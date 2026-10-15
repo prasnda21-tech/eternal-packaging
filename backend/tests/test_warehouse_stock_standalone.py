@@ -1,26 +1,33 @@
-"""Warehouse stock standalone — safe on Mongo without multi-doc transactions.
+"""Warehouse stock standalone — integrity on real MongoDB standalone (no Replica Set).
 
-Uses an isolated DB. Does not require Replica Set transactions for the
-standalone engine (pending-event + unique ledger). Flag default OFF preserves
-compatibility catalog behavior.
+These tests intentionally target an isolated mongod without --replSet so the
+pending-event engine is proven without multi-document transactions.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# Prefer dedicated standalone mongod (no RS). Override with STANDALONE_MONGO_URL.
+STANDALONE_URL = os.environ.get(
+    "STANDALONE_MONGO_URL", "mongodb://127.0.0.1:27018"
+)
 os.environ["DB_NAME"] = "eternal_packaging_test_warehouse_standalone"
-os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+os.environ["MONGO_URL"] = STANDALONE_URL
 
 from services.physical_stock import (  # noqa: E402
     BALANCE_COLLECTION,
     BRANCHES_COLLECTION,
     LEDGER_COLLECTION,
     MASTER_ITEMS_COLLECTION,
+    PhysicalStockConflictError,
+    PhysicalStockRetryError,
+    SALES_DELIVERY_CONFIRMATIONS,
     WAREHOUSES_COLLECTION,
     ensure_indexes,
     list_physical_stock_catalog,
@@ -29,19 +36,23 @@ from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.warehouse_stock_standalone import (  # noqa: E402
     MODE_WAREHOUSE_STANDALONE,
     adjust_to_target_standalone,
+    apply_confirmed_sales_delivery_standalone,
     apply_opname_lines_standalone,
     apply_purchase_receipt_lines_standalone,
     apply_sales_delivery_line_standalone,
     apply_standalone_movement,
+    cancel_sales_delivery_document_standalone,
+    ensure_receipt_movements_complete,
     is_warehouse_stock_standalone_active,
     post_opening_balance_standalone,
     recover_pending_balance,
+    set_fail_after_claim,
     set_fail_after_ledger,
     set_warehouse_stock_standalone_enabled,
 )
 
 TEST_DB = "eternal_packaging_test_warehouse_standalone"
-MONGO_URL = os.environ["MONGO_URL"]
+MONGO_URL = STANDALONE_URL
 
 pytestmark = pytest.mark.anyio
 
@@ -55,16 +66,24 @@ def anyio_backend():
 async def db():
     assert "eternal_packaging_preview" not in TEST_DB
     client = AsyncIOMotorClient(MONGO_URL)
+    hello = await client.admin.command("hello")
+    # Hard requirement: real standalone mongod, not Replica Set.
+    assert not hello.get("setName"), (
+        f"Integrity tests must run on standalone mongod; got setName={hello.get('setName')!r}. "
+        f"Start mongod without --replSet (e.g. port 27018) and set STANDALONE_MONGO_URL."
+    )
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
     await ensure_indexes(database)
     await set_r2_authority_active(database, active=False)
     await set_warehouse_stock_standalone_enabled(database, enabled=True)
     set_fail_after_ledger(False)
+    set_fail_after_claim(False)
     try:
         yield database
     finally:
         set_fail_after_ledger(False)
+        set_fail_after_claim(False)
         await client.drop_database(TEST_DB)
         client.close()
 
@@ -98,6 +117,18 @@ async def _seed(db, *, code="A"):
     return item, branch, wh_a, wh_b
 
 
+async def _qty(db, item_id, warehouse_id) -> int:
+    bal = await db[BALANCE_COLLECTION].find_one(
+        {"master_item_id": item_id, "warehouse_id": warehouse_id}, {"_id": 0},
+    )
+    return int((bal or {}).get("physical_qty") or 0)
+
+
+async def test_topology_is_standalone(db):
+    hello = await db.client.admin.command("hello")
+    assert hello.get("setName") in (None, "")
+
+
 async def test_flag_off_keeps_compatibility_catalog(db):
     await set_warehouse_stock_standalone_enabled(db, enabled=False)
     assert await is_warehouse_stock_standalone_active(db) is False
@@ -113,8 +144,6 @@ async def test_flag_off_keeps_compatibility_catalog(db):
         },
         actor_id="tester",
     )
-    # Opening still wrote balances (direct API) but catalog must stay compatibility
-    # when flag is off — production default.
     await set_warehouse_stock_standalone_enabled(db, enabled=False)
     catalog = await list_physical_stock_catalog(db)
     assert catalog["stock_read_mode"] == "compatibility"
@@ -122,7 +151,7 @@ async def test_flag_off_keeps_compatibility_catalog(db):
 
 
 async def test_uat_opening_opname_gr_delivery_isolation(db):
-    """Scenarios 1–5, 12: A/B isolation + GR + delivery."""
+    """A=1000 → opname 950 → GR +40 → delivery -25 = 965; B stays 500."""
     item, branch, wh_a, wh_b = await _seed(db)
     open_a = await post_opening_balance_standalone(
         db,
@@ -149,7 +178,6 @@ async def test_uat_opening_opname_gr_delivery_isolation(db):
     assert open_a["physical_qty"] == 1000
     assert open_b["physical_qty"] == 500
 
-    # Opname A → 950
     await adjust_to_target_standalone(
         db,
         item["id"],
@@ -162,16 +190,9 @@ async def test_uat_opening_opname_gr_delivery_isolation(db):
         },
         actor_id="u1",
     )
-    bal_a = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_a["id"]}, {"_id": 0}
-    )
-    bal_b = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_b["id"]}, {"_id": 0}
-    )
-    assert bal_a["physical_qty"] == 950
-    assert bal_b["physical_qty"] == 500
+    assert await _qty(db, item["id"], wh_a["id"]) == 950
+    assert await _qty(db, item["id"], wh_b["id"]) == 500
 
-    # GR A +40 → 990
     receipt = {
         "id": f"rc-{uuid.uuid4().hex[:8]}",
         "branch_id": branch["id"],
@@ -185,12 +206,8 @@ async def test_uat_opening_opname_gr_delivery_isolation(db):
         }],
     }
     await apply_purchase_receipt_lines_standalone(db, receipt, actor_id="u1")
-    bal_a = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_a["id"]}, {"_id": 0}
-    )
-    assert bal_a["physical_qty"] == 990
+    assert await _qty(db, item["id"], wh_a["id"]) == 990
 
-    # Delivery A -25 → 965
     await apply_sales_delivery_line_standalone(
         db,
         master_item_id=item["id"],
@@ -201,14 +218,8 @@ async def test_uat_opening_opname_gr_delivery_isolation(db):
         line_idx=0,
         actor_id="u1",
     )
-    bal_a = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_a["id"]}, {"_id": 0}
-    )
-    bal_b = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_b["id"]}, {"_id": 0}
-    )
-    assert bal_a["physical_qty"] == 965
-    assert bal_b["physical_qty"] == 500
+    assert await _qty(db, item["id"], wh_a["id"]) == 965
+    assert await _qty(db, item["id"], wh_b["id"]) == 500
 
     catalog = await list_physical_stock_catalog(
         db, branch_id=branch["id"], warehouse_id=wh_a["id"],
@@ -217,11 +228,15 @@ async def test_uat_opening_opname_gr_delivery_isolation(db):
     assert catalog.get("warehouse_stock_standalone") is True
     row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
     assert row["physical_qty"] == 965
-    assert row["qty_tersedia_valid"] is True  # reconciled + no unverified belum
+    assert row["qty_tersedia_valid"] is True
+
+    # No dual-write into legacy COMPANY / product_stock_state.
+    assert await db.product_stock_state.count_documents({}) == 0
 
 
-async def test_concurrent_adjust_and_idempotent_replay(db):
-    item, branch, wh_a, _wh_b = await _seed(db)
+async def test_active_claim_vs_recovery_interleaving(db):
+    """Active claim must not be released by a concurrent recover; lease fences it."""
+    item, branch, wh_a, _ = await _seed(db)
     await post_opening_balance_standalone(
         db,
         item["id"],
@@ -229,42 +244,67 @@ async def test_concurrent_adjust_and_idempotent_replay(db):
             "branch_id": branch["id"],
             "warehouse_id": wh_a["id"],
             "physical_qty": 100,
-            "idempotency_key": "open-c",
+            "idempotency_key": "open-claim",
         },
         actor_id="u1",
     )
-
-    async def adj(key, target):
-        return await adjust_to_target_standalone(
+    identity = {
+        "master_item_id": item["id"],
+        "branch_id": branch["id"],
+        "warehouse_id": wh_a["id"],
+    }
+    set_fail_after_claim(True)
+    with pytest.raises(Exception):
+        await apply_standalone_movement(
             db,
-            item["id"],
             {
+                "master_item_id": item["id"],
                 "branch_id": branch["id"],
                 "warehouse_id": wh_a["id"],
-                "target_physical_qty": target,
-                "reason": f"adj-{target}",
-                "idempotency_key": key,
+                "movement_type": "MANUAL_ADJUSTMENT",
+                "qty_delta": 7,
+                "reference_type": "MANUAL_ADJUSTMENT",
+                "reference_id": "claim-race",
+                "reason": "claim race",
+                "idempotency_key": "owner-key",
+                "metadata": {"target_physical_qty": 107},
             },
             actor_id="u1",
         )
+    set_fail_after_claim(False)
+    bal = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
+    assert bal.get("pending_event")
+    assert str(bal["pending_event"].get("idempotency_key")) == "owner-key"
+    # No ledger yet — foreign recover must refuse while lease is active.
+    with pytest.raises(PhysicalStockRetryError):
+        await recover_pending_balance(db, identity, for_idempotency_key="other-key")
+    bal2 = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
+    assert bal2.get("pending_event")
+    assert await _qty(db, item["id"], wh_a["id"]) == 100
 
-    # Two different keys racing toward different targets — last writer with CAS retries.
-    results = await asyncio.gather(adj("k1", 90), adj("k2", 80), return_exceptions=True)
-    oks = [r for r in results if not isinstance(r, Exception)]
-    assert len(oks) >= 1
-    bal = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_a["id"]}, {"_id": 0}
+    # Owner may release and retry; then succeeds.
+    await recover_pending_balance(db, identity, for_idempotency_key="owner-key")
+    mov = await apply_standalone_movement(
+        db,
+        {
+            "master_item_id": item["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "movement_type": "MANUAL_ADJUSTMENT",
+            "qty_delta": 7,
+            "reference_type": "MANUAL_ADJUSTMENT",
+            "reference_id": "claim-race",
+            "reason": "claim race",
+            "idempotency_key": "owner-key",
+            "metadata": {"target_physical_qty": 107},
+        },
+        actor_id="u1",
     )
-    assert bal["physical_qty"] in (80, 90)
-
-    # Replay same key
-    again = await adj("k1", 90)
-    assert again["changed"] is True
-    ledgers = await db[LEDGER_COLLECTION].count_documents({"idempotency_key": "k1"})
-    assert ledgers == 1
+    assert mov["balance_after"] == 107
+    assert await _qty(db, item["id"], wh_a["id"]) == 107
 
 
-async def test_crash_after_ledger_then_recover(db):
+async def test_crash_after_ledger_then_recover_and_retry_finalizes(db):
     item, branch, wh_a, _ = await _seed(db)
     await post_opening_balance_standalone(
         db,
@@ -303,11 +343,11 @@ async def test_crash_after_ledger_then_recover(db):
     }
     bal = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
     assert bal.get("pending_event")
-    await recover_pending_balance(db, identity)
-    bal2 = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
-    assert bal2.get("pending_event") in (None, {})
-    assert bal2["physical_qty"] == 55
-    # Replay is idempotent
+    assert await db[LEDGER_COLLECTION].count_documents({"idempotency_key": "crash-key"}) == 1
+    # Balance still stale until finalize.
+    assert bal["physical_qty"] == 50
+
+    # Retry with same key must finalize — not return success with leftover balance.
     mov = await apply_standalone_movement(
         db,
         {
@@ -325,11 +365,169 @@ async def test_crash_after_ledger_then_recover(db):
         actor_id="u1",
     )
     assert mov["balance_after"] == 55
+    bal2 = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
+    assert bal2.get("pending_event") in (None, {})
+    assert bal2["physical_qty"] == 55
     assert await db[LEDGER_COLLECTION].count_documents({"idempotency_key": "crash-key"}) == 1
 
 
-async def test_opname_partial_status(db):
+async def test_gr_multiline_partial_then_retry(db):
+    """Receipt exists with only some line ledgers — same idempotency retry completes rest."""
     item, branch, wh_a, _ = await _seed(db)
+    item2 = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "SKU-2",
+        "item_name": "Barang 2",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(item2))
+    await post_opening_balance_standalone(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 10,
+            "idempotency_key": "open-gr-1",
+        },
+        actor_id="u1",
+    )
+    await post_opening_balance_standalone(
+        db,
+        item2["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 20,
+            "idempotency_key": "open-gr-2",
+        },
+        actor_id="u1",
+    )
+    receipt = {
+        "id": f"rc-{uuid.uuid4().hex[:8]}",
+        "branch_id": branch["id"],
+        "warehouse_id": wh_a["id"],
+        "purchase_order_id": "po-gr",
+        "lines": [
+            {
+                "line_id": "ln1",
+                "master_item_id": item["id"],
+                "received_qty": 5,
+                "purchase_order_line_id": "pol1",
+            },
+            {
+                "line_id": "ln2",
+                "master_item_id": item2["id"],
+                "received_qty": 3,
+                "purchase_order_line_id": "pol2",
+            },
+        ],
+        "stock_posting": {"status": "PARTIAL", "posted_count": 1, "failed_count": 1},
+    }
+    await db["purchase_goods_receipts"].insert_one(dict(receipt))
+    # Simulate crash after first line ledger only.
+    await apply_standalone_movement(
+        db,
+        {
+            "master_item_id": item["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "movement_type": "PURCHASE_RECEIPT",
+            "qty_delta": 5,
+            "reference_type": "purchase_goods_receipt",
+            "reference_id": f"{receipt['id']}:ln1",
+            "reason": "Penerimaan pembelian",
+            "idempotency_key": f"purchase-receipt:{receipt['id']}:ln1",
+            "metadata": {
+                "receipt_id": receipt["id"],
+                "line_id": "ln1",
+                "purchase_order_id": "po-gr",
+                "purchase_order_line_id": "pol1",
+            },
+        },
+        actor_id="u1",
+    )
+    assert await _qty(db, item["id"], wh_a["id"]) == 15
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"purchase-receipt:{receipt['id']}:ln2"}
+    ) == 0
+
+    # Idempotent ensure must NOT assume receipt row means stock is complete.
+    retry = await ensure_receipt_movements_complete(db, receipt, actor_id="u1")
+    assert retry["status"] == "COMPLETE"
+    assert await _qty(db, item["id"], wh_a["id"]) == 15
+    assert await _qty(db, item2["id"], wh_a["id"]) == 23
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"purchase-receipt:{receipt['id']}:ln1"}
+    ) == 1
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"purchase-receipt:{receipt['id']}:ln2"}
+    ) == 1
+    posting = await db["purchase_goods_receipts"].find_one(
+        {"id": receipt["id"]}, {"_id": 0, "stock_posting": 1},
+    )
+    assert posting["stock_posting"]["status"] == "COMPLETE"
+
+
+async def test_adjustment_race_with_balance_change(db):
+    item, branch, wh_a, _ = await _seed(db)
+    await post_opening_balance_standalone(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 100,
+            "idempotency_key": "open-adj",
+        },
+        actor_id="u1",
+    )
+
+    async def adj(key, target):
+        return await adjust_to_target_standalone(
+            db,
+            item["id"],
+            {
+                "branch_id": branch["id"],
+                "warehouse_id": wh_a["id"],
+                "target_physical_qty": target,
+                "reason": f"adj-{target}",
+                "idempotency_key": key,
+            },
+            actor_id="u1",
+        )
+
+    results = await asyncio.gather(adj("k1", 90), adj("k2", 80), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, Exception)]
+    oks = [r for r in results if not isinstance(r, Exception)]
+    # At least one succeeds; loser retries or conflicts without applying stale delta.
+    assert len(oks) >= 1
+    bal = await _qty(db, item["id"], wh_a["id"])
+    assert bal in (80, 90)
+    # Winner lands exactly on its target (atomic claim-time delta).
+    for ok in oks:
+        assert ok["physical_qty"] == ok["target_physical_qty"]
+    # Stale snapshot must not leave a non-target balance.
+    assert bal in {r["target_physical_qty"] for r in oks} or isinstance(
+        errors[0] if errors else None, (PhysicalStockConflictError, PhysicalStockRetryError)
+    )
+
+    again = await adj("k1", 90)
+    assert again["changed"] is True
+    assert await db[LEDGER_COLLECTION].count_documents({"idempotency_key": "k1"}) == 1
+
+
+async def test_opname_partial_then_resume(db):
+    item, branch, wh_a, _ = await _seed(db)
+    item2 = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "SKU-OP2",
+        "item_name": "Barang OP2",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(item2))
     await post_opening_balance_standalone(
         db,
         item["id"],
@@ -341,14 +539,17 @@ async def test_opname_partial_status(db):
         },
         actor_id="u1",
     )
-    ghost = {
-        "id": "ghost-item",
-        "item_code": "GHOST",
-        "item_name": "Ghost",
-        "unit": "PCS",
-        "item_type": "INVENTORY",
-    }
-    # ghost master missing → line fails validation
+    await post_opening_balance_standalone(
+        db,
+        item2["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 50,
+            "idempotency_key": "open-opn-2",
+        },
+        actor_id="u1",
+    )
     session = {
         "id": f"so-{uuid.uuid4().hex[:8]}",
         "branch_id": branch["id"],
@@ -367,7 +568,7 @@ async def test_opname_partial_status(db):
         },
         {
             "line_id": "l2",
-            "master_item_id": ghost["id"],
+            "master_item_id": "ghost-missing",
             "difference_qty": 5,
             "physical_count_qty": 5,
             "book_qty": 0,
@@ -378,10 +579,140 @@ async def test_opname_partial_status(db):
     assert outcome["status"] == "PARTIAL"
     assert outcome["posted_count"] == 1
     assert outcome["failed_count"] == 1
-    bal = await db[BALANCE_COLLECTION].find_one(
-        {"master_item_id": item["id"], "warehouse_id": wh_a["id"]}, {"_id": 0}
+    assert await _qty(db, item["id"], wh_a["id"]) == 90
+
+    # Mark line statuses as a PARTIAL session would, then resume.
+    lines[0]["post_status"] = "POSTED"
+    lines[0]["movement_id"] = outcome["lines"][0]["movement"]["id"]
+    lines[1]["post_status"] = "FAILED"
+    lines[1]["master_item_id"] = item2["id"]
+    lines[1]["difference_qty"] = -5
+    lines[1]["physical_count_qty"] = 45
+    lines[1]["book_qty"] = 50
+    lines[1]["book_qty_at_posting"] = 50
+
+    resumed = await apply_opname_lines_standalone(
+        db, session, lines, actor_id="u1", resume=True,
     )
-    assert bal["physical_qty"] == 90
+    assert resumed["status"] == "CONFIRMED"
+    assert any(r.get("skipped_resume") for r in resumed["lines"])
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"stock-opname:{session['id']}:l1"}
+    ) == 1
+    assert await _qty(db, item["id"], wh_a["id"]) == 90
+    assert await _qty(db, item2["id"], wh_a["id"]) == 45
+
+
+async def test_http_confirm_delivery_and_retry_and_cancel(db):
+    """Exercise durable delivery apply + idempotent retry + cancel (not helper-only)."""
+    item, branch, wh_a, wh_b = await _seed(db)
+    await post_opening_balance_standalone(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 100,
+            "idempotency_key": "open-del",
+        },
+        actor_id="u1",
+    )
+    # Mark warehouse as default so location resolver works without session.
+    await db[WAREHOUSES_COLLECTION].update_one(
+        {"id": wh_a["id"]}, {"$set": {"is_default": True, "code": "MAIN"}},
+    )
+    order = {
+        "id": f"ord-{uuid.uuid4().hex[:8]}",
+        "cancelled": False,
+        "line_items": [{
+            "master_item_id": item["id"],
+            "line_id": "oli-1",
+            "quantity": 100,
+            "production_process": "non_print",
+            "name": "Barang",
+        }],
+    }
+    await db.orders.insert_one(dict(order))
+    confirmation_id = f"conf-{uuid.uuid4().hex[:8]}"
+    sj_id = f"sj-{uuid.uuid4().hex[:8]}"
+    lines = [{"line_idx": 0, "qty": 25, "master_item_id": item["id"], "line_id": "oli-1"}]
+
+    first = await apply_confirmed_sales_delivery_standalone(
+        db,
+        order=order,
+        confirmation_id=confirmation_id,
+        lines=lines,
+        actor_id="u1",
+        warehouse_id=wh_a["id"],
+        branch_id=branch["id"],
+        reason="Konfirmasi terkirim",
+        sales_delivery_id=sj_id,
+    )
+    assert first["engine"] == MODE_WAREHOUSE_STANDALONE
+    assert first["replayed"] is False
+    assert len(first["movements"]) == 1
+    assert await _qty(db, item["id"], wh_a["id"]) == 75
+    conf = await db[SALES_DELIVERY_CONFIRMATIONS].find_one({"id": confirmation_id}, {"_id": 0})
+    assert conf is not None
+    assert conf.get("stock_posting", {}).get("status") == "COMPLETE"
+
+    # Idempotent HTTP retry — same confirmation, no double debit.
+    retry = await apply_confirmed_sales_delivery_standalone(
+        db,
+        order=order,
+        confirmation_id=confirmation_id,
+        lines=lines,
+        actor_id="u1",
+        warehouse_id=wh_a["id"],
+        branch_id=branch["id"],
+        reason="Konfirmasi terkirim",
+        sales_delivery_id=sj_id,
+    )
+    assert retry["replayed"] is True
+    assert await _qty(db, item["id"], wh_a["id"]) == 75
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"metadata.confirmation_id": confirmation_id, "movement_type": "SALES_DELIVERY"}
+    ) == 1
+
+    # Cancel / reverse delivery restores stock.
+    await db.sales_deliveries.insert_one({
+        "id": sj_id,
+        "sj_number": "SJ-TEST-1",
+        "order_id": order["id"],
+        "po_id": order["id"],
+        "is_cancelled": False,
+        "status": "TERKIRIM",
+    })
+    cancelled = await cancel_sales_delivery_document_standalone(
+        db,
+        {"id": sj_id, "sj_number": "SJ-TEST-1", "order_id": order["id"], "po_id": order["id"]},
+        actor_id="u1",
+        reason="Pembatalan Surat Jalan",
+    )
+    assert cancelled["soft_cancelled"] is True
+    assert cancelled["engine"] == MODE_WAREHOUSE_STANDALONE
+    assert await _qty(db, item["id"], wh_a["id"]) == 100
+    conf2 = await db[SALES_DELIVERY_CONFIRMATIONS].find_one({"id": confirmation_id}, {"_id": 0})
+    assert conf2.get("reversed") is True
+    # B untouched throughout.
+    assert await _qty(db, item["id"], wh_b["id"]) == 0
+
+
+async def test_no_auto_copy_company_to_warehouse(db):
+    item, branch, wh_a, _ = await _seed(db)
+    await db.product_stock_state.insert_one({
+        "_id": item["id"],
+        "master_item_id": item["id"],
+        "total_qty": 9999,
+        "initialized": True,
+        "status": "INITIALIZED",
+    })
+    catalog = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=wh_a["id"],
+    )
+    row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
+    assert row["physical_qty"] == 0
+    assert row["qty_tersedia_valid"] is False
 
 
 async def test_service_addon_excluded_from_catalog_physical(db):
@@ -411,19 +742,37 @@ async def test_service_addon_excluded_from_catalog_physical(db):
     assert service["id"] not in ids
 
 
-async def test_no_auto_copy_company_to_warehouse(db):
+async def test_stale_lease_allows_foreign_recovery(db):
     item, branch, wh_a, _ = await _seed(db)
-    await db.product_stock_state.insert_one({
-        "_id": item["id"],
-        "master_item_id": item["id"],
-        "total_qty": 9999,
-        "initialized": True,
-        "status": "INITIALIZED",
-    })
-    catalog = await list_physical_stock_catalog(
-        db, branch_id=branch["id"], warehouse_id=wh_a["id"],
+    await post_opening_balance_standalone(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 10,
+            "idempotency_key": "open-stale",
+        },
+        actor_id="u1",
     )
-    row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
-    # No opening → book 0 / unreconciled — never 9999 from company
-    assert row["physical_qty"] == 0
-    assert row["qty_tersedia_valid"] is False
+    identity = {
+        "master_item_id": item["id"],
+        "branch_id": branch["id"],
+        "warehouse_id": wh_a["id"],
+    }
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+    await db[BALANCE_COLLECTION].update_one(
+        identity,
+        {"$set": {
+            "pending_event": {
+                "event_id": "standalone:stale-key",
+                "idempotency_key": "stale-key",
+                "qty_delta": 3,
+                "claimed_at": stale,
+                "lease_expires_at": stale,
+            }
+        }},
+    )
+    await recover_pending_balance(db, identity, for_idempotency_key="other")
+    bal = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
+    assert bal.get("pending_event") in (None, {})

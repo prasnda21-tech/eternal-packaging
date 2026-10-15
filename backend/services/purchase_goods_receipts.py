@@ -671,7 +671,7 @@ async def _commit_standalone_goods_receipt(
         resolve_purchase_receipt_warehouse,
     )
     from services.warehouse_stock_standalone import (
-        apply_purchase_receipt_lines_standalone,
+        ensure_receipt_movements_complete,
         require_warehouse_stock_standalone,
     )
 
@@ -689,24 +689,35 @@ async def _commit_standalone_goods_receipt(
         line["warehouse_id"] = resolved_warehouse
         line["received_qty"] = _whole_received_qty(line["received_qty"])
 
+    async def _finish_existing(existing: dict) -> dict:
+        """Idempotent retry must complete missing line movements, not assume stock is done."""
+        spec = {
+            "purchase_order_id": doc["purchase_order_id"],
+            "branch_id": branch_id,
+            "warehouse_id": resolved_warehouse,
+            "lines": _receipt_line_identity(doc.get("lines") or []),
+        }
+        if not _same_receipt_payload(existing, spec):
+            from services.physical_stock import PhysicalStockConflictError
+            raise PhysicalStockConflictError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda"
+            )
+        posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
+        if str(posting.get("status") or "").upper() != "COMPLETE":
+            try:
+                await ensure_receipt_movements_complete(db, existing, actor_id=actor_id)
+            except Exception as exc:
+                _r2_http(exc)
+            existing = await db[COLLECTION].find_one({"id": existing["id"]}, {"_id": 0}) or existing
+        return existing
+
     if doc.get("idempotency_key"):
         existing = await db[COLLECTION].find_one(
             {"idempotency_key": doc["idempotency_key"]},
             {"_id": 0},
         )
         if existing:
-            spec = {
-                "purchase_order_id": doc["purchase_order_id"],
-                "branch_id": branch_id,
-                "warehouse_id": resolved_warehouse,
-                "lines": _receipt_line_identity(doc.get("lines") or []),
-            }
-            if not _same_receipt_payload(existing, spec):
-                from services.physical_stock import PhysicalStockConflictError
-                raise PhysicalStockConflictError(
-                    "Idempotency key sudah digunakan dengan payload yang berbeda"
-                )
-            return existing
+            return await _finish_existing(existing)
 
     number_index = existing_count + 1
     candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, number_index)
@@ -723,11 +734,17 @@ async def _commit_standalone_goods_receipt(
                 {"idempotency_key": doc["idempotency_key"]}, {"_id": 0},
             )
             if existing:
-                return existing
+                return await _finish_existing(existing)
         raise HTTPException(409, "Dokumen duplikat terdeteksi.") from exc
 
     try:
-        await apply_purchase_receipt_lines_standalone(db, doc, actor_id=actor_id)
+        outcome = await ensure_receipt_movements_complete(db, doc, actor_id=actor_id)
+        doc["stock_posting"] = {
+            "status": outcome.get("status"),
+            "posted_count": outcome.get("posted_count"),
+            "failed_count": outcome.get("failed_count"),
+            "engine": outcome.get("engine"),
+        }
     except Exception as exc:
         # Receipt row exists; movements may be partial — surface clearly for recovery.
         _r2_http(exc)
