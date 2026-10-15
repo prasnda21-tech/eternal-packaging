@@ -196,3 +196,72 @@ def test_f_service_prices_still_billed():
     billed = sum(int(li["quantity"]) * int(li["unit_price"]) for li in o["line_items"])
     assert billed == 5_000_000 + 500_000 + 700_000
     assert packing_required_total(o) == 1000
+
+
+def test_unlinked_service_blocks_packing_and_stock_unproven():
+    """Regression: SERVICE without parent_line_id must not silently unlock Packing.
+
+    Stock marks completion_unproven; Packing must also return avail=0 until
+    explicit induk is set. Sibling-finished rule is separate (see test_b).
+    """
+    from services.order_line_addon import order_has_unlinked_process_addons
+
+    order = {
+        "id": "PO-orphan-addon",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-a",
+                "name": "Barang A",
+                "quantity": 1000,
+                "production_process": "print",
+                "master_item_id": "inv-a",
+                "item_type": "INVENTORY",
+            },
+            {
+                "line_id": "ln-orphan",
+                "name": "Add On Warna",
+                "quantity": 1000,
+                "production_process": "print",
+                "master_item_id": "svc-w",
+                "item_type": "SERVICE",
+                # no parent_line_id
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 0},
+        ],
+        "helper_prep": {"items": [{"line_idx": 0, "qty_prepared": 1000}]},
+    }
+    assert order_has_unlinked_process_addons(order) is True
+    progress = aggregate_operational_orders(
+        [order], exclude_master_ids={"svc-w"},
+    )
+    assert progress["inv-a"].get("completion_unproven") is True
+    assert available_for_packing_line(order, 0) == 0
+    assert packing_required_total(order) == 1000  # physical target unchanged
+
+    # Explicit induk → packing unlocks when group FULLY_COMPLETED
+    order["line_items"][1]["parent_line_id"] = "ln-a"
+    order["operator_splits"][1]["qty_completed"] = 1000
+    assert order_has_unlinked_process_addons(order) is False
+    assert evaluate_process_group(order, 0).fully_completed is True
+    assert available_for_packing_line(order, 0) == 1000
+
+
+def test_linked_a_complete_not_blocked_by_unfinished_b_without_orphan():
+    """Keep per-induk rule: finished A packs while unfinished B does not."""
+    o = _po001_a_with_two_addons(w1=1000, w2=1000, w3=1000)
+    o["line_items"].append({
+        "line_id": "ln-b",
+        "name": "Barang B",
+        "quantity": 500,
+        "production_process": "print",
+        "master_item_id": "inv-b",
+        "item_type": "INVENTORY",
+    })
+    o["operator_splits"].append({"line_idx": 3, "qty_completed": 0})
+    o["helper_prep"]["items"].append({"line_idx": 3, "qty_prepared": 0})
+    assert available_for_packing_line(o, 0) == 1000
+    assert available_for_packing_line(o, 3) == 0

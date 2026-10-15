@@ -328,13 +328,12 @@ def evaluate_process_group(
     )
 
 
-def parent_has_linked_process_children(
+def _process_master_ids_for_order(
     order: dict,
-    parent_idx: int,
     *,
     process_master_ids: Optional[Set[str]] = None,
-) -> bool:
-    from quantity_rules import is_print_line, is_service_process_line
+) -> Tuple[List[str], Set[str]]:
+    from quantity_rules import is_service_process_line
 
     lines = list(order.get("line_items") or [])
     mids = [
@@ -347,6 +346,21 @@ def parent_has_linked_process_children(
             mid = mids[i] if i < len(mids) else ""
             if mid:
                 process_ids.add(mid)
+    return mids, process_ids
+
+
+def parent_has_linked_process_children(
+    order: dict,
+    parent_idx: int,
+    *,
+    process_master_ids: Optional[Set[str]] = None,
+) -> bool:
+    from quantity_rules import is_print_line
+
+    lines = list(order.get("line_items") or [])
+    mids, process_ids = _process_master_ids_for_order(
+        order, process_master_ids=process_master_ids,
+    )
     children, _ = process_children_for_parent(
         parent_idx,
         lines,
@@ -355,6 +369,37 @@ def parent_has_linked_process_children(
         is_print_line=is_print_line,
     )
     return bool(children)
+
+
+def order_has_unlinked_process_addons(
+    order: dict,
+    *,
+    process_master_ids: Optional[Set[str]] = None,
+) -> bool:
+    """True when an active SERVICE/process print line lacks a valid parent link.
+
+    Ambiguous Add On work must not silently unlock packing/siap for inventory
+    lines. Never invents which induk the orphan belongs to.
+    """
+    from quantity_rules import is_print_line
+
+    lines = list(order.get("line_items") or [])
+    if not lines:
+        return False
+    mids, process_ids = _process_master_ids_for_order(
+        order, process_master_ids=process_master_ids,
+    )
+    if not process_ids:
+        return False
+    # Any parent index reports the same unlinked flag for the whole PO.
+    _, unlinked = process_children_for_parent(
+        0,
+        lines,
+        process_master_ids=process_ids,
+        master_ids=mids,
+        is_print_line=is_print_line,
+    )
+    return bool(unlinked)
 
 
 def conservative_full_process_ready(

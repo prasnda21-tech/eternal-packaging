@@ -488,11 +488,16 @@ def available_for_packing_line(order: dict, line_idx: int) -> int:
     if not is_print_line(li) or is_service_process_line(li):
         return 0
     # Per-parent process group gate (does not wait on unrelated sibling items).
+    # Unlinked SERVICE Add Ons on this PO are ambiguous — require explicit induk
+    # before any inventory line may pack as "complete".
     from services.order_line_addon import (
         STATUS_FULLY_COMPLETED,
         evaluate_process_group,
+        order_has_unlinked_process_addons,
         parent_has_linked_process_children,
     )
+    if order_has_unlinked_process_addons(order):
+        return 0
     if parent_has_linked_process_children(order, idx):
         group = evaluate_process_group(order, idx)
         if group.status != STATUS_FULLY_COMPLETED:
