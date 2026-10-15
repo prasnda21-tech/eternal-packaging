@@ -150,6 +150,132 @@ async def test_rbac_director_allowed_holding_allowed_others_denied():
         assert denied.status_code == 403
 
 
+async def test_rbac_director_super_admin_preview_execute_data_effect():
+    """Direktur + is_super_admin retains purge; admin SA without override denied."""
+    from server import user_permissions
+
+    purge_key = "cash_bank.reconcile.purge_unmatched"
+    director_sa = _director()
+    director_sa["email"] = "dir.sa.purge@example.com"
+    admin_sa = _user(role="admin")
+    admin_sa["email"] = "admin.sa.purge@example.com"
+    holding = _holding()
+    holding["email"] = "hold.purge@example.com"
+    operator = _user(role="operator", perms=["cash_bank.view", "cash_bank.reconcile"])
+    operator["email"] = "op.purge@example.com"
+
+    await server.db.users.insert_one(
+        {
+            "id": director_sa["id"],
+            "email": director_sa["email"],
+            "role": "direktur_utama",
+            "status": "active",
+            "is_super_admin": True,
+            "permissions_override": {},
+        }
+    )
+    await server.db.users.insert_one(
+        {
+            "id": admin_sa["id"],
+            "email": admin_sa["email"],
+            "role": "admin",
+            "status": "active",
+            "is_super_admin": True,
+            "permissions_override": {},
+        }
+    )
+    await server.db.users.insert_one(
+        {
+            "id": holding["id"],
+            "email": holding["email"],
+            "role": "holding_team",
+            "status": "active",
+            "is_super_admin": False,
+            "permissions_override": {},
+        }
+    )
+
+    before_dir_sa = await user_permissions(director_sa)
+    before_admin_sa = await user_permissions(admin_sa)
+    before_holding = await user_permissions(holding)
+    before_operator = await user_permissions(operator)
+    assert purge_key in before_dir_sa
+    assert purge_key not in before_admin_sa
+    assert purge_key in before_holding
+    assert purge_key not in before_operator
+
+    async with await client_for(director_sa) as c:
+        bank, _book, by_desc = await _seed_abcd(c)
+        params = {"cash_bank_id": bank["id"], **PERIOD}
+        me = await c.get("/api/auth/me")
+        assert me.status_code == 200, me.text
+        assert purge_key in me.json()["permissions"]
+        prev = await c.get("/api/cash-bank/reconciliations/unmatched-purge/preview", params=params)
+        assert prev.status_code == 200, prev.text
+        assert prev.json()["eligible_count"] == 4
+        lines_before = await server.db[LINES].count_documents({})
+        journals_before = await server.db[JOURNAL_ENTRIES].count_documents({})
+        key = f"purge-sa-{uuid.uuid4().hex}"
+        purged = await c.post(
+            "/api/cash-bank/reconciliations/unmatched-purge",
+            json={
+                "cash_bank_id": bank["id"],
+                "start_date": PERIOD["start_date"],
+                "end_date": PERIOD["end_date"],
+                "idempotency_key": key,
+            },
+        )
+        assert purged.status_code == 200, purged.text
+        body = purged.json()
+        assert body["status"] == "completed"
+        assert body["deleted_count"] == 4
+        assert await server.db[LINES].count_documents({}) == lines_before - 4
+        assert await server.db[JOURNAL_ENTRIES].count_documents({}) == journals_before
+        for desc in ("Mutasi A", "Mutasi B", "Mutasi C", "Mutasi D"):
+            assert await server.db[LINES].find_one({"id": by_desc[desc]["id"]}) is None
+
+    after_dir_sa = await user_permissions(director_sa)
+    after_admin_sa = await user_permissions(admin_sa)
+    after_holding = await user_permissions(holding)
+    after_operator = await user_permissions(operator)
+    assert (purge_key in after_dir_sa) == (purge_key in before_dir_sa) == True
+    assert (purge_key in after_admin_sa) == (purge_key in before_admin_sa) == False
+    assert (purge_key in after_holding) == (purge_key in before_holding) == True
+    assert (purge_key in after_operator) == (purge_key in before_operator) == False
+
+    async with await client_for(admin_sa) as c:
+        denied = await c.get(
+            "/api/cash-bank/reconciliations/unmatched-purge/preview",
+            params={"cash_bank_id": bank["id"], **PERIOD},
+        )
+        assert denied.status_code == 403
+        denied_x = await c.post(
+            "/api/cash-bank/reconciliations/unmatched-purge",
+            json={
+                "cash_bank_id": bank["id"],
+                "start_date": PERIOD["start_date"],
+                "end_date": PERIOD["end_date"],
+                "idempotency_key": f"admin-deny-{uuid.uuid4().hex}",
+            },
+        )
+        assert denied_x.status_code == 403
+
+    async with await client_for(holding) as c:
+        # Fresh unmatched rows for holding preview on same bank period (empty after purge)
+        prev_h = await c.get(
+            "/api/cash-bank/reconciliations/unmatched-purge/preview",
+            params={"cash_bank_id": bank["id"], **PERIOD},
+        )
+        assert prev_h.status_code == 200, prev_h.text
+
+    async with await client_for(operator) as c:
+        denied_op = await c.get(
+            "/api/cash-bank/reconciliations/unmatched-purge/preview",
+            params={"cash_bank_id": bank["id"], **PERIOD},
+        )
+        assert denied_op.status_code == 403
+
+
 async def test_preview_zero_write_and_counts():
     director = _director()
     async with await client_for(director) as c:
