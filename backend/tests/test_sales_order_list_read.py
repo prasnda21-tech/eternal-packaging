@@ -161,10 +161,11 @@ async def test_list_omits_heavy_file_payload_and_keeps_table_fields():
             assert by_id[done["id"]]["hold"] is False
 
             summary = by_id[ready_doc["id"]]["delivery_summary"]
+            # Header total_qty without line qty does not count, same as Detail PO.
             assert summary["total_ordered"] == 100
-            assert summary["total_shipped"] == 40
-            assert summary["total_remaining"] == 60
-            assert summary["status"] == "SEBAGIAN"
+            assert summary["total_shipped"] == 0
+            assert summary["total_remaining"] == 100
+            assert summary["status"] == "BELUM DIKIRIM"
 
             hold_list = await client.get("/api/sales-orders", params={"q": marker, "status": "hold"})
             hold_ids = {o["id"] for o in hold_list.json()["orders"]}

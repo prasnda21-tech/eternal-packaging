@@ -44,14 +44,65 @@ export function orderQuantityLabel(order) {
   return qty.toLocaleString("id-ID");
 }
 
+function finiteQty(value) {
+  if (value == null || value === "") return null;
+  const qty = Number(value);
+  if (!Number.isFinite(qty) || qty < 0) return null;
+  return qty;
+}
+
+function progressUnits(display) {
+  if (!Array.isArray(display?.units)) return [];
+  return display.units.map((row) => {
+    const ordered = finiteQty(row?.ordered);
+    const shipped = finiteQty(row?.shipped);
+    const unit = String(row?.unit || "").trim();
+    if (ordered == null || shipped == null || !unit) return null;
+    return { ordered, shipped, unit };
+  }).filter(Boolean);
+}
+
+function singleUnitLabel(row) {
+  const unitSuffix = row.unit ? ` ${row.unit}` : "";
+  return `${row.shipped.toLocaleString("id-ID")} terkirim / ${row.ordered.toLocaleString("id-ID")} pesanan${unitSuffix}`;
+}
+
+function compactUnitLabel(rows) {
+  return rows
+    .map((row) => `${row.shipped.toLocaleString("id-ID")}/${row.ordered.toLocaleString("id-ID")} ${row.unit}`)
+    .join(" · ");
+}
+
 /**
- * Delivery progress from shipped vs ordered on the existing summary.
- * Mixed units are not added into one ratio. A zero shipped count is ratio 0.
+ * Delivery progress for the Pengiriman column.
+ * Prefer delivery_progress (valid shipment lines). delivery_summary stays the
+ * eligibility snapshot and is only a fallback when the display payload is absent.
+ * Each unit stays separate. A bar is drawn only for one verified unit.
  */
 export function listDeliveryProgress(order) {
-  const status = salesOrderDeliveryStatus(order);
+  const display = order?.delivery_progress;
+  const useDisplay = !!(display && typeof display === "object" && display.status);
+  const status = useDisplay ? String(display.status) : salesOrderDeliveryStatus(order);
   const parts = Array.isArray(order?.quantity_by_unit) ? order.quantity_by_unit : [];
-  const summary = order?.delivery_summary;
+  const summary = useDisplay ? display : order?.delivery_summary;
+  const rows = useDisplay ? progressUnits(display) : [];
+  const remainder = !!(useDisplay && display.unverified_remainder);
+  if (useDisplay && rows.length === 0 && (status === "UNVERIFIED" || remainder)) {
+    return { status, shipped: null, ordered: null, unit: "", ratio: null, label: "Perlu verifikasi" };
+  }
+  if (rows.length === 1 && !remainder) {
+    const row = rows[0];
+    const ratio = row.ordered > 0 ? Math.min(1, Math.max(0, row.shipped / row.ordered)) : 0;
+    return { status, shipped: row.shipped, ordered: row.ordered, unit: row.unit, ratio, label: singleUnitLabel(row) };
+  }
+  if (rows.length > 1 || (rows.length === 1 && remainder)) {
+    const numeric = rows.length === 1 ? singleUnitLabel(rows[0]) : compactUnitLabel(rows);
+    const label = remainder ? `${numeric} · Perlu verifikasi` : numeric;
+    return { status, shipped: null, ordered: null, unit: "", ratio: null, label };
+  }
+  if (useDisplay && status === "UNVERIFIED") {
+    return { status, shipped: null, ordered: null, unit: "", ratio: null, label: "Perlu verifikasi" };
+  }
   const shipped = summary && summary.total_shipped != null && summary.total_shipped !== ""
     ? Number(summary.total_shipped)
     : null;

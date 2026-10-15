@@ -46,6 +46,131 @@ describe("sales order quantity presentation", () => {
     expect(text).not.toMatch(/Siap kirim|Kendala/);
   });
 
+  test("display progress wins over the eligibility summary for one unit", () => {
+    const full = listDeliveryProgress({
+      quantity_by_unit: [{ unit: "pcs", quantity: 1000 }],
+      delivery_summary: { status: "SELESAI", total_ordered: 1000, total_shipped: 1000, total_remaining: 0 },
+      delivery_progress: { status: "SEBAGIAN", total_ordered: 1000, total_shipped: 400, total_remaining: 600, verified: true },
+    });
+    expect(full.label).toBe("400 terkirim / 1.000 pesanan pcs");
+    expect(full.ratio).toBe(0.4);
+    expect(full.status).toBe("SEBAGIAN");
+
+    const none = listDeliveryProgress({
+      quantity_by_unit: [{ unit: "pcs", quantity: 1000 }],
+      delivery_progress: { status: "BELUM DIKIRIM", total_ordered: 1000, total_shipped: 0, total_remaining: 1000, verified: true },
+    });
+    expect(none.label).toBe("0 terkirim / 1.000 pesanan pcs");
+    expect(none.ratio).toBe(0);
+
+    const done = listDeliveryProgress({
+      quantity_by_unit: [{ unit: "pcs", quantity: 1000 }],
+      delivery_progress: { status: "SELESAI", total_ordered: 1000, total_shipped: 1000, total_remaining: 0, verified: true },
+    });
+    expect(done.label).toBe("1.000 terkirim / 1.000 pesanan pcs");
+    expect(done.ratio).toBe(1);
+  });
+
+  test("legacy unverified progress is not shown as zero", () => {
+    const legacy = listDeliveryProgress({
+      quantity_by_unit: [{ unit: "pcs", quantity: 1000 }],
+      delivery_summary: { status: "SELESAI", total_ordered: 1000, total_shipped: 1000, total_remaining: 0 },
+      delivery_progress: { status: "UNVERIFIED", total_ordered: null, total_shipped: null, verified: false, needs_verification: false },
+    });
+    expect(legacy.label).toBe("Perlu verifikasi");
+    expect(legacy.ratio).toBe(null);
+    expect(legacy.label).not.toMatch(/0 terkirim/);
+  });
+
+  test("gate disagreement keeps the verified quantity", () => {
+    const row = listDeliveryProgress({
+      quantity_by_unit: [{ unit: "pcs", quantity: 1000 }],
+      delivery_summary: { status: "SELESAI", total_ordered: 1000, total_shipped: 1000, total_remaining: 0 },
+      delivery_progress: {
+        status: "SEBAGIAN",
+        total_ordered: 1000,
+        total_shipped: 400,
+        total_remaining: 600,
+        verified: true,
+        needs_verification: true,
+      },
+    });
+    expect(row.label).toBe("400 terkirim / 1.000 pesanan pcs");
+    expect(row.ratio).toBe(0.4);
+    expect(row.label).not.toBe("Perlu verifikasi");
+  });
+
+  test("mixed units without a per-unit payload keep the status fallback", () => {
+    const mixed = listDeliveryProgress({
+      quantity_by_unit: [
+        { unit: "pcs", quantity: 1000 },
+        { unit: "dus", quantity: 1 },
+      ],
+      delivery_progress: { status: "SEBAGIAN", total_ordered: null, total_shipped: null, verified: false },
+    });
+    expect(mixed.label).toBe("SEBAGIAN");
+    expect(mixed.ratio).toBe(null);
+    expect(mixed.label).not.toMatch(/terkirim/);
+  });
+
+  test("multi-unit progress shows each unit and does not sum them", () => {
+    const row = listDeliveryProgress({
+      delivery_progress: {
+        status: "SEBAGIAN",
+        total_ordered: null,
+        total_shipped: null,
+        verified: false,
+        unverified_remainder: false,
+        units: [
+          { unit: "pcs", ordered: 1000, shipped: 400 },
+          { unit: "dus", ordered: 2, shipped: 1 },
+        ],
+      },
+    });
+    expect(row.label).toBe("400/1.000 pcs · 1/2 dus");
+    expect(row.ratio).toBe(null);
+    expect(row.label).not.toMatch(/SEBAGIAN|SELESAI|402|1\.002/);
+
+    const single = listDeliveryProgress({
+      delivery_progress: {
+        status: "BELUM DIKIRIM",
+        unverified_remainder: false,
+        units: [{ unit: "pcs", ordered: 1000, shipped: 0 }],
+      },
+    });
+    expect(single.label).toBe("0 terkirim / 1.000 pesanan pcs");
+    expect(single.ratio).toBe(0);
+  });
+
+  test("three units and a partial unverified remainder stay numeric", () => {
+    const three = listDeliveryProgress({
+      delivery_progress: {
+        status: "SELESAI",
+        units: [
+          { unit: "pcs", ordered: 1000, shipped: 1000 },
+          { unit: "dus", ordered: 2, shipped: 2 },
+          { unit: "pack", ordered: 5, shipped: 0 },
+        ],
+      },
+    });
+    expect(three.label).toBe("1.000/1.000 pcs · 2/2 dus · 0/5 pack");
+    expect(three.ratio).toBe(null);
+
+    const partial = listDeliveryProgress({
+      delivery_progress: {
+        status: "SEBAGIAN",
+        unverified_remainder: true,
+        units: [
+          { unit: "pcs", ordered: 1000, shipped: 400 },
+          { unit: "dus", ordered: 2, shipped: 1 },
+        ],
+      },
+    });
+    expect(partial.label).toBe("400/1.000 pcs · 1/2 dus · Perlu verifikasi");
+    expect(partial.ratio).toBe(null);
+    expect(partial.label).not.toMatch(/\b7\b/);
+  });
+
   test("one unit labels shipped over ordered and keeps a zero bar empty", () => {
     expect(listProgressText({
       quantity_by_unit: [{ unit: "pcs", quantity: 100 }],
