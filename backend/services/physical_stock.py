@@ -3081,7 +3081,10 @@ async def list_physical_stock_catalog(
             r2_delivered_qty=effective_delivered,
         )
         # Fail-closed siap kirim when process Add On completion cannot be proven.
-        if completion_unproven and _qty_num(completed_for_buckets) > 0:
+        belum_unverified = bool(
+            completion_unproven and _qty_num(completed_for_buckets) > 0
+        )
+        if belum_unverified:
             buckets = dict(buckets)
             buckets["qty_belum_terkirim"] = None  # type: ignore[assignment]
             # Qty Tersedia informational only excludes pesanan (not fabricated belum).
@@ -3138,7 +3141,10 @@ async def list_physical_stock_catalog(
             baseline_status = BASELINE_UNRECONCILED
         else:
             baseline_status = BASELINE_RECONCILED
-        qty_tersedia_valid = baseline_status == BASELINE_RECONCILED
+        # Reconciled book is not enough when Belum Terkirim itself is unverified.
+        qty_tersedia_valid = (
+            baseline_status == BASELINE_RECONCILED and not belum_unverified
+        )
         row = {
             "master_item_id": master.get("id"),
             "item_code": master.get("item_code") or "",
@@ -3148,14 +3154,23 @@ async def list_physical_stock_catalog(
             "physical_qty": buckets["physical_qty"],
             "qty_pesanan": buckets["qty_pesanan"],
             "qty_belum_terkirim": buckets["qty_belum_terkirim"],
-            # Informational book math only — not definitive until baseline reconciled.
+            # Informational book math only — not definitive until baseline reconciled
+            # and Belum Terkirim is verified.
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
+            "qty_tersedia_note": (
+                "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
+                "(proses Add On / completion tidak dapat dibuktikan)."
+                if belum_unverified
+                else (
+                    "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi"
+                    if not qty_tersedia_valid
+                    else None
+                )
+            ),
             "updated_at": max(updated) if updated else None,
             "belum_terkirim_status": (
-                "BELUM_TERVERIFIKASI"
-                if completion_unproven and _qty_num(completed_for_buckets) > 0
-                else "READY"
+                "BELUM_TERVERIFIKASI" if belum_unverified else "READY"
             ),
             "stock_read_mode": "r2",
             "baseline_status": baseline_status,

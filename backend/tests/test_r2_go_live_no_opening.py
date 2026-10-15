@@ -466,3 +466,96 @@ async def test_warehouses_not_mixed_on_pre_opname_movements(db):
     assert row_b["physical_qty"] == 0
     assert row_b["baseline_status"] == BASELINE_UNRECONCILED
     assert row_b["qty_tersedia_valid"] is False
+
+
+async def test_r2_unverified_belum_forces_tersedia_invalid_even_if_reconciled(db):
+    """Regression: BELUM_TERVERIFIKASI must keep qty_tersedia_valid=false when book is reconciled."""
+    await set_r2_authority_active(db, active=True)
+    item = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "CUP",
+        "item_name": "Cup",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    }
+    svc = {
+        "id": f"svc-{uuid.uuid4().hex[:8]}",
+        "item_code": "ADDON-W2",
+        "item_name": "Add On Warna 2",
+        "unit": "PCS",
+        "item_type": "SERVICE",
+        "is_active": True,
+    }
+    branch = {
+        "id": f"br-{uuid.uuid4().hex[:8]}",
+        "code": "YGY",
+        "name": "Yogyakarta",
+        "active": True,
+    }
+    warehouse = {
+        "id": f"wh-{uuid.uuid4().hex[:8]}",
+        "branch_id": branch["id"],
+        "code": "MAIN",
+        "name": "Utama",
+        "active": True,
+        "is_operational": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(item))
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(svc))
+    await db[BRANCHES_COLLECTION].insert_one(dict(branch))
+    await db[WAREHOUSES_COLLECTION].insert_one(dict(warehouse))
+    from services.physical_stock import post_opening_balance
+
+    await post_opening_balance(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 5000,
+            "reason": "open",
+            "idempotency_key": f"open-{item['id']}",
+        },
+        actor_id="t",
+    )
+    bal = await get_balance(db, item["id"], branch["id"], warehouse["id"])
+    assert bal["baseline_status"] == BASELINE_RECONCILED
+
+    await db.orders.insert_one({
+        "id": f"so-addon-{uuid.uuid4().hex[:6]}",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-main",
+                "master_item_id": item["id"],
+                "quantity": 1000,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-svc",
+                "master_item_id": svc["id"],
+                "quantity": 1000,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 1000},
+            {"line_idx": 1, "qty_completed": 0},
+        ],
+    })
+    await initialize_delivery_cutover_baseline(db)
+
+    catalog = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=warehouse["id"],
+    )
+    assert svc["id"] not in {r["master_item_id"] for r in catalog["items"]}
+    row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
+    assert row["baseline_status"] == BASELINE_RECONCILED
+    assert row["belum_terkirim_status"] == "BELUM_TERVERIFIKASI"
+    assert row["qty_belum_terkirim"] is None
+    assert row["qty_tersedia_valid"] is False
+    # Book balance unchanged by catalog read
+    bal2 = await get_balance(db, item["id"], branch["id"], warehouse["id"])
+    assert bal2["physical_qty"] == 5000
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 1  # opening only
