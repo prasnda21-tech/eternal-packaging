@@ -10372,6 +10372,8 @@ class SalesDeliveryCreatePayload(BaseModel):
     sales: Optional[str] = None
     expedition: Optional[str] = None
     notes: Optional[str] = ""
+    recipient_phone_source: Optional[str] = None
+    recipient_phone: Optional[str] = None
     line_items: List[SalesDeliveryLineItemInput]
     delivery_location: Optional[SalesDeliveryLocationInput] = None
 

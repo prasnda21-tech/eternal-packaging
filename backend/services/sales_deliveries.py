@@ -35,6 +35,7 @@ from services.physical_stock_engine import (
     finalize_sales_delivery_stock,
 )
 from services.delivery_schedule import persistable_delivery_location
+from services.sales_activity.util import normalize_whatsapp
 
 logger = logging.getLogger(__name__)
 
@@ -642,6 +643,7 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
         "order_date": order.get("order_date"),
         "customer": customer_val,
         "customer_name": customer_val,
+        "customer_phone": (order.get("customer_phone") or "").strip(),
         "outlet": outlet_val,
         "outlet_name": outlet_val,
         "recipient": recipient_val,
@@ -732,6 +734,39 @@ def _assert_fresh_delivery_qty(summary: Dict[str, Any], validated_lines: List[di
             )
 
 
+_RECIPIENT_PHONE_SOURCES = frozenset({"customer", "manual"})
+
+
+def resolve_delivery_recipient_phone(order: dict, payload: dict) -> Tuple[Optional[str], Optional[str]]:
+    """Snapshot phone for one Surat Jalan.
+
+    Customer mode reads orders.customer_phone and ignores the client number.
+    Manual mode stores the admin input. Empty is allowed. A non-empty manual
+    number that cannot be normalized is rejected. An existing customer number
+    that cannot be normalized is stored as text with no WhatsApp digits.
+    """
+    source = str((payload or {}).get("recipient_phone_source") or "manual").strip().lower()
+    if source not in _RECIPIENT_PHONE_SOURCES:
+        raise HTTPException(400, "Sumber nomor WhatsApp penerima tidak valid")
+    if source == "customer":
+        raw = str((order or {}).get("customer_phone") or "").strip()
+        if not raw:
+            return None, None
+        return raw, normalize_whatsapp(raw)
+    raw_in = (payload or {}).get("recipient_phone")
+    if raw_in is None:
+        return None, None
+    text = str(raw_in).strip()
+    if not text:
+        return None, None
+    if len(text) > 40:
+        raise HTTPException(400, "Nomor WhatsApp penerima tidak valid")
+    wa = normalize_whatsapp(text)
+    if not wa:
+        raise HTTPException(400, "Nomor WhatsApp penerima tidak valid")
+    return text, wa
+
+
 async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
     """Create a new Sales Delivery (Pengiriman Pesanan) backend-authoritatively.
     
@@ -757,6 +792,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
 
         if order.get("cancelled"):
             raise HTTPException(400, "Pesanan Penjualan ini sudah dibatalkan.")
+
+        recipient_phone, recipient_phone_wa = resolve_delivery_recipient_phone(order, payload)
 
         # 2. Get latest delivery summary and remaining quantities
         summary = await get_po_delivery_summary(db, order)
@@ -880,6 +917,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "expedition_or_vehicle": final_expedition,
                 "notes": final_notes,
                 "delivery_note": final_notes,
+                "recipient_phone": recipient_phone,
+                "recipient_phone_wa": recipient_phone_wa,
                 "created_by": user.get("email") or "",
                 "created_by_name": user.get("name") or user.get("email") or "",
                 "created_by_role": user.get("role") or "",
@@ -937,6 +976,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     "delivery_zone": final_zone,
                     "expedition": final_expedition,
                     "notes": final_notes,
+                    "recipient_phone": recipient_phone,
+                    "recipient_phone_wa": recipient_phone_wa,
                     "lines": [
                         {
                             "line_idx": ln["line_idx"],
@@ -1480,6 +1521,7 @@ def generate_sales_delivery_pdf_bytes(
         driver_img = _sig_image(*driver_file, cap_w, cap_h) if driver_file else None
         display_recipient = _text(recipient_name or delivery.get("recipient"))
         display_driver = _text(driver_name or delivery.get("driver_name"))
+        recipient_phone_text = _text(delivery.get("recipient_phone"))
         recipient_when = _signed_date(recipient_signed_at)
         driver_when = _signed_date(driver_signed_at)
 
@@ -1492,14 +1534,17 @@ def generate_sales_delivery_pdf_bytes(
         label_row = []
         gap_row = []
         line_row = []
-        for label, image, name, when in zip(labels, images, names, whens):
+        for idx, (label, image, name, when) in enumerate(zip(labels, images, names, whens)):
             label_row.append(Paragraph(esc(label), sty["center"]))
             gap_row.append(image if image is not None else Spacer(1, 12 * mm))
             tgl = date_label + (f" {when}" if when else "")
+            shown = esc(name) if name else "&nbsp;"
+            if idx == 3 and recipient_phone_text:
+                shown = f"{shown}<br/>{esc(recipient_phone_text)}"
             line = Table(
                 [[
                     Paragraph(esc(tgl), sty["small"]),
-                    Paragraph(esc(name) if name else "&nbsp;", sty["small"]),
+                    Paragraph(shown, sty["small"]),
                 ]],
                 colWidths=[14 * mm, slot - 16 * mm],
             )
@@ -1599,6 +1644,18 @@ async def generate_signed_sj_pdf_for_order(
         )
     if not delivery:
         lines = (entry or {}).get("lines") or []
+        snap_phone = None
+        want_ids = {
+            str(shipment_id or "").strip(),
+            str((entry or {}).get("shipment_id") or "").strip(),
+        }
+        want_ids.discard("")
+        for sh in order.get("shipments") or []:
+            if not isinstance(sh, dict):
+                continue
+            if str(sh.get("id") or "").strip() in want_ids:
+                snap_phone = sh.get("recipient_phone")
+                break
         delivery = {
             "id": shipment_id or sj_file_id or str(uuid.uuid4()),
             "po_id": order.get("id"),
@@ -1608,6 +1665,7 @@ async def generate_signed_sj_pdf_for_order(
             "outlet": order.get("outlet"),
             "address": order.get("address") or order.get("delivery_address"),
             "recipient": sig.get("recipient_name") or order.get("recipient") or order.get("recipient_name"),
+            "recipient_phone": snap_phone,
             "driver_name": resolve_pdf_driver_display_name(order, driver_sig=driver_sig, user=user),
             "sales": order.get("sales") or order.get("sales_name"),
             "delivery_zone": order.get("delivery_zone") or order.get("zone"),

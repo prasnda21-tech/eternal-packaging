@@ -31,6 +31,19 @@ function getTodayString() {
   return d.toISOString().split("T")[0];
 }
 
+const PHONE_BLANKS = new Set(["", "-", "--", "n/a", "na", "none", "null", "tidak ada"]);
+
+/** Same digit rules as backend normalize_whatsapp. Empty/invalid → "". */
+export function recipientWhatsappDigits(value) {
+  const folded = String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (PHONE_BLANKS.has(folded)) return "";
+  let digits = String(value || "").replace(/\D+/g, "");
+  if (digits.length < 8) return "";
+  if (digits.startsWith("0")) digits = `62${digits.slice(1)}`;
+  if (digits.startsWith("8") && digits.length >= 9) digits = `62${digits}`;
+  return digits;
+}
+
 export default function PengirimanPesanan() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -79,6 +92,9 @@ export default function PengirimanPesanan() {
     line_qtys: {}, // { [line_idx]: number }
     line_notes: {}, // { [line_idx]: string }
   });
+  const [phoneSource, setPhoneSource] = useState("manual");
+  const [manualPhone, setManualPhone] = useState("");
+  const [phoneError, setPhoneError] = useState("");
   const [formBusy, setFormBusy] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -161,6 +177,9 @@ export default function PengirimanPesanan() {
 
   // Load PO summary when selectedPoId changes
   const loadPoSummary = useCallback(async (poId) => {
+    setManualPhone("");
+    setPhoneError("");
+    setPhoneSource("manual");
     if (!poId) {
       setPoSummary(null);
       setSjLocationOverride(null);
@@ -173,6 +192,8 @@ export default function PengirimanPesanan() {
       const data = await api.getPoDeliverySummary(poId);
       setPoSummary(data);
       setSjLocationOverride(null);
+      const customerPhone = String(data.customer_phone || "").trim();
+      setPhoneSource(customerPhone ? "customer" : "manual");
 
       // Pre-fill header fields
       setFormData((prev) => {
@@ -305,6 +326,7 @@ export default function PengirimanPesanan() {
   };
 
   // Total Qty to ship in current form
+  const customerPhoneAvailable = String(poSummary?.customer_phone || "").trim();
   const totalShippingQty = useMemo(() => {
     if (!poSummary?.lines) return 0;
     return poSummary.lines.reduce((acc, l) => acc + (formData.line_qtys[l.line_idx] || 0), 0);
@@ -344,6 +366,17 @@ export default function PengirimanPesanan() {
       return;
     }
 
+    const customerPhone = String(poSummary.customer_phone || "").trim();
+    const source = phoneSource === "customer" && customerPhone ? "customer" : "manual";
+    if (source === "manual") {
+      const typed = manualPhone.trim();
+      if (typed && !recipientWhatsappDigits(typed)) {
+        setPhoneError("Nomor WhatsApp penerima tidak valid");
+        return;
+      }
+    }
+    setPhoneError("");
+
     // Build payload lines
     const lineItemsPayload = [];
     poSummary.lines.forEach((l) => {
@@ -369,7 +402,9 @@ export default function PengirimanPesanan() {
       expedition: formData.expedition,
       notes: formData.notes,
       line_items: lineItemsPayload,
+      recipient_phone_source: source,
     };
+    if (source === "manual") payload.recipient_phone = manualPhone.trim();
     const locationOverride = sjOverridePayload(sjLocationOverride);
     if (locationOverride) payload.delivery_location = locationOverride;
 
@@ -706,6 +741,71 @@ export default function PengirimanPesanan() {
                   data-testid="input-delivery-recipient"
                   style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
                 />
+              </div>
+
+              <div style={{ gridColumn: "1 / -1" }} data-testid="delivery-recipient-phone-field">
+                <span style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
+                  No. WhatsApp Penerima
+                </span>
+                <div role="radiogroup" aria-label="No. WhatsApp Penerima" style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px", marginBottom: 6 }}>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.9rem", color: customerPhoneAvailable ? "#1e293b" : "#94a3b8" }}>
+                    <input
+                      type="radio"
+                      name="recipient-phone-source"
+                      value="customer"
+                      checked={phoneSource === "customer"}
+                      disabled={!customerPhoneAvailable || formBusy}
+                      onChange={() => {
+                        if (!customerPhoneAvailable) return;
+                        setPhoneSource("customer");
+                        setPhoneError("");
+                      }}
+                      data-testid="phone-source-customer"
+                    />
+                    Gunakan nomor pelanggan
+                  </label>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.9rem", color: "#1e293b" }}>
+                    <input
+                      type="radio"
+                      name="recipient-phone-source"
+                      value="manual"
+                      checked={phoneSource !== "customer"}
+                      disabled={formBusy}
+                      onChange={() => {
+                        setPhoneSource("manual");
+                        setPhoneError("");
+                      }}
+                      data-testid="phone-source-manual"
+                    />
+                    Input nomor manual
+                  </label>
+                </div>
+                {phoneSource === "customer" && customerPhoneAvailable ? (
+                  <input
+                    type="text"
+                    readOnly
+                    value={customerPhoneAvailable}
+                    data-testid="display-customer-phone"
+                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", boxSizing: "border-box" }}
+                  />
+                ) : (
+                  <input
+                    type="tel"
+                    value={manualPhone}
+                    onChange={(e) => {
+                      setManualPhone(e.target.value);
+                      if (phoneError) setPhoneError("");
+                    }}
+                    placeholder="08… atau +62…"
+                    disabled={formBusy}
+                    data-testid="input-recipient-phone"
+                    autoComplete="tel"
+                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
+                  />
+                )}
+                {phoneError ? (
+                  <p className="error" data-testid="recipient-phone-error" style={{ margin: "4px 0 0", color: "#b91c1c", fontSize: "0.8rem" }}>{phoneError}</p>
+                ) : null}
               </div>
 
               {/* Sales */}

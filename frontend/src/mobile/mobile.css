@@ -2350,6 +2350,18 @@
   color: #1d4ed8;
 }
 
+.mop-delivery-wa {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 44px;
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #15803d;
+  text-decoration: none;
+}
+
 .mop-delivery-info-row {
   display: grid;
   grid-template-columns: 1fr auto;

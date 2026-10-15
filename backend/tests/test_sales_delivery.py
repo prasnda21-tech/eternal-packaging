@@ -973,3 +973,344 @@ async def test_create_persists_sj_location_without_mutating_po():
         await server.db.orders.delete_many({"id": po["id"]})
         await server.db.sales_deliveries.delete_many({"po_id": po["id"]})
 
+
+def _phone_user():
+    return {"email": "crm-phone@eternalpackaging.com", "name": "CRM Phone", "role": "crm"}
+
+
+async def _po_with_customer_phone(phone="081234567890", qty=1000):
+    po_num = f"PO/2026/08/30/{uuid.uuid4().hex[:6].upper()}"
+    po = await create_helper_po(
+        po_num,
+        [{"name": "Cup Phone", "quantity": qty, "unit": "pcs"}],
+        customer="PT Phone Snapshot",
+    )
+    master_id = f"cust-{po['id']}"
+    await server.db.orders.update_one(
+        {"id": po["id"]},
+        {"$set": {"customer_phone": phone, "customer_id": master_id}},
+    )
+    po["customer_phone"] = phone
+    po["customer_id"] = master_id
+    master = {"id": master_id, "name": "PT Phone Snapshot", "phone": "089000000000"}
+    await server.db.sales_customers.insert_one(dict(master))
+    return po, master
+
+
+async def _cleanup_phone_po(po):
+    await server.db.orders.delete_many({"id": po["id"]})
+    await server.db.sales_deliveries.delete_many({"po_id": po["id"]})
+    await server.db.sales_customers.delete_many({"id": po.get("customer_id")})
+
+
+def _pdf_text(pdf_bytes: bytes) -> str:
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        return "\n".join((page.extract_text() or "") for page in pdf.pages)
+
+
+@pytest.mark.anyio
+async def test_recipient_phone_customer_mode_snapshots_po_phone_not_master():
+    po, master = await _po_with_customer_phone("0812-3456-7890")
+    app.dependency_overrides[current_user] = _phone_user
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            summary = (await client.get(f"/api/sales-deliveries/po/{po['id']}/summary")).json()
+            assert summary["customer_phone"] == "0812-3456-7890"
+            assert summary["total_ordered"] == 1000
+            assert summary["can_create_delivery"] is True
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "delivery_date": "2026-08-30",
+                "recipient_phone_source": "customer",
+                "recipient_phone": "089999999999",
+                "line_items": [{"line_idx": 0, "qty": 400}],
+            })
+            assert res.status_code == 200, res.text
+            delivery = res.json()["delivery"]
+            assert delivery["recipient_phone"] == "0812-3456-7890"
+            assert delivery["recipient_phone_wa"] == "6281234567890"
+            assert delivery["total_qty"] == 400
+            order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert order["customer_phone"] == "0812-3456-7890"
+            assert "recipient_phone" not in order
+            ship = order["shipments"][0]
+            assert ship["id"] == delivery["id"]
+            assert ship["recipient_phone"] == delivery["recipient_phone"]
+            assert ship["recipient_phone_wa"] == delivery["recipient_phone_wa"]
+            stored_master = await server.db.sales_customers.find_one({"id": master["id"]}, {"_id": 0})
+            assert stored_master["phone"] == "089000000000"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await _cleanup_phone_po(po)
+
+
+@pytest.mark.anyio
+async def test_recipient_phone_manual_empty_invalid_and_customer_invalid():
+    po, _master = await _po_with_customer_phone("abc-bukan-nomor")
+    app.dependency_overrides[current_user] = _phone_user
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            bad = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "recipient_phone_source": "manual",
+                "recipient_phone": "123",
+                "line_items": [{"line_idx": 0, "qty": 100}],
+            })
+            assert bad.status_code == 400
+            assert await server.db.sales_deliveries.count_documents({"po_id": po["id"]}) == 0
+
+            empty = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "recipient_phone_source": "manual",
+                "recipient_phone": "   ",
+                "line_items": [{"line_idx": 0, "qty": 100}],
+            })
+            assert empty.status_code == 200, empty.text
+            first = empty.json()["delivery"]
+            assert first["recipient_phone"] is None
+            assert first["recipient_phone_wa"] is None
+
+            kept = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "recipient_phone_source": "customer",
+                "recipient_phone": "081234567890",
+                "line_items": [{"line_idx": 0, "qty": 100}],
+            })
+            assert kept.status_code == 200, kept.text
+            second = kept.json()["delivery"]
+            assert second["recipient_phone"] == "abc-bukan-nomor"
+            assert second["recipient_phone_wa"] is None
+            assert second["id"] != first["id"]
+            order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert order["customer_phone"] == "abc-bukan-nomor"
+            phones = {sh["id"]: sh["recipient_phone"] for sh in order["shipments"]}
+            assert phones[first["id"]] is None
+            assert phones[second["id"]] == "abc-bukan-nomor"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await _cleanup_phone_po(po)
+
+
+@pytest.mark.anyio
+async def test_recipient_phone_two_sj_and_retry_keeps_first_snapshot(monkeypatch):
+    po, _master = await _po_with_customer_phone("081111111111")
+
+    async def _no_pdf(*_args, **_kwargs):
+        return None, "pdf_generate_failed"
+
+    monkeypatch.setattr("services.sales_deliveries.ensure_generated_sj_pdf", _no_pdf)
+    app.dependency_overrides[current_user] = _phone_user
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "recipient_phone_source": "manual",
+                "recipient_phone": "081211110000",
+                "line_items": [{"line_idx": 0, "qty": 200}],
+            })
+            assert first.status_code == 200, first.text
+            sj_a = first.json()["delivery"]
+            retry = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "recipient_phone_source": "manual",
+                "recipient_phone": "081222220000",
+                "line_items": [{"line_idx": 0, "qty": 200}],
+            })
+            assert retry.status_code == 200, retry.text
+            assert retry.json()["delivery"]["id"] == sj_a["id"]
+            assert retry.json()["delivery"]["recipient_phone"] == "081211110000"
+            assert retry.json()["delivery"]["recipient_phone_wa"] == "6281211110000"
+            second = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "recipient_phone_source": "manual",
+                "recipient_phone": "+62 822-3333-0000",
+                "line_items": [{"line_idx": 0, "qty": 300}],
+            })
+            assert second.status_code == 200, second.text
+            sj_b = second.json()["delivery"]
+            assert sj_b["id"] != sj_a["id"]
+            assert sj_b["recipient_phone"] == "+62 822-3333-0000"
+            assert sj_b["recipient_phone_wa"] == "6282233330000"
+            stored_a = await server.db.sales_deliveries.find_one({"id": sj_a["id"]}, {"_id": 0})
+            assert stored_a["recipient_phone_wa"] == "6281211110000"
+            order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            by_id = {sh["id"]: sh for sh in order["shipments"]}
+            assert by_id[sj_a["id"]]["recipient_phone_wa"] == "6281211110000"
+            assert by_id[sj_b["id"]]["recipient_phone_wa"] == "6282233330000"
+            assert order["customer_phone"] == "081111111111"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await _cleanup_phone_po(po)
+
+
+@pytest.mark.anyio
+async def test_recipient_phone_survives_reschedule_cancel_and_supersede(monkeypatch):
+    po, _master = await _po_with_customer_phone("081234567890")
+
+    async def _no_pdf(*_args, **_kwargs):
+        return None, "pdf_generate_failed"
+
+    monkeypatch.setattr("services.sales_deliveries.ensure_generated_sj_pdf", _no_pdf)
+    app.dependency_overrides[current_user] = _phone_user
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "delivery_date": "2026-08-30",
+                "recipient_phone_source": "manual",
+                "recipient_phone": "081234567890",
+                "line_items": [{"line_idx": 0, "qty": 100}],
+            })
+            assert res.status_code == 200, res.text
+            delivery = res.json()["delivery"]
+        from services.sales_deliveries import sync_sj_numbers_after_reschedule
+        order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        await sync_sj_numbers_after_reschedule(
+            server.db,
+            order,
+            previous_date="2026-08-30",
+            new_date="2026-09-02",
+            shipment_id=delivery["id"],
+            user=_phone_user(),
+        )
+        fresh = await server.db.sales_deliveries.find_one({"id": delivery["id"]}, {"_id": 0})
+        assert fresh["recipient_phone"] == "081234567890"
+        assert fresh["recipient_phone_wa"] == "6281234567890"
+        ship = next(sh for sh in order["shipments"] if sh["id"] == delivery["id"])
+        assert ship["recipient_phone_wa"] == "6281234567890"
+
+        from services.sj_integrity import supersede_shipment
+        supersede_shipment(
+            order,
+            target_id=delivery["id"],
+            actor={"email": "crm-phone@eternalpackaging.com"},
+            reason="uji",
+            now="2026-09-03T00:00:00Z",
+        )
+        ship = next(sh for sh in order["shipments"] if sh["id"] == delivery["id"])
+        assert ship["status"] == "superseded"
+        assert ship["recipient_phone"] == "081234567890"
+        assert ship["recipient_phone_wa"] == "6281234567890"
+
+        from motor.motor_asyncio import AsyncIOMotorCollection
+        from services.physical_stock import cancel_sales_delivery_document
+
+        async def _txn_ok(_client):
+            return None
+
+        class _Txn:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class _Session:
+            def start_transaction(self):
+                return _Txn()
+
+        class _SessionCM:
+            async def __aenter__(self):
+                return _Session()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        async def _start_session():
+            return _SessionCM()
+
+        orig_find_one = AsyncIOMotorCollection.find_one
+        orig_update_one = AsyncIOMotorCollection.update_one
+        orig_find = AsyncIOMotorCollection.find
+
+        async def _find_one(self, *args, **kwargs):
+            kwargs.pop("session", None)
+            return await orig_find_one(self, *args, **kwargs)
+
+        async def _update_one(self, *args, **kwargs):
+            kwargs.pop("session", None)
+            return await orig_update_one(self, *args, **kwargs)
+
+        def _find(self, *args, **kwargs):
+            kwargs.pop("session", None)
+            return orig_find(self, *args, **kwargs)
+
+        monkeypatch.setattr("services.physical_stock.require_transaction_support", _txn_ok)
+        monkeypatch.setattr(AsyncIOMotorCollection, "find_one", _find_one)
+        monkeypatch.setattr(AsyncIOMotorCollection, "update_one", _update_one)
+        monkeypatch.setattr(AsyncIOMotorCollection, "find", _find)
+        monkeypatch.setattr(server.db.client, "start_session", _start_session)
+        await cancel_sales_delivery_document(
+            server.db, fresh, actor_id="crm-phone@eternalpackaging.com", reason="uji batal",
+        )
+        cancelled = await server.db.sales_deliveries.find_one({"id": delivery["id"]}, {"_id": 0})
+        assert cancelled["is_cancelled"] is True
+        assert cancelled["recipient_phone"] == "081234567890"
+        assert cancelled["recipient_phone_wa"] == "6281234567890"
+        order_after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        ship_after = next(sh for sh in order_after["shipments"] if sh["id"] == delivery["id"])
+        assert ship_after["recipient_phone"] == "081234567890"
+        assert ship_after["recipient_phone_wa"] == "6281234567890"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await _cleanup_phone_po(po)
+
+
+def test_recipient_phone_pdf_legacy_generic_and_signed_snapshot():
+    from services.print_design_settings import resolve_print_design
+    from services.print_field_registry import default_delivery_header_elements
+    from services.sales_deliveries import generate_sales_delivery_pdf_bytes
+
+    base = {
+        "sj_number": "SJ/2026/08/30/0001",
+        "delivery_date": "2026-08-30",
+        "customer": "PT SJ Phone",
+        "address": "Jl. Snapshot 1",
+        "outlet": "Utama",
+        "sales": "Vira",
+        "expedition": "Internal",
+        "delivery_zone": "Barat",
+        "created_by_name": "Admin",
+        "po_number": "PO/2026/08/30/PHONE",
+        "recipient": "Pak Budi",
+        "notes": "Catatan",
+        "line_items": [{"item_code": "C1", "name": "Cup Phone", "qty": 4, "unit": "pcs"}],
+        "total_qty": 4,
+    }
+    legacy = resolve_print_design(None)
+    generic = resolve_print_design({
+        "company_name": "ETERNAL PACKAGING",
+        "surat_jalan": {"header_elements": default_delivery_header_elements()[:4]},
+    })
+    without = dict(base)
+    legacy_without = _pdf_text(generate_sales_delivery_pdf_bytes(without, design=legacy))
+    generic_without = _pdf_text(generate_sales_delivery_pdf_bytes(without, design=generic))
+    assert "081234567890" not in legacy_without
+    assert "081234567890" not in generic_without
+    assert "Penerima" in legacy_without
+    assert "Penerima" in generic_without
+    assert "Cup Phone" in legacy_without
+    assert "Cup Phone" in generic_without
+
+    with_phone = dict(base, recipient_phone="081234567890", recipient_phone_wa="6281234567890")
+    legacy_text = _pdf_text(generate_sales_delivery_pdf_bytes(with_phone, design=legacy))
+    generic_text = _pdf_text(generate_sales_delivery_pdf_bytes(with_phone, design=generic))
+    assert "081234567890" in legacy_text
+    assert "081234567890" in generic_text
+    assert "089000000000" not in legacy_text
+
+    signed = _pdf_text(generate_sales_delivery_pdf_bytes(
+        with_phone,
+        None,
+        recipient_name="Ibu Sari",
+        design=legacy,
+    ))
+    assert "Ibu Sari" in signed
+    assert "081234567890" in signed
+    assert "089000000000" not in signed
+
