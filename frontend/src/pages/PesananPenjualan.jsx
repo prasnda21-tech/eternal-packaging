@@ -214,7 +214,13 @@ function InvoiceStatusCell({ order, canOpen }) {
 }
 
 export function createSalesOrderLineItem(overrides = {}) {
-  return { ...INITIAL_LINE_ITEM, ...overrides, rowKey: nextSalesOrderLineKey() };
+  const rowKey = overrides.rowKey || nextSalesOrderLineKey();
+  return {
+    ...INITIAL_LINE_ITEM,
+    ...overrides,
+    rowKey,
+    line_id: overrides.line_id || rowKey,
+  };
 }
 
 /** Same messages and branches as the previous inline submit validation. */
@@ -292,7 +298,9 @@ export function buildSalesOrderCreatePayload(formData) {
     customer: String(formData.customer || "").trim(),
     line_items: (formData.line_items || []).map((li) => {
       const price = linePriceNumber(li.unit_price);
-    const next = {
+      const parentId = String(li.parent_line_id || "").trim();
+      const lineId = String(li.line_id || li.rowKey || "").trim();
+      const next = {
         ...li,
         name: String(li.name || "").trim(),
         quantity: Number(li.quantity),
@@ -302,6 +310,11 @@ export function buildSalesOrderCreatePayload(formData) {
         price_source: price === null ? null : (li.price_source === "pengaturan_harga" ? "pengaturan_harga" : "manual"),
         price_review: Boolean(li.price_review),
       };
+      if (lineId) next.line_id = lineId;
+      else delete next.line_id;
+      if (parentId) next.parent_line_id = parentId;
+      else delete next.parent_line_id;
+      delete next.parent_line_idx;
       delete next.entry_mode;
       delete next.rowKey;
       delete next.price_lock;
@@ -338,6 +351,7 @@ const INITIAL_LINE_ITEM = {
   price_source: "",
   price_review: false,
   price_lock: false,
+  parent_line_id: "",
 };
 
 const CHIP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
@@ -1235,10 +1249,20 @@ export default function PesananPenjualan() {
   const removeLineItem = (index) => {
     if (formData.line_items.length <= 1) return;
     dirtyRef.current = true;
-    const rowKey = formData.line_items[index]?.rowKey;
+    const removed = formData.line_items[index];
+    const rowKey = removed?.rowKey;
+    const removedLineId = String(removed?.line_id || removed?.rowKey || "").trim();
     setFormData((prev) => ({
       ...prev,
-      line_items: prev.line_items.filter((_, i) => i !== index),
+      line_items: prev.line_items
+        .filter((_, i) => i !== index)
+        .map((li) => {
+          const parentId = String(li.parent_line_id || "").trim();
+          if (removedLineId && parentId && parentId === removedLineId) {
+            return { ...li, parent_line_id: "" };
+          }
+          return li;
+        }),
     }));
     if (rowKey) {
       setLineModes((prev) => {
@@ -2581,10 +2605,21 @@ export default function PesananPenjualan() {
                           ? ""
                           : (detailStillPresent ? detailRowKey : formData.line_items[itemOffset]?.rowKey);
                         const detailOpen = activeDetailKey === line.rowKey;
+                        const parentLabel = (() => {
+                          const pid = String(line.parent_line_id || "").trim();
+                          if (!pid) return "";
+                          const parent = formData.line_items.find(
+                            (item) => String(item.line_id || item.rowKey || "").trim() === pid,
+                          );
+                          if (!parent) return "Induk Add On";
+                          const pIdx = formData.line_items.indexOf(parent);
+                          return `Induk #${pIdx + 1}`;
+                        })();
                         const detailSummary = [
                           line.item_code,
                           line.production_process === "non_print" ? "Tidak Cetak" : "",
                           line.color,
+                          parentLabel,
                           line.notes,
                         ].filter(Boolean).join(" · ");
                         return (
@@ -2726,6 +2761,29 @@ export default function PesananPenjualan() {
                                   <label>
                                     Warna
                                     <input type="text" className="so-line-input" value={line.color || ""} onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)} placeholder="Warna" data-testid={`line-color-${originalIndex}`} />
+                                  </label>
+                                  <label>
+                                    Barang induk (Add On)
+                                    <select
+                                      className="so-line-input"
+                                      value={String(line.parent_line_id || "")}
+                                      onChange={(e) => handleLineChange(originalIndex, "parent_line_id", e.target.value)}
+                                      data-testid={`line-parent-${originalIndex}`}
+                                      aria-label="Barang induk Add On"
+                                    >
+                                      <option value="">— Bukan Add On / tanpa induk —</option>
+                                      {formData.line_items.map((candidate, candIdx) => {
+                                        if (candIdx === originalIndex) return null;
+                                        const candId = String(candidate.line_id || candidate.rowKey || "").trim();
+                                        if (!candId) return null;
+                                        const label = String(candidate.name || candidate.item_code || `Baris #${candIdx + 1}`).trim();
+                                        return (
+                                          <option key={candId} value={candId}>
+                                            #{candIdx + 1} — {label || "Tanpa nama"}
+                                          </option>
+                                        );
+                                      })}
+                                    </select>
                                   </label>
                                   <label>
                                     Catatan Item

@@ -2743,16 +2743,14 @@ def aggregate_operational_orders(
     Masters in exclude_master_ids (e.g. item_type=SERVICE process Add On) never
     contribute physical stock demand — work qty stays on production tracking.
 
-    Explicit parent_line_id / parent_line_idx on process Add Ons enables
-    conservative siap = min(parent, linked processes). Unlinked SERVICE/orphan
-    print processes keep completion_unproven (fail-closed). Never invent links
-    from item names.
+    Explicit parent_line_id / parent_line_idx links process Add Ons to a parent.
+    operator_splits have no per-unit batch/unit IDs, so linked children never
+    prove physical siap via min() — completion_unproven stays True (Belum =
+    BELUM_TERVERIFIKASI). Unlinked SERVICE/orphan print processes also
+    fail-closed. Never invent links from item names.
     """
     from quantity_rules import is_print_line, operational_ready_qty_for_line
-    from services.order_line_addon import (
-        conservative_full_process_ready,
-        process_children_for_parent,
-    )
+    from services.order_line_addon import process_children_for_parent
 
     owners = accurate_owners or {}
     excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
@@ -2855,25 +2853,12 @@ def aggregate_operational_orders(
 
             parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
             children = children_by_parent.get(idx) or []
-            if children and not process_gate_unproven:
-                child_pairs = [
-                    (
-                        _qty_num(lines[c].get("quantity")),
-                        _qty_num(process_completed_by_idx.get(c, 0)),
-                    )
-                    for c in children
-                ]
-                ready = conservative_full_process_ready(
-                    parent_ordered=ordered,
-                    parent_completed=parent_completed,
-                    child_ordered_completed=child_pairs,
-                )
-                add(mid, ordered, ready, unproven=False)
-            elif process_gate_unproven and (
-                order_unlinked_process or has_orphan_print or unassigned_ambiguous
-            ):
-                # Relation insufficient — keep physical-line progress for Qty Pesanan,
-                # but mark siap/belum unverified when any completed exists.
+            if children:
+                # Linked process Add Ons present. Without batch/unit overlap proof,
+                # never promote min(parent, warna) to READY physical siap.
+                add(mid, ordered, parent_completed, unproven=True)
+            elif process_gate_unproven:
+                # Unlinked/orphan/ambiguous process work on this PO — fail-closed.
                 add(mid, ordered, parent_completed, unproven=True)
             else:
                 add(mid, ordered, parent_completed, unproven=False)

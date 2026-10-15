@@ -3578,68 +3578,72 @@ async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload
 
     Does not change quantity, name, color, Accurate ids, or production_process.
     Never invents links from item names. Invalid parent refs are rejected.
+    Uses optimistic updated_at lock to avoid lost updates on concurrent PO edits.
     """
     from services.order_line_addon import (
         ensure_line_identity_fields,
         line_identity,
-        validate_parent_relation,
+        validate_lines_parent_graph,
     )
 
     await _require_perm(user, "production.route.edit")
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
-    lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
-    if not lis:
-        raise HTTPException(400, "PO tidak memiliki line item")
-    # Ensure stable line_id on every row before resolving parents.
-    for i, li in enumerate(lis):
-        lis[i] = ensure_line_identity_fields(li, i)
 
-    before = {
-        str(i): {
-            "line_id": line_identity(li, i),
-            "parent_line_id": li.get("parent_line_id"),
-            "parent_line_idx": li.get("parent_line_idx"),
+    before_holder = {"addon_parents": None}
+    after_holder = {"addon_parents": None}
+
+    def _mutate(order: dict):
+        lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+        if not lis:
+            raise HTTPException(400, "PO tidak memiliki line item")
+        for i, li in enumerate(lis):
+            lis[i] = ensure_line_identity_fields(li, i)
+
+        before_holder["addon_parents"] = {
+            str(i): {
+                "line_id": line_identity(li, i),
+                "parent_line_id": li.get("parent_line_id"),
+                "parent_line_idx": li.get("parent_line_idx"),
+            }
+            for i, li in enumerate(lis)
         }
-        for i, li in enumerate(lis)
-    }
-    for it in payload.items or []:
-        if it.line_idx < 0 or it.line_idx >= len(lis):
-            raise HTTPException(400, f"line_idx {it.line_idx} tidak valid")
-        row = lis[it.line_idx]
-        if it.clear:
-            row.pop("parent_line_id", None)
-            row.pop("parent_line_idx", None)
-            continue
-        if it.parent_line_id is not None:
-            pid = str(it.parent_line_id or "").strip()
-            if pid:
-                row["parent_line_id"] = pid
-            else:
+        for it in payload.items or []:
+            if it.line_idx < 0 or it.line_idx >= len(lis):
+                raise HTTPException(400, f"line_idx {it.line_idx} tidak valid")
+            row = lis[it.line_idx]
+            if it.clear:
                 row.pop("parent_line_id", None)
-        if it.parent_line_idx is not None:
-            row["parent_line_idx"] = int(it.parent_line_idx)
-        err = validate_parent_relation(row, lis, idx=it.line_idx)
+                row.pop("parent_line_idx", None)
+                continue
+            if it.parent_line_id is not None:
+                pid = str(it.parent_line_id or "").strip()
+                if pid:
+                    row["parent_line_id"] = pid
+                else:
+                    row.pop("parent_line_id", None)
+            if it.parent_line_idx is not None:
+                row["parent_line_idx"] = int(it.parent_line_idx)
+        err = validate_lines_parent_graph(lis)
         if err:
             raise HTTPException(400, err)
-    order["line_items"] = lis
-    await _persist_order(order)
-    after = {
-        str(i): {
-            "line_id": line_identity(li, i),
-            "parent_line_id": li.get("parent_line_id"),
-            "parent_line_idx": li.get("parent_line_idx"),
+        order["line_items"] = lis
+        after_holder["addon_parents"] = {
+            str(i): {
+                "line_id": line_identity(li, i),
+                "parent_line_id": li.get("parent_line_id"),
+                "parent_line_idx": li.get("parent_line_idx"),
+            }
+            for i, li in enumerate(lis)
         }
-        for i, li in enumerate(lis)
-    }
+
+    order = await _with_quantity_lock(
+        order_id, _mutate, persist_keys=("line_items",),
+    )
     await _audit_po(
         order,
         "production.addon_parent.update",
         user,
-        before={"addon_parents": before},
-        after={"addon_parents": after},
+        before={"addon_parents": before_holder["addon_parents"]},
+        after={"addon_parents": after_holder["addon_parents"]},
     )
     return {"order": order}
 
@@ -10264,6 +10268,10 @@ class SalesOrderLineItemInput(BaseModel):
     unit_price: Optional[Union[int, float, str]] = None
     price_source: Optional[str] = None
     price_review: Optional[bool] = None
+    # Explicit Add On → Barang Utama relation (opt-in; never inferred from names).
+    line_id: Optional[str] = None
+    parent_line_id: Optional[str] = None
+    parent_line_idx: Optional[int] = None
 
 
 class SalesOrderPriceQuotePayload(BaseModel):
@@ -10782,8 +10790,26 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         raise HTTPException(400, "Minimal 1 line item.")
     
     from services.master_items import resolve_line_production_process
+    from services.order_line_addon import validate_lines_parent_graph
+
+    master_ids_for_type = [
+        (li.master_item_id or "").strip()
+        for li in payload.line_items
+        if (li.master_item_id or "").strip()
+    ]
+    item_type_by_master: Dict[str, str] = {}
+    if master_ids_for_type:
+        type_rows = await db.master_items.find(
+            {"id": {"$in": list(set(master_ids_for_type))}},
+            {"_id": 0, "id": 1, "item_type": 1},
+        ).to_list(len(set(master_ids_for_type)))
+        for row in type_rows:
+            mid_key = str(row.get("id") or "").strip()
+            if mid_key:
+                item_type_by_master[mid_key] = str(row.get("item_type") or "").strip().upper()
 
     normalized_lines = []
+    seen_line_ids = set()
     for i, li in enumerate(payload.line_items):
         name = (li.name or "").strip()
         if not name:
@@ -10804,7 +10830,13 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             explicit=li.production_process,
         )
 
-        normalized_lines.append({
+        line_id = (li.line_id or "").strip() or f"ln-{uuid.uuid4().hex[:12]}"
+        if line_id in seen_line_ids:
+            raise HTTPException(400, f"Line item #{i+1}: line_id duplikat '{line_id}'.")
+        seen_line_ids.add(line_id)
+
+        row = {
+            "line_id": line_id,
             "item_code": (li.item_code or "").strip() or None,
             "name": name,
             "quantity": q,
@@ -10817,7 +10849,20 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "unit_price": li.unit_price,
             "price_source": li.price_source,
             "price_review": bool(li.price_review),
-        })
+        }
+        stamped_type = item_type_by_master.get(mid or "")
+        if stamped_type:
+            row["item_type"] = stamped_type
+        parent_id = (li.parent_line_id or "").strip() if li.parent_line_id is not None else ""
+        if parent_id:
+            row["parent_line_id"] = parent_id
+        if li.parent_line_idx is not None:
+            row["parent_line_idx"] = int(li.parent_line_idx)
+        normalized_lines.append(row)
+
+    graph_err = validate_lines_parent_graph(normalized_lines)
+    if graph_err:
+        raise HTTPException(400, graph_err)
     
     order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
     deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)

@@ -806,7 +806,7 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     # Restore explicit parent links for remaining matrix.
     await db.orders.update_one({"id": oid}, {"$set": {"line_items": linked_lines}})
 
-    # (2) Warna1 complete; warna2/3 unfinished — siap = min = 0 (proven relation)
+    # (2) Warna1 complete; warna2/3 unfinished — no batch proof → BELUM_TERVERIFIKASI
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -815,11 +815,11 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 1000  # 1000 - min(1000,0,0)
-    assert row["qty_belum_terkirim"] == 0
-    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+    assert row["qty_pesanan"] == 0  # parent progress visible; Belum not invented
+    assert row["qty_belum_terkirim"] is None
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
 
-    # (3) Warna1+2 done; warna3 unfinished — siap still 0
+    # (3) Warna1+2 done; warna3 unfinished — still unverified (no unit overlap proof)
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -828,11 +828,11 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 1000
-    assert row["qty_belum_terkirim"] == 0
-    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+    assert row["qty_pesanan"] == 0
+    assert row["qty_belum_terkirim"] is None
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
 
-    # (4) All processes complete — siap 1000 fisik, not 3000
+    # (4) All processes complete — still BELUM_TERVERIFIKASI (min ≠ batch proof)
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
@@ -842,10 +842,10 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
     assert row["qty_pesanan"] == 0
-    assert row["qty_belum_terkirim"] == 1000
-    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+    assert row["qty_belum_terkirim"] is None
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
 
-    # (5) Partial different progress — conservative min siap = 200
+    # (5) Partial different progress — still unverified; never READY via min()
     await db.orders.update_one({"id": oid}, {"$set": {
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 400},
@@ -854,9 +854,9 @@ async def test_fase1_addon_service_matrix_and_attribution(db):
         ],
     }})
     row = next(r for r in (await list_compatibility_stock_catalog(db))["items"] if r["master_item_id"] == physical["id"])
-    assert row["qty_pesanan"] == 800  # 1000 - 200
-    assert row["qty_belum_terkirim"] == 200
-    assert row["belum_terkirim_status"] == BELUM_STATUS_READY
+    assert row["qty_pesanan"] == 600  # 1000 - parent 400
+    assert row["qty_belum_terkirim"] is None
+    assert row["belum_terkirim_status"] == BELUM_STATUS_UNVERIFIED
 
     # (6) Cancelled SERVICE Add On ignored for process gate → inventory-only READY again
     await db.orders.update_one({"id": oid}, {"$set": {

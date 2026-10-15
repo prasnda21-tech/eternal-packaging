@@ -9,8 +9,9 @@ Rules:
 - Never invent parent links from item names.
 - Historical lines without parent_line_id stay fail-closed for siap-kirim gating.
 - SERVICE / excluded masters are process work — not physical stock demand.
-- With proven parent links, siap qty is the conservative min across parent +
-  required process completions (upper bound without per-unit batch IDs).
+- operator_splits have no per-unit batch/unit IDs linking warna processes to the
+  same physical pcs. Therefore min(parent, children) is NOT proof of physical
+  siap — linked process children force completion_unproven (BELUM_TERVERIFIKASI).
 """
 from __future__ import annotations
 
@@ -77,6 +78,21 @@ def build_line_id_index(lines: Sequence[dict]) -> Dict[str, int]:
     return index
 
 
+def duplicate_line_id_error(lines: Sequence[dict]) -> Optional[str]:
+    """Reject ambiguous duplicate line_id values (excluding synthetic idx:N)."""
+    seen: Dict[str, int] = {}
+    for i, row in enumerate(lines):
+        if not isinstance(row, dict):
+            continue
+        lid = str(row.get("line_id") or row.get("id") or "").strip()
+        if not lid:
+            continue
+        if lid in seen:
+            return f"line_id duplikat: '{lid}' (baris {seen[lid] + 1} dan {i + 1})."
+        seen[lid] = i
+    return None
+
+
 def process_children_for_parent(
     parent_idx: int,
     lines: Sequence[dict],
@@ -116,9 +132,10 @@ def conservative_full_process_ready(
     parent_completed: float,
     child_ordered_completed: Iterable[Tuple[float, float]],
 ) -> float:
-    """Upper bound of units that finished every required process.
+    """Upper-bound helper only — NOT proof of physical siap without batch IDs.
 
-    min(parent, children) — never invents beyond the weakest process progress.
+    Kept for diagnostics / future batch-proven paths. Stock Saat Ini must not
+    promote this value to READY while per-unit overlap is unproven.
     """
     ready = min(max(parent_ordered, 0.0), max(parent_completed, 0.0))
     for ordered, completed in child_ordered_completed:
@@ -155,4 +172,32 @@ def validate_parent_relation(
         return "parent_line_id / parent_line_idx tidak merujuk ke line induk yang valid."
     if parent == idx:
         return "Add On tidak boleh merujuk dirinya sendiri sebagai induk."
+    if line_cancelled(lines[parent]):
+        return "Barang induk tidak aktif / dibatalkan."
+    # Cycle detection: walk explicit parent chain.
+    seen = {idx}
+    cur: Optional[int] = parent
+    while cur is not None:
+        if cur in seen:
+            return "Relasi induk Add On membentuk cycle."
+        seen.add(cur)
+        parent_line = lines[cur] if 0 <= cur < len(lines) else None
+        if not isinstance(parent_line, dict):
+            break
+        nxt = resolve_parent_idx(parent_line, lines)
+        cur = nxt
+    return None
+
+
+def validate_lines_parent_graph(lines: Sequence[dict]) -> Optional[str]:
+    """Validate duplicate ids and every present parent relation on the PO."""
+    dup = duplicate_line_id_error(lines)
+    if dup:
+        return dup
+    for i, row in enumerate(lines):
+        if not isinstance(row, dict) or line_cancelled(row):
+            continue
+        err = validate_parent_relation(row, lines, idx=i)
+        if err:
+            return f"Baris #{i + 1}: {err}"
     return None

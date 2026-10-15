@@ -49,7 +49,8 @@ def test_conservative_min_ready():
     ) == 200
 
 
-def test_aggregate_with_parent_links_uses_min_not_unproven():
+def test_aggregate_with_parent_links_never_promotes_min_to_proven():
+    """No batch/unit IDs on splits → linked Add On ≠ READY physical siap."""
     orders = [{
         "id": "o1",
         "cancelled": False,
@@ -78,7 +79,7 @@ def test_aggregate_with_parent_links_uses_min_not_unproven():
         "operator_splits": [
             {"line_idx": 0, "qty_completed": 1000},
             {"line_idx": 1, "qty_completed": 1000},
-            {"line_idx": 2, "qty_completed": 400},
+            {"line_idx": 2, "qty_completed": 1000},
         ],
     }]
     progress = aggregate_operational_orders(
@@ -86,9 +87,37 @@ def test_aggregate_with_parent_links_uses_min_not_unproven():
     )
     slot = progress["inv"]
     assert slot["ordered_qty"] == 1000
-    assert slot["completed_qty"] == 400  # min(1000,1000,400)
-    assert slot.get("completion_unproven") is False
+    # Parent progress kept for buckets; never proven siap via min().
+    assert slot["completed_qty"] == 1000
+    assert slot.get("completion_unproven") is True
     assert "svc2" not in progress
+
+
+def test_validate_rejects_cancelled_parent_cycle_and_duplicate_ids():
+    from services.order_line_addon import (
+        duplicate_line_id_error,
+        validate_lines_parent_graph,
+        validate_parent_relation,
+    )
+
+    cancelled_parent = [
+        {"line_id": "ln-main", "cancelled": True},
+        {"line_id": "ln-w2", "parent_line_id": "ln-main"},
+    ]
+    assert validate_parent_relation(cancelled_parent[1], cancelled_parent, idx=1)
+
+    cycle = [
+        {"line_id": "a", "parent_line_id": "b"},
+        {"line_id": "b", "parent_line_id": "a"},
+    ]
+    assert validate_parent_relation(cycle[0], cycle, idx=0)
+
+    dup = [
+        {"line_id": "same", "name": "X"},
+        {"line_id": "same", "name": "Y", "parent_line_id": "same"},
+    ]
+    assert duplicate_line_id_error(dup)
+    assert validate_lines_parent_graph(dup)
 
 
 def test_aggregate_service_without_parent_fail_closed():

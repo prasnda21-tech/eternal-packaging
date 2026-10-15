@@ -615,6 +615,9 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(detail).not.toMatch(/so-create-workspace/);
     expect(page).toMatch(/data-testid="so-create-actionbar"/);
     expect(page).toMatch(/data-testid="btn-submit-sales-order"/);
+    expect(page).toMatch(/data-testid=\{`line-parent-\$\{originalIndex\}`\}/);
+    expect(page).toMatch(/Barang induk \(Add On\)/);
+    expect(page).toMatch(/parent_line_id/);
     expect(page).toMatch(/data-scroll-owner="form"/);
     expect(page).toMatch(/data-scroll-owner=\{viewMode === "create" \? "workspace" : "list"\}/);
     expect(page).not.toMatch(/data-scroll-owner="line-items"/);

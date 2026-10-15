@@ -303,6 +303,29 @@ describe("sales order create workspace contract", () => {
     expect(withUi.line_items[0].entry_mode).toBeUndefined();
     expect(withUi.line_items[0].price_lock).toBeUndefined();
     expect(withUi.line_items[0].name).toBe("Box");
+    expect(withUi.line_items[0].line_id).toBe("so-line-9");
+
+    const withParent = buildSalesOrderCreatePayload(baseForm({
+      line_items: [
+        { ...baseForm().line_items[0], line_id: "ln-main", rowKey: "rk-main" },
+        {
+          line_id: "ln-addon",
+          rowKey: "rk-addon",
+          name: "Add On Warna",
+          quantity: 2,
+          unit: "pcs",
+          color: "",
+          production_process: "print",
+          notes: "",
+          accurate_item_id: null,
+          master_item_id: null,
+          parent_line_id: "ln-main",
+        },
+      ],
+    }));
+    expect(withParent.line_items[1].parent_line_id).toBe("ln-main");
+    expect(withParent.line_items[1].line_id).toBe("ln-addon");
+    expect(withParent.line_items[0].parent_line_id).toBeUndefined();
   });
 
   test("blank PO number stays an absent value and identical lines are not merged", () => {
