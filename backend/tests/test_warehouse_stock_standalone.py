@@ -14,11 +14,14 @@ import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Prefer dedicated standalone mongod (no RS). Override with STANDALONE_MONGO_URL.
+# Do NOT mutate process-wide MONGO_URL/DB_NAME at import — that can poison sibling
+# xdist workers when this module is collected alongside other suites (see CI note
+# on sales_invoice_edit_revision isolation).
 STANDALONE_URL = os.environ.get(
     "STANDALONE_MONGO_URL", "mongodb://127.0.0.1:27018"
 )
-os.environ["DB_NAME"] = "eternal_packaging_test_warehouse_standalone"
-os.environ["MONGO_URL"] = STANDALONE_URL
+TEST_DB = "eternal_packaging_test_warehouse_standalone"
+MONGO_URL = STANDALONE_URL
 
 from services.physical_stock import (  # noqa: E402
     BALANCE_COLLECTION,
@@ -50,9 +53,6 @@ from services.warehouse_stock_standalone import (  # noqa: E402
     set_fail_after_ledger,
     set_warehouse_stock_standalone_enabled,
 )
-
-TEST_DB = "eternal_packaging_test_warehouse_standalone"
-MONGO_URL = STANDALONE_URL
 
 pytestmark = pytest.mark.anyio
 
