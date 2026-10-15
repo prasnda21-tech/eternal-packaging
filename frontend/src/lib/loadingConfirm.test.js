@@ -1,8 +1,26 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME, loadingConfirmations, loadingConfirmationsAll, MSG_LOADING_CORRECTION_SJ_CANCEL } from "./loadingConfirm";
 import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
+import fs from "fs";
+import path from "path";
 
 describe("Loading confirm helpers", () => {
+  test("active confirmations exclude cancelled; all keeps history; correction copy exists", () => {
+    const order = {
+      loading_confirmations: [
+        { id: "a", lines: [{ line_idx: 0, qty: 1 }] },
+        { id: "b", cancelled: true, lines: [{ line_idx: 0, qty: 2 }] },
+      ],
+    };
+    expect(loadingConfirmations(order).map((c) => c.id)).toEqual(["a"]);
+    expect(loadingConfirmationsAll(order).map((c) => c.id)).toEqual(["a", "b"]);
+    expect(MSG_LOADING_CORRECTION_SJ_CANCEL).toMatch(/batalkan Surat Jalan/i);
+    const panel = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
+    expect(panel).toMatch(/loading-correction-hint/);
+    expect(panel).toMatch(/MSG_LOADING_CORRECTION_SJ_CANCEL/);
+    expect(panel).toMatch(/loading-confirm-cancelled-history/);
+  });
+
   const order = {
     line_items: [
       { name: "Item A", item_code: "A1", quantity: 1000 },

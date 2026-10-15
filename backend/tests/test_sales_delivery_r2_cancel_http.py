@@ -331,6 +331,11 @@ async def test_1_2_3_4_9_12_cancel_terkirim_restores_origin_warehouse(db):
     assert order["shipments"][0]["is_cancelled"] is True
     assert len([p for p in order["delivery_proofs"] if not p.get("is_deleted")]) == 2
     assert order.get("delivery_recipient_signature", {}).get("signature_storage_path")
+    # Loading linked to this SJ is soft-cancelled with the Batalkan SJ action.
+    loading = order.get("loading_confirmations") or []
+    assert loading, "seed includes loading_confirmations"
+    assert all(c.get("cancelled") is True for c in loading if isinstance(c, dict))
+    assert body.get("loading_cancelled_ids")
 
     summary = await get_po_delivery_summary(database, seeded["po_id"])
     assert summary["total_remaining"] == 15

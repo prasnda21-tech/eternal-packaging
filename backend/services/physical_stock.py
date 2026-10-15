@@ -1664,6 +1664,148 @@ def _shipment_matches_delivery(shipment: dict, identity: set) -> bool:
     return False
 
 
+MSG_LOADING_STOCK_UNSUPPORTED = (
+    "Pembatalan Surat Jalan ditolak: terdapat mutasi stok Loading yang belum "
+    "mempunyai jalur reversal aman. Hubungi admin."
+)
+
+_LOADING_SJ_IDENTITY_FIELDS = (
+    "surat_jalan_id", "shipment_id", "sj_number", "sales_delivery_id", "number",
+)
+
+
+def _expand_sj_cancel_identity(order: Optional[dict], identity: set) -> set:
+    """Union delivery tokens with matching shipment aliases (exact SJ scope)."""
+    expanded = {str(t).strip() for t in (identity or set()) if str(t).strip()}
+    if not isinstance(order, dict) or not expanded:
+        return expanded
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict) or not _shipment_matches_delivery(sh, expanded):
+            continue
+        for field in ("id", "sales_delivery_id", "sj_number", "number", "file_id"):
+            token = str(sh.get(field) or "").strip()
+            if token:
+                expanded.add(token)
+    for f in order.get("surat_jalan_files") or []:
+        if not isinstance(f, dict):
+            continue
+        file_tokens = {
+            str(f.get(k) or "").strip()
+            for k in ("id", "shipment_id", "sales_delivery_id", "sj_number", "number")
+        }
+        file_tokens.discard("")
+        if file_tokens & expanded:
+            expanded.update(file_tokens)
+    return expanded
+
+
+def _loading_confirmation_matches_sj(conf: dict, identity: set) -> bool:
+    if not isinstance(conf, dict) or not identity:
+        return False
+    for field in _LOADING_SJ_IDENTITY_FIELDS:
+        token = str(conf.get(field) or "").strip()
+        if token and token in identity:
+            return True
+    return False
+
+
+def _soft_cancel_loading_for_sj_identity(
+    order: dict,
+    identity: set,
+    *,
+    actor_id: str,
+    cancelled_at: str,
+    reason: str,
+) -> List[str]:
+    """Soft-cancel Loading confirmations / snapshots for one SJ identity only.
+
+    Preserves lines, qty, original confirmer, and history. Idempotent for rows
+    already cancelled. Returns newly cancelled confirmation ids.
+    """
+    if not isinstance(order, dict) or not identity:
+        return []
+    newly: List[str] = []
+    actor = str(actor_id or "").strip() or "user"
+    note = str(reason or "").strip() or "Pembatalan Surat Jalan"
+    for conf in order.get("loading_confirmations") or []:
+        if not isinstance(conf, dict):
+            continue
+        if not _loading_confirmation_matches_sj(conf, identity):
+            continue
+        if conf.get("cancelled") or conf.get("deleted"):
+            continue
+        conf["cancelled"] = True
+        conf["cancelled_by"] = actor
+        conf["cancelled_by_name"] = actor
+        conf["cancelled_at"] = cancelled_at
+        conf["cancelled_reason"] = note
+        conf_id = str(conf.get("id") or "").strip()
+        if conf_id:
+            newly.append(conf_id)
+    for snap in order.get("loading_snapshots") or []:
+        if not isinstance(snap, dict):
+            continue
+        if not _loading_confirmation_matches_sj(snap, identity):
+            continue
+        if snap.get("cancelled") or snap.get("deleted"):
+            continue
+        st = str(snap.get("status") or "").strip().lower()
+        if st in ("cancelled", "superseded", "deleted"):
+            continue
+        snap["cancelled"] = True
+        snap["status"] = "cancelled"
+        snap["cancelled_by"] = actor
+        snap["cancelled_at"] = cancelled_at
+        snap["cancelled_reason"] = note
+    return newly
+
+
+async def _assert_no_unsupported_loading_stock(
+    db,
+    *,
+    order_id: str,
+    confirmation_ids: List[str],
+    session=None,
+) -> None:
+    """Fail-closed when Loading-origin PSS movements exist for these confirmations.
+
+    Current SJ cancel only reverses R2 SALES_DELIVERY. Loading stock_movements
+    have no supported reverse on this path — refuse partial cancel.
+    """
+    oid = str(order_id or "").strip()
+    ids = [str(c).strip() for c in (confirmation_ids or []) if str(c).strip()]
+    if not oid or not ids:
+        return
+    find_kwargs = {"session": session} if session is not None else {}
+    for cid in ids:
+        needles = (
+            f"stock_out:loading:{oid}:{cid}:",
+            f"loading:{oid}:{cid}:",
+        )
+        for needle in needles:
+            mov = await db.stock_movements.find_one(
+                {
+                    "reference_type": "loading_confirmation",
+                    "event_id": {"$regex": f"^{re.escape(needle)}"},
+                },
+                {"_id": 1, "id": 1},
+                **find_kwargs,
+            )
+            if mov:
+                raise PhysicalStockValidationError(MSG_LOADING_STOCK_UNSUPPORTED)
+        pending = await db.product_stock_state.find_one(
+            {
+                "pending_event.reference_type": "loading_confirmation",
+                "pending_event.order_id": oid,
+                "pending_event.event_id": {"$regex": f":{re.escape(cid)}:"},
+            },
+            {"_id": 1},
+            **find_kwargs,
+        )
+        if pending:
+            raise PhysicalStockValidationError(MSG_LOADING_STOCK_UNSUPPORTED)
+
+
 def _recompute_order_delivery_after_cancel(order: dict) -> dict:
     """Recompute qty_delivered / delivery_status / stage from active shipments."""
     from quantity_rules import (
@@ -1780,6 +1922,43 @@ async def cancel_sales_delivery_document(
                         "cancelled", "dibatalkan", "deleted",
                     ):
                         order = await db.orders.find_one({"id": po_id}, {"_id": 0}, session=session) if po_id else None
+                        healed_ids: List[str] = []
+                        # Idempotent heal: soft-cancel any Loading still active for this SJ.
+                        if isinstance(order, dict):
+                            expanded = _expand_sj_cancel_identity(order, identity)
+                            candidates = [
+                                str(c.get("id") or "").strip()
+                                for c in (order.get("loading_confirmations") or [])
+                                if isinstance(c, dict)
+                                and _loading_confirmation_matches_sj(c, expanded)
+                                and not c.get("cancelled")
+                                and not c.get("deleted")
+                                and str(c.get("id") or "").strip()
+                            ]
+                            if candidates:
+                                await _assert_no_unsupported_loading_stock(
+                                    db,
+                                    order_id=po_id,
+                                    confirmation_ids=candidates,
+                                    session=session,
+                                )
+                            healed_ids = _soft_cancel_loading_for_sj_identity(
+                                order,
+                                expanded,
+                                actor_id=actor,
+                                cancelled_at=now_iso(),
+                                reason=note,
+                            )
+                            if healed_ids:
+                                await db.orders.update_one(
+                                    {"id": po_id},
+                                    {"$set": {
+                                        "loading_confirmations": order.get("loading_confirmations") or [],
+                                        "loading_snapshots": order.get("loading_snapshots") or [],
+                                        "updated_at": now_iso(),
+                                    }},
+                                    session=session,
+                                )
                         return {
                             "id": delivery_id,
                             "sj_number": fresh.get("sj_number", delivery_id),
@@ -1787,6 +1966,7 @@ async def cancel_sales_delivery_document(
                             "deleted": False,
                             "replayed": True,
                             "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
+                            "loading_cancelled_ids": healed_ids,
                             "order_id": po_id or None,
                             "qty_delivered": (order or {}).get("qty_delivered"),
                             "delivery_status": (order or {}).get("delivery_status"),
@@ -1877,15 +2057,33 @@ async def cancel_sales_delivery_document(
                     )
 
                     order_patch = {}
+                    loading_cancelled_ids: List[str] = []
                     if po_id:
                         order = await db.orders.find_one({"id": po_id}, {"_id": 0}, session=session)
                         if order:
+                            expanded = _expand_sj_cancel_identity(order, identity)
+                            loading_candidates = [
+                                str(c.get("id") or "").strip()
+                                for c in (order.get("loading_confirmations") or [])
+                                if isinstance(c, dict)
+                                and _loading_confirmation_matches_sj(c, expanded)
+                                and not c.get("cancelled")
+                                and not c.get("deleted")
+                                and str(c.get("id") or "").strip()
+                            ]
+                            if loading_candidates:
+                                await _assert_no_unsupported_loading_stock(
+                                    db,
+                                    order_id=po_id,
+                                    confirmation_ids=loading_candidates,
+                                    session=session,
+                                )
                             shipments = []
                             for sh in order.get("shipments") or []:
                                 if not isinstance(sh, dict):
                                     continue
                                 row = dict(sh)
-                                if _shipment_matches_delivery(row, identity):
+                                if _shipment_matches_delivery(row, expanded):
                                     row["is_cancelled"] = True
                                     row["cancelled"] = True
                                     row["status"] = "cancelled"
@@ -1904,7 +2102,7 @@ async def cancel_sales_delivery_document(
                                     "sales_delivery_id", "delivery_id",
                                 ):
                                     token = str(row.get(field) or "").strip()
-                                    if token and token in identity:
+                                    if token and token in expanded:
                                         linked = True
                                         break
                                 if linked:
@@ -1914,10 +2112,19 @@ async def cancel_sales_delivery_document(
                                 confirmations.append(row)
                             order["shipments"] = shipments
                             order["delivery_confirmations"] = confirmations
+                            loading_cancelled_ids = _soft_cancel_loading_for_sj_identity(
+                                order,
+                                expanded,
+                                actor_id=actor,
+                                cancelled_at=cancelled_at,
+                                reason=note,
+                            )
                             recomputed = _recompute_order_delivery_after_cancel(order)
                             order_patch = {
                                 "shipments": shipments,
                                 "delivery_confirmations": confirmations,
+                                "loading_confirmations": order.get("loading_confirmations") or [],
+                                "loading_snapshots": order.get("loading_snapshots") or [],
                                 "qty_delivered": recomputed["qty_delivered"],
                                 "delivery_status": recomputed["delivery_status"],
                                 "current_stage": recomputed["current_stage"],
@@ -1940,6 +2147,7 @@ async def cancel_sales_delivery_document(
                             "confirmation_ids": confirmation_ids,
                             "reversal_movement_ids": all_reversal_ids,
                         },
+                        "loading_cancelled_ids": loading_cancelled_ids,
                         "order_id": po_id or None,
                         "qty_delivered": order_patch.get("qty_delivered"),
                         "delivery_status": order_patch.get("delivery_status"),

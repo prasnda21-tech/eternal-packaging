@@ -322,9 +322,19 @@ export function nextSelectedLoadingSjId(files, sjId) {
   return id;
 }
 
+export const MSG_LOADING_CORRECTION_SJ_CANCEL =
+  "Untuk mengoreksi Loading yang sudah dikonfirmasi, batalkan Surat Jalan terkait terlebih dahulu. Loading akan dinonaktifkan otomatis.";
+
+/** Active (non-cancelled) Loading confirmations. */
 export function loadingConfirmations(order) {
   return (Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [])
     .filter((c) => c && !c.cancelled && !c.deleted);
+}
+
+/** All Loading confirmations including cancelled (history / audit display). */
+export function loadingConfirmationsAll(order) {
+  return (Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [])
+    .filter((c) => c && typeof c === "object");
 }
 
 export function deliveredQtyForLoadingConfirmation(order, confirmationId) {

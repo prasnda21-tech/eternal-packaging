@@ -10,6 +10,7 @@ import SuratJalanViewButton from "./SuratJalanViewButton";
 import api from "../lib/api";
 import {
   loadingConfirmations,
+  loadingConfirmationsAll,
   loadingLineLabel,
   loadingPoLines,
   sjFilesForLoading,
@@ -22,6 +23,7 @@ import {
   validateDiscrepancySelection,
   loadingDiscrepancies,
   loadingDiscrepancyHistory,
+  MSG_LOADING_CORRECTION_SJ_CANCEL,
   LOADING_CONFIRM_MATCH_PERM,
   LOADING_REPORT_DISCREPANCY_PERM,
   LOADING_VIEW_DISCREPANCY_HISTORY_PERM,
@@ -66,6 +68,8 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const poLines = useMemo(() => loadingPoLines(order, activeSj?.id), [order, activeSj?.id]);
   const sjLines = useMemo(() => sjLinesForDiscrepancy(order, activeSj?.id), [order, activeSj?.id]);
   const confirmations = loadingConfirmations(order);
+  const confirmationsAll = loadingConfirmationsAll(order);
+  const cancelledConfirmations = confirmationsAll.filter((c) => c.cancelled || c.deleted);
   const openDisc = loadingDiscrepancies(order).filter(
     (d) => !activeSj?.id || String(d.surat_jalan_id || "") === String(activeSj.id),
   );
@@ -79,7 +83,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
   const isComplete = String(verification?.code || "").includes("complete");
 
   const showActive = hasSj || canManage || canViewHistory;
-  if (!showActive && !hasLegacyLoading(order) && confirmations.length === 0) return null;
+  if (!showActive && !hasLegacyLoading(order) && confirmationsAll.length === 0) return null;
 
   const rowsSnap = shipmentLinesForOrder(order);
   const loadingEvents = order?.loading_info?.events || [];
@@ -425,6 +429,14 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
         {err ? <div className="error" data-testid="loading-error">{err}</div> : null}
 
         {confirmations.length > 0 ? (
+          <p className="muted small" data-testid="loading-correction-hint">
+            {MSG_LOADING_CORRECTION_SJ_CANCEL}
+            {" "}
+            Gunakan aksi Batalkan Surat Jalan di Pengiriman Pesanan.
+          </p>
+        ) : null}
+
+        {confirmations.length > 0 ? (
           <ul className="sj-file-list" data-testid="loading-confirm-history" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
             {confirmations.map((c) => {
               const deletable = canDelete && canDeleteLoadingConfirmation(order, c);
@@ -451,6 +463,7 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                         disabled={busy}
                         onClick={() => setDeleteTarget(c)}
                         data-testid={`loading-delete-${c.id}`}
+                        title="Admin saja. Koreksi normal: batalkan Surat Jalan terkait."
                       >
                         Hapus
                       </button>
@@ -459,6 +472,29 @@ export default function LoadingPanel({ order, canManage = false, onUpdated }) {
                 </li>
               );
             })}
+          </ul>
+        ) : null}
+
+        {cancelledConfirmations.length > 0 ? (
+          <ul className="sj-file-list" data-testid="loading-confirm-cancelled-history" style={{ listStyle: "none", margin: "8px 0 0", padding: 0, display: "grid", gap: 8 }}>
+            {cancelledConfirmations.map((c) => (
+              <li key={c.id} data-testid={`loading-confirm-cancelled-${c.id}`} className="muted">
+                <div>
+                  <strong>{c.surat_jalan_name || "Surat Jalan"}</strong>
+                  {" "}
+                  <span className="qty-status status-wait" data-testid={`loading-cancelled-badge-${c.id}`}>Dibatalkan</span>
+                  {(c.lines || []).map((ln, i) => (
+                    <div key={`${c.id}-c-${i}`} className="muted small">
+                      {loadingLineLabel(ln, order)} — Qty {fmt(ln.qty)}
+                    </div>
+                  ))}
+                  <span className="muted small">
+                    {c.cancelled_reason || "Dibatalkan bersama Surat Jalan"}
+                    {c.cancelled_at ? ` · ${formatDate(c.cancelled_at)}` : ""}
+                  </span>
+                </div>
+              </li>
+            ))}
           </ul>
         ) : null}
 
