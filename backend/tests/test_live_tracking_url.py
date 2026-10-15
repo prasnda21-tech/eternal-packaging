@@ -283,7 +283,9 @@ async def test_missing_and_multiple_po_are_not_silently_chosen(isolated):
         missing_open = await client.get(f"/api/public/tracking/{missing['tracking_token']}")
     assert missing_share.json()["po_label"] == "missing"
     assert "/tanpa-po/" in missing_share.json()["public_path"]
-    assert "SJ" not in missing_share.json()["public_path"]
+    # Label segments only — random access codes may contain "SJ" by chance.
+    missing_labels = missing_share.json()["public_path"].rsplit("/", 1)[0]
+    assert "SJ" not in missing_labels
     assert missing_open.json()["order_number"] == ""
     assert many_share.json()["po_label"] == "multiple"
     many_path = many_share.json()["public_path"]
