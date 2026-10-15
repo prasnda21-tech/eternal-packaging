@@ -85,6 +85,7 @@ export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
 
   productionMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   taskMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
+  const salesCatalogByPath = Object.fromEntries(SALES_WORKSPACE_TABS.map((t) => [t.path, t]));
   salesMenuItems(hasPerm).forEach((item) => {
     const tab = itemToTab(item, salesIdByPath[item.to]);
     if (tab.path === "/penjualan/permintaan-produk" || tab.path.startsWith("/penjualan/permintaan-produk/")) {
@@ -98,7 +99,8 @@ export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
       });
       return;
     }
-    tabs.push(tab);
+    const catalog = salesCatalogByPath[item.to];
+    tabs.push(catalog?.rememberSearch ? { ...tab, rememberSearch: true } : tab);
   });
   purchasingMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));
   inventoryMenuItems(hasPerm).forEach((item) => tabs.push(itemToTab(item)));

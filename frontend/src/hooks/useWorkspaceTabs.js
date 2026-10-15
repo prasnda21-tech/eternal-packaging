@@ -2,6 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { registerWorkspaceTabEnricher } from "../lib/workspaceTabEnrichment";
+import {
+  normalizeWorkspaceSearch,
+  workspaceTabHref,
+} from "../lib/workspaceTabs";
 
 /**
  * Shared workspace tabs: open on route, no duplicates, close + navigate,
@@ -15,6 +19,8 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
   const hydratedUser = useRef(null);
   const pathRef = useRef(location.pathname);
   pathRef.current = location.pathname;
+  const searchRef = useRef(location.search);
+  searchRef.current = location.search;
   const stateRef = useRef(location.state);
   stateRef.current = location.state;
   const openOrActivateRef = useRef(openOrActivate);
@@ -31,20 +37,28 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
     if (hydratedUser.current === uid) return;
     hydratedUser.current = uid;
     const restored = load(user);
-    setTabs(openOrActivate(restored, pathRef.current, stateRef.current).tabs);
+    setTabs(openOrActivate(restored, pathRef.current, stateRef.current, searchRef.current).tabs);
   }, [user, load, openOrActivate]);
 
   useLayoutEffect(() => {
     if (!user || !hydratedUser.current) return;
     setTabs((cur) => {
-      const { tabs: next, activated } = openOrActivate(cur, location.pathname, location.state);
+      const { tabs: next, activated } = openOrActivate(
+        cur,
+        location.pathname,
+        location.state,
+        location.search,
+      );
       if (!activated) return cur;
       const same = next.length === cur.length && next.every((t, i) => (
-        t.id === cur[i]?.id && t.path === cur[i]?.path && t.label === cur[i]?.label
+        t.id === cur[i]?.id
+        && t.path === cur[i]?.path
+        && t.label === cur[i]?.label
+        && normalizeWorkspaceSearch(t.search) === normalizeWorkspaceSearch(cur[i]?.search)
       ));
       return same ? cur : next;
     });
-  }, [location.pathname, location.state, user, openOrActivate]);
+  }, [location.pathname, location.search, location.state, user, openOrActivate]);
 
   useEffect(() => {
     if (!user || !hydratedUser.current) return;
@@ -56,6 +70,7 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
 
   // In-place existence + label enrichment (no navigate/replace).
   // Layout: register before paint so queued PODetail pings flush after hydrate.
+  // Do not pass search — enrichers must not wipe rememberSearch query state.
   useLayoutEffect(() => {
     return registerWorkspaceTabEnricher((pathname, meta) => {
       if (!hydratedUser.current) return;
@@ -65,6 +80,7 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
         const same = next.length === cur.length && next.every((t, i) => (
           t.id === cur[i]?.id && t.path === cur[i]?.path && t.label === cur[i]?.label
           && t.title === cur[i]?.title && t.labelPriority === cur[i]?.labelPriority
+          && normalizeWorkspaceSearch(t.search) === normalizeWorkspaceSearch(cur[i]?.search)
         ));
         return same ? cur : next;
       });
@@ -73,18 +89,21 @@ export function useWorkspaceTabs({ load, save, openOrActivate, closeTab: closeTa
 
   const activateTab = useCallback((tab) => {
     if (!tab?.path) return;
-    if (location.pathname !== tab.path) navigate(tab.path);
-  }, [location.pathname, navigate]);
+    const target = workspaceTabHref(tab);
+    const current = `${location.pathname}${normalizeWorkspaceSearch(location.search)}`;
+    if (current !== target) navigate(target);
+  }, [location.pathname, location.search, navigate]);
 
   const closeTab = useCallback((tabId) => {
     setTabs((cur) => {
       const { tabs: next, navigateTo } = closeTabFn(cur, tabId, location.pathname);
-      if (navigateTo && navigateTo !== location.pathname) {
+      const current = `${location.pathname}${normalizeWorkspaceSearch(location.search)}`;
+      if (navigateTo && navigateTo !== current) {
         queueMicrotask(() => navigate(navigateTo));
       }
       return next;
     });
-  }, [location.pathname, navigate, closeTabFn]);
+  }, [location.pathname, location.search, navigate, closeTabFn]);
 
   return {
     tabs,

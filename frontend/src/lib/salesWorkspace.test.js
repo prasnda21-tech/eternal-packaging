@@ -52,6 +52,14 @@ describe("salesWorkspace tabs", () => {
     expect(b.tabs).toHaveLength(1);
   });
 
+  test("Faktur Penjualan remembers list search across sibling activation", () => {
+    expect(SALES_WORKSPACE_TABS.find((t) => t.id === "faktur-penjualan")?.rememberSearch).toBe(true);
+    const a = openOrActivateSalesTab([], "/penjualan/faktur-penjualan?tab=pending&page=2");
+    expect(a.activated.search).toBe("?tab=pending&page=2");
+    const b = openOrActivateSalesTab(a.tabs, "/penjualan/pengiriman-pesanan");
+    expect(b.tabs.find((t) => t.id === "faktur-penjualan").search).toBe("?tab=pending&page=2");
+  });
+
   test("close active moves to nearest neighbor", () => {
     const tabs = SALES_WORKSPACE_TABS.slice(0, 3);
     const mid = closeSalesTab(tabs, "pengiriman-pesanan", "/penjualan/pengiriman-pesanan");

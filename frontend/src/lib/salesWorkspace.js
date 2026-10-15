@@ -6,7 +6,13 @@ import { createWorkspaceTabApi } from "./workspaceTabs";
 export const SALES_WORKSPACE_TABS = [
   { id: "pesanan-penjualan", path: SALES_NAV_ROUTES[NAV_KEYS.salesOrder], label: "Pesanan Penjualan" },
   { id: "pengiriman-pesanan", path: SALES_NAV_ROUTES[NAV_KEYS.salesDeliveryOrder], label: "Pengiriman Pesanan" },
-  { id: "faktur-penjualan", path: SALES_NAV_ROUTES[NAV_KEYS.salesInvoice], label: "Faktur Penjualan" },
+  {
+    id: "faktur-penjualan",
+    path: SALES_NAV_ROUTES[NAV_KEYS.salesInvoice],
+    label: "Faktur Penjualan",
+    // Keep list query (tab/filter/page/q) when leaving via workspace chrome.
+    rememberSearch: true,
+  },
   { id: "penerimaan-penjualan", path: SALES_NAV_ROUTES[NAV_KEYS.salesReceipt], label: "Penerimaan Penjualan" },
   { id: "import-po", path: SALES_NAV_ROUTES[NAV_KEYS.importPo], label: "Import PO" },
   { id: "aktivitas-sales", path: SALES_NAV_ROUTES[NAV_KEYS.salesActivity], label: "Aktivitas Sales", matchPrefix: true },

@@ -4,6 +4,21 @@ export function normalizeWorkspacePath(pathname) {
   return String(pathname || "").split("?")[0].replace(/\/$/, "") || "/";
 }
 
+/** Normalize `?a=1` / `a=1` / empty for opt-in rememberSearch tabs. */
+export function normalizeWorkspaceSearch(search) {
+  const raw = String(search ?? "").trim();
+  if (!raw || raw === "?") return "";
+  return raw.startsWith("?") ? raw : `?${raw}`;
+}
+
+/** Href used when activating/closing onto a tab (path + optional remembered search). */
+export function workspaceTabHref(tab) {
+  const path = normalizeWorkspacePath(tab?.path);
+  if (!tab?.rememberSearch) return path;
+  const search = normalizeWorkspaceSearch(tab.search);
+  return search ? `${path}${search}` : path;
+}
+
 export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath, resolveStoredTab }) {
   const tabs = Array.isArray(catalog) ? catalog : [];
 
@@ -49,7 +64,16 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
               ? normalizeWorkspacePath(item.path)
               : "";
             if (base && remembered && typeof base.matches === "function" && base.matches(remembered)) {
-              return { ...base, path: remembered };
+              const row = { ...base, path: remembered };
+              if (base.rememberSearch) {
+                const search = normalizeWorkspaceSearch(item.search);
+                if (search) row.search = search;
+              }
+              return row;
+            }
+            if (base?.rememberSearch) {
+              const search = normalizeWorkspaceSearch(item.search);
+              return search ? { ...base, search } : { ...base };
             }
             return typeof resolveStoredTab === "function" ? resolveStoredTab(item) : null;
           }
@@ -67,7 +91,19 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
     try {
       const payload = (openTabs || []).map((t) => {
         if (t?.rememberPath && t.path) {
-          return { id: t.id, path: t.path, rememberPath: true };
+          const row = { id: t.id, path: t.path, rememberPath: true };
+          if (t.rememberSearch) {
+            row.rememberSearch = true;
+            const search = normalizeWorkspaceSearch(t.search);
+            if (search) row.search = search;
+          }
+          return row;
+        }
+        if (t?.rememberSearch) {
+          const row = { id: t.id, rememberSearch: true };
+          const search = normalizeWorkspaceSearch(t.search);
+          if (search) row.search = search;
+          return row;
         }
         if (!t?.dynamic) return t.id;
         const row = { id: t.id, path: t.path, label: t.label };
@@ -100,23 +136,61 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
     }
   }
 
-  function openOrActivate(openTabs, pathname, meta) {
+  /**
+   * @param {unknown} search When undefined, do not change a rememberSearch tab's
+   *   stored query (enricher / callers that only pass pathname). When a string
+   *   (including ""), sync stored search to the current location.
+   */
+  function openOrActivate(openTabs, pathname, meta, search) {
     const entry = tabByPath(pathname, meta);
     if (!entry) return { tabs: openTabs || [], activated: null };
     const path = normalizeWorkspacePath(pathname);
     const rememberPath = Boolean(entry.rememberPath)
       && typeof entry.matches === "function"
       && entry.matches(path);
-    const tracked = rememberPath ? { ...entry, path } : entry;
+    const searchProvided = search !== undefined;
+    const pathQuery = String(pathname || "").includes("?")
+      ? normalizeWorkspaceSearch(String(pathname).slice(String(pathname).indexOf("?")))
+      : "";
+    const nextSearch = searchProvided
+      ? normalizeWorkspaceSearch(search)
+      : (entry.rememberSearch && pathQuery ? pathQuery : null);
+    const applySearch = entry.rememberSearch && nextSearch !== null;
+
+    let tracked = rememberPath ? { ...entry, path } : { ...entry };
+    if (applySearch) {
+      if (nextSearch) tracked = { ...tracked, search: nextSearch };
+      else {
+        const { search: _drop, ...rest } = tracked;
+        tracked = rest;
+      }
+    }
+
     const list = Array.isArray(openTabs) ? [...openTabs] : [];
     const idx = list.findIndex((t) => t.id === entry.id);
     if (idx >= 0) {
       const existing = list[idx];
+      let updated = existing;
+      let changed = false;
+
       if (rememberPath && existing.path !== path) {
-        const updated = { ...existing, path };
+        updated = { ...updated, path };
+        changed = true;
+      }
+      if (applySearch && normalizeWorkspaceSearch(existing.search) !== nextSearch) {
+        if (nextSearch) updated = { ...updated, search: nextSearch, rememberSearch: true };
+        else {
+          const { search: _drop, ...rest } = updated;
+          updated = { ...rest, rememberSearch: true };
+        }
+        changed = true;
+      }
+
+      if (changed) {
         list[idx] = updated;
         return { tabs: list, activated: updated };
       }
+
       // Dynamic tabs: upgrade label only when navigation meta carries richer
       // info. Null/empty meta (tab click, refresh, back/forward) must keep the
       // existing customer label — never downgrade to PO <order_id>.
@@ -137,15 +211,15 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
           || (hasPoNumber && !hasCustomer && newPri > oldPri)
         );
         if (canUpgrade) {
-          const updated = {
+          const upgraded = {
             ...existing,
             label: entry.label,
             path: entry.path,
             ...(entry.title ? { title: entry.title } : {}),
             labelPriority: newPri,
           };
-          list[idx] = updated;
-          return { tabs: list, activated: updated };
+          list[idx] = upgraded;
+          return { tabs: list, activated: upgraded };
         }
       }
       return { tabs: list, activated: existing };
@@ -165,7 +239,7 @@ export function createWorkspaceTabApi({ catalog, storagePrefix, dynamicFromPath,
     if (!closingActive) return { tabs: next, navigateTo: null };
     if (!next.length) return { tabs: next, navigateTo: "/" };
     const neighbor = next[Math.min(idx, next.length - 1)];
-    return { tabs: next, navigateTo: neighbor.path };
+    return { tabs: next, navigateTo: workspaceTabHref(neighbor) };
   }
 
   return {
