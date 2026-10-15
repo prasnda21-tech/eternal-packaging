@@ -105,8 +105,24 @@ import {
   priceSourceLabel,
   quoteFailureMessage,
 } from "../lib/salesOrderLinePrice";
+import {
+  buildSalesOrderListCacheKey,
+  clearSalesOrderListCache,
+  getSalesOrderListCache,
+  invalidateSalesOrderListCache,
+  setSalesOrderListCache,
+  shouldRevalidateSalesOrderListOnFocus,
+} from "../lib/salesOrderListCache";
 
 let salesOrderLineKeySeq = 0;
+
+function listIdentityUserId(user) {
+  return user?.id || user?.email || user?.sub || "";
+}
+
+function listIdentityBranchId(user) {
+  return user?.branch_id || user?.active_branch_id || user?.branchId || "";
+}
 
 function nextSalesOrderLineKey() {
   salesOrderLineKeySeq += 1;
@@ -475,9 +491,14 @@ export default function PesananPenjualan() {
   // List state
   const [orders, setOrders] = useState([]);
   const [listLoading, setListLoading] = useState(false);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [listErr, setListErr] = useState("");
+  const [listSyncErr, setListSyncErr] = useState("");
+  const [listShowingCache, setListShowingCache] = useState(false);
   const [colWidths, setColWidths] = useState(() => readSalesOrderColWidths());
   const colResizeRef = useRef(null);
+  const listUserId = listIdentityUserId(user);
+  const listBranchId = listIdentityBranchId(user);
   const {
     input: searchInput,
     setInput: setSearchInput,
@@ -638,6 +659,15 @@ export default function PesananPenjualan() {
   }, []);
 
   const loadOrdersAbortRef = useRef(null);
+  const requestSeq = useRef(0);
+  const prevListUserRef = useRef(listUserId);
+
+  const applyOrderListPayload = useCallback((rows, meta, { fromCache = false } = {}) => {
+    setOrders(rows);
+    setListMeta(meta);
+    setListShowingCache(Boolean(fromCache));
+    if (!fromCache) setListSyncErr("");
+  }, []);
 
   const loadOptions = useCallback(async ({ applySuggestedPo = false } = {}) => {
     setOptionsLoading(true);
@@ -658,25 +688,66 @@ export default function PesananPenjualan() {
     }
   }, []);
 
-  const loadOrders = useCallback(async () => {
-    loadOrdersAbortRef.current?.abort();
-    const ac = new AbortController();
-    loadOrdersAbortRef.current = ac;
-    setListLoading(true);
-    setListErr("");
+  // Stale-while-revalidate: paint exact-key cache, then full-page refetch same query.
+  // Always background-revalidate on cache hit (TTL is not a substitute for tab-activate refresh).
+  const loadOrders = useCallback(async ({ force = false } = {}) => {
+    const cacheKey = buildSalesOrderListCacheKey({
+      userId: listUserId,
+      branchId: listBranchId,
+      canViewInvoice,
+      listTab,
+      period,
+      q: searchQuery,
+      columnFilters,
+      page,
+      pageSize,
+    });
+
     const validationError = salesOrderColumnFilterValidation(columnFilters);
     if (validationError) {
       setListErr(validationError);
-      setOrders([]);
-      setListMeta({
+      applyOrderListPayload([], {
         total: 0,
         capped: false,
         tabTotal: 0,
         counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
-      });
+      }, { fromCache: false });
       setListLoading(false);
+      setListRefreshing(false);
       return;
     }
+
+    const cached = getSalesOrderListCache(cacheKey);
+    const hasCache = Boolean(cached);
+
+    if (hasCache) {
+      applyOrderListPayload(cached.orders, cached.listMeta, { fromCache: true });
+      setSelectedIds(new Set());
+    } else {
+      // Clear rows from a different query, but keep total=null so URL page restore
+      // is not clamped to page 1 before the authoritative response arrives.
+      applyOrderListPayload([], {
+        total: null,
+        capped: false,
+        tabTotal: 0,
+        counts: { all: 0, active: 0, completed: 0, pending: 0, cancelled: 0 },
+      }, { fromCache: false });
+    }
+
+    const seq = requestSeq.current + 1;
+    requestSeq.current = seq;
+    loadOrdersAbortRef.current?.abort();
+    const ac = new AbortController();
+    loadOrdersAbortRef.current = ac;
+    if (hasCache) {
+      setListRefreshing(true);
+      setListLoading(false);
+    } else {
+      setListLoading(true);
+      setListRefreshing(false);
+    }
+    setListErr("");
+
     try {
       const bounds = periodBounds(period);
       const params = salesOrderListRequest({
@@ -701,23 +772,51 @@ export default function PesananPenjualan() {
         pageSize,
       });
       const res = await api.listSalesOrders(params, { signal: ac.signal });
-      if (ac.signal.aborted) return;
+      if (seq !== requestSeq.current || ac.signal.aborted) return;
       const rows = res.orders || [];
-      setOrders(rows);
-      setListMeta(salesFiveTabListMetaFromResponse(res, { rowCount: rows.length }));
+      const meta = salesFiveTabListMetaFromResponse(res, { rowCount: rows.length });
+      setSalesOrderListCache(cacheKey, { orders: rows, listMeta: meta, res });
+      applyOrderListPayload(rows, meta, { fromCache: false });
       setSelectedIds(new Set());
     } catch (e) {
-      if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || ac.signal.aborted) {
+      if (seq !== requestSeq.current || ac.signal.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") {
         return;
       }
       const det = e.response?.data?.detail;
-      setListErr(typeof det === "object" ? det.message : (det || "Gagal memuat daftar Pesanan Penjualan"));
+      const message = typeof det === "object"
+        ? det.message
+        : det || "Gagal memuat daftar Pesanan Penjualan";
+      if (hasCache) {
+        setListSyncErr(message || "Gagal menyinkronkan daftar. Menampilkan data tersimpan sementara.");
+        setListShowingCache(true);
+      } else {
+        setListErr(message);
+      }
     } finally {
-      if (!ac.signal.aborted) {
+      if (seq === requestSeq.current && !ac.signal.aborted) {
         setListLoading(false);
+        setListRefreshing(false);
       }
     }
-  }, [searchQuery, listTab, period, page, pageSize, columnFilters, canViewInvoice]);
+  }, [
+    applyOrderListPayload,
+    canViewInvoice,
+    columnFilters,
+    listBranchId,
+    listTab,
+    listUserId,
+    page,
+    pageSize,
+    period,
+    searchQuery,
+  ]);
+
+  const reloadOrderListAuthoritative = useCallback(async () => {
+    invalidateSalesOrderListCache();
+    setListShowingCache(false);
+    setListSyncErr("");
+    await loadOrders({ force: true });
+  }, [loadOrders]);
 
   const serverPaged = listMeta.total != null && Number.isFinite(Number(listMeta.total));
   const displayedOrders = useMemo(() => {
@@ -892,11 +991,32 @@ export default function PesananPenjualan() {
   }, [formData.line_items, viewMode]);
 
   useEffect(() => {
+    if (prevListUserRef.current === listUserId) return;
+    clearSalesOrderListCache();
+    prevListUserRef.current = listUserId;
+  }, [listUserId]);
+
+  useEffect(() => {
     if (viewMode === "list") {
       loadOrders();
     }
     return () => {
       loadOrdersAbortRef.current?.abort();
+    };
+  }, [viewMode, loadOrders]);
+
+  useEffect(() => {
+    if (viewMode !== "list") return undefined;
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!shouldRevalidateSalesOrderListOnFocus()) return;
+      loadOrders({ force: false });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [viewMode, loadOrders]);
 
@@ -1357,7 +1477,7 @@ export default function PesananPenjualan() {
       await api.bulkDelete(Array.from(selectedIds), "Hapus dari daftar Pesanan Penjualan", "HAPUS");
       setDeleteConfirm(null);
       setSelectedIds(new Set());
-      loadOrders();
+      await reloadOrderListAuthoritative();
     } catch (e) {
       setDeleteErr(formatDeleteError(e.response?.data?.detail));
     } finally {
@@ -1594,10 +1714,11 @@ export default function PesananPenjualan() {
       const createdId = res.order?.id;
       setTimeout(() => {
         if (createdId) {
+          invalidateSalesOrderListCache();
           navigate(`/po/${createdId}`);
         } else {
           setViewMode("list");
-          loadOrders();
+          void reloadOrderListAuthoritative();
         }
       }, 700);
       return;
@@ -1772,8 +1893,12 @@ export default function PesananPenjualan() {
                 <div className="so-list-summary" data-testid="sales-order-aktif-count">
                   <strong>{Number(listMeta.total).toLocaleString("id-ID")}</strong>
                   <span>pesanan aktif</span>
+                  {listRefreshing ? <span data-testid="sales-order-list-refreshing"> · menyegarkan</span> : null}
                 </div>
               )}
+              {!showAktifCount && listRefreshing ? (
+                <div className="so-list-summary" data-testid="sales-order-list-refreshing">menyegarkan</div>
+              ) : null}
             </div>
             <div className="so-list-header-actions">
               {canDelete && selectedIds.size > 0 && (
@@ -1795,12 +1920,12 @@ export default function PesananPenjualan() {
               <button
                 type="button"
                 className="so-list-refresh"
-                onClick={loadOrders}
-                disabled={listLoading}
+                onClick={() => loadOrders({ force: true })}
+                disabled={listLoading || listRefreshing}
                 data-testid="sales-order-refresh-button"
                 aria-label="Muat ulang"
               >
-                <RefreshCw size={16} className={listLoading ? "spin" : ""} />
+                <RefreshCw size={16} className={(listLoading || listRefreshing) ? "spin" : ""} />
               </button>
               {canCreate && (
                 <button
@@ -1903,6 +2028,15 @@ export default function PesananPenjualan() {
             <div className="so-list-error" data-testid="list-error-banner" role="alert">
               <AlertCircle size={16} />
               <span>{listErr}</span>
+            </div>
+          )}
+          {listSyncErr && (
+            <div className="so-list-error" data-testid="sales-order-list-sync-error" role="status">
+              <AlertCircle size={16} />
+              <span>
+                {listSyncErr}
+                {listShowingCache ? " Data di bawah belum disinkronkan ulang." : ""}
+              </span>
             </div>
           )}
 

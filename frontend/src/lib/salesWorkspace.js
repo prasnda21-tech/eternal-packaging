@@ -4,7 +4,13 @@ import { SALES_NAV_ROUTES, NAV_KEYS } from "./navAccess";
 import { createWorkspaceTabApi } from "./workspaceTabs";
 
 export const SALES_WORKSPACE_TABS = [
-  { id: "pesanan-penjualan", path: SALES_NAV_ROUTES[NAV_KEYS.salesOrder], label: "Pesanan Penjualan" },
+  {
+    id: "pesanan-penjualan",
+    path: SALES_NAV_ROUTES[NAV_KEYS.salesOrder],
+    label: "Pesanan Penjualan",
+    // Keep list query (tab/filter/page/q/period) when leaving via workspace chrome.
+    rememberSearch: true,
+  },
   { id: "pengiriman-pesanan", path: SALES_NAV_ROUTES[NAV_KEYS.salesDeliveryOrder], label: "Pengiriman Pesanan" },
   {
     id: "faktur-penjualan",
