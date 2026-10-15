@@ -3561,6 +3561,89 @@ async def set_line_items_route(order_id: str, payload: LineItemRoutePayload, use
     return {"order": order}
 
 
+class AddonParentItem(BaseModel):
+    line_idx: int
+    parent_line_id: Optional[str] = None
+    parent_line_idx: Optional[int] = None
+    clear: bool = False
+
+
+class AddonParentPayload(BaseModel):
+    items: List[AddonParentItem]
+
+
+@api_router.patch("/orders/{order_id}/line-items/addon-parent")
+async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload, user=Depends(current_user)):
+    """Set/clear explicit Add On → Barang Utama relation (parent_line_id).
+
+    Does not change quantity, name, color, Accurate ids, or production_process.
+    Never invents links from item names. Invalid parent refs are rejected.
+    """
+    from services.order_line_addon import (
+        ensure_line_identity_fields,
+        line_identity,
+        validate_parent_relation,
+    )
+
+    await _require_perm(user, "production.route.edit")
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(order)
+    lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+    if not lis:
+        raise HTTPException(400, "PO tidak memiliki line item")
+    # Ensure stable line_id on every row before resolving parents.
+    for i, li in enumerate(lis):
+        lis[i] = ensure_line_identity_fields(li, i)
+
+    before = {
+        str(i): {
+            "line_id": line_identity(li, i),
+            "parent_line_id": li.get("parent_line_id"),
+            "parent_line_idx": li.get("parent_line_idx"),
+        }
+        for i, li in enumerate(lis)
+    }
+    for it in payload.items or []:
+        if it.line_idx < 0 or it.line_idx >= len(lis):
+            raise HTTPException(400, f"line_idx {it.line_idx} tidak valid")
+        row = lis[it.line_idx]
+        if it.clear:
+            row.pop("parent_line_id", None)
+            row.pop("parent_line_idx", None)
+            continue
+        if it.parent_line_id is not None:
+            pid = str(it.parent_line_id or "").strip()
+            if pid:
+                row["parent_line_id"] = pid
+            else:
+                row.pop("parent_line_id", None)
+        if it.parent_line_idx is not None:
+            row["parent_line_idx"] = int(it.parent_line_idx)
+        err = validate_parent_relation(row, lis, idx=it.line_idx)
+        if err:
+            raise HTTPException(400, err)
+    order["line_items"] = lis
+    await _persist_order(order)
+    after = {
+        str(i): {
+            "line_id": line_identity(li, i),
+            "parent_line_id": li.get("parent_line_id"),
+            "parent_line_idx": li.get("parent_line_idx"),
+        }
+        for i, li in enumerate(lis)
+    }
+    await _audit_po(
+        order,
+        "production.addon_parent.update",
+        user,
+        before={"addon_parents": before},
+        after={"addon_parents": after},
+    )
+    return {"order": order}
+
+
 # ---- Batch 3: Dashboard Action Center ----
 _ACTION_CENTER_LIMIT = 2000
 
