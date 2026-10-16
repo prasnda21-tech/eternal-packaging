@@ -55,7 +55,11 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-legend-bar/);
     expect(stock).toMatch(/Filter lanjutan/);
     expect(stock).toMatch(/Lihat penjelasan lengkap/);
+    expect(stock).toMatch(/stock-filter-focus/);
+    expect(stock).toMatch(/Filter \(fokus\)/);
     expect(stock).toMatch(/stock-expand-panel/);
+    expect(stock).toMatch(/Detail per gudang/);
+    expect(stock).toMatch(/stock-mobile-list/);
     expect(stock).toMatch(/bookPhysicalDisplay/);
     expect(stock).toMatch(/stockPhysicalPrimaryDisplay/);
     expect(stock).toMatch(/data-balance-present/);
@@ -102,7 +106,10 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/data-testid="stock-adjust-target"/);
     expect(stock).toMatch(/data-testid="stock-adjust-warehouse"/);
     expect(stock).toMatch(/data-testid="stock-adjust-reason"/);
+    expect(stock).toMatch(/Alasan Koreksi/);
     expect(stock).toMatch(/Simpan Koreksi/);
+    expect(stock).toMatch(/stock-adjust-dialog/);
+    expect(stock).toMatch(/>\s*Batal\s*</);
     expect(stock).toMatch(/createPhysicalAdjustment/);
     expect(stock).toMatch(/Koreksi manual dari Stock Saat Ini/);
     expect(stock).toMatch(/stock-inline-input/);
