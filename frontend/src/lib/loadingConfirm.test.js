@@ -1,8 +1,40 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME, loadingConfirmations, loadingConfirmationsAll, canDeleteLoadingConfirmation, MSG_LOADING_CORRECTION_SJ_CANCEL } from "./loadingConfirm";
 import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
+import fs from "fs";
+import path from "path";
 
 describe("Loading confirm helpers", () => {
+  test("active confirmations exclude cancelled; SJ-first Hapus; unresolved fail-closed", () => {
+    const order = {
+      loading_confirmations: [
+        { id: "a", shipment_id: "sj-a", surat_jalan_id: "sj-a", lines: [{ line_idx: 0, qty: 1 }] },
+        { id: "b", cancelled: true, shipment_id: "sj-b", lines: [{ line_idx: 0, qty: 2 }] },
+        { id: "missing", shipment_id: "sj-gone", surat_jalan_id: "sj-gone", lines: [{ line_idx: 0, qty: 1 }] },
+        { id: "legacy", lines: [{ line_idx: 0, qty: 1 }] },
+      ],
+      shipments: [
+        { id: "sj-a", number: "SJ-A" },
+        { id: "sj-b", number: "SJ-B", is_cancelled: true, status: "cancelled" },
+      ],
+      qty_delivered: 0,
+      delivery_status: "Belum Terkirim",
+    };
+    expect(loadingConfirmations(order).map((c) => c.id)).toEqual(["a", "missing", "legacy"]);
+    expect(loadingConfirmationsAll(order).map((c) => c.id)).toEqual(["a", "b", "missing", "legacy"]);
+    expect(MSG_LOADING_CORRECTION_SJ_CANCEL).toMatch(/batalkan Surat Jalan/i);
+    expect(MSG_LOADING_CORRECTION_SJ_CANCEL).toMatch(/hapus konfirmasi Loading/i);
+    expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[0])).toBe(false);
+    order.shipments[0] = { id: "sj-a", number: "SJ-A", is_cancelled: true, status: "cancelled" };
+    expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[0])).toBe(true);
+    expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[2])).toBe(false);
+    expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[3])).toBe(true);
+    const panel = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
+    expect(panel).toMatch(/loading-correction-hint/);
+    expect(panel).toMatch(/MSG_LOADING_CORRECTION_SJ_CANCEL/);
+    expect(panel).toMatch(/loading-confirm-cancelled-history/);
+  });
+
   const order = {
     line_items: [
       { name: "Item A", item_code: "A1", quantity: 1000 },
