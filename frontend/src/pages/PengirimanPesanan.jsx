@@ -26,7 +26,17 @@ import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDe
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import "./salesSubmenuDensity.css";
+
+/** Soft disclosure when list length hits the known API `.to_list(1000)` ceiling. */
+export const DELIVERY_LIST_API_CAP = 1000;
+
+const DELIVERY_STATUS_TABS = [
+  { id: "all", label: "Semua" },
+  { id: "SEBAGIAN", label: "Sebagian" },
+  { id: "SELESAI", label: "Selesai" },
+];
 
 function getTodayString() {
   const d = new Date();
@@ -69,7 +79,13 @@ export default function PengirimanPesanan() {
   const [listErr, setListErr] = useState("");
   const [listSyncErr, setListSyncErr] = useState("");
   const [listShowingCache, setListShowingCache] = useState(false);
-  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
+  const {
+    input: searchInput,
+    setInput: setSearchInput,
+    q: searchQuery,
+    flush: flushSearch,
+    clear: clearSearch,
+  } = useDebouncedLiveSearch(searchParams.get("q") || "");
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "all");
   const [deliveryDatePreset, setDeliveryDatePreset] = useState(() => searchParams.get("period") || "all");
   const [createdByFilter, setCreatedByFilter] = useState(() => searchParams.get("created_by") || "");
@@ -202,7 +218,7 @@ export default function PengirimanPesanan() {
   }, []);
 
   const resetDeliveryFilters = () => {
-    setSearchQuery("");
+    clearSearch();
     setStatusFilter("all");
     setDeliveryDatePreset("all");
     setCreatedByFilter("");
@@ -670,6 +686,17 @@ export default function PengirimanPesanan() {
                 <Trash2 size={16} /> Batal Terpilih ({selectedIds.size})
               </button>
             )}
+            <button
+              type="button"
+              className="sd-list-refresh"
+              onClick={() => { void reloadDeliveryListAuthoritative(); }}
+              disabled={listLoading || listRefreshing}
+              title="Segarkan"
+              aria-label="Segarkan"
+              data-testid="refresh-delivery-btn"
+            >
+              <RefreshCw size={16} className={(listLoading || listRefreshing) ? "spin" : ""} />
+            </button>
             {canCreate && (
               <button
                 type="button"
@@ -1197,51 +1224,65 @@ export default function PengirimanPesanan() {
             </div>
           )}
 
-          <div className="sd-list-toolbar">
-            <div className="sd-list-search">
-              <Search size={16} />
-              <input
-                type="text"
-                placeholder="Cari No SJ / No PO / Customer / Outlet / Sales..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                data-testid="search-deliveries-input"
-              />
-              {searchQuery && (
-                <button type="button" onClick={() => setSearchQuery("")} aria-label="Hapus pencarian">
-                  <X size={14} />
-                </button>
-              )}
-            </div>
-            {[
-              { id: "all", label: "Semua Status" },
-              { id: "SEBAGIAN", label: "Sebagian" },
-              { id: "SELESAI", label: "Selesai" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={"sd-filter-btn" + (statusFilter === tab.id ? " is-active" : "")}
-                onClick={() => setStatusFilter(tab.id)}
-                data-testid={`filter-status-${tab.id}`}
-              >
-                {tab.label}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="sd-list-reset"
-              data-testid="reset-delivery-filters"
-              onClick={resetDeliveryFilters}
-              disabled={
-                !searchQuery
-                && statusFilter === "all"
-                && deliveryDatePreset === "all"
-                && !createdByFilter
-              }
+          <div className="sd-list-chrome">
+            <div
+              className="fp-invoice-tabs"
+              role="tablist"
+              aria-label="Status pengiriman"
+              data-testid="delivery-list-tabs"
             >
-              Reset Filter
-            </button>
+              {DELIVERY_STATUS_TABS.map((tab) => {
+                const selected = statusFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={selected ? "is-active" : ""}
+                    onClick={() => setStatusFilter(tab.id)}
+                    data-testid={`filter-status-${tab.id}`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="sd-list-toolbar">
+              <div className="sd-list-search">
+                <Search size={16} />
+                <input
+                  type="text"
+                  placeholder="Cari No SJ / No PO / Customer / Outlet / Sales..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") flushSearch(e);
+                  }}
+                  data-testid="search-deliveries-input"
+                />
+                {searchInput && (
+                  <button type="button" onClick={() => clearSearch()} aria-label="Hapus pencarian">
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                className="sd-list-reset"
+                data-testid="reset-delivery-filters"
+                onClick={resetDeliveryFilters}
+                disabled={
+                  !searchInput
+                  && !searchQuery
+                  && statusFilter === "all"
+                  && deliveryDatePreset === "all"
+                  && !createdByFilter
+                }
+              >
+                Reset Filter
+              </button>
+            </div>
           </div>
 
           <div className="sd-list-table-scroll">
@@ -1300,18 +1341,21 @@ export default function PengirimanPesanan() {
                 ) : deliveries.length === 0 ? (
                   <tr>
                     <td colSpan={canDelete ? 8 : 7} className="sd-list-empty" data-testid="empty-deliveries">
-                      <Truck size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
-                      <p style={{ margin: 0, fontWeight: 500 }}>Belum ada data Pengiriman Pesanan yang sesuai.</p>
+                      <Truck size={32} aria-hidden="true" />
+                      <p>Belum ada data Pengiriman Pesanan yang sesuai.</p>
                       {canCreate && (
                         <button
                           type="button"
+                          className="sd-btn-primary"
                           onClick={() => {
                             setViewMode("create");
                             setSelectedPoId("");
+                            setDeliveryFormTab("terms");
+                            setSearchParams({ action: "create" });
                           }}
-                          style={{ marginTop: 12, padding: "6px 14px", background: "#0284c7", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}
+                          data-testid="btn-empty-create-delivery"
                         >
-                          + Buat Pengiriman Pertama
+                          <Plus size={16} /> Buat Pengiriman Pertama
                         </button>
                       )}
                     </td>
@@ -1343,25 +1387,18 @@ export default function PengirimanPesanan() {
                       </td>
                       <td>{formatDisplayDate(d.delivery_date) || "-"}</td>
                       <td className="sd-money">{Number(d.total_qty || 0).toLocaleString("id-ID")} pcs</td>
-                      <td style={{ padding: "10px 12px" }}>
+                      <td>
                         <span
-                          className="pj-status-badge"
+                          className={
+                            "pj-status-badge sd-delivery-status"
+                            + (String(d.status).toUpperCase() === "SELESAI" ? " is-selesai" : " is-sebagian")
+                          }
                           data-testid={`delivery-status-${d.id}`}
-                          style={{
-                            display: "inline-block",
-                            padding: "2px 8px",
-                            background: String(d.status).toUpperCase() === "SELESAI" ? "#dcfce7" : "#e0f2fe",
-                            color: String(d.status).toUpperCase() === "SELESAI" ? "#166534" : "#075985",
-                            borderRadius: 12,
-                            fontSize: "0.75rem",
-                            fontWeight: 700,
-                            border: String(d.status).toUpperCase() === "SELESAI" ? "1.5px solid #86efac" : "1.5px solid #7dd3fc",
-                          }}
                         >
                           {String(d.status).toUpperCase() === "SELESAI" ? "SELESAI" : "SEBAGIAN"}
                         </span>
                       </td>
-                      <td style={{ padding: "10px 12px", color: "#64748b", fontSize: "0.85rem" }}>
+                      <td className="sd-support-text">
                         {d.created_by_name || d.created_by || "-"}
                       </td>
                       <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
@@ -1411,14 +1448,19 @@ export default function PengirimanPesanan() {
               </tbody>
             </table>
           </div>
-          <footer className="sd-list-footer" data-testid="delivery-list-footer">
-            <span>
+          <footer className="sd-list-footer sd-delivery-list-footer" data-testid="delivery-list-footer">
+            <span data-testid="delivery-list-range">
               {listLoading
                 ? "Memuat daftar pengiriman..."
                 : listErr
                 ? "Daftar pengiriman belum dapat ditampilkan"
                 : loadedRangeLabel(deliveries.length, "pengiriman")}
             </span>
+            {!listLoading && !listErr && deliveries.length >= DELIVERY_LIST_API_CAP ? (
+              <span className="sd-list-cap-note" data-testid="delivery-list-api-cap-note">
+                Daftar dapat dibatasi API (maks. {DELIVERY_LIST_API_CAP.toLocaleString("id-ID")} baris per permintaan). Sempitkan filter atau pencarian bila perlu.
+              </span>
+            ) : null}
           </footer>
         </section>
       )}
@@ -1428,39 +1470,39 @@ export default function PengirimanPesanan() {
         <div
           className="modal-overlay"
           data-testid="delivery-detail-modal"
-          style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delivery-detail-title"
         >
-          <div
-            className="modal-content"
-            style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 840, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 10px 25px rgba(0,0,0,0.15)" }}
-          >
-            {/* Modal Header */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e2e8f0", paddingBottom: 12, marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 8, background: "#e0f2fe", color: "#0369a1", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div className="modal-content sd-modal-card sd-delivery-detail-card">
+            <div className="sd-delivery-detail-header">
+              <div className="sd-delivery-detail-heading">
+                <div className="sd-delivery-detail-icon" aria-hidden="true">
                   <Truck size={20} />
                 </div>
                 <div>
-                  <h2 style={{ margin: 0, fontSize: "1.25rem", color: "#0f172a" }}>
-                    Detail Surat Jalan: <span style={{ color: "#0284c7" }}>{detailData.delivery?.sj_number}</span>
+                  <h2 id="delivery-detail-title">
+                    Detail Surat Jalan: <span>{detailData.delivery?.sj_number}</span>
                   </h2>
-                  <span style={{ fontSize: "0.8rem", color: "#64748b" }}>
+                  <span className="sd-delivery-detail-sub">
                     Pengiriman #{detailData.delivery?.shipment_index} dari PO <strong>{detailData.delivery?.po_number}</strong>
                   </span>
                 </div>
               </div>
               <button
                 type="button"
+                className="sd-delivery-detail-close"
                 onClick={() => {
                   setSelectedDeliveryId(null);
                   setDetailData(null);
                 }}
                 data-testid="btn-close-delivery-modal"
-                style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}
+                aria-label="Tutup detail pengiriman"
               >
                 <X size={20} />
               </button>
             </div>
+            <div className="sd-modal-body">
 
             {/* PO Progress Summary Box */}
             {detailData.po_summary && (
@@ -1650,26 +1692,27 @@ export default function PengirimanPesanan() {
               </div>
             )}
 
-            {/* Modal Actions */}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, borderTop: "1px solid #e2e8f0", paddingTop: 14 }}>
+            </div>
+
+            <div className="sd-modal-footer" data-testid="delivery-detail-footer">
               {canPrint && (
                 <button
                   type="button"
+                  className="sd-btn-primary"
                   onClick={() => handlePrintPdf(detailData.delivery?.id)}
                   data-testid="btn-print-modal-pdf"
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#0284c7", color: "#fff", border: "none", borderRadius: 6, fontWeight: 600, cursor: "pointer" }}
                 >
                   <Printer size={16} /> Cetak PDF Surat Jalan
                 </button>
               )}
               <button
                 type="button"
+                className="sd-list-reset"
                 onClick={() => {
                   setSelectedDeliveryId(null);
                   setDetailData(null);
                 }}
                 data-testid="btn-close-modal-bottom"
-                style={{ padding: "8px 16px", background: "#f1f5f9", color: "#334155", border: "1px solid #cbd5e1", borderRadius: 6, fontWeight: 600, cursor: "pointer" }}
               >
                 Tutup
               </button>

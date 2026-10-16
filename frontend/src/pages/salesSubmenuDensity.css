@@ -2017,3 +2017,95 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
 }
 .fp-invoice-page .fp-status-main{font-weight:700}
 .fp-invoice-page .fp-status-sub{color:#64748B;font-size:11.5px}
+
+/* Pengiriman Pesanan — list density / detail chrome (status remains SEBAGIAN/SELESAI) */
+.sd-density .sd-delivery-list-footer{
+  gap:6px 12px;
+  flex-wrap:wrap;
+}
+.sd-density .sd-list-cap-note{
+  color:#64748b;
+  font-size:12px;
+  white-space:normal !important;
+}
+.sd-density .sd-list-table .sd-support-text{
+  color:#64748b;
+  font-size:12.5px;
+}
+.sd-density .sd-list-table .pj-status-badge.sd-delivery-status{
+  display:inline-block;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:700;
+  line-height:1.2;
+  border:1.5px solid transparent;
+}
+.sd-density .sd-list-table .pj-status-badge.sd-delivery-status.is-selesai{
+  background:#dcfce7;
+  color:#166534;
+  border-color:#86efac;
+}
+.sd-density .sd-list-table .pj-status-badge.sd-delivery-status.is-sebagian{
+  background:#e0f2fe;
+  color:#075985;
+  border-color:#7dd3fc;
+}
+.sd-density .sd-list-empty .sd-btn-primary{margin-top:10px}
+.sd-density .sd-list-empty svg{opacity:.4;margin-bottom:6px}
+.sd-density .sd-delivery-detail-card{
+  width:100%;
+  max-width:840px;
+  border-radius:12px;
+  box-shadow:0 10px 25px rgba(0,0,0,.15);
+}
+.sd-density .sd-delivery-detail-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex:0 0 auto;
+  padding:14px 16px;
+  border-bottom:1px solid var(--sd-line);
+}
+.sd-density .sd-delivery-detail-heading{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-width:0;
+}
+.sd-density .sd-delivery-detail-icon{
+  width:36px;
+  height:36px;
+  border-radius:8px;
+  background:#e0f2fe;
+  color:#0369a1;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  flex:0 0 auto;
+}
+.sd-density .sd-delivery-detail-header h2{
+  margin:0;
+  font-size:1.1rem;
+  line-height:1.25;
+  color:#0f172a;
+}
+.sd-density .sd-delivery-detail-header h2 span{color:#0284c7}
+.sd-density .sd-delivery-detail-sub{
+  display:block;
+  margin-top:2px;
+  font-size:.8rem;
+  color:#64748b;
+}
+.sd-density .sd-delivery-detail-close{
+  background:none;
+  border:none;
+  cursor:pointer;
+  color:#64748b;
+  padding:4px;
+  flex:0 0 auto;
+}
+.sd-density .sd-delivery-detail-card .sd-modal-footer{
+  padding-right:16px;
+}
