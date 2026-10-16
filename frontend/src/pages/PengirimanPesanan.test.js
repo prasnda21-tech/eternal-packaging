@@ -159,6 +159,8 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/id:\s*"SELESAI",\s*label:\s*"Selesai"/);
     expect(src).not.toMatch(/id:\s*"Dikirim"/);
     expect(src).not.toMatch(/id:\s*"Terkirim"/);
+    expect(src).not.toMatch(/SALES_LIST_TABS/);
+    expect(src).not.toMatch(/tab-faktur-/);
 
     // Detail modal PO Progress Summary
     expect(src).toMatch(/data-testid="delivery-po-progress-summary"/);
@@ -170,6 +172,25 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/detail-cumulative-sj-qty/);
     expect(src).toMatch(/detail-remaining-po-qty/);
     expect(src).toMatch(/detail-delivery-status/);
+  });
+
+  test("list chrome follows sd-density: refresh, status strip, debounce, density, cap note", () => {
+    expect(src).toMatch(/useDebouncedLiveSearch/);
+    expect(src).toMatch(/sd-list-chrome/);
+    expect(src).toMatch(/delivery-list-tabs/);
+    expect(src).toMatch(/sd-list-refresh/);
+    expect(src).toMatch(/refresh-delivery-btn/);
+    expect(src).toMatch(/reloadDeliveryListAuthoritative/);
+    expect(src).toMatch(/DELIVERY_LIST_API_CAP/);
+    expect(src).toMatch(/delivery-list-api-cap-note/);
+    expect(src).toMatch(/sd-delivery-status/);
+    expect(src).toMatch(/sd-btn-primary/);
+    expect(src).toMatch(/sd-list-empty/);
+    expect(src).toMatch(/sd-banner is-error/);
+    expect(src).toMatch(/delivery-list-sync-error/);
+    expect(src).toMatch(/sd-modal-card/);
+    expect(src).toMatch(/btn-close-delivery-modal/);
+    expect(src).toMatch(/await loadDeliveries\(\{ force: true \}\)/);
   });
 });
 
