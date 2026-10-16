@@ -84,7 +84,9 @@ bash -c '
   status=$?
   set -e
   if [ "${status}" -ne 0 ]; then
-    echo "::error::synthetic suite exited with status ${status}"
+    # Do not emit GitHub Actions ::error:: here — that annotates a passing
+    # prove step as failure. Mirror the workflow branch with a plain marker.
+    echo "SYNTHETIC_WRAPPER_FAIL status=${status}"
     exit "${status}"
   fi
 ' || wrapper_rc=$?
