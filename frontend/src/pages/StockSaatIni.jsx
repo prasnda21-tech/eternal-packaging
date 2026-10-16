@@ -304,6 +304,8 @@ export default function StockSaatIni() {
           </div>
           <p className="subhead" data-testid="stock-subtitle">
             Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim.
+            {" "}
+            Nilai negatif = kebutuhan stok (tidak memblokir operasional).
           </p>
           {data && (
             <details className="stock-context-info" data-testid="stock-context-info">
@@ -441,7 +443,7 @@ export default function StockSaatIni() {
           <thead>
             <tr>
               {showBranchAggregate && <th className="col-expand" aria-label="Rincian gudang" />}
-              <th className="col-text">Barang</th>
+              <th className="col-text">Nama Barang</th>
               <th className="col-fit" data-testid="stock-location-header">Lokasi</th>
               <th
                 className="col-fit num"
@@ -513,7 +515,9 @@ export default function StockSaatIni() {
                   <div className="stock-item-secondary muted small">
                     <span className="mono" data-testid={`stock-code-${it.master_item_id}`}>{it.item_code || "—"}</span>
                     <span aria-hidden="true"> · </span>
-                    <span>{it.base_unit || "—"}</span>
+                    <span data-testid={`stock-unit-${it.master_item_id}`}>
+                      Satuan Dasar {it.base_unit || "—"}
+                    </span>
                   </div>
                 </td>
                 <td className="col-fit small" data-testid={`stock-location-${it.master_item_id}`}>
