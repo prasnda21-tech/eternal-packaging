@@ -6810,6 +6810,39 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         logging.getLogger(__name__).warning("sales_delivery SJ reconcile sync failed", exc_info=True)
 
     recorded = bool(action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or []))
+    # Crash/retry: mutate early-returns when action_id already recorded, which
+    # clears the chance to populate standalone_request. Rebuild from persisted
+    # confirmation so missing warehouse movements can still complete.
+    if (
+        uses_standalone_stock
+        and recorded
+        and not standalone_request.get("confirmation_id")
+        and isinstance(order, dict)
+    ):
+        selected_sh, _resolve_err = _qr_resolve_delivery_shipment(
+            order, selected_shipment_id,
+        )
+        matched_conf = None
+        for rec in (order.get("delivery_confirmations") or []):
+            if not isinstance(rec, dict):
+                continue
+            if action_id and (
+                str(rec.get("action_id") or "").strip() == action_id
+                or str(rec.get("id") or "").strip() == action_id
+            ):
+                matched_conf = rec
+                break
+        if matched_conf is None and conf_holder.get("conf"):
+            matched_conf = conf_holder.get("conf")
+        if matched_conf:
+            increment = int(matched_conf.get("qty") or 0)
+            if increment > 0:
+                standalone_request["confirmation_id"] = (
+                    action_id
+                    or str(matched_conf.get("id") or "").strip()
+                )
+                standalone_request["shipment"] = selected_sh
+                standalone_request["increment"] = increment
     if claim_plan_holder.get("active"):
         if claimed_stock and (conf_holder.get("conf") or recorded):
             from services.physical_stock_engine import finalize_delivery_confirmed_stock

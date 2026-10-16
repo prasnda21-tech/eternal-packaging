@@ -518,9 +518,12 @@ jobs:
         working-directory: backend
         env:
           STANDALONE_MONGO_URL: mongodb://127.0.0.1:27018
+          APP_ENV: test
+          JWT_SECRET: ci-only-secret
         run: >-
           python -m pytest -vv -n 0 --tb=short
           tests/test_warehouse_stock_standalone.py
+          tests/test_confirm_delivered_standalone_retry.py
 
   backend-live-orders:
     name: Backend live orders summary

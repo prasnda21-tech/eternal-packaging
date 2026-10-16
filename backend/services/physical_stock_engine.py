@@ -67,16 +67,36 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def legacy_pss_stock_out_writes_enabled(db) -> bool:
-    """PSS physical stock-out (PENGIRIMAN) writers run only while R2 authority is OFF.
+async def legacy_pss_company_stock_writes_enabled(db) -> bool:
+    """Company PSS product_stock_state writers run only in legacy mode.
 
-    When r2_authority_active is True, packing/loading/SJ/delivery-confirmed must not
-    claim or finalize product_stock_state. Business docs and STATUS_CETAK (Δ0) stay
-    on their existing gates; this helper only blocks legacy physical stock-out writes.
+    Exclusive ownership:
+    - R2 ON → R2 warehouse path only (no PSS dual-write).
+    - R2 OFF + warehouse_stock_standalone ON → standalone warehouse path only.
+    - Both OFF → legacy PSS remains authoritative for physical stock mutations.
+
+    STATUS_CETAK keeps a separate gate (is_operator_cetak_physical_stock_active)
+    so R2 ON can still convert Belum Dicetak → Sudah Dicetak on company PSS.
     """
     from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
 
-    return not await is_r2_authority_active(db)
+    if await is_r2_authority_active(db):
+        return False
+    if await is_warehouse_stock_standalone_active(db):
+        return False
+    return True
+
+
+async def legacy_pss_stock_out_writes_enabled(db) -> bool:
+    """PSS physical stock-out (PENGIRIMAN) writers: legacy only (not R2 / standalone).
+
+    When r2_authority_active or warehouse_stock_standalone is True, packing /
+    loading / SJ / delivery-confirmed must not claim or finalize
+    product_stock_state. Snapshot-enabled=True on old orders still respects
+    this exclusivity gate.
+    """
+    return await legacy_pss_company_stock_writes_enabled(db)
 
 
 async def attach_po_stock_snapshot(db, po_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -944,6 +964,8 @@ async def handle_purchase_order_created(
     snapshot = po.get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_in_trigger") != "purchase_order":
         return []
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return []
 
     po_id = str(po.get("id") or "").strip()
     po_num = str(po.get("po_number") or "").strip()
@@ -993,6 +1015,8 @@ async def handle_goods_receipt_created(
     po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0}) if po_id else None
     snapshot = (po or {}).get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_in_trigger") != "goods_receipt":
+        return []
+    if not await legacy_pss_company_stock_writes_enabled(db):
         return []
 
     rc_id = str(receipt.get("id") or "").strip()
@@ -1047,6 +1071,8 @@ async def handle_manual_receipt_created(
     settings = await get_physical_stock_settings(db)
     if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
         return []
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return []
 
     rc_id = str(
         receipt.get("accurate_receipt_id")
@@ -1099,6 +1125,8 @@ async def precheck_manual_receipt_lines(
     settings = await get_physical_stock_settings(db)
     if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
         return
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return
     for line in lines or []:
         mid = line.get("master_item_id")
         if mid:
@@ -1115,9 +1143,17 @@ async def is_operator_cetak_physical_stock_active(
 
     Snapshot short-circuits first. When live_enabled is provided by the request
     path, settings are not re-read. When omitted, live settings are loaded once.
+
+    Warehouse-standalone owns physical stock when active (R2 still OFF) — skip
+    company PSS STATUS_CETAK dual-write. R2 ON leaves this gate unchanged
+    because is_warehouse_stock_standalone_active is False under R2.
     """
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled"):
+        return False
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
+    if await is_warehouse_stock_standalone_active(db):
         return False
     if live_enabled is None:
         settings = await get_physical_stock_settings(db)

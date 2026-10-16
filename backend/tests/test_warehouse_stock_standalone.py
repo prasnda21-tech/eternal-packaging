@@ -819,3 +819,371 @@ async def test_stale_lease_allows_foreign_recovery(db):
     await recover_pending_balance(db, identity, for_idempotency_key="other")
     bal = await db[BALANCE_COLLECTION].find_one(identity, {"_id": 0})
     assert bal.get("pending_event") in (None, {})
+
+
+async def test_standalone_on_blocks_legacy_pss_dual_write(db):
+    """R2 OFF + standalone ON + physical_stock.enabled → no PSS dual-write."""
+    from services.physical_stock_engine import (
+        handle_delivery_confirmed,
+        handle_goods_receipt_created,
+        handle_loading_confirmed,
+        handle_manual_receipt_created,
+        handle_operator_progress,
+        handle_packing_completed,
+        handle_purchase_order_created,
+        handle_sales_delivery_created,
+        is_operator_cetak_physical_stock_active,
+        legacy_pss_company_stock_writes_enabled,
+        legacy_pss_stock_out_writes_enabled,
+        should_claim_delivery_confirmed_stock,
+        should_claim_loading_stock,
+        should_claim_packing_stock,
+        should_claim_sales_delivery_stock,
+    )
+    from services.product_stock_state import initialize_opening_balance, get_product_stock_state
+    from services.physical_stock_settings import update_physical_stock_settings
+
+    item, branch, wh_a, _ = await _seed(db)
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True)
+    await update_physical_stock_settings(
+        db,
+        {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        user={"email": "t@test"},
+    )
+    await initialize_opening_balance(
+        db, item["id"],
+        {"unprinted_qty": 100.0, "printed_qty": 50.0, "base_uom": "PCS"},
+        user={"email": "t@test"},
+    )
+    pss_before = await get_product_stock_state(db, item["id"])
+    legacy_before = await db.stock_movements.count_documents({})
+
+    assert await legacy_pss_stock_out_writes_enabled(db) is False
+    assert await legacy_pss_company_stock_writes_enabled(db) is False
+
+    order = {
+        "id": f"so-{uuid.uuid4().hex[:8]}",
+        "po_number": "PO-SA-DW",
+        "cancelled": False,
+        "physical_stock_snapshot": {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        "line_items": [{
+            "line_id": "ln-0",
+            "master_item_id": item["id"],
+            "quantity": 100,
+            "production_process": "print",
+            "unit": "PCS",
+            "name": "Barang",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 50, "operator_name": "Op"}],
+    }
+    assert await is_operator_cetak_physical_stock_active(db, order, live_enabled=True) is False
+    assert await should_claim_packing_stock(
+        db, {**order, "physical_stock_snapshot": {**order["physical_stock_snapshot"], "stock_out_trigger": "packing_completed"}},
+    ) is False
+    assert await should_claim_loading_stock(
+        db, {**order, "physical_stock_snapshot": {**order["physical_stock_snapshot"], "stock_out_trigger": "loading_confirmation"}},
+    ) is False
+    assert await should_claim_sales_delivery_stock(
+        db, {**order, "physical_stock_snapshot": {**order["physical_stock_snapshot"], "stock_out_trigger": "sales_delivery"}},
+    ) is False
+    assert await should_claim_delivery_confirmed_stock(db, order) is False
+
+    assert await handle_packing_completed(
+        db,
+        {**order, "physical_stock_snapshot": {**order["physical_stock_snapshot"], "stock_out_trigger": "packing_completed"}},
+        [{"line_idx": 0, "qty": 10, "action_id": "pack-1"}],
+        {"email": "t"},
+    ) == []
+    assert await handle_loading_confirmed(
+        db,
+        {**order, "physical_stock_snapshot": {**order["physical_stock_snapshot"], "stock_out_trigger": "loading_confirmation"}},
+        {"id": "load-1", "lines": [{"line_idx": 0, "qty": 10}]},
+        {"email": "t"},
+    ) == []
+    assert await handle_sales_delivery_created(
+        db,
+        {**order, "physical_stock_snapshot": {**order["physical_stock_snapshot"], "stock_out_trigger": "sales_delivery"}},
+        {"id": "sj-1", "line_items": [{"line_idx": 0, "master_item_id": item["id"], "qty": 10, "production_process": "print"}]},
+        {"email": "t"},
+    ) == []
+    assert await handle_delivery_confirmed(
+        db, order, {"id": "conf-1", "lines": [{"line_idx": 0, "qty": 10}]}, {"email": "t"},
+    ) == []
+    assert await handle_operator_progress(
+        db, order, {"line_idx": 0, "operator_name": "Op"},
+        increment=10, action_id="cetak-1", live_enabled=True,
+    ) is None
+
+    po = {
+        "id": f"po-{uuid.uuid4().hex[:8]}",
+        "po_number": "PO-IN",
+        "supplier": "SUP",
+        "physical_stock_snapshot": {
+            "enabled": True,
+            "stock_in_trigger": "purchase_order",
+        },
+        "lines": [{
+            "line_id": "pol1",
+            "line_idx": 0,
+            "master_item_id": item["id"],
+            "ordered_qty": 5,
+            "unit": "PCS",
+        }],
+    }
+    assert await handle_purchase_order_created(db, po, {"email": "t"}) == []
+    await db.purchase_orders.insert_one({
+        "id": "po-gr-dw",
+        "physical_stock_snapshot": {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+        },
+    })
+    assert await handle_goods_receipt_created(
+        db,
+        {
+            "id": "rc-dw",
+            "purchase_order_id": "po-gr-dw",
+            "receipt_number": "GR-1",
+            "lines": [{"line_id": "l1", "master_item_id": item["id"], "received_qty": 5, "unit": "PCS"}],
+        },
+        {"email": "t"},
+    ) == []
+    assert await handle_manual_receipt_created(
+        db,
+        {
+            "accurate_receipt_id": "man-1",
+            "receipt_number": "MR-1",
+            "supplier": "SUP",
+            "lines": [{"line_id": "l1", "master_item_id": item["id"], "received_qty": 5, "unit": "PCS"}],
+        },
+        {"email": "t"},
+    ) == []
+
+    pss_after = await get_product_stock_state(db, item["id"])
+    assert float(pss_after["total_qty"]) == float(pss_before["total_qty"])
+    assert float(pss_after["unprinted_qty"]) == float(pss_before["unprinted_qty"])
+    assert float(pss_after["printed_qty"]) == float(pss_before["printed_qty"])
+    assert await db.stock_movements.count_documents({}) == legacy_before
+    # Warehouse path still authoritative under standalone.
+    await post_opening_balance_standalone(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 7,
+            "idempotency_key": "open-dw-auth",
+        },
+        actor_id="u1",
+    )
+    assert await _qty(db, item["id"], wh_a["id"]) == 7
+
+
+async def test_standalone_off_keeps_legacy_pss_gates(db):
+    """R2 OFF + standalone OFF → legacy PSS stock-out gates remain active."""
+    from services.physical_stock_engine import (
+        legacy_pss_company_stock_writes_enabled,
+        legacy_pss_stock_out_writes_enabled,
+        should_claim_delivery_confirmed_stock,
+        should_claim_packing_stock,
+    )
+
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    assert await is_warehouse_stock_standalone_active(db) is False
+    assert await legacy_pss_stock_out_writes_enabled(db) is True
+    assert await legacy_pss_company_stock_writes_enabled(db) is True
+    order = {
+        "physical_stock_snapshot": {
+            "enabled": True,
+            "stock_out_trigger": "packing_completed",
+        },
+    }
+    assert await should_claim_packing_stock(db, order) is True
+    order_d = {
+        "physical_stock_snapshot": {
+            "enabled": True,
+            "stock_out_trigger": "delivery_confirmed",
+        },
+    }
+    assert await should_claim_delivery_confirmed_stock(db, order_d) is True
+
+
+async def test_create_gr_idempotency_resumes_partial_standalone(db):
+    """create_purchase_goods_receipt early-return must finish PARTIAL movements."""
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, branch, wh_a, _ = await _seed(db)
+    item2 = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "SKU-GR2",
+        "item_name": "Barang GR2",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(dict(item2))
+    await db[WAREHOUSES_COLLECTION].update_one(
+        {"id": wh_a["id"]}, {"$set": {"is_default": True, "code": "MAIN"}},
+    )
+    for mid, key, qty in (
+        (item["id"], "open-create-gr-1", 10),
+        (item2["id"], "open-create-gr-2", 20),
+    ):
+        await post_opening_balance_standalone(
+            db, mid,
+            {
+                "branch_id": branch["id"],
+                "warehouse_id": wh_a["id"],
+                "physical_qty": qty,
+                "idempotency_key": key,
+            },
+            actor_id="u1",
+        )
+
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier SA",
+        "lines": [
+            {
+                "master_item_id": item["id"],
+                "item_name": "Barang A",
+                "item_code": "SKU-A",
+                "unit": "PCS",
+                "ordered_qty": 5,
+                "unit_price": 1000,
+            },
+            {
+                "master_item_id": item2["id"],
+                "item_name": "Barang B",
+                "item_code": "SKU-GR2",
+                "unit": "PCS",
+                "ordered_qty": 3,
+                "unit_price": 1000,
+            },
+        ],
+        "idempotency_key": f"po-create-gr-{uuid.uuid4().hex[:8]}",
+    }, user)
+    pol1 = po["lines"][0]["line_id"]
+    pol2 = po["lines"][1]["line_id"]
+    idem = f"gr-partial-{uuid.uuid4().hex[:8]}"
+    receipt_id = f"rc-{uuid.uuid4().hex[:8]}"
+    receipt = {
+        "id": receipt_id,
+        "idempotency_key": idem,
+        "purchase_order_id": po["id"],
+        "po_number": po.get("po_number") or "PO-X",
+        "branch_id": branch["id"],
+        "warehouse_id": wh_a["id"],
+        "warehouse_standalone": True,
+        "r2_physical": False,
+        "lines": [
+            {
+                "line_id": "ln1",
+                "line_idx": 0,
+                "purchase_order_line_id": pol1,
+                "master_item_id": item["id"],
+                "received_qty": 5,
+                "unit": "PCS",
+                "item_name": "Barang A",
+                "item_code": "SKU-A",
+                "unit_price": 1000,
+            },
+            {
+                "line_id": "ln2",
+                "line_idx": 1,
+                "purchase_order_line_id": pol2,
+                "master_item_id": item2["id"],
+                "received_qty": 3,
+                "unit": "PCS",
+                "item_name": "Barang B",
+                "item_code": "SKU-GR2",
+                "unit_price": 1000,
+            },
+        ],
+        "stock_posting": {"status": "PARTIAL", "posted_count": 1, "failed_count": 1},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user,
+    }
+    await db["purchase_goods_receipts"].create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
+    await db["purchase_goods_receipts"].insert_one(dict(receipt))
+    await apply_standalone_movement(
+        db,
+        {
+            "master_item_id": item["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "movement_type": "PURCHASE_RECEIPT",
+            "qty_delta": 5,
+            "reference_type": "purchase_goods_receipt",
+            "reference_id": f"{receipt_id}:ln1",
+            "reason": "Penerimaan pembelian",
+            "idempotency_key": f"purchase-receipt:{receipt_id}:ln1",
+            "metadata": {
+                "receipt_id": receipt_id,
+                "line_id": "ln1",
+                "purchase_order_id": po["id"],
+                "purchase_order_line_id": pol1,
+            },
+        },
+        actor_id="u1",
+    )
+    assert await _qty(db, item["id"], wh_a["id"]) == 15
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"purchase-receipt:{receipt_id}:ln2"}
+    ) == 0
+
+    # Main create path (not ensure_receipt_movements_complete alone).
+    retry = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "warehouse_id": wh_a["id"],
+        "lines": [
+            {"purchase_order_line_id": pol1, "received_qty": 5},
+            {"purchase_order_line_id": pol2, "received_qty": 3},
+        ],
+        "idempotency_key": idem,
+    }, user)
+    assert retry["id"] == receipt_id
+    assert str(retry.get("purchase_order_id")) == po["id"]
+    assert str(retry.get("warehouse_id")) == wh_a["id"]
+    assert await _qty(db, item["id"], wh_a["id"]) == 15
+    assert await _qty(db, item2["id"], wh_a["id"]) == 23
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"purchase-receipt:{receipt_id}:ln1"}
+    ) == 1
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"idempotency_key": f"purchase-receipt:{receipt_id}:ln2"}
+    ) == 1
+    posting = await db["purchase_goods_receipts"].find_one(
+        {"id": receipt_id}, {"_id": 0, "stock_posting": 1},
+    )
+    assert posting["stock_posting"]["status"] == "COMPLETE"
+    # Second retry must not double-post movements.
+    again = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "warehouse_id": wh_a["id"],
+        "lines": [
+            {"purchase_order_line_id": pol1, "received_qty": 5},
+            {"purchase_order_line_id": pol2, "received_qty": 3},
+        ],
+        "idempotency_key": idem,
+    }, user)
+    assert again["id"] == receipt_id
+    assert await _qty(db, item["id"], wh_a["id"]) == 15
+    assert await _qty(db, item2["id"], wh_a["id"]) == 23
+    assert await db[LEDGER_COLLECTION].count_documents(
+        {"movement_type": "PURCHASE_RECEIPT", "warehouse_id": wh_a["id"]}
+    ) == 2

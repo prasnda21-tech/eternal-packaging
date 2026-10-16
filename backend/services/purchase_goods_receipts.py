@@ -938,6 +938,40 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                 if not (same_po and same_lines and same_wh):
                     raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
                 await _authorize_receipt_location(db, user, existing)
+                # Standalone PARTIAL/FAILED: resume missing warehouse movements.
+                # Do not assume receipt row existence means stock posting is done.
+                from services.r2_go_live import is_r2_authority_active
+                from services.warehouse_stock_standalone import (
+                    ensure_receipt_movements_complete,
+                    is_warehouse_stock_standalone_active,
+                )
+
+                r2_on = await is_r2_authority_active(db)
+                standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+                if standalone_on:
+                    posting = (
+                        existing.get("stock_posting")
+                        if isinstance(existing.get("stock_posting"), dict)
+                        else {}
+                    )
+                    if str(posting.get("status") or "").upper() != "COMPLETE":
+                        actor_id = str(
+                            (user or {}).get("id")
+                            or (user or {}).get("email")
+                            or "user"
+                        )
+                        try:
+                            await ensure_receipt_movements_complete(
+                                db, existing, actor_id=actor_id,
+                            )
+                        except Exception as exc:
+                            _r2_http(exc)
+                        existing = (
+                            await db[COLLECTION].find_one(
+                                {"id": existing["id"]}, {"_id": 0},
+                            )
+                            or existing
+                        )
                 from services.hpp_cutover import recognize_posted_goods_receipt
                 await recognize_posted_goods_receipt(db, existing, user)
                 out = await enrich_goods_receipt(db, existing)
