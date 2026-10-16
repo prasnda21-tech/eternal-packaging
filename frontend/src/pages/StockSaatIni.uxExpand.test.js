@@ -155,17 +155,20 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     });
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
-    // No repeated under-physical status blocks — one compact flag + tooltip only.
+    // Single primary status — never Belum tersedia + Belum lengkap together.
     expect(container.querySelector('[data-testid="stock-aggregate-hint-m-neg"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-flag-m-neg"]')?.textContent).toMatch(/Defisit/i);
     expect(container.querySelector('[data-testid="stock-physical-m-neg"]')?.textContent)
-      .not.toMatch(/Saldo awal belum direkonsiliasi|Ada gudang belum saldo/i);
+      .not.toMatch(/Saldo awal belum direkonsiliasi|Ada gudang belum saldo|Belum lengkap/i);
     expect(container.querySelector('[data-testid="stock-available-invalid-m-miss"]')?.textContent)
       .toMatch(/Belum valid/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.getAttribute("data-baseline-label"))
       .toMatch(/belum direkonsiliasi|Belum valid/i);
-    expect(container.querySelector('[data-testid="stock-flag-m-miss"]')?.textContent)
-      .toMatch(/Belum lengkap/i);
+    expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
+      .toMatch(/^Belum lengkap$/);
+    expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
+      .not.toMatch(/Belum tersedia/i);
+    expect(container.querySelector('[data-testid="stock-flag-m-miss"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-updated-by-m-neg"]')?.textContent)
       .toMatch(/oleh Rafi Operator/);
     expect(container.querySelector('[data-testid="stock-updated-by-m-miss"]')?.textContent)

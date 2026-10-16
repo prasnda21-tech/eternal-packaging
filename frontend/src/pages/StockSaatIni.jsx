@@ -8,6 +8,7 @@ import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import {
   bookPhysicalDisplay,
+  stockPhysicalPrimaryDisplay,
   isOperationalWarehouse,
   openingReady,
   operationalOpeningWarehouses,
@@ -488,25 +489,21 @@ export default function StockSaatIni() {
               </tr>
             )}
             {tableView === "results" && items.map((it) => {
-              const book = bookPhysicalDisplay(it, { warehouseId: selectedFilterWarehouse?.id || "" });
-              const physicalText = book.present ? fmtQty(book.qty) : book.text;
+              const selectedWhId = selectedFilterWarehouse?.id || "";
+              const primary = stockPhysicalPrimaryDisplay(it, {
+                warehouseId: selectedWhId,
+                branchAggregate: showBranchAggregate,
+              });
+              const physicalText = primary.present ? fmtQty(primary.qty) : primary.text;
               const whBalances = Array.isArray(it.warehouse_balances) ? it.warehouse_balances : [];
               const canExpand = showBranchAggregate && whBalances.length > 0;
               const expanded = Boolean(expandedRows[it.master_item_id]);
               const hasWhDeficit = whBalances.some((wb) => wb.saldo_buku_negatif);
-              const hasWhMissing = whBalances.some((wb) => wb.balance_present === false);
-              const hasWhUnreconciled = whBalances.some((wb) => wb.baseline_status === "unreconciled");
-              const rowNegative = Boolean(book.present && it.saldo_buku_negatif);
-              const physicalHints = [
-                it.baseline_label,
-                rowNegative ? "Saldo negatif" : null,
-                showBranchAggregate && hasWhDeficit ? "Ada gudang defisit" : null,
-                showBranchAggregate && hasWhMissing ? "Ada gudang belum saldo" : null,
-                showBranchAggregate && hasWhUnreconciled && !hasWhMissing ? "Ada gudang belum valid" : null,
-              ].filter(Boolean);
-              const compactFlag = rowNegative || hasWhDeficit
-                ? "Defisit"
-                : (showBranchAggregate && hasWhMissing ? "Belum lengkap" : null);
+              const rowNegative = Boolean(primary.negative);
+              const physicalHints = primary.hints || [];
+              const compactFlag = primary.flag;
+              // Inline adjust still needs book presence for the selected warehouse.
+              const book = bookPhysicalDisplay(it, { warehouseId: selectedWhId });
               return (
               <Fragment key={it.master_item_id}>
               <tr
@@ -550,12 +547,13 @@ export default function StockSaatIni() {
                   className={`col-fit num mono${rowNegative ? " stock-book-negative" : ""}`}
                   data-testid={`stock-physical-${it.master_item_id}`}
                   data-negative={rowNegative ? "true" : "false"}
-                  data-balance-present={book.present ? "true" : "false"}
+                  data-balance-present={primary.present ? "true" : "false"}
                   data-baseline-status={it.baseline_status || ""}
                   data-baseline-label={it.baseline_label || ""}
+                  data-physical-status={primary.text || (compactFlag || "qty")}
                   title={physicalHints.length ? physicalHints.join(" · ") : undefined}
                 >
-                  {canAdjust && inlineItemId === it.master_item_id && singleWarehouse ? (
+                  {canAdjust && inlineItemId === it.master_item_id && singleWarehouse && book.present ? (
                     <InlinePhysicalEditor
                       item={it}
                       saving={savingAdjust}
@@ -572,11 +570,11 @@ export default function StockSaatIni() {
                       {physicalText}
                     </button>
                   ) : (
-                    <span className={book.present ? undefined : "muted"}>{physicalText}</span>
+                    <span className={primary.present ? undefined : "muted"}>{physicalText}</span>
                   )}
                   {compactFlag && (
                     <span
-                      className={`stock-compact-flag${rowNegative || hasWhDeficit ? " is-deficit" : ""}`}
+                      className={`stock-compact-flag${compactFlag === "Defisit" ? " is-deficit" : ""}`}
                       data-testid={`stock-flag-${it.master_item_id}`}
                       title={physicalHints.join(" · ")}
                     >

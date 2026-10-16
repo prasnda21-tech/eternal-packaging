@@ -52,6 +52,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Nilai negatif = kebutuhan stok/);
     expect(stock).toMatch(/tidak memblokir operasional/);
     expect(stock).toMatch(/bookPhysicalDisplay/);
+    expect(stock).toMatch(/stockPhysicalPrimaryDisplay/);
     expect(stock).toMatch(/data-balance-present/);
     expect(stock).toMatch(/api\.physicalStockCatalog\(/);
     expect(stock).toMatch(/Nama Barang/);
