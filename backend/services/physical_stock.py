@@ -30,6 +30,8 @@ WAREHOUSES_COLLECTION = "warehouses"
 BASELINE_RECONCILED = "reconciled"
 BASELINE_UNRECONCILED = "unreconciled"
 BASELINE_UNRECONCILED_LABEL = "Saldo awal belum direkonsiliasi"
+# Honest fallback when a posted movement has no resolvable user identity.
+LAST_STOCK_ACTOR_UNKNOWN = "Tidak tercatat"
 
 MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
 MOVEMENT_PURCHASE_RECEIPT = "PURCHASE_RECEIPT"
@@ -3159,6 +3161,7 @@ async def list_physical_stock_catalog(
         # independently of the branch aggregate. Missing balance ≠ verified zero.
         warehouse_balances = []
         scope_baselines: List[str] = []
+        candidate_movement_ids: List[str] = []
         for wh in warehouses:
             wid = str(wh.get("id") or "")
             if not wid:
@@ -3168,6 +3171,8 @@ async def list_physical_stock_catalog(
                 wh_qty = None
                 wh_baseline = BASELINE_UNRECONCILED
                 wh_label = BASELINE_UNRECONCILED_LABEL
+                wh_movement_id = None
+                wh_updated_at = None
             else:
                 wh_qty = _qty_num(doc.get("physical_qty"))
                 wh_baseline = (
@@ -3179,6 +3184,10 @@ async def list_physical_stock_catalog(
                     if wh_baseline == BASELINE_UNRECONCILED
                     else None
                 )
+                wh_movement_id = str(doc.get("last_movement_id") or "").strip() or None
+                wh_updated_at = doc.get("updated_at")
+                if wh_movement_id:
+                    candidate_movement_ids.append(wh_movement_id)
             scope_baselines.append(wh_baseline)
             warehouse_balances.append({
                 "warehouse_id": wid,
@@ -3190,6 +3199,9 @@ async def list_physical_stock_catalog(
                 "saldo_buku_negatif": bool(wh_qty is not None and wh_qty < 0),
                 "balance_present": doc is not None,
                 "physical_qty_is_book": True,
+                "updated_at": wh_updated_at,
+                "updated_by_name": None,
+                "_last_movement_id": wh_movement_id,
             })
         # Branch summary valid only when EVERY operational warehouse in scope has
         # a RECONCILED balance. Selected-warehouse view uses that gudang alone
@@ -3227,7 +3239,11 @@ async def list_physical_stock_catalog(
                     else None
                 )
             ),
+            # Provisional from balance stamps; replaced by the same final movement
+            # used for updated_by_name during page enrich (never master_items.updated_by).
             "updated_at": max(updated) if updated else None,
+            "updated_by_name": None,
+            "_candidate_movement_ids": candidate_movement_ids,
             "belum_terkirim_status": (
                 "BELUM_TERVERIFIKASI" if belum_unverified else "READY"
             ),
@@ -3270,8 +3286,11 @@ async def list_physical_stock_catalog(
     total = len(rows)
     start = (safe_page - 1) * safe_limit
     page_count = (total + safe_limit - 1) // safe_limit if total else 0
+    page_items = rows[start:start + safe_limit]
+    # Batch enrich only the current page — avoid N+1 on the full catalog.
+    await _attach_last_stock_actors(db, page_items)
     return {
-        "items": rows[start:start + safe_limit],
+        "items": page_items,
         "total": total,
         "page": safe_page,
         "limit": safe_limit,
@@ -3305,6 +3324,128 @@ async def list_physical_stock_catalog(
             )
         ),
     }
+
+
+def _movement_sort_key(movement: dict) -> Tuple[str, str]:
+    """Newest posted movement wins; occurred_at then created_at, then id."""
+    return (
+        str(movement.get("occurred_at") or ""),
+        str(movement.get("created_at") or ""),
+        str(movement.get("id") or ""),
+    )
+
+
+def _actor_display_name(user: Optional[dict]) -> Optional[str]:
+    """Public display only — never password, token, or other private fields."""
+    if not user:
+        return None
+    name = str(user.get("name") or "").strip()
+    if name:
+        return name
+    email = str(user.get("email") or "").strip()
+    return email or None
+
+
+async def _attach_last_stock_actors(db, page_items: List[dict]) -> None:
+    """Attach updated_at + updated_by_name from the same final posted movement.
+
+    Uses balance.last_movement_id → ledger.actor_id → users display name.
+    Pending claims are never consulted. Unknown / missing identity → Tidak tercatat.
+    Mutates page_items in place and strips internal enrichment keys.
+    """
+    movement_ids: List[str] = []
+    for row in page_items:
+        for mid in row.get("_candidate_movement_ids") or []:
+            text = str(mid or "").strip()
+            if text:
+                movement_ids.append(text)
+        for wb in row.get("warehouse_balances") or []:
+            text = str(wb.get("_last_movement_id") or "").strip()
+            if text:
+                movement_ids.append(text)
+    unique_ids = list(dict.fromkeys(movement_ids))
+    movements_by_id: Dict[str, dict] = {}
+    if unique_ids:
+        found = await db[LEDGER_COLLECTION].find(
+            {"id": {"$in": unique_ids}},
+            {
+                "_id": 0,
+                "id": 1,
+                "actor_id": 1,
+                "occurred_at": 1,
+                "created_at": 1,
+                "warehouse_id": 1,
+                "master_item_id": 1,
+            },
+        ).to_list(len(unique_ids))
+        movements_by_id = {
+            str(doc.get("id")): doc for doc in found if doc.get("id")
+        }
+
+    actor_keys: List[str] = []
+    for doc in movements_by_id.values():
+        actor = str(doc.get("actor_id") or "").strip()
+        if actor:
+            actor_keys.append(actor)
+    unique_actors = list(dict.fromkeys(actor_keys))
+    users_by_key: Dict[str, dict] = {}
+    if unique_actors:
+        user_rows = await db.users.find(
+            {"$or": [
+                {"id": {"$in": unique_actors}},
+                {"email": {"$in": unique_actors}},
+            ]},
+            {"_id": 0, "id": 1, "name": 1, "email": 1},
+        ).to_list(max(len(unique_actors) * 2, 1))
+        for user in user_rows:
+            uid = str(user.get("id") or "").strip()
+            email = str(user.get("email") or "").strip()
+            if uid:
+                users_by_key[uid] = user
+            if email:
+                users_by_key[email] = user
+
+    for row in page_items:
+        candidate_ids = [
+            str(mid).strip()
+            for mid in (row.get("_candidate_movement_ids") or [])
+            if str(mid or "").strip()
+        ]
+        candidates = [
+            movements_by_id[mid] for mid in candidate_ids if mid in movements_by_id
+        ]
+        if candidates:
+            best = max(candidates, key=_movement_sort_key)
+            row["updated_at"] = (
+                best.get("occurred_at") or best.get("created_at") or row.get("updated_at")
+            )
+            actor_id = str(best.get("actor_id") or "").strip()
+            display = _actor_display_name(users_by_key.get(actor_id)) if actor_id else None
+            row["updated_by_name"] = display or LAST_STOCK_ACTOR_UNKNOWN
+        elif row.get("updated_at"):
+            # Legacy balance stamp without a provable posted movement actor.
+            row["updated_by_name"] = LAST_STOCK_ACTOR_UNKNOWN
+        else:
+            row["updated_by_name"] = None
+
+        for wb in row.get("warehouse_balances") or []:
+            wh_mid = str(wb.pop("_last_movement_id", None) or "").strip()
+            movement = movements_by_id.get(wh_mid) if wh_mid else None
+            if movement:
+                wb["updated_at"] = (
+                    movement.get("occurred_at")
+                    or movement.get("created_at")
+                    or wb.get("updated_at")
+                )
+                actor_id = str(movement.get("actor_id") or "").strip()
+                display = _actor_display_name(users_by_key.get(actor_id)) if actor_id else None
+                wb["updated_by_name"] = display or LAST_STOCK_ACTOR_UNKNOWN
+            elif wb.get("updated_at"):
+                wb["updated_by_name"] = LAST_STOCK_ACTOR_UNKNOWN
+            else:
+                wb["updated_by_name"] = None
+
+        row.pop("_candidate_movement_ids", None)
 
 
 async def _catalog_units(db, masters) -> dict:

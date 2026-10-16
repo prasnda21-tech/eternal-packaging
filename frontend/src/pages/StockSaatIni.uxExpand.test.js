@@ -88,6 +88,9 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     expect(container.querySelector('[data-testid="stock-item-m-dual"] .stock-item-primary')?.textContent)
       .toMatch(/Pouch Matte/i);
     expect(container.querySelector('[data-testid="stock-code-m-dual"]')?.textContent).toBe("UAT-606-004");
+    expect(container.querySelector('[data-testid="stock-unit-header"]')?.textContent).toMatch(/Satuan Dasar/i);
+    expect(container.querySelector('[data-testid="stock-unit-m-dual"]')?.textContent).toBe("PCS");
+    expect(container.querySelector('[data-testid="stock-item-m-dual"]')?.textContent).not.toMatch(/Satuan Dasar PCS/i);
     expect(container.querySelector('[data-testid="stock-warehouse-breakdown-m-dual"]')).toBeNull();
     const expand = container.querySelector('[data-testid="stock-expand-m-dual"]');
     expect(expand).toBeTruthy();
@@ -122,6 +125,8 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
           qty_belum_terkirim: 0,
           qty_tersedia: 75,
           qty_tersedia_valid: true,
+          updated_at: "2026-10-17T01:09:00+00:00",
+          updated_by_name: "Rafi Operator",
           warehouse_balances: [
             { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: -25, balance_present: true, saldo_buku_negatif: true },
             { warehouse_id: "wh-b", warehouse_code: "B", physical_qty: 100, balance_present: true, saldo_buku_negatif: false },
@@ -139,6 +144,8 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
           qty_tersedia_valid: false,
           baseline_status: "unreconciled",
           baseline_label: "Saldo awal belum direkonsiliasi",
+          updated_at: "2026-10-17T01:10:00+00:00",
+          updated_by_name: null,
           warehouse_balances: [
             { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: null, balance_present: false, baseline_status: "unreconciled" },
             { warehouse_id: "wh-b", warehouse_code: "B", physical_qty: 200, balance_present: true },
@@ -148,18 +155,28 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     });
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
-    expect(container.querySelector('[data-testid="stock-aggregate-hint-m-neg"]')?.textContent)
-      .toMatch(/defisit/i);
+    // No repeated under-physical status blocks — one compact flag + tooltip only.
+    expect(container.querySelector('[data-testid="stock-aggregate-hint-m-neg"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-flag-m-neg"]')?.textContent).toMatch(/Defisit/i);
+    expect(container.querySelector('[data-testid="stock-physical-m-neg"]')?.textContent)
+      .not.toMatch(/Saldo awal belum direkonsiliasi|Ada gudang belum saldo/i);
     expect(container.querySelector('[data-testid="stock-available-invalid-m-miss"]')?.textContent)
       .toMatch(/Belum valid/i);
-    expect(container.querySelector('[data-testid="stock-baseline-m-miss"]')?.textContent)
+    expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.getAttribute("data-baseline-label"))
       .toMatch(/belum direkonsiliasi|Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-flag-m-miss"]')?.textContent)
+      .toMatch(/Belum lengkap/i);
+    expect(container.querySelector('[data-testid="stock-updated-by-m-neg"]')?.textContent)
+      .toMatch(/oleh Rafi Operator/);
+    expect(container.querySelector('[data-testid="stock-updated-by-m-miss"]')?.textContent)
+      .toMatch(/oleh Tidak tercatat/);
     await act(async () => {
       container.querySelector('[data-testid="stock-expand-m-neg"]').click();
     });
     const negCell = container.querySelector('[data-testid="stock-wh-bal-m-neg-MAIN"]');
     expect(negCell?.getAttribute("data-negative")).toBe("true");
     expect(negCell?.textContent).toMatch(/-?25|−25/);
+    expect(negCell?.textContent).toMatch(/Saldo negatif/i);
     await act(async () => {
       container.querySelector('[data-testid="stock-expand-m-miss"]').click();
     });

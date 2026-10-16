@@ -192,6 +192,10 @@ def aggregate_legacy_delivered_qty(
     return delivered, provenance
 
 
+# Honest fallback — never invent actor from master_items.updated_by.
+LAST_STOCK_ACTOR_UNKNOWN = "Tidak tercatat"
+
+
 def _compatibility_flags() -> dict:
     """Legacy company stock is informational only — never warehouse-valid."""
     return {
@@ -241,6 +245,8 @@ def compatibility_row(
             "qty_belum_terkirim": None,
             "qty_tersedia": buckets["physical_qty"] - qty_pesanan,
             "updated_at": updated_at,
+            # Legacy company stamp is not a posted warehouse movement identity.
+            "updated_by_name": LAST_STOCK_ACTOR_UNKNOWN if updated_at else None,
             "belum_terkirim_status": BELUM_STATUS_UNVERIFIED,
             **flags,
         }
@@ -262,6 +268,7 @@ def compatibility_row(
         "qty_belum_terkirim": buckets["qty_belum_terkirim"],
         "qty_tersedia": buckets["qty_tersedia"],
         "updated_at": updated_at,
+        "updated_by_name": LAST_STOCK_ACTOR_UNKNOWN if updated_at else None,
         "belum_terkirim_status": BELUM_STATUS_READY,
         **flags,
     }

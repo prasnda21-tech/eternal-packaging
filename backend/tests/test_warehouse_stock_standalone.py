@@ -785,6 +785,100 @@ async def test_service_addon_excluded_from_catalog_physical(db):
     assert service["id"] not in ids
 
 
+async def test_catalog_last_update_actor_from_posted_movement(db):
+    """Terakhir Update time+actor come from the same final posted movement.
+
+    Semua Gudang picks the newest movement among branch-scoped warehouses.
+    Selected warehouse uses that warehouse only. Unknown actor → Tidak tercatat.
+    Never uses master_items.updated_by.
+    """
+    from services.physical_stock import LAST_STOCK_ACTOR_UNKNOWN, MOVEMENT_OPENING_BALANCE
+
+    item, branch, wh_a, wh_b = await _seed(db, code="ACT")
+    await db.users.insert_many([
+        {"id": "actor-a", "name": "Operator Gudang A", "email": "a@example.com"},
+        {"id": "actor-b", "name": "Operator Gudang B", "email": "b@example.com"},
+    ])
+    # Poison master stamp — must never appear as stock actor.
+    await db[MASTER_ITEMS_COLLECTION].update_one(
+        {"id": item["id"]},
+        {"$set": {"updated_by": "master-editor", "updated_by_name": "Master Editor Fake"}},
+    )
+    # Direct movement posts so occurred_at is controlled (opening helper stamps "now").
+    await apply_standalone_movement(
+        db,
+        {
+            "master_item_id": item["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "movement_type": MOVEMENT_OPENING_BALANCE,
+            "qty_delta": 100,
+            "reference_type": MOVEMENT_OPENING_BALANCE,
+            "reference_id": f"open-{item['id']}-{wh_a['id']}",
+            "reason": "Saldo awal A",
+            "idempotency_key": "open-actor-a",
+            "occurred_at": "2026-10-16T10:00:00+00:00",
+            "created_at": "2026-10-16T10:00:00+00:00",
+        },
+        actor_id="actor-a",
+    )
+    await apply_standalone_movement(
+        db,
+        {
+            "master_item_id": item["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": wh_b["id"],
+            "movement_type": MOVEMENT_OPENING_BALANCE,
+            "qty_delta": 40,
+            "reference_type": MOVEMENT_OPENING_BALANCE,
+            "reference_id": f"open-{item['id']}-{wh_b['id']}",
+            "reason": "Saldo awal B",
+            "idempotency_key": "open-actor-b",
+            "occurred_at": "2026-10-16T12:00:00+00:00",
+            "created_at": "2026-10-16T12:00:00+00:00",
+        },
+        actor_id="actor-b",
+    )
+
+    branch_catalog = await list_physical_stock_catalog(db, branch_id=branch["id"])
+    branch_row = next(r for r in branch_catalog["items"] if r["master_item_id"] == item["id"])
+    assert branch_row["updated_by_name"] == "Operator Gudang B"
+    assert str(branch_row["updated_at"]).startswith("2026-10-16T12:00:00")
+    assert "Master Editor" not in str(branch_row.get("updated_by_name") or "")
+    assert "_candidate_movement_ids" not in branch_row
+    wh_by_code = {
+        wb["warehouse_code"]: wb for wb in branch_row["warehouse_balances"]
+    }
+    assert wh_by_code["A"]["updated_by_name"] == "Operator Gudang A"
+    assert wh_by_code["B"]["updated_by_name"] == "Operator Gudang B"
+    assert "_last_movement_id" not in wh_by_code["A"]
+
+    only_a = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=wh_a["id"],
+    )
+    row_a = next(r for r in only_a["items"] if r["master_item_id"] == item["id"])
+    assert row_a["updated_by_name"] == "Operator Gudang A"
+    assert str(row_a["updated_at"]).startswith("2026-10-16T10:00:00")
+
+    only_b = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=wh_b["id"],
+    )
+    row_b = next(r for r in only_b["items"] if r["master_item_id"] == item["id"])
+    assert row_b["updated_by_name"] == "Operator Gudang B"
+
+    # Legacy balance without last_movement_id → honest unknown actor.
+    await db[BALANCE_COLLECTION].update_one(
+        {"master_item_id": item["id"], "warehouse_id": wh_a["id"]},
+        {"$unset": {"last_movement_id": ""}, "$set": {"updated_at": "2026-10-15T08:00:00+00:00"}},
+    )
+    legacy = await list_physical_stock_catalog(
+        db, branch_id=branch["id"], warehouse_id=wh_a["id"],
+    )
+    legacy_row = next(r for r in legacy["items"] if r["master_item_id"] == item["id"])
+    assert legacy_row["updated_by_name"] == LAST_STOCK_ACTOR_UNKNOWN
+    assert str(legacy_row["updated_at"]).startswith("2026-10-15T08:00:00")
+
+
 async def test_stale_lease_allows_foreign_recovery(db):
     item, branch, wh_a, _ = await _seed(db)
     await post_opening_balance_standalone(

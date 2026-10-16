@@ -86,7 +86,11 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-undelivered-m1"]')?.getAttribute("data-belum-status")).toBe("BELUM_TERVERIFIKASI");
     expect(container.querySelector('[data-testid="stock-available-m1"]')?.getAttribute("data-tersedia-valid")).toBe("false");
     expect(container.querySelector('[data-testid="stock-available-invalid-m1"]')?.textContent).toMatch(/Belum valid/i);
-    expect(container.querySelector('[data-testid="stock-baseline-m1"]')?.textContent).toMatch(/legacy|gudang|direkonsiliasi/i);
+    expect(container.querySelector('[data-testid="stock-physical-m1"]')?.getAttribute("data-baseline-label"))
+      .toMatch(/legacy|gudang|direkonsiliasi/i);
+    expect(container.querySelector('[data-testid="stock-physical-m1"]')?.textContent)
+      .not.toMatch(/Stok fisik legacy|Saldo awal belum direkonsiliasi/i);
+    expect(container.querySelector('[data-testid="stock-unit-header"]')?.textContent).toMatch(/Satuan Dasar/i);
   });
 
   test("legacy CUTOVER_PENDING status still renders Belum terverifikasi", async () => {

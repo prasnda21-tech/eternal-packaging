@@ -56,6 +56,11 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/api\.physicalStockCatalog\(/);
     expect(stock).toMatch(/Nama Barang/);
     expect(stock).toMatch(/Satuan Dasar/);
+    expect(stock).toMatch(/data-testid="stock-unit-header"/);
+    expect(stock).toMatch(/stock-updated-by/);
+    expect(stock).toMatch(/Tidak tercatat/);
+    expect(stock).toMatch(/stock-compact-flag/);
+    expect(stock).toMatch(/data-baseline-label/);
     expect(stock).toMatch(/Stock Fisik/);
     expect(stock).toMatch(/Stock Fisik \(perusahaan\)/);
     expect(stock).toMatch(/data-testid="stock-physical-header"/);
