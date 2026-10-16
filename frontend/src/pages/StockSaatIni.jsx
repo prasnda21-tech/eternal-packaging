@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Check, Download, Search, X } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Download, Info, Search, SlidersHorizontal, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatTrackingPageDateTime } from "../lib/constants";
@@ -45,6 +45,8 @@ export default function StockSaatIni() {
   const [inlineItemId, setInlineItemId] = useState(null);
   const [savingAdjust, setSavingAdjust] = useState(false);
   const [expandedRows, setExpandedRows] = useState(() => ({}));
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
 
@@ -297,8 +299,76 @@ export default function StockSaatIni() {
     URL.revokeObjectURL(url);
   };
 
+  const branchLabel = (() => {
+    const row = branches.find((b) => b.id === effectiveBranchId);
+    if (row?.code && row?.name && row.code !== row.name) return `${row.name} (${row.code})`;
+    return row?.code || data?.effective_branch_code || row?.name || "Cabang";
+  })();
+
+  const renderPhysicalCell = (it, primary, physicalText, book) => {
+    const hints = primary.hints || [];
+    const flag = primary.flag;
+    const statusKey = primary.text === "Belum lengkap"
+      ? "incomplete"
+      : primary.text === "Belum tersedia"
+        ? "missing"
+        : (flag === "Defisit" ? "deficit" : "qty");
+    const chip = !primary.present ? (
+      <span className={`stock-status-badge stock-status-badge--${statusKey}`}>{physicalText}</span>
+    ) : (
+      <span className={`stock-qty-chip${primary.negative ? " is-deficit" : ""}`}>{physicalText}</span>
+    );
+    const flagEl = flag ? (
+      <span
+        className="stock-status-badge stock-status-badge--deficit"
+        data-testid={`stock-flag-${it.master_item_id}`}
+        title={hints.join(" · ")}
+      >
+        {flag}
+      </span>
+    ) : null;
+    if (canAdjust && inlineItemId === it.master_item_id && singleWarehouse && book.present) {
+      return (
+        <InlinePhysicalEditor
+          item={it}
+          saving={savingAdjust}
+          onCancel={() => setInlineItemId(null)}
+          onSave={(target, setCellError, close) => saveInline(it, target, setCellError, close)}
+        />
+      );
+    }
+    if (canAdjust) {
+      return (
+        <span className="stock-physical-cell-inner">
+          <button
+            type="button"
+            className="stock-physical-btn"
+            data-testid={`stock-adjust-${it.master_item_id}`}
+            onClick={() => beginAdjust(it)}
+          >
+            {chip}
+          </button>
+          {flagEl}
+        </span>
+      );
+    }
+    return (
+      <span className="stock-physical-cell-inner">
+        {chip}
+        {flagEl}
+      </span>
+    );
+  };
+
+  const whStatusLabel = (wb) => {
+    if (!wb.balance_present) return { text: "Belum tersedia", tone: "missing" };
+    if (wb.saldo_buku_negatif) return { text: "Defisit", tone: "deficit" };
+    if (wb.baseline_status === "unreconciled") return { text: "Belum valid", tone: "incomplete" };
+    return { text: "Valid", tone: "valid" };
+  };
+
   return (
-    <div className="prod-page master-items-page stock-page" data-testid="stock-saat-ini-page">
+    <div className="prod-page master-items-page stock-page stock-page--mockup" data-testid="stock-saat-ini-page">
       <div className="page-heading prod-heading stock-page-heading">
         <div className="prod-heading-copy">
           <div className="stock-title-row">
@@ -314,38 +384,15 @@ export default function StockSaatIni() {
             )}
           </div>
           <p className="subhead" data-testid="stock-subtitle">
-            Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim.
-            {" "}
-            Nilai negatif = kebutuhan stok (tidak memblokir operasional).
+            {warehouseActive
+              ? "Persediaan barang per cabang dan gudang."
+              : "Persediaan barang (mode kompatibilitas perusahaan)."}
           </p>
-          {data && (
-            <details className="stock-context-info" data-testid="stock-context-info">
-              <summary>Aturan stok &amp; mode baca</summary>
-              <p className="muted small" data-testid="stock-read-mode">{modeFullLabel}</p>
-              {!warehouseActive && (
-                <p className="muted small" data-testid="stock-compat-branch-note">
-                  {data.physical_qty_note
-                    || "Angka Stock Fisik adalah gabungan legacy perusahaan — bukan saldo gudang."}
-                </p>
-              )}
-              {!warehouseActive && !canAdjust && (
-                <p className="muted small" data-testid="stock-adjust-blocked-reason">
-                  {data.adjust_blocked_reason
-                    || "Koreksi/Saldo Awal/Opname gudang memerlukan r2_authority_active atau warehouse_stock_standalone."}
-                </p>
-              )}
-              {warehouseActive && (
-                <p className="muted small" data-testid="stock-book-vs-count-note">
-                  Qty Pesanan / Belum Terkirim lingkup cabang. Saldo belum ada = Belum tersedia; belum direkonsiliasi = Belum valid — bukan klaim nol siap jual. Agregat cabang tidak menyembunyikan defisit gudang atau saldo belum valid.
-                </p>
-              )}
-            </details>
-          )}
         </div>
         <div className="stock-heading-actions">
           <button
             type="button"
-            className="ghost"
+            className="stock-btn-outline"
             onClick={() => setOpeningOpen(true)}
             disabled={!canAdjust}
             title={!canAdjust ? (data?.adjust_blocked_reason || "Saldo Awal belum tersedia pada mode ini") : undefined}
@@ -354,13 +401,13 @@ export default function StockSaatIni() {
             Saldo Awal
           </button>
           {warehouseActive ? (
-            <Link className="ghost" to={opnameHref} data-testid="stock-opname-button">
+            <Link className="stock-btn-outline" to={opnameHref} data-testid="stock-opname-button">
               Stock Opname
             </Link>
           ) : (
             <button
               type="button"
-              className="ghost"
+              className="stock-btn-outline"
               disabled
               title={data?.adjust_blocked_reason || "Stock Opname memerlukan mesin gudang (R2 atau warehouse standalone)."}
               data-testid="stock-opname-button"
@@ -369,7 +416,7 @@ export default function StockSaatIni() {
             </button>
           )}
           {canExport && (
-            <button className="primary" onClick={download} data-testid="stock-export-button">
+            <button className="stock-btn-primary" onClick={download} data-testid="stock-export-button">
               <Download size={14} /> Export
             </button>
           )}
@@ -382,72 +429,155 @@ export default function StockSaatIni() {
         </div>
       )}
 
-      <div className="prod-filters" data-testid="stock-filters">
-        <div className="prod-filter-row">
-          <BranchScopeSelect
-            branches={branches}
-            value={effectiveBranchId}
-            canSwitch={Boolean(canSwitchBranches && warehouseActive)}
-            effectiveCode={data?.effective_branch_code}
-            onChange={(next) => {
-              setBranchId(next);
-              setWarehouseId("");
-              setPage(1);
-              setInlineItemId(null);
-              setAdjustItem(null);
-            }}
-            testId="stock-branch-select"
-          />
-          {warehouseActive && (
-            <label className="field stock-warehouse-filter" data-testid="stock-warehouse-filter">
-              <span className="muted small">Gudang</span>
-              <select
-                value={warehouseId}
-                onChange={(e) => {
-                  setWarehouseId(e.target.value);
-                  setPage(1);
-                  setInlineItemId(null);
-                  setAdjustItem(null);
-                }}
-                data-testid="stock-warehouse-select"
-                aria-label="Filter gudang"
-              >
-                <option value="">Semua Gudang</option>
-                {filterWarehouses.map((wh) => (
-                  <option key={wh.id} value={wh.id}>
-                    {wh.code ? `${wh.code} — ${wh.name || wh.code}` : (wh.name || wh.id)}
-                  </option>
-                ))}
-              </select>
+      <div className="stock-filter-bar" data-testid="stock-filters">
+        <div className="stock-filter-field stock-filter-field--branch">
+          {canSwitchBranches && warehouseActive ? (
+            <BranchScopeSelect
+              branches={branches}
+              value={effectiveBranchId}
+              canSwitch
+              effectiveCode={data?.effective_branch_code || branchLabel}
+              onChange={(next) => {
+                setBranchId(next);
+                setWarehouseId("");
+                setPage(1);
+                setInlineItemId(null);
+                setAdjustItem(null);
+              }}
+              testId="stock-branch-select"
+            />
+          ) : (
+            <label className="stock-filter-ro" data-testid="stock-branch-select-fixed">
+              <span>Cabang</span>
+              <div className="stock-filter-ro-value">{branchLabel}</div>
             </label>
           )}
-          <form className="search-inline" onSubmit={doSearch}>
-            <Search size={14} />
-            <input
-              type="text"
-              value={qInput}
-              onChange={(e) => setQInput(e.target.value)}
-              placeholder="Cari kode / nama / Accurate ID (live)"
-              data-testid="stock-search"
-              aria-label="Cari kode / nama / Accurate ID"
-            />
-            {q && (
-              <button type="button" className="ghost sm" onClick={clearSearch} aria-label="Bersihkan">
-                <X size={12} />
-              </button>
-            )}
-          </form>
+        </div>
+        {warehouseActive && (
+          <label className="stock-filter-field" data-testid="stock-warehouse-filter">
+            <span>Gudang</span>
+            <select
+              value={warehouseId}
+              onChange={(e) => {
+                setWarehouseId(e.target.value);
+                setPage(1);
+                setInlineItemId(null);
+                setAdjustItem(null);
+              }}
+              data-testid="stock-warehouse-select"
+              aria-label="Filter gudang"
+            >
+              <option value="">Semua Gudang</option>
+              {filterWarehouses.map((wh) => (
+                <option key={wh.id} value={wh.id}>
+                  {wh.code ? `${wh.code} — ${wh.name || wh.code}` : (wh.name || wh.id)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <form className="stock-filter-search" onSubmit={doSearch}>
+          <Search size={16} aria-hidden="true" />
+          <input
+            type="text"
+            value={qInput}
+            onChange={(e) => setQInput(e.target.value)}
+            placeholder="Cari kode, nama, atau Accurate ID…"
+            data-testid="stock-search"
+            aria-label="Cari kode / nama / Accurate ID"
+          />
+          {q && (
+            <button type="button" className="stock-search-clear" onClick={clearSearch} aria-label="Bersihkan">
+              <X size={14} />
+            </button>
+          )}
+        </form>
+        <label className="stock-filter-field stock-filter-field--pagesize">
+          <span className="sr-only">Per halaman</span>
           <select
             value={pageSize}
             onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
             data-testid="stock-page-size"
+            aria-label="Jumlah baris per halaman"
           >
             <option value={25}>25 / halaman</option>
             <option value={50}>50 / halaman</option>
             <option value={100}>100 / halaman</option>
           </select>
-        </div>
+        </label>
+        <button
+          type="button"
+          className={`stock-filter-advanced${advancedOpen ? " is-open" : ""}`}
+          data-testid="stock-filter-advanced"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((v) => !v)}
+        >
+          <SlidersHorizontal size={15} aria-hidden="true" />
+          Filter lanjutan
+        </button>
       </div>
+
+      {advancedOpen && (
+        <div className="stock-advanced-panel" data-testid="stock-advanced-panel">
+          <p className="muted small">
+            Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim.
+            Nilai negatif = kebutuhan stok (tidak memblokir operasional).
+          </p>
+        </div>
+      )}
+
+      <div className="stock-legend-bar" data-testid="stock-legend-bar">
+        <div className="stock-legend-lead">
+          <Info size={15} aria-hidden="true" />
+          <span>Nilai negatif menunjukkan defisit stok.</span>
+        </div>
+        <div className="stock-legend-items" aria-hidden="true">
+          <span><span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span> = belum ada saldo fisik</span>
+          <span><span className="stock-status-badge stock-status-badge--incomplete">Belum lengkap</span> = ada gudang belum valid</span>
+          <span><span className="stock-status-badge stock-status-badge--deficit">Defisit</span> = saldo fisik &lt; 0</span>
+        </div>
+        <button
+          type="button"
+          className="stock-legend-toggle"
+          data-testid="stock-legend-toggle"
+          aria-expanded={legendOpen}
+          onClick={() => setLegendOpen((v) => !v)}
+        >
+          Lihat penjelasan lengkap
+          <ChevronDown size={14} className={legendOpen ? "is-open" : undefined} aria-hidden="true" />
+        </button>
+      </div>
+
+      {data && (
+        <div
+          className="stock-context-info stock-legend-detail"
+          data-testid="stock-context-info"
+          hidden={!legendOpen}
+        >
+          <p className="muted small" data-testid="stock-read-mode">{modeFullLabel}</p>
+          <p className="muted small">
+            Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim.
+            Nilai negatif = kebutuhan stok (tidak memblokir operasional).
+          </p>
+          {!warehouseActive && (
+            <p className="muted small" data-testid="stock-compat-branch-note">
+              {data.physical_qty_note
+                || "Angka Stock Fisik adalah gabungan legacy perusahaan — bukan saldo gudang."}
+            </p>
+          )}
+          {!warehouseActive && !canAdjust && (
+            <p className="muted small" data-testid="stock-adjust-blocked-reason">
+              {data.adjust_blocked_reason
+                || "Koreksi/Saldo Awal/Opname gudang memerlukan r2_authority_active atau warehouse_stock_standalone."}
+            </p>
+          )}
+          {warehouseActive && (
+            <p className="muted small" data-testid="stock-book-vs-count-note">
+              Qty Pesanan / Belum Terkirim lingkup cabang. Saldo belum ada = Belum tersedia; belum direkonsiliasi = Belum valid — bukan klaim nol siap jual. Agregat cabang tidak menyembunyikan defisit gudang atau saldo belum valid.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="prod-table-wrap master-table-wrap stock-table-wrap">
         <table className="prod-table master-items-table stock-dense-table" data-testid="stock-table">
@@ -502,7 +632,6 @@ export default function StockSaatIni() {
               const rowNegative = Boolean(primary.negative);
               const physicalHints = primary.hints || [];
               const compactFlag = primary.flag;
-              // Inline adjust still needs book presence for the selected warehouse.
               const book = bookPhysicalDisplay(it, { warehouseId: selectedWhId });
               return (
               <Fragment key={it.master_item_id}>
@@ -518,7 +647,7 @@ export default function StockSaatIni() {
                     {canExpand ? (
                       <button
                         type="button"
-                        className="ghost sm stock-expand-btn"
+                        className="stock-expand-btn"
                         aria-expanded={expanded}
                         aria-label={expanded ? "Sembunyikan rincian gudang" : "Tampilkan rincian gudang"}
                         data-testid={`stock-expand-${it.master_item_id}`}
@@ -553,34 +682,7 @@ export default function StockSaatIni() {
                   data-physical-status={primary.text || (compactFlag || "qty")}
                   title={physicalHints.length ? physicalHints.join(" · ") : undefined}
                 >
-                  {canAdjust && inlineItemId === it.master_item_id && singleWarehouse && book.present ? (
-                    <InlinePhysicalEditor
-                      item={it}
-                      saving={savingAdjust}
-                      onCancel={() => setInlineItemId(null)}
-                      onSave={(target, setCellError, close) => saveInline(it, target, setCellError, close)}
-                    />
-                  ) : canAdjust ? (
-                    <button
-                      type="button"
-                      className="ghost sm"
-                      data-testid={`stock-adjust-${it.master_item_id}`}
-                      onClick={() => beginAdjust(it)}
-                    >
-                      {physicalText}
-                    </button>
-                  ) : (
-                    <span className={primary.present ? undefined : "muted"}>{physicalText}</span>
-                  )}
-                  {compactFlag && (
-                    <span
-                      className={`stock-compact-flag${compactFlag === "Defisit" ? " is-deficit" : ""}`}
-                      data-testid={`stock-flag-${it.master_item_id}`}
-                      title={physicalHints.join(" · ")}
-                    >
-                      {compactFlag}
-                    </span>
-                  )}
+                  {renderPhysicalCell(it, primary, physicalText, book)}
                 </td>
                 <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
                 <td
@@ -628,41 +730,62 @@ export default function StockSaatIni() {
               {canExpand && expanded && (
                 <tr className="stock-expand-row" data-testid={`stock-expand-row-${it.master_item_id}`}>
                   <td colSpan={9}>
-                    <ul className="stock-warehouse-breakdown" data-testid={`stock-warehouse-breakdown-${it.master_item_id}`}>
-                      {whBalances.map((wb) => (
-                        <li
-                          key={wb.warehouse_id}
-                          data-testid={`stock-wh-bal-${it.master_item_id}-${wb.warehouse_code || wb.warehouse_id}`}
-                          className={wb.saldo_buku_negatif ? "stock-book-negative" : undefined}
-                          data-negative={wb.saldo_buku_negatif ? "true" : "false"}
-                          data-balance-present={wb.balance_present ? "true" : "false"}
-                          title={[
-                            wb.baseline_label,
-                            wb.saldo_buku_negatif ? "Saldo negatif" : null,
-                            wb.updated_at
-                              ? `Update ${formatTrackingPageDateTime(wb.updated_at) || formatDate(wb.updated_at)} oleh ${wb.updated_by_name || "Tidak tercatat"}`
-                              : null,
-                          ].filter(Boolean).join(" · ") || undefined}
-                        >
-                          <span className="mono">{wb.warehouse_code || wb.warehouse_name}</span>
-                          {": "}
-                          <span className={wb.balance_present ? "mono" : "muted"}>
-                            {wb.balance_present ? fmtQty(wb.physical_qty) : "Belum tersedia"}
-                          </span>
-                          {" "}
-                          <span className="muted">{it.base_unit || "PCS"}</span>
-                          {wb.baseline_status === "unreconciled" && (
-                            <span className="muted small"> · Belum valid</span>
-                          )}
-                          {wb.saldo_buku_negatif && (
-                            <span className="stock-book-negative-note"> · Saldo negatif</span>
-                          )}
-                          {!wb.balance_present && (
-                            <span className="muted small"> · Saldo belum ada</span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="stock-expand-panel" data-testid={`stock-warehouse-breakdown-${it.master_item_id}`}>
+                      <table className="stock-expand-table">
+                        <thead>
+                          <tr>
+                            <th>Gudang</th>
+                            <th className="num">Stock Fisik</th>
+                            <th className="num" title="Lingkup cabang">Qty Pesanan</th>
+                            <th className="num" title="Lingkup cabang">Qty Belum Terkirim</th>
+                            <th className="num" title="Lingkup cabang">Qty Tersedia</th>
+                            <th>Status</th>
+                            <th>Terakhir Update</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {whBalances.map((wb) => {
+                            const st = whStatusLabel(wb);
+                            return (
+                              <tr
+                                key={wb.warehouse_id}
+                                data-testid={`stock-wh-bal-${it.master_item_id}-${wb.warehouse_code || wb.warehouse_id}`}
+                                className={wb.saldo_buku_negatif ? "stock-book-negative" : undefined}
+                                data-negative={wb.saldo_buku_negatif ? "true" : "false"}
+                                data-balance-present={wb.balance_present ? "true" : "false"}
+                              >
+                                <td className="mono">{wb.warehouse_code || wb.warehouse_name}</td>
+                                <td className="num mono">
+                                  {wb.balance_present ? (
+                                    <span className={`stock-qty-chip${wb.saldo_buku_negatif ? " is-deficit" : ""}`}>
+                                      {fmtQty(wb.physical_qty)}
+                                    </span>
+                                  ) : (
+                                    <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
+                                  )}
+                                </td>
+                                <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
+                                <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
+                                <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
+                                <td>
+                                  <span className={`stock-status-badge stock-status-badge--${st.tone}`}>{st.text}</span>
+                                </td>
+                                <td className="stock-last-update">
+                                  {wb.updated_at ? (
+                                    <>
+                                      <div className="nowrap">{formatTrackingPageDateTime(wb.updated_at) || formatDate(wb.updated_at)}</div>
+                                      <div className="muted small nowrap">
+                                        oleh {wb.updated_by_name || "Tidak tercatat"}
+                                      </div>
+                                    </>
+                                  ) : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </td>
                 </tr>
               )}
@@ -674,10 +797,10 @@ export default function StockSaatIni() {
       </div>
 
       {pageCount > 1 && (
-        <div className="master-pager" data-testid="stock-pager">
-          <button className="ghost sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
+        <div className="master-pager stock-pager" data-testid="stock-pager">
+          <button className="stock-btn-outline sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
           <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} baris</span>
-          <button className="ghost sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
+          <button className="stock-btn-outline sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
       )}
 

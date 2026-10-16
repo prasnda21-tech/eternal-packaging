@@ -165,10 +165,11 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.getAttribute("data-baseline-label"))
       .toMatch(/belum direkonsiliasi|Belum valid/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
-      .toMatch(/^Belum lengkap$/);
+      .toMatch(/Belum lengkap/);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
       .not.toMatch(/Belum tersedia/i);
     expect(container.querySelector('[data-testid="stock-flag-m-miss"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-legend-bar"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-updated-by-m-neg"]')?.textContent)
       .toMatch(/oleh Rafi Operator/);
     expect(container.querySelector('[data-testid="stock-updated-by-m-miss"]')?.textContent)
@@ -179,7 +180,7 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     const negCell = container.querySelector('[data-testid="stock-wh-bal-m-neg-MAIN"]');
     expect(negCell?.getAttribute("data-negative")).toBe("true");
     expect(negCell?.textContent).toMatch(/-?25|−25/);
-    expect(negCell?.textContent).toMatch(/Saldo negatif/i);
+    expect(negCell?.textContent).toMatch(/Defisit|negatif/i);
     await act(async () => {
       container.querySelector('[data-testid="stock-expand-m-miss"]').click();
     });

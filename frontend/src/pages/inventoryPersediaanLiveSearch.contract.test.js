@@ -51,6 +51,11 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Qty Tersedia = Stock Fisik [-\u2212] Qty Pesanan [-\u2212] Qty Belum Terkirim/);
     expect(stock).toMatch(/Nilai negatif = kebutuhan stok/);
     expect(stock).toMatch(/tidak memblokir operasional/);
+    expect(stock).toMatch(/Persediaan barang per cabang dan gudang/);
+    expect(stock).toMatch(/stock-legend-bar/);
+    expect(stock).toMatch(/Filter lanjutan/);
+    expect(stock).toMatch(/Lihat penjelasan lengkap/);
+    expect(stock).toMatch(/stock-expand-panel/);
     expect(stock).toMatch(/bookPhysicalDisplay/);
     expect(stock).toMatch(/stockPhysicalPrimaryDisplay/);
     expect(stock).toMatch(/data-balance-present/);
@@ -60,7 +65,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/data-testid="stock-unit-header"/);
     expect(stock).toMatch(/stock-updated-by/);
     expect(stock).toMatch(/Tidak tercatat/);
-    expect(stock).toMatch(/stock-compact-flag/);
+    expect(stock).toMatch(/stock-status-badge/);
     expect(stock).toMatch(/data-baseline-label/);
     expect(stock).toMatch(/Stock Fisik/);
     expect(stock).toMatch(/Stock Fisik \(perusahaan\)/);
@@ -73,7 +78,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).not.toMatch(/Belum Dicetak/);
     expect(stock).not.toMatch(/Sudah Dicetak/);
     expect(stock).not.toMatch(/<th[^>]*>Stock Saat Ini<\/th>/);
-    expect(stock).not.toMatch(/>Cabang</);
+    expect(stock).not.toMatch(/<th[^>]*>Cabang<\/th>/);
     expect(stock).not.toMatch(/Qty Saat Ini \+ Pembelian Barang/);
     expect(stock).not.toMatch(/Pembelian Barang/);
     expect(stock).not.toMatch(/Qty PO/);
@@ -118,7 +123,8 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-loading/);
     expect(stock).toMatch(/if \(!searchPending\) return/);
     expect(stock).toMatch(/items: \[\]/);
-    expect(stock).toMatch(/Cari kode \/ nama \/ Accurate ID \(live\)/);
+    expect(stock).toMatch(/Cari kode, nama, atau Accurate ID/);
+    expect(stock).toMatch(/data-testid="stock-search"/);
     expect(stock).not.toMatch(/>Cari</);
     expect(stock).not.toMatch(/api\.currentStock\(/);
     expect(stock).not.toMatch(/currentStockUpdate/);
