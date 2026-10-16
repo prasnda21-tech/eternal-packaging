@@ -328,6 +328,9 @@ export const MSG_LOADING_CORRECTION_SJ_CANCEL =
 export const MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL =
   "Batalkan Surat Jalan terkait terlebih dahulu, kemudian hapus konfirmasi Loading.";
 
+export const MSG_LOADING_DELETE_SJ_UNRESOLVED =
+  "Identitas Surat Jalan pada konfirmasi Loading tidak dapat dibuktikan (hilang atau ambigu). Hapus Loading ditolak.";
+
 /** Active (non-cancelled) Loading confirmations. */
 export function loadingConfirmations(order) {
   return (Array.isArray(order?.loading_confirmations) ? order.loading_confirmations : [])
@@ -348,15 +351,23 @@ function _shipmentIsActive(sh) {
   return !["cancelled", "dibatalkan", "superseded", "deleted"].includes(st);
 }
 
-/** Shipment linked to one Loading confirmation (id fields only, never name). */
-export function loadingRelatedShipment(order, confirmation) {
-  const sid = String(
+/** Exact SJ identity token on Loading (never product name). */
+export function loadingConfirmationSjToken(confirmation) {
+  return String(
     confirmation?.shipment_id || confirmation?.surat_jalan_id || confirmation?.sales_delivery_id || "",
   ).trim();
+}
+
+/** Shipment linked to one Loading confirmation (id fields only, never name).
+ *  Null with a non-empty token means unresolved/ambiguous — not cancelled.
+ */
+export function loadingRelatedShipment(order, confirmation) {
+  const sid = loadingConfirmationSjToken(confirmation);
   if (!sid) return null;
   const ships = Array.isArray(order?.shipments) ? order.shipments : [];
   const exact = ships.filter((sh) => String(sh?.id || "").trim() === sid);
   if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
   const alias = ships.filter((sh) => (
     String(sh?.sales_delivery_id || "").trim() === sid
     || String(sh?.sj_number || "").trim() === sid
@@ -401,8 +412,13 @@ export function canDeleteLoadingConfirmation(order, confirmation) {
   const delivered = Number(order?.qty_delivered || order?.delivered_qty || 0);
   const required = Number(order?.total_quantity || 0);
   if (required > 0 && delivered >= required) return false;
+  const token = loadingConfirmationSjToken(confirmation);
   const related = loadingRelatedShipment(order, confirmation);
-  if (related && _shipmentIsActive(related)) return false;
+  if (token) {
+    if (!related) return false; // unresolved/ambiguous ≠ cancelled
+    if (_shipmentIsActive(related)) return false;
+  }
+  // Legacy Loading without SJ identity: delivery guards only (matches backend).
   if (deliveredQtyForLoadingConfirmation(order, confirmation.id) > 0) return false;
   return true;
 }

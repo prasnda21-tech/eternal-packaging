@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from quantity_rules import (
     MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL,
+    MSG_LOADING_DELETE_SJ_UNRESOLVED,
     available_for_loading_confirm_line,
     cancel_loading_confirmation,
     delivered_qty_for_loading_confirmation,
@@ -93,6 +94,46 @@ def test_hapus_blocked_while_related_sj_active():
     order = _order_two_sj()
     err = validate_cancel_loading_confirmation(order, "lc-a1")
     assert err == MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
+
+
+def test_hapus_fail_closed_when_sj_identity_missing_shipment():
+    """Token present but shipment unresolved must NOT be treated as cancelled."""
+    order = _order_two_sj(sj_a_cancelled=True)
+    order["loading_confirmations"][0]["shipment_id"] = "sj-missing"
+    order["loading_confirmations"][0]["surat_jalan_id"] = "sj-missing"
+    err = validate_cancel_loading_confirmation(order, "lc-a1")
+    assert err == MSG_LOADING_DELETE_SJ_UNRESOLVED
+
+
+def test_hapus_fail_closed_when_sj_identity_ambiguous():
+    order = _order_two_sj(sj_a_cancelled=True)
+    # Two shipments share the same number alias → find_shipment returns None.
+    order["shipments"][0]["number"] = "SJ-DUP"
+    order["shipments"][0]["sj_number"] = "SJ-DUP"
+    order["shipments"][1]["number"] = "SJ-DUP"
+    order["shipments"][1]["sj_number"] = "SJ-DUP"
+    order["loading_confirmations"][0]["shipment_id"] = "SJ-DUP"
+    order["loading_confirmations"][0]["surat_jalan_id"] = "SJ-DUP"
+    err = validate_cancel_loading_confirmation(order, "lc-a1")
+    assert err == MSG_LOADING_DELETE_SJ_UNRESOLVED
+
+
+def test_legacy_loading_without_sj_identity_keeps_delivery_guards_only():
+    order = {
+        "id": "po-legacy",
+        "total_quantity": 1000,
+        "line_items": [{"name": "Box", "quantity": 1000, "line_id": "L0"}],
+        "shipments": [{"id": "sj-x", "number": "SJ-X"}],
+        "qty_delivered": 0,
+        "delivery_status": "Belum Terkirim",
+        "loading_confirmations": [{
+            "id": "lc-legacy",
+            "lines": [{"line_idx": 0, "qty": 100}],
+        }],
+    }
+    assert validate_cancel_loading_confirmation(order, "lc-legacy") is None
+    cancel_loading_confirmation(order, "lc-legacy", actor={"email": "a@x"}, cancelled_at="t")
+    assert order["loading_confirmations"][0]["cancelled"] is True
 
 
 def test_sj_cancel_does_not_auto_cancel_loading():

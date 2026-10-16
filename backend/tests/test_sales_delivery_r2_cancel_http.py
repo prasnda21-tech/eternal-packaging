@@ -336,6 +336,23 @@ async def test_1_2_3_4_9_12_cancel_terkirim_restores_origin_warehouse(db):
     assert loading, "seed includes loading_confirmations"
     assert all(not c.get("cancelled") for c in loading if isinstance(c, dict))
     assert "loading_cancelled_ids" not in body or not body.get("loading_cancelled_ids")
+    lc_id = loading[0]["id"]
+    ledger_before_hapus = await database[LEDGER_COLLECTION].count_documents({})
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        hapus = await client.delete(
+            f"/api/orders/{seeded['po_id']}/loading-confirm/{lc_id}",
+        )
+    assert hapus.status_code == 200, hapus.text
+    order_after = await database.orders.find_one({"id": seeded["po_id"]}, {"_id": 0})
+    lc_after = next(
+        c for c in (order_after.get("loading_confirmations") or [])
+        if str(c.get("id")) == str(lc_id)
+    )
+    assert lc_after.get("cancelled") is True
+    assert lc_after.get("lines")  # history preserved
+    assert await database[LEDGER_COLLECTION].count_documents({}) == ledger_before_hapus
+    assert await _legacy_counts(database) == legacy_before
 
     summary = await get_po_delivery_summary(database, seeded["po_id"])
     assert summary["total_remaining"] == 15

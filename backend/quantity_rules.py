@@ -1330,17 +1330,32 @@ MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL = (
     "Batalkan Surat Jalan terkait terlebih dahulu, kemudian hapus konfirmasi Loading."
 )
 
+MSG_LOADING_DELETE_SJ_UNRESOLVED = (
+    "Identitas Surat Jalan pada konfirmasi Loading tidak dapat dibuktikan "
+    "(hilang atau ambigu). Hapus Loading ditolak."
+)
 
-def loading_related_shipment(order: dict, confirmation: Optional[dict]) -> Optional[dict]:
-    """Shipment linked to one Loading confirmation (identity fields, never name)."""
+
+def loading_confirmation_sj_token(confirmation: Optional[dict]) -> str:
+    """Exact SJ identity token on a Loading confirmation (never product name)."""
     if not isinstance(confirmation, dict):
-        return None
-    sid = str(
+        return ""
+    return str(
         confirmation.get("shipment_id")
         or confirmation.get("surat_jalan_id")
         or confirmation.get("sales_delivery_id")
         or ""
     ).strip()
+
+
+def loading_related_shipment(order: dict, confirmation: Optional[dict]) -> Optional[dict]:
+    """Shipment linked to one Loading confirmation (identity fields, never name).
+
+    Returns None when token is empty (legacy) OR when identity cannot be uniquely
+    resolved. Callers that see a non-empty token MUST treat None as unresolved,
+    not as cancelled.
+    """
+    sid = loading_confirmation_sj_token(confirmation)
     if not sid:
         return None
     return find_shipment(order, sid)
@@ -1394,9 +1409,15 @@ def validate_cancel_loading_confirmation(order: dict, confirmation_id: str) -> O
     conf = find_loading_confirmation(order, confirmation_id, include_cancelled=False)
     if not conf:
         return "Konfirmasi Loading tidak ditemukan."
+    token = loading_confirmation_sj_token(conf)
     related = loading_related_shipment(order, conf)
-    if related is not None and shipment_is_active(related):
-        return MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
+    if token:
+        # SJ identity present → must uniquely resolve. Unresolved ≠ cancelled.
+        if related is None:
+            return MSG_LOADING_DELETE_SJ_UNRESOLVED
+        if shipment_is_active(related):
+            return MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
+    # Legacy Loading without SJ identity: keep delivery/fully-delivered guards only.
     if delivered_qty_for_loading_confirmation(order, confirmation_id) > 0:
         return "Loading ini sudah mempunyai qty terkirim — tidak bisa dihapus."
     return None
