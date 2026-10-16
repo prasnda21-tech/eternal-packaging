@@ -134,6 +134,8 @@ def collect_order_embedded_downstream_hits(order: dict, line_idx: int) -> List[s
     for lc in order.get("loading_confirmations") or []:
         if not isinstance(lc, dict):
             continue
+        if lc.get("cancelled") or lc.get("deleted"):
+            continue
         if _line_idx_in_rows(lc.get("lines"), line_idx):
             hits.append("loading")
             break
@@ -146,6 +148,8 @@ def collect_order_embedded_downstream_hits(order: dict, line_idx: int) -> List[s
 
     for ev in order.get("delivery_confirmations") or []:
         if not isinstance(ev, dict):
+            continue
+        if ev.get("cancelled") or ev.get("is_cancelled") or ev.get("is_deleted") or ev.get("deleted"):
             continue
         items = ev.get("items") or ev.get("lines") or []
         if _line_idx_in_rows(items, line_idx):

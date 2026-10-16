@@ -118,6 +118,25 @@ describe("RolePermissionWorkspace", () => {
     unmount();
   });
 
+  test("expand all / collapse all module accordions", () => {
+    const { container, unmount } = mount();
+    expect(container.querySelector('[data-testid="role-perm-accordion-tools"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="role-perm-search-hint"]')).toBeTruthy();
+    act(() => {
+      container.querySelector('[data-testid="role-perm-expand-all"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="role-cat-toggle-pengaturan"]').getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('[data-testid="role-cat-grid-pengaturan"]')).toBeTruthy();
+    act(() => {
+      container.querySelector('[data-testid="role-perm-collapse-all"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="role-cat-toggle-po"]').getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="role-cat-grid-po"]')).toBeNull();
+    unmount();
+  });
+
   test("search filters label, key, and category", () => {
     const { container, rerender, unmount } = mount();
     rerender({ permQuery: "po.delete" });

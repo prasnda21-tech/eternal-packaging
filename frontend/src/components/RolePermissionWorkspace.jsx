@@ -112,6 +112,14 @@ export default function RolePermissionWorkspace({
     });
   };
 
+  const expandAllMods = () => {
+    setOpenMods(new Set(visibleModules.map(([mod]) => mod)));
+  };
+
+  const collapseAllMods = () => {
+    setOpenMods(new Set());
+  };
+
   const toggleCategoryAll = (mod, perms) => {
     const keys = perms.map((p) => p.key);
     const allOn = keys.every((k) => permsDraft.has(k));
@@ -281,6 +289,27 @@ export default function RolePermissionWorkspace({
                 </button>
               ))}
             </div>
+            <div className="role-perm-accordion-tools" data-testid="role-perm-accordion-tools">
+              <button
+                type="button"
+                className="ghost sm"
+                onClick={expandAllMods}
+                data-testid="role-perm-expand-all"
+              >
+                Buka semua
+              </button>
+              <button
+                type="button"
+                className="ghost sm"
+                onClick={collapseAllMods}
+                data-testid="role-perm-collapse-all"
+              >
+                Tutup semua
+              </button>
+            </div>
+            <p className="role-perm-search-hint" data-testid="role-perm-search-hint">
+              Izin sensitif ditandai SENSITIF. Simpan hanya mengirim perubahan yang Anda centang.
+            </p>
           </div>
         )}
       </div>

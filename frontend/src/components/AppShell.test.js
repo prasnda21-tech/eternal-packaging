@@ -36,10 +36,11 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/title=\{label\}/);
     expect(shell).toMatch(/rail-tooltip/);
     expect(shell).toMatch(/aria-label=\{label\}/);
-    expect(shell).not.toMatch(/rail-label/);
+    expect(shell).toMatch(/rail-label/);
+    expect(shell).toMatch(/showLabel=\{sidebarExpanded\}/);
   });
 
-  test("flyout stays to the right of the permanent 64px rail and does not shift main content", () => {
+  test("flyout stays to the right of the rail token and does not shift main content", () => {
     expect(shell).toMatch(/placeSidebarFlyout/);
     expect(shell).toMatch(/app-sidebar-slot/);
     expect(shell).toMatch(/style=\{flyoutStyle\}/);
@@ -47,15 +48,17 @@ describe("sidebar flyout interaction", () => {
     expect(css).toMatch(/\.app-sidebar-slot\{/);
     expect(css).toMatch(/\.app-shell\{--sidebar-rail:64px/);
     expect(css).toMatch(/grid-template-columns:var\(--sidebar-rail\) minmax\(0,1fr\)/);
-    expect(css).not.toMatch(/is-sidebar-expanded/);
+    expect(css).toMatch(/\[data-sidebar-mode="expanded"\]\{--sidebar-rail:220px\}/);
     expect(css).not.toMatch(/--sidebar-rail:240px/);
     expect(css).not.toMatch(/\.sidebar-flyout\{[^}]*top:12px/);
     expect(css).not.toMatch(/\.sidebar-flyout\{[^}]*left:8px;right:8px;top:56px/);
     expect(css).toMatch(/overflow-x:hidden/);
     expect(css).toMatch(/width:min\(280px,calc\(100vw - var\(--sidebar-rail\) - 16px\)\)/);
     expect(flyout).toMatch(/permanent compact vertical rail always opens to the right/);
-    expect(shell).not.toMatch(/sidebarExpanded/);
-    expect(shell).not.toMatch(/sidebar-mode-toggle/);
+    expect(shell).toMatch(/sidebarExpanded/);
+    expect(shell).toMatch(/sidebar-mode-toggle/);
+    expect(shell).toMatch(/data-sidebar-mode=\{sidebarMode\}/);
+    expect(shell).toMatch(/sidebarRailWidth\(sidebarMode\)/);
   });
 
   test("menu names routes and permission helpers stay the same", () => {
@@ -160,6 +163,7 @@ describe("sidebar flyout interaction", () => {
     expect(presentation).toMatch(/tooltipLabel: "SPK Antar Divisi"/);
     expect(presentation).not.toMatch(/labelCompact/);
     expect(presentation).not.toMatch(/labelExpanded/);
+    expect(presentation).toMatch(/export const SIDEBAR_EXPANDED_WIDTH = 220/);
   });
 
   test("Pengaturan rail opens the shared list flyout without navigating", () => {
@@ -189,8 +193,23 @@ describe("sidebar flyout interaction", () => {
     expect(presentation).not.toMatch(/ep\.desktopSidebar\.mode/);
     expect(presentation).not.toMatch(/readSidebarMode/);
     expect(presentation).not.toMatch(/writeSidebarMode/);
-    expect(shell).not.toMatch(/localStorage/);
+    expect(shell).toMatch(/resolveSidebarMode/);
+    expect(shell).toMatch(/writeSidebarMode/);
+    expect(shell).toMatch(/data-testid="sidebar-mode-toggle"/);
+    expect(shell).toMatch(/data-testid="sidebar-edge-toggle"/);
+    expect(css).toMatch(/\.sidebar-mode-toggle\{/);
     expect(shell).not.toMatch(/role === /);
+  });
+
+  test("collapsible mode keeps flyout submenu and user preference helpers outside presentation", () => {
+    expect(shell).toMatch(/from "\.\.\/lib\/sidebarMode"/);
+    expect(shell).toMatch(/toggleSidebarWidth/);
+    expect(shell).toMatch(/sidebarUserSetRef/);
+    expect(shell).toMatch(/defaultSidebarModeForWidth/);
+    expect(shell).toMatch(/BrandMark compact=\{!sidebarExpanded\}/);
+    expect(css).toMatch(/\.rail-label\{/);
+    expect(css).toMatch(/\[data-sidebar-mode="expanded"\] \.rail-label\{display:block\}/);
+    expect(css).toMatch(/\[data-sidebar-mode="expanded"\] \.rail-tooltip\{display:none\}/);
   });
 
   test("authenticated shell mounts web floating notification bell once", () => {

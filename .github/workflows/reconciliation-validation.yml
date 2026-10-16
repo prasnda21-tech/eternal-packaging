@@ -111,6 +111,11 @@ jobs:
           tests/test_quantity_invariants.py
       # Phase 2.2C revision suite must run alone: it sets DB_NAME at import and
       # previously hung the combined xdist job after ~87% with no further output.
+      # Capture status AFTER timeout/pytest (never inside `if ! …; status=$?`).
+      # Inside `if !`, bash resets $? to 0 because the if-compound succeeded —
+      # a failing suite then `exit 0` and the job stays false-green.
+      - name: Prove CI timeout exit-code capture
+        run: bash scripts/tests/test_ci_timeout_exit_capture.sh
       - name: Run sales invoice edit revision tests
         working-directory: backend
         timeout-minutes: 5
@@ -121,10 +126,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting isolated revision suite (serial, dedicated DB_NAME)"
-          if ! timeout --signal=TERM --kill-after=15s 180s \
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
             python -m pytest -vv -n 0 --durations=20 \
-            tests/test_sales_invoice_edit_revision.py; then
-            status=$?
+            tests/test_sales_invoice_edit_revision.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             echo "::error::sales invoice edit revision tests exited with status ${status}"
             echo "--- process snapshot ---"
             ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
@@ -144,10 +152,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting isolated business-cancel suite (serial, dedicated DB_NAME)"
-          if ! timeout --signal=TERM --kill-after=15s 180s \
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
             python -m pytest -vv -n 0 --durations=20 \
-            tests/test_sales_business_cancel.py; then
-            status=$?
+            tests/test_sales_business_cancel.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             echo "::error::sales business cancel tests exited with status ${status}"
             echo "--- process snapshot ---"
             ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
@@ -166,10 +177,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting isolated receipt edit-revision suite (serial, dedicated DB_NAME)"
-          if ! timeout --signal=TERM --kill-after=15s 180s \
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
             python -m pytest -vv -n 0 --durations=20 \
-            tests/test_sales_receipt_edit_revision.py; then
-            status=$?
+            tests/test_sales_receipt_edit_revision.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             echo "::error::sales receipt edit revision tests exited with status ${status}"
             echo "--- process snapshot ---"
             ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
@@ -188,10 +202,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting isolated lifecycle capability suite (serial, dedicated DB_NAME)"
-          if ! timeout --signal=TERM --kill-after=15s 180s \
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
             python -m pytest -vv -n 0 --durations=20 \
-            tests/test_sales_lifecycle_capability.py; then
-            status=$?
+            tests/test_sales_lifecycle_capability.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             echo "::error::sales lifecycle capability tests exited with status ${status}"
             echo "--- process snapshot ---"
             ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
@@ -210,10 +227,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Starting isolated sales list five-tab suite (serial, dedicated DB_NAME)"
-          if ! timeout --signal=TERM --kill-after=15s 180s \
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
             python -m pytest -vv -n 0 --durations=20 \
-            tests/test_sales_list_tabs.py; then
-            status=$?
+            tests/test_sales_list_tabs.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
             echo "::error::sales list five-tab tests exited with status ${status}"
             echo "--- process snapshot ---"
             ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
@@ -222,8 +242,7 @@ jobs:
             exit "${status}"
           fi
       # Cash-bank Accurate 1:N group match + Owner View pin DB_NAME at import.
-      # Capture status after the command (not inside `if ! …; status=$?`), or a
-      # failing suite is reported as exit 0 and the job stays green.
+      # Same exit-capture contract as the sales isolated suites above.
       - name: Run cash-bank recon group and owner tests
         working-directory: backend
         timeout-minutes: 5

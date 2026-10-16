@@ -166,12 +166,25 @@ def _po(**extra):
     return o
 
 
-def test_l1_delete_pass_when_not_delivered():
+def _cancel_related_sj(o):
+    """SJ-first correction: soft-cancel related shipment before Hapus Loading."""
+    for sh in o.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        sh["is_cancelled"] = True
+        sh["cancelled"] = True
+        sh["status"] = "cancelled"
+        sh["sj_status"] = "cancelled"
+
+
+def test_l1_delete_pass_when_sj_cancelled_and_not_delivered():
     o = _po()
     apply_loading_confirmation(
         o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 400}],
         confirmation_id="c1", confirmed_at="t1",
     )
+    assert validate_cancel_loading_confirmation(o, "c1")  # SJ still active
+    _cancel_related_sj(o)
     assert validate_cancel_loading_confirmation(o, "c1") is None
     cancel_loading_confirmation(o, "c1", actor={"email": "a@x.com"}, cancelled_at="t2")
     assert len(loading_confirmations_stored(o)) == 0
@@ -184,6 +197,8 @@ def test_l2_reject_when_confirmation_delivered():
         o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 400}],
         confirmation_id="c1", confirmed_at="t1",
     )
+    _cancel_related_sj(o)
+    o["delivery_confirmations"] = [{"shipment_id": "f1", "qty": 400}]
     assert delivered_qty_for_loading_confirmation(o, "c1") == 400
     assert validate_cancel_loading_confirmation(o, "c1")
 
@@ -207,6 +222,7 @@ def test_l4_other_loading_identical():
         o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 300}],
         confirmation_id="c2", confirmed_at="t2",
     )
+    _cancel_related_sj(o)
     cancel_loading_confirmation(o, "c1", actor={"email": "a@x.com"}, cancelled_at="t3")
     active = loading_confirmations_stored(o)
     assert len(active) == 1
@@ -221,6 +237,7 @@ def test_l5_sj_file_preserved():
         o, surat_jalan_id="f1", lines=[{"line_idx": 0, "qty": 100}],
         confirmation_id="c1", confirmed_at="t1",
     )
+    _cancel_related_sj(o)
     cancel_loading_confirmation(o, "c1", actor={"email": "a@x.com"}, cancelled_at="t2")
     assert o["surat_jalan_files"][0]["id"] == "f1"
 
@@ -236,6 +253,7 @@ def test_l6_recalc_remaining():
         confirmation_id="c2", confirmed_at="t2",
     )
     assert qty_confirmed_loading(o) == 600
+    _cancel_related_sj(o)
     cancel_loading_confirmation(o, "c2", actor={"email": "a@x.com"}, cancelled_at="t3")
     assert qty_confirmed_loading(o) == 400
 

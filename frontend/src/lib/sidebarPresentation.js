@@ -3,6 +3,8 @@
 import { NAV_KEYS } from "./navAccess";
 
 export const SIDEBAR_RAIL_WIDTH = 64;
+/** Expanded desktop rail width — kept in sync with sidebarMode.SIDEBAR_EXPANDED_WIDTH. */
+export const SIDEBAR_EXPANDED_WIDTH = 220;
 
 const PRODUCTION_TASK_KEYS = ["designer", "screener", "kepala_produksi", "helper", "operator", "packing"];
 const DELIVERY_TASK_KEYS = ["surat_jalan", "loading", "terkirim"];

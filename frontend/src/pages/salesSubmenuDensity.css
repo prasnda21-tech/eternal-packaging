@@ -1998,3 +1998,22 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
   font-size:12px;
 }
 .sd-density .fp-pager span{font-variant-numeric:tabular-nums}
+
+/* UX 9.0 Phase 2A — Faktur / sd-list identity hierarchy */
+.fp-invoice-page .sd-identity{
+  display:flex;flex-direction:column;gap:2px;min-width:0;
+}
+.fp-invoice-page .sd-customer{
+  font-size:13.5px;font-weight:700;letter-spacing:-0.01em;color:#0F172A;
+}
+.fp-invoice-page .sd-doc.is-static{
+  font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:#0F766E;
+}
+.fp-invoice-page .sd-list-toolbar{
+  gap:8px;align-items:center;
+}
+.fp-invoice-page .sd-list-empty{
+  padding:28px 16px;text-align:center;color:#64748B;
+}
+.fp-invoice-page .fp-status-main{font-weight:700}
+.fp-invoice-page .fp-status-sub{color:#64748B;font-size:11.5px}

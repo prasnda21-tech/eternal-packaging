@@ -1,4 +1,4 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PanelLeftClose, PanelLeftOpen, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
@@ -7,6 +7,15 @@ import { ROLES } from "../lib/constants";
 import { canAccessRoutePage } from "../lib/independentRoute";
 import { NAV_KEYS, TASK_NAV_ORDER, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
+import {
+  SIDEBAR_MODE_COLLAPSED,
+  SIDEBAR_MODE_EXPANDED,
+  defaultSidebarModeForWidth,
+  resolveSidebarMode,
+  sidebarRailWidth,
+  toggleSidebarMode,
+  writeSidebarMode,
+} from "../lib/sidebarMode";
 import { buildDesktopSidebar, groupedRailForPath, isDeliveryRailActive, isFinanceRailActive, isOperationalReportRailActive, isProductionRailActive, isSalesRailActive, isSalesReportPath, nextChevronMenu, railLabel } from "../lib/sidebarPresentation";
 import { canSeeSpkNav } from "../lib/spk";
 import { moduleFromPath } from "../lib/uiModule";
@@ -140,7 +149,7 @@ const TILE_ICONS = {
   audit: ScrollText,
 };
 
-const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, expanded, controls, active, open, onClick }, ref) {
+const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, expanded, controls, active, open, showLabel, onClick }, ref) {
   return (
     <button
       ref={ref}
@@ -154,12 +163,13 @@ const RailButton = forwardRef(function RailButton({ testid, label, icon: Icon, e
       data-testid={testid}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
+      {showLabel ? <span className="rail-label">{label}</span> : null}
       <span className="rail-tooltip">{label}</span>
     </button>
   );
 });
 
-function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate, badge }) {
+function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate, badge, showLabel }) {
   return (
     <NavLink
       to={to}
@@ -171,6 +181,7 @@ function RailNavLink({ to, testid, label, icon: Icon, end, onNavigate, badge }) 
       onClick={onNavigate}
     >
       <Icon size={20} strokeWidth={1.75} aria-hidden="true" />
+      {showLabel ? <span className="rail-label">{label}</span> : null}
       {badge ? (
         <span className="rail-unread-badge" data-testid={`${testid}-unread`}>
           {badge > 99 ? "99+" : badge}
@@ -205,6 +216,10 @@ export default function AppShell() {
   const hrPayrollActive = location.pathname.startsWith("/hr-payroll");
   const produksiActive = isProductionRailActive(location.pathname);
   const pengirimanActive = isDeliveryRailActive(location.pathname);
+  const userId = user?.id || user?._id || user?.email || "";
+  const [sidebarMode, setSidebarMode] = useState(SIDEBAR_MODE_COLLAPSED);
+  const [sidebarUserSet, setSidebarUserSet] = useState(false);
+  const sidebarExpanded = sidebarMode === SIDEBAR_MODE_EXPANDED;
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
   const [edgeTop, setEdgeTop] = useState(96);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
@@ -215,6 +230,32 @@ export default function AppShell() {
   const sidebarRef = useRef(null);
   const flyoutRef = useRef(null);
   const railRefs = useRef({});
+  const sidebarUserSetRef = useRef(false);
+
+  useEffect(() => {
+    sidebarUserSetRef.current = sidebarUserSet;
+  }, [sidebarUserSet]);
+
+  useEffect(() => {
+    const storage = typeof window !== "undefined" ? window.localStorage : null;
+    const width = typeof window !== "undefined" ? window.innerWidth : 1024;
+    const resolved = resolveSidebarMode({
+      storage,
+      userId,
+      viewportWidth: width,
+    });
+    setSidebarMode(resolved.mode);
+    setSidebarUserSet(resolved.userSet);
+  }, [userId]);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (sidebarUserSetRef.current) return;
+      setSidebarMode(defaultSidebarModeForWidth(window.innerWidth));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -345,7 +386,7 @@ export default function AppShell() {
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
     };
-  }, [activeSidebarMenu]);
+  }, [activeSidebarMenu, sidebarMode]);
 
   const doLogout = async () => {
     await logout();
@@ -357,6 +398,14 @@ export default function AppShell() {
   };
 
   const closeFlyout = () => setActiveSidebarMenu(null);
+
+  const toggleSidebarWidth = () => {
+    const next = toggleSidebarMode(sidebarMode);
+    setSidebarMode(next);
+    setSidebarUserSet(true);
+    const storage = typeof window !== "undefined" ? window.localStorage : null;
+    writeSidebarMode(storage, userId, next);
+  };
 
   const healthLabel = health.ok === true
     ? "Operasional · MongoDB Terhubung"
@@ -502,18 +551,24 @@ export default function AppShell() {
       nav?.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [activeSidebarMenu, edgeGroupId]);
+  }, [activeSidebarMenu, edgeGroupId, sidebarMode]);
 
   const toggleChevron = () => {
     setActiveSidebarMenu((cur) => nextChevronMenu(cur, edgeGroupId));
   };
 
   return (
-    <div className="app-shell" data-module={uiModule} data-ui-system="colorful">
+    <div
+      className="app-shell"
+      data-module={uiModule}
+      data-ui-system="colorful"
+      data-sidebar-mode={sidebarMode}
+      style={{ "--sidebar-rail": `${sidebarRailWidth(sidebarMode)}px` }}
+    >
       <div className="app-sidebar-slot">
       <aside className="app-sidebar" ref={sidebarRef}>
         <Link to="/" className="brand" title="Eternal Packaging" data-testid="sidebar-brand" onClick={closeFlyout}>
-          <BrandMark compact onDark />
+          <BrandMark compact={!sidebarExpanded} onDark />
         </Link>
         <nav className="app-sidebar-nav" aria-label="Menu utama">
           {sidebar.map((entry) => (
@@ -525,6 +580,7 @@ export default function AppShell() {
                 label={railLabel(entry)}
                 icon={RAIL_ICONS[entry.id]}
                 badge={entry.id === "chat" && chatUnread > 0 ? chatUnread : 0}
+                showLabel={sidebarExpanded}
                 onNavigate={closeFlyout}
               />
             ) : (
@@ -538,12 +594,28 @@ export default function AppShell() {
                   controls={entry.flyoutId}
                   active={!!railActive[entry.id]}
                   open={activeSidebarMenu === entry.id}
+                  showLabel={sidebarExpanded}
                   onClick={() => toggleMenu(entry.id)}
                 />
               </div>
             )
           ))}
         </nav>
+        <button
+          type="button"
+          className="sidebar-mode-toggle"
+          aria-label={sidebarExpanded ? "Ciutkan sidebar" : "Perluas sidebar"}
+          aria-pressed={sidebarExpanded}
+          data-testid="sidebar-mode-toggle"
+          onClick={toggleSidebarWidth}
+        >
+          {sidebarExpanded
+            ? <PanelLeftClose size={18} strokeWidth={1.75} aria-hidden="true" />
+            : <PanelLeftOpen size={18} strokeWidth={1.75} aria-hidden="true" />}
+          <span className="sidebar-mode-toggle-label">
+            {sidebarExpanded ? "Ciutkan menu" : "Perluas menu"}
+          </span>
+        </button>
         {groupedEntry ? (
           <button
             type="button"

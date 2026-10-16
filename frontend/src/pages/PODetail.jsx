@@ -20,6 +20,7 @@ import LoadingPanel from "../components/LoadingPanel";
 import OutletLocationModal from "../components/OutletLocationModal";
 import EditPoInfoModal from "../components/EditPoInfoModal";
 import StageBar from "../components/StageBar";
+import SalesProcessNav from "../components/SalesProcessNav";
 import { MetricCell, MetricRow, QtyOpsHead, statusClassFor } from "../components/qtyUi";
 import { terkirimQtySummary } from "../lib/deliveryHistory";
 import { trackingShareFromLink } from "../lib/liveTrackingLink";
@@ -901,6 +902,13 @@ export default function PODetail() {
           Lihat Semua Tahap <ChevronDown size={14} />
         </button>
       </div>
+
+      <SalesProcessNav
+        hasPerm={hasPerm}
+        orderId={order?.id || id}
+        poNumber={order?.po_number || ""}
+        invoiceId={proformaTarget?.invoice_id || ""}
+      />
 
       <section className="po-stage-ws-chrome" data-testid="po-stage-panel">
         <header className="po-stage-ws-chrome-head po-view-context" data-testid="po-view-context">

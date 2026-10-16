@@ -73,6 +73,15 @@
   color: var(--mod-ink, #155e75);
 }
 
+/* UX 9.0 Phase 2C ? required vs optional signal near label */
+.fs-field-label .fs-req,
+.fs-label .fs-req,
+.fs-required-mark {
+  color: #b91c1c;
+  font-weight: 700;
+  margin-left: 2px;
+}
+
 .fs-section-scroll-safe {
   overflow: visible;
 }
