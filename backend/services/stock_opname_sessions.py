@@ -12,11 +12,12 @@ Canonical valuation events when a valid HPP already exists. No GL posting.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, File, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from services.inventory_accounting import ITEM_TYPE_SERVICE
@@ -643,8 +644,13 @@ async def list_stock_opname_sessions(
 
 async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
     from services.physical_stock import _client, require_transaction_support
+    from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
 
-    await require_transaction_support(_client(db))
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+    if not standalone_on:
+        await require_transaction_support(_client(db))
     doc = await get_stock_opname_session(db, session_id, user=user)
     if doc["status"] in (STATUS_COUNTING, STATUS_REVIEW, STATUS_CONFIRMED):
         if doc["status"] == STATUS_CONFIRMED:
@@ -654,34 +660,47 @@ async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
         raise HTTPException(400, "Sesi stock opname sudah dibatalkan.")
     if doc["status"] != STATUS_DRAFT:
         raise HTTPException(400, "Cutoff hanya dapat dimulai dari draf.")
+
+    async def _cutoff_body(mongo_session=None):
+        current = await db[COLLECTION].find_one(
+            {"id": doc["id"]}, {"_id": 0}, session=mongo_session,
+        )
+        if not current:
+            raise HTTPException(404, "Sesi stock opname tidak ditemukan.")
+        if current.get("status") in (STATUS_COUNTING, STATUS_REVIEW):
+            return _public(current)
+        if current.get("status") != STATUS_DRAFT:
+            raise HTTPException(400, "Cutoff hanya dapat dimulai dari draf.")
+        lines = await _book_lines(db, mongo_session, warehouse_id=current["warehouse_id"])
+        cutoff_at = _now()
+        result = await db[COLLECTION].update_one(
+            {"id": current["id"], "status": STATUS_DRAFT},
+            {"$set": {
+                "status": STATUS_COUNTING,
+                "cutoff_at": cutoff_at,
+                "lines": lines,
+                "updated_at": cutoff_at,
+            }},
+            session=mongo_session,
+        )
+        if result.matched_count != 1:
+            fresh = await db[COLLECTION].find_one(
+                {"id": current["id"]}, {"_id": 0}, session=mongo_session,
+            )
+            if fresh and fresh.get("status") in (STATUS_COUNTING, STATUS_REVIEW):
+                return _public(fresh)
+            raise HTTPException(409, "Cutoff stock opname gagal karena perubahan bersamaan.")
+        saved = await db[COLLECTION].find_one(
+            {"id": current["id"]}, {"_id": 0}, session=mongo_session,
+        )
+        return _public(saved)
+
+    if standalone_on:
+        return await _cutoff_body(None)
+
     async with await _client(db).start_session() as mongo_session:
         async with mongo_session.start_transaction():
-            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0}, session=mongo_session)
-            if not current:
-                raise HTTPException(404, "Sesi stock opname tidak ditemukan.")
-            if current.get("status") in (STATUS_COUNTING, STATUS_REVIEW):
-                return _public(current)
-            if current.get("status") != STATUS_DRAFT:
-                raise HTTPException(400, "Cutoff hanya dapat dimulai dari draf.")
-            lines = await _book_lines(db, mongo_session, warehouse_id=current["warehouse_id"])
-            cutoff_at = _now()
-            result = await db[COLLECTION].update_one(
-                {"id": current["id"], "status": STATUS_DRAFT},
-                {"$set": {
-                    "status": STATUS_COUNTING,
-                    "cutoff_at": cutoff_at,
-                    "lines": lines,
-                    "updated_at": cutoff_at,
-                }},
-                session=mongo_session,
-            )
-            if result.matched_count != 1:
-                fresh = await db[COLLECTION].find_one({"id": current["id"]}, {"_id": 0}, session=mongo_session)
-                if fresh and fresh.get("status") in (STATUS_COUNTING, STATUS_REVIEW):
-                    return _public(fresh)
-                raise HTTPException(409, "Cutoff stock opname gagal karena perubahan bersamaan.")
-            saved = await db[COLLECTION].find_one({"id": current["id"]}, {"_id": 0}, session=mongo_session)
-            return _public(saved)
+            return await _cutoff_body(mongo_session)
 
 
 async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict], user: dict) -> dict:
@@ -985,12 +1004,157 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
             return _public(saved)
 
 
+async def _confirm_standalone(db, doc: dict, confirmation_key: str, user: dict) -> dict:
+    """Post opname lines one-by-one without multi-doc transactions. May return PARTIAL.
+
+    Safe resume: PARTIAL sessions re-post only non-POSTED lines. Concurrent confirms
+    are fenced by an atomic confirm_lock lease before any movement write.
+    """
+    from services.warehouse_stock_standalone import apply_opname_lines_standalone
+
+    actor = _actor(user)
+    if doc.get("status") == STATUS_CONFIRMED:
+        stored_key = str(doc.get("confirmation_key") or "")
+        if confirmation_key and stored_key and stored_key != confirmation_key:
+            raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+        return _public(doc)
+    if doc.get("status") not in (STATUS_REVIEW, "PARTIAL"):
+        raise HTTPException(400, "Konfirmasi hanya dapat dilakukan dari status REVIEW atau PARTIAL.")
+
+    resume = doc.get("status") == "PARTIAL"
+    if resume:
+        stored_key = str(doc.get("confirmation_key") or "")
+        if confirmation_key and stored_key and stored_key != confirmation_key:
+            raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+
+    now = datetime.now(timezone.utc)
+    lock_id = str(uuid.uuid4())
+    lease_expires = (now + timedelta(seconds=60)).isoformat()
+    claimed = await db[COLLECTION].find_one_and_update(
+        {
+            "id": doc["id"],
+            "status": {"$in": [STATUS_REVIEW, "PARTIAL"]},
+            "$or": [
+                {"confirm_lock": {"$exists": False}},
+                {"confirm_lock": None},
+                {"confirm_lock.expires_at": {"$lte": now.isoformat()}},
+            ],
+        },
+        {"$set": {
+            "confirm_lock": {
+                "id": lock_id,
+                "actor": actor,
+                "expires_at": lease_expires,
+                "claimed_at": now.isoformat(),
+            },
+            "updated_at": _now(),
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+        if current and current.get("status") == STATUS_CONFIRMED:
+            return _public(current)
+        raise HTTPException(409, "Konfirmasi stock opname gagal karena perubahan bersamaan.")
+
+    # Prefer freshest lines after lock (may already carry post_status from PARTIAL).
+    lines = [dict(line) for line in (claimed.get("lines") or doc.get("lines") or [])]
+    _require_complete(lines)
+    mode = session_mode(claimed)
+    if mode == MODE_OPERATIONAL:
+        _require_operational_count_times(lines)
+        lines = await _prepare_operational_lines(db, None, claimed, lines)
+    else:
+        for line in lines:
+            if resume and str(line.get("post_status") or "").upper() == "POSTED":
+                continue
+            qty = int(line["physical_count_qty"])
+            book = int(line.get("book_qty") or 0)
+            line["difference_qty"] = qty - book
+            line["book_qty_at_posting"] = book
+            line["target_qty"] = qty
+            line["net_movement_after_count"] = 0
+
+    occurred_at = _now()
+    try:
+        outcome = await apply_opname_lines_standalone(
+            db, claimed, lines, actor_id=actor, occurred_at=occurred_at, resume=resume,
+        )
+        by_line = {
+            str(row.get("line_id") or ""): row
+            for row in outcome.get("lines") or []
+        }
+        for line in lines:
+            lid = str(line.get("line_id") or "")
+            row = by_line.get(lid) or {}
+            if resume and str(line.get("post_status") or "").upper() == "POSTED" and not row:
+                continue
+            if row.get("skipped_resume"):
+                line["post_status"] = "POSTED"
+                continue
+            line["post_status"] = row.get("status") or "SKIPPED"
+            mov = row.get("movement") if isinstance(row.get("movement"), dict) else None
+            if mov and mov.get("id"):
+                line["movement_id"] = mov.get("id")
+            if row.get("error"):
+                line["post_error"] = row.get("error")
+            elif "post_error" in line and line.get("post_status") == "POSTED":
+                line.pop("post_error", None)
+
+        status = outcome.get("status") or STATUS_CONFIRMED
+        fields = {
+            "status": STATUS_CONFIRMED if status == "CONFIRMED" else status,
+            "mode": mode,
+            "lines": lines,
+            "confirmed_at": occurred_at,
+            "confirmed_by": actor,
+            "updated_at": occurred_at,
+            "standalone_post": {
+                "engine": outcome.get("engine"),
+                "posted_count": outcome.get("posted_count"),
+                "failed_count": outcome.get("failed_count"),
+                "status": status,
+                "resumed": resume,
+            },
+        }
+        if confirmation_key:
+            fields["confirmation_key"] = confirmation_key
+        result = await db[COLLECTION].update_one(
+            {
+                "id": doc["id"],
+                "confirm_lock.id": lock_id,
+                "status": {"$in": [STATUS_REVIEW, "PARTIAL"]},
+            },
+            {
+                "$set": fields,
+                "$unset": {"active_warehouse_key": "", "confirm_lock": ""},
+            },
+        )
+        if result.matched_count != 1:
+            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+            if current and current.get("status") in (STATUS_CONFIRMED, "PARTIAL"):
+                return _public(current)
+            raise HTTPException(409, "Konfirmasi stock opname gagal karena perubahan bersamaan.")
+        saved = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+        return _public(saved)
+    except Exception:
+        await db[COLLECTION].update_one(
+            {"id": doc["id"], "confirm_lock.id": lock_id},
+            {"$unset": {"confirm_lock": ""}},
+        )
+        raise
+
+
 async def confirm_stock_opname_session(db, session_id: str, payload: Optional[dict], user: dict) -> dict:
     from services.hpp_cutover import ensure_indexes, finalize_stock_opname_valuation
-    from services.r2_go_live import require_r2_authority_active
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
 
     payload = payload or {}
-    await require_r2_authority_active(db)
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+    if not r2_on and not standalone_on:
+        await require_r2_authority_active(db)  # raises 409 with existing message
     await ensure_indexes(db)
     doc = await get_stock_opname_session(db, session_id, user=user)
     confirmation_key = str(payload.get("idempotency_key") or payload.get("confirmation_key") or "").strip()
@@ -1004,8 +1168,23 @@ async def confirm_stock_opname_session(db, session_id: str, payload: Optional[di
             raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
         await finalize_stock_opname_valuation(db, doc, user)
         return await get_stock_opname_session(db, doc["id"])
+    if doc["status"] == "PARTIAL":
+        if not standalone_on:
+            raise HTTPException(400, "Sesi PARTIAL hanya dapat dilanjutkan pada mode warehouse standalone.")
+        stored_key = str(doc.get("confirmation_key") or "")
+        if confirmation_key and stored_key and stored_key != confirmation_key:
+            raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+        saved = await _confirm_standalone(db, doc, confirmation_key or stored_key, user)
+        if saved.get("status") == STATUS_CONFIRMED:
+            await finalize_stock_opname_valuation(db, saved, user)
+        return await get_stock_opname_session(db, saved["id"])
     if doc["status"] != STATUS_REVIEW:
         raise HTTPException(400, "Konfirmasi hanya dapat dilakukan dari status REVIEW.")
+    if standalone_on:
+        saved = await _confirm_standalone(db, doc, confirmation_key, user)
+        if saved.get("status") == STATUS_CONFIRMED:
+            await finalize_stock_opname_valuation(db, saved, user)
+        return await get_stock_opname_session(db, saved["id"])
     last_error = None
     saved = None
     for _attempt in range(5):

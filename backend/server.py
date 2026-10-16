@@ -6480,14 +6480,57 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
     from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active as _is_warehouse_stock_standalone_active,
+    )
     r2_authority_on = await _is_r2_authority_active(db)
+    standalone_stock_on = (not r2_authority_on) and await _is_warehouse_stock_standalone_active(db)
     # R2 ON: always R2 path — never fall back to PSS because balances are missing.
-    # R2 OFF: keep existing optional R2 path when balances already exist.
+    # Standalone ON (R2 OFF): warehouse pending-event path — never dual-write PSS/R2 txn.
+    # Else: keep existing optional R2 path when balances already exist, else PSS.
     if r2_authority_on:
         uses_r2_stock = bool(existing_order)
+        uses_standalone_stock = False
+    elif standalone_stock_on:
+        uses_r2_stock = False
+        uses_standalone_stock = bool(existing_order)
     else:
         uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+        uses_standalone_stock = False
     r2_request = {}
+    standalone_request = {}
+
+    def _plan_delivery_stock_lines(order, shipment, increment_qty):
+        from services.physical_stock_engine import plan_confirmed_sj_stock
+        if isinstance(shipment, dict):
+            plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+            if plan.get("error") or not plan.get("lines"):
+                from services.physical_stock import PhysicalStockValidationError
+                raise PhysicalStockValidationError(
+                    plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
+                )
+            return [
+                {
+                    "line_idx": int(ln["line_idx"]),
+                    "qty": int(ln["qty"]),
+                    "master_item_id": ln.get("master_item_id"),
+                    "line_id": ln.get("line_id"),
+                }
+                for ln in plan["lines"]
+            ]
+        items = [
+            (idx, line) for idx, line in enumerate(order.get("line_items") or [])
+            if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
+        ]
+        if len(items) == 1 and int(increment_qty or 0) > 0:
+            idx, line = items[0]
+            return [{
+                "line_idx": idx,
+                "qty": int(increment_qty),
+                "master_item_id": line.get("master_item_id"),
+                "line_id": line.get("line_id"),
+            }]
+        return None
 
     try:
         if r2_authority_on and existing_order and op.get("ready"):
@@ -6547,7 +6590,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 except PhysicalStockNotFoundError as exc:
                     raise HTTPException(404, str(exc)) from exc
 
-        if existing_order and op.get("ready") and not uses_r2_stock:
+        if existing_order and op.get("ready") and not uses_r2_stock and not uses_standalone_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
             )
@@ -6649,6 +6692,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 r2_request["confirmation_id"] = action_id or conf_holder["conf"].get("id")
                 r2_request["shipment"] = selected_sh
                 r2_request["increment"] = increment
+            if uses_standalone_stock and conf_holder.get("conf"):
+                standalone_request["confirmation_id"] = (
+                    action_id or conf_holder["conf"].get("id")
+                )
+                standalone_request["shipment"] = selected_sh
+                standalone_request["increment"] = increment
 
         async def _post_r2_delivery(session, order):
             if not r2_request.get("confirmation_id"):
@@ -6657,38 +6706,10 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 PhysicalStockValidationError,
                 apply_confirmed_sales_delivery,
             )
-            from services.physical_stock_engine import plan_confirmed_sj_stock
             shipment = r2_request.get("shipment")
-            lines = None
-            if isinstance(shipment, dict):
-                plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
-                if plan.get("error") or not plan.get("lines"):
-                    raise PhysicalStockValidationError(
-                        plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
-                    )
-                lines = [
-                    {
-                        "line_idx": int(ln["line_idx"]),
-                        "qty": int(ln["qty"]),
-                        "master_item_id": ln.get("master_item_id"),
-                        "line_id": ln.get("line_id"),
-                    }
-                    for ln in plan["lines"]
-                ]
-            else:
-                items = [
-                    (idx, line) for idx, line in enumerate(order.get("line_items") or [])
-                    if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
-                ]
-                increment_qty = int(r2_request.get("increment") or 0)
-                if len(items) == 1 and increment_qty > 0:
-                    idx, line = items[0]
-                    lines = [{
-                        "line_idx": idx,
-                        "qty": increment_qty,
-                        "master_item_id": line.get("master_item_id"),
-                        "line_id": line.get("line_id"),
-                    }]
+            lines = _plan_delivery_stock_lines(
+                order, shipment, r2_request.get("increment"),
+            )
             if not lines:
                 raise PhysicalStockValidationError(
                     "Baris pengiriman tidak dapat dipetakan ke master item"
@@ -6713,6 +6734,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
         try:
             await prepare_delivery_commit(db, op, claimed_stock)
+            # Standalone posts AFTER order persist (no multi-doc txn). R2 keeps in-txn hook.
             token = _r2_delivery_hook.set(_post_r2_delivery if uses_r2_stock else None)
             try:
                 order = await _with_quantity_lock(
@@ -6792,7 +6814,48 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         if claimed_stock and (conf_holder.get("conf") or recorded):
             from services.physical_stock_engine import finalize_delivery_confirmed_stock
             await finalize_delivery_confirmed_stock(db, claimed_stock, user)
-    elif conf_holder.get("conf") and not uses_r2_stock:
+    elif uses_standalone_stock and (conf_holder.get("conf") or recorded) and standalone_request.get("confirmation_id"):
+        # Durable delivery flow after order confirmation is persisted (no multi-doc txn).
+        from services.physical_stock import (
+            PhysicalStockConflictError,
+            PhysicalStockUnavailableError,
+            PhysicalStockValidationError,
+        )
+        from services.warehouse_stock_standalone import (
+            apply_confirmed_sales_delivery_standalone,
+        )
+        shipment = standalone_request.get("shipment")
+        lines = _plan_delivery_stock_lines(
+            order, shipment, standalone_request.get("increment"),
+        )
+        if not lines:
+            raise HTTPException(400, "Baris pengiriman tidak dapat dipetakan ke master item")
+        sj_src = shipment if isinstance(shipment, dict) else {}
+        sj_link = str(sj_src.get("sales_delivery_id") or sj_src.get("id") or "").strip()
+        try:
+            stock_result = await apply_confirmed_sales_delivery_standalone(
+                db,
+                order=order,
+                confirmation_id=standalone_request["confirmation_id"],
+                lines=lines,
+                actor_id=str(user.get("id") or user.get("email") or "user"),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+                reason="Konfirmasi terkirim",
+                sales_delivery_id=sj_link or None,
+            )
+            r2_stock_warnings_holder["warnings"] = list(
+                stock_result.get("stock_warnings") or []
+            )
+            r2_stock_warnings_holder["warehouse_id"] = stock_result.get("warehouse_id")
+            r2_stock_warnings_holder["branch_id"] = stock_result.get("branch_id")
+        except PhysicalStockValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PhysicalStockConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except PhysicalStockUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
+    elif conf_holder.get("conf") and not uses_r2_stock and not uses_standalone_stock:
         # R2 path already posted SALES_DELIVERY in-txn; never dual-write PSS.
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
@@ -6842,13 +6905,15 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     if isinstance(order, dict):
         order.pop("delivery_confirm_fence", None)
     result = {"order": _public_saved_order(order, view)}
-    if r2_authority_on:
+    if r2_authority_on or uses_standalone_stock:
         result["stock_warnings"] = list(r2_stock_warnings_holder.get("warnings") or [])
         result["has_shortage_warning"] = any(
             w.get("has_shortage") for w in result["stock_warnings"]
         )
         result["warehouse_id"] = r2_stock_warnings_holder.get("warehouse_id")
         result["branch_id"] = r2_stock_warnings_holder.get("branch_id")
+        if uses_standalone_stock:
+            result["stock_engine"] = "warehouse_standalone"
     return result
 
 
@@ -13249,6 +13314,11 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
         cancel_sales_delivery_document,
         reverse_r2_deliveries_for_sales_delivery,
     )
+    from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active_cancel
+    from services.warehouse_stock_standalone import (
+        cancel_sales_delivery_document_standalone,
+        is_warehouse_stock_standalone_active as _is_standalone_for_cancel,
+    )
     blocker = await _sales_delivery_delete_blocker(delivery)
     already_cancelled = bool(
         delivery.get("is_cancelled")
@@ -13257,15 +13327,25 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     r2_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
     needs_soft_cancel = bool(blocker or already_cancelled or r2_ids)
     actor_id = str(user.get("id") or user.get("email") or "user")
+    r2_on_cancel = await _is_r2_authority_active_cancel(db)
+    standalone_cancel = (not r2_on_cancel) and await _is_standalone_for_cancel(db)
 
     if needs_soft_cancel:
         try:
-            result = await cancel_sales_delivery_document(
-                db,
-                delivery,
-                actor_id=actor_id,
-                reason="Pembatalan Surat Jalan",
-            )
+            if standalone_cancel:
+                result = await cancel_sales_delivery_document_standalone(
+                    db,
+                    delivery,
+                    actor_id=actor_id,
+                    reason="Pembatalan Surat Jalan",
+                )
+            else:
+                result = await cancel_sales_delivery_document(
+                    db,
+                    delivery,
+                    actor_id=actor_id,
+                    reason="Pembatalan Surat Jalan",
+                )
         except PhysicalStockNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
         except PhysicalStockAbortError as exc:
@@ -13285,6 +13365,7 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
                 "r2_reversal": result.get("r2_reversal"),
                 "qty_delivered": result.get("qty_delivered"),
                 "delivery_status": result.get("delivery_status"),
+                "engine": result.get("engine"),
             },
         )
         return {
@@ -13300,6 +13381,7 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
             "qty_delivered": result.get("qty_delivered"),
             "delivery_status": result.get("delivery_status"),
             "current_stage": result.get("current_stage"),
+            "stock_engine": result.get("engine"),
             "message": "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi.",
         }
 
@@ -13882,11 +13964,20 @@ async def master_item_physical_opening_balance_post(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
+    """Create one OPENING_BALANCE per warehouse.
+
+    Prefers R2 transactional engine when r2_authority_active. Otherwise uses
+    warehouse_stock_standalone (pending-event, no multi-doc txn) when that flag
+    is enabled. Never bypasses either gate.
+    """
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
     from services.branch_access import authorize_stock_location
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active,
+        post_opening_balance_standalone,
+        require_warehouse_stock_standalone,
+    )
     body = payload or {}
     await authorize_stock_location(
         db,
@@ -13905,7 +13996,12 @@ async def master_item_physical_opening_balance_post(
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+            return await post_opening_balance_standalone(db, item_id, body, actor_id=actor_id)
+        await require_r2_authority_active(db)
         return await post_opening_balance(db, item_id, body, actor_id=actor_id)
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -13936,10 +14032,14 @@ async def master_item_physical_adjustment_post(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    """Correct one warehouse to a target physical qty (R2 txn or standalone CAS)."""
     from services.branch_access import authorize_stock_location
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        adjust_to_target_standalone,
+        is_warehouse_stock_standalone_active,
+        require_warehouse_stock_standalone,
+    )
     from services.product_stock_state import require_physical_stock_correction_access
 
     if not _adjustment_allowed(user):
@@ -13964,7 +14064,12 @@ async def master_item_physical_adjustment_post(
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+            return await adjust_to_target_standalone(db, item_id, body, actor_id=actor_id)
+        await require_r2_authority_active(db)
         return await adjust_physical_stock_to_target(db, item_id, body, actor_id=actor_id)
     except PhysicalStockValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
