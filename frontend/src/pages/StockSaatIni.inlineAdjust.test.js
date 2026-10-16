@@ -250,4 +250,115 @@ describe("Stock Saat Ini inline physical correction", () => {
     act(() => root.unmount());
     container.remove();
   });
+
+  test("selected warehouse filter scopes adjust + opname link to that warehouse id", async () => {
+    const uatBranch = { id: "br-uat", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true };
+    const whA = { id: "wh-a", branch_id: "br-uat", code: "GUD-A", name: "Gudang A", active: true, is_operational: true };
+    const whB = { id: "wh-b", branch_id: "br-uat", code: "GUD-B", name: "Gudang B", active: true, is_operational: true };
+    api.branches.mockResolvedValue({ items: [uatBranch] });
+    api.warehouses.mockResolvedValue({ items: [whA, whB] });
+    api.physicalStockCatalog.mockImplementation(async (params = {}) => ({
+      ...catalog(),
+      can_adjust_physical_stock: true,
+      can_switch_branches: true,
+      r2_authority_active: true,
+      stock_read_mode: "r2",
+      effective_branch_id: params.branch_id || uatBranch.id,
+      effective_branch_code: "UAT-YGY",
+      warehouse_count: 2,
+      items: [{
+        ...ITEM,
+        physical_qty: 20,
+        baseline_status: "unreconciled",
+        baseline_label: "Belum direkonsiliasi",
+        warehouse_balances: [{
+          warehouse_id: "wh-a",
+          warehouse_code: "GUD-A",
+          physical_qty: 20,
+          balance_present: true,
+          baseline_status: "unreconciled",
+        }],
+      }],
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const whSelect = container.querySelector('[data-testid="stock-warehouse-select"]');
+    expect(whSelect).not.toBeNull();
+    await act(async () => {
+      whSelect.value = "wh-a";
+      whSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(api.physicalStockCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({ branch_id: "br-uat", warehouse_id: "wh-a" }),
+    );
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik");
+    expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toBe(
+      "/persediaan/stock-opname?warehouse_id=wh-a",
+    );
+    expect(container.querySelector('[data-testid="stock-baseline-item-1"]')?.textContent).toMatch(/Belum direkonsiliasi/i);
+    expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-balance-present")).toBe("true");
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    // Single selected warehouse → inline edit, not multi-warehouse modal.
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).not.toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("warehouse without balance shows Belum tersedia, not zero", async () => {
+    const uatBranch = { id: "br-uat", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true };
+    const whB = { id: "wh-b", branch_id: "br-uat", code: "GUD-B", name: "Gudang B", active: true, is_operational: true };
+    api.branches.mockResolvedValue({ items: [uatBranch] });
+    api.warehouses.mockResolvedValue({ items: [whB] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      can_adjust_physical_stock: true,
+      r2_authority_active: true,
+      stock_read_mode: "r2",
+      effective_branch_id: uatBranch.id,
+      effective_branch_code: "UAT-YGY",
+      warehouse_count: 1,
+      items: [{
+        ...ITEM,
+        item_code: "GR-FIN-601-001",
+        physical_qty: 0,
+        qty_tersedia: 0,
+        qty_tersedia_valid: false,
+        baseline_status: "unreconciled",
+        baseline_label: "Saldo awal belum direkonsiliasi",
+        warehouse_balances: [{
+          warehouse_id: "wh-b",
+          warehouse_code: "GUD-B",
+          physical_qty: null,
+          balance_present: false,
+          baseline_status: "unreconciled",
+        }],
+      }],
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      const sel = container.querySelector('[data-testid="stock-warehouse-select"]');
+      sel.value = "wh-b";
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const physical = container.querySelector('[data-testid="stock-physical-item-1"]');
+    expect(physical?.getAttribute("data-balance-present")).toBe("false");
+    expect(physical?.textContent).toMatch(/Belum tersedia/i);
+    expect(physical?.textContent).not.toMatch(/^0|[^0-9]0[^0-9]/);
+    expect(container.querySelector('[data-testid="stock-available-invalid-item-1"]')?.textContent).toMatch(/Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-baseline-item-1"]')?.textContent).toMatch(/belum direkonsiliasi/i);
+    act(() => root.unmount());
+    container.remove();
+  });
 });

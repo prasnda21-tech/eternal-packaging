@@ -7,8 +7,10 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { goodsReceiptWarehouseChoice } from "../lib/physicalStockView";
 import {
+  canOfferPurchaseReceive,
   errDetail,
   friendlyLoadError,
+  mergePurchaseOrderIntoList,
   newIdempotencyKey,
   purchaseStatusPillClass,
   purchaseRowInteractionProps,
@@ -48,7 +50,7 @@ function emptyLine() {
 
 export default function PenerimaanBarang() {
   const { hasPerm } = useAuth();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canSync = hasPerm("purchase_receipts.sync");
   const canExport = hasPerm("purchase_receipts.export");
   const canCreate = hasPerm("purchase_receipts.receive");
@@ -176,9 +178,23 @@ export default function PenerimaanBarang() {
         const choice = goodsReceiptWarehouseChoice(branchRes.items || [], warehouseRes.items || []);
         setRecvWarehouseChoice(choice);
         setRecvWarehouseId(choice.warehouseId || "");
+        if (choice.blocked) {
+          setRecvErr("Penerimaan tidak dapat disimpan: belum ada gudang aktif pada cabang yang diizinkan.");
+        } else {
+          setRecvErr((prev) => (
+            String(prev || "").startsWith("Gagal memuat gudang")
+            || String(prev || "").includes("belum ada gudang aktif")
+              ? ""
+              : prev
+          ));
+        }
       })
-      .catch(() => {
-        if (!cancelled) setRecvErr("Gagal memuat gudang penerimaan.");
+      .catch((ex) => {
+        if (cancelled) return;
+        // Do not disguise API/network failures as “no warehouse”.
+        setRecvWarehouseChoice({ rows: [], warehouseId: "", blocked: true, explicit: false });
+        setRecvWarehouseId("");
+        setRecvErr(`Gagal memuat gudang penerimaan. ${errDetail(ex)}`.trim());
       });
     return () => { cancelled = true; };
   }, [receiveOpen]);
@@ -280,15 +296,19 @@ export default function PenerimaanBarang() {
           include_cancelled: true,
         }),
       ]);
-      setPoDetail(res.order);
+      const order = res.order;
+      setPoDetail(order);
+      setPoOrders((current) => mergePurchaseOrderIntoList(current, order));
       setPoReceipts((current) => [
         ...current.filter(
           (receipt) => String(receipt.purchase_order_id || "") !== String(poId),
         ),
         ...(receiptRes.receipts || []),
       ]);
+      return order;
     } catch (ex) {
       setPoErr(errDetail(ex));
+      return null;
     } finally {
       setPoDetailLoading(false);
     }
@@ -299,6 +319,20 @@ export default function PenerimaanBarang() {
     setRecvPoId("");
     setRecvPreview(null);
     setRecvBusy(false);
+  };
+
+  /** After a successful PO-linked GR: refresh list, eligible set, detail, receipts from API. */
+  const refreshAfterPoGoodsReceipt = async (poId) => {
+    const id = String(poId || "").trim();
+    await refreshSideData();
+    await loadPoOrders();
+    if (id) {
+      await openPoReceivingDetail(id);
+    }
+    // Drop deep-link receive query so remount does not reopen a finished receive.
+    if (searchParams.get("purchase_order_id") || searchParams.get("action")) {
+      setSearchParams({}, { replace: true });
+    }
   };
 
   const doSync = async () => {
@@ -442,18 +476,20 @@ export default function PenerimaanBarang() {
     setRecvErr("");
     setRecvMsg("");
     try {
+      const poId = recvPreview.purchase_order_id;
       const res = await api.createPurchaseGoodsReceipt({
-        purchase_order_id: recvPreview.purchase_order_id,
+        purchase_order_id: poId,
         receipt_date: recvDate,
         warehouse_id: recvWarehouseId,
         lines: qtyLines,
         idempotency_key: newIdempotencyKey(),
       });
-      setRecvMsg(`Penerimaan terhadap PO tercatat: ${res.receipt.receipt_number}`);
-      await loadPoOrders();
-      await refreshSideData();
+      const receiptNumber = res.receipt?.receipt_number || "";
+      setRecvMsg(`Penerimaan terhadap PO tercatat: ${receiptNumber}`);
       closeReceive();
-      setOk(`Penerimaan ${res.receipt.receipt_number} tersimpan`);
+      setOk(`Penerimaan ${receiptNumber} tersimpan`);
+      // Invalidate local PO progress/history from API — do not leave Belum Diterima/sisa stale.
+      await refreshAfterPoGoodsReceipt(poId);
     } catch (ex) {
       setRecvErr(errDetail(ex));
     } finally {
@@ -946,7 +982,7 @@ export default function PenerimaanBarang() {
                     <button type="button" className="ghost" onClick={() => setPoDetail(null)} data-testid="btn-back-po-list">
                       Kembali ke daftar
                     </button>
-                    {canReceivePo && Number(poDetail.receiving_progress?.remaining_qty) > 0 && (
+                    {canReceivePo && canOfferPurchaseReceive(poDetail) && (
                       <button
                         type="button"
                         className="primary"

@@ -33,6 +33,20 @@ export function friendlyLoadError(ex, fallback = "Tidak dapat memuat data. Perik
   return detail;
 }
 
+/** Replace or prepend one PO in the receive list from a fresh API order snapshot. */
+export function mergePurchaseOrderIntoList(orders, order) {
+  if (!order || !order.id) return Array.isArray(orders) ? orders : [];
+  const rest = (Array.isArray(orders) ? orders : []).filter(
+    (row) => String(row?.id || "") !== String(order.id),
+  );
+  return [order, ...rest];
+}
+
+/** Offer another goods receipt only while remaining receivable qty is positive. */
+export function canOfferPurchaseReceive(order) {
+  return Number(order?.receiving_progress?.remaining_qty) > 0;
+}
+
 /** Compact receiving status label for operators. */
 export function shortReceivingStatus(status) {
   const s = String(status || "").trim().toUpperCase();

@@ -27,12 +27,17 @@ from services.accurate import (
     sanitize_accurate_error,
 )
 from services.master_items import (
+    ACCURATE_ID_PARTIAL_INDEX,
+    CODE_CLAIMS_INDEX,
     COLLECTION,
+    INDEX_NOT_READY_MSG,
+    LEGACY_ACCURATE_ID_INDEX,
     UNKNOWN_ITEM_MSG,
     MasterItemUnresolvedError,
     build_list_query,
     create_local_master_item,
     list_master_items,
+    local_master_create_index_status,
     lookup_masters_by_accurate_ids,
     public_master_item,
     resolve_line_production_process,
@@ -43,6 +48,29 @@ from services.master_items import (
     upsert_master_item,
 )
 from fastapi import HTTPException
+
+
+def _ready_master_indexes():
+    return {
+        "_id_": {"key": [("_id", 1)]},
+        ACCURATE_ID_PARTIAL_INDEX: {
+            "key": [("accurate_item_id", 1)],
+            "unique": True,
+            "partialFilterExpression": {
+                "accurate_item_id": {"$exists": True, "$type": "string", "$gt": ""},
+            },
+        },
+    }
+
+
+def _ready_claim_indexes():
+    return {
+        "_id_": {"key": [("_id", 1)]},
+        CODE_CLAIMS_INDEX: {
+            "key": [("code_key", 1)],
+            "unique": True,
+        },
+    }
 
 
 def _await(coro):
@@ -71,8 +99,9 @@ class FakeCursor:
 
 
 class FakeCollection:
-    def __init__(self):
+    def __init__(self, indexes=None):
         self.docs = []
+        self._indexes = dict(indexes or {})
 
     def _match(self, doc, query):
         if not query:
@@ -188,16 +217,21 @@ class FakeCollection:
         return type("R", (), {"deleted_count": 0})()
 
     async def index_information(self):
-        return {}
+        return dict(self._indexes)
 
     async def drop_index(self, name):
+        self._indexes.pop(name, None)
         return None
 
 
 class FakeDB:
-    def __init__(self):
-        self.master_items = FakeCollection()
-        self.master_item_code_claims = FakeCollection()
+    def __init__(self, *, ready_indexes=True):
+        if ready_indexes:
+            self.master_items = FakeCollection(_ready_master_indexes())
+            self.master_item_code_claims = FakeCollection(_ready_claim_indexes())
+        else:
+            self.master_items = FakeCollection()
+            self.master_item_code_claims = FakeCollection()
 
     def __getitem__(self, name):
         if name == COLLECTION:
@@ -1301,6 +1335,96 @@ def test_create_local_insert_failure_releases_claim():
     }))
     assert created["origin"] == "local"
     assert len(db.master_item_code_claims.docs) == 1
+
+
+def test_create_local_rejects_when_indexes_missing_no_writes():
+    db = FakeDB(ready_indexes=False)
+    status = _await(local_master_create_index_status(db))
+    assert status["local_create_ready"] is False
+    try:
+        _await(create_local_master_item(db, {
+            "item_code": "NOIDX-1",
+            "item_name": "Should 503",
+            "item_type": "INVENTORY",
+            "unit": "pcs",
+            "is_active": True,
+        }))
+        assert False, "expected 503"
+    except HTTPException as exc:
+        assert exc.status_code == 503
+        assert INDEX_NOT_READY_MSG in str(exc.detail)
+    assert db.master_items.docs == []
+    assert db.master_item_code_claims.docs == []
+
+
+def test_create_local_rejects_when_legacy_full_unique_present_no_writes():
+    db = FakeDB(ready_indexes=True)
+    db.master_items._indexes[LEGACY_ACCURATE_ID_INDEX] = {
+        "key": [("accurate_item_id", 1)],
+        "unique": True,
+    }
+    status = _await(local_master_create_index_status(db))
+    assert status["legacy_full_unique_present"] is True
+    assert status["local_create_ready"] is False
+    try:
+        _await(create_local_master_item(db, {
+            "item_code": "LEGACY-1",
+            "item_name": "Blocked",
+            "item_type": "INVENTORY",
+            "unit": "pcs",
+            "is_active": True,
+        }))
+        assert False, "expected 503"
+    except HTTPException as exc:
+        assert exc.status_code == 503
+    assert db.master_items.docs == []
+    assert db.master_item_code_claims.docs == []
+
+
+def test_create_local_rejects_when_claims_index_missing_no_writes():
+    db = FakeDB(ready_indexes=True)
+    db.master_item_code_claims._indexes = {"_id_": {"key": [("_id", 1)]}}
+    status = _await(local_master_create_index_status(db))
+    assert status["code_claims"] is False
+    assert status["local_create_ready"] is False
+    try:
+        _await(create_local_master_item(db, {
+            "item_code": "NOCLAIM-1",
+            "item_name": "Blocked",
+            "item_type": "SERVICE",
+            "unit": "pcs",
+            "is_active": True,
+        }))
+        assert False, "expected 503"
+    except HTTPException as exc:
+        assert exc.status_code == 503
+    assert db.master_items.docs == []
+    assert db.master_item_code_claims.docs == []
+
+
+def test_create_local_rejects_when_partial_index_name_wrong_definition():
+    """Name alone is not enough — wrong definition under expected name fails ready."""
+    db = FakeDB(ready_indexes=True)
+    db.master_items._indexes[ACCURATE_ID_PARTIAL_INDEX] = {
+        "key": [("accurate_item_id", 1)],
+        "unique": True,
+        # missing partialFilterExpression → treated as legacy-shaped / not ready partial
+    }
+    status = _await(local_master_create_index_status(db))
+    assert status["local_create_ready"] is False
+    try:
+        _await(create_local_master_item(db, {
+            "item_code": "BADPART-1",
+            "item_name": "Blocked",
+            "item_type": "INVENTORY",
+            "unit": "pcs",
+            "is_active": True,
+        }))
+        assert False, "expected 503"
+    except HTTPException as exc:
+        assert exc.status_code == 503
+    assert db.master_items.docs == []
+    assert db.master_item_code_claims.docs == []
 
 
 def test_master_production_process_default_and_sync_preserve():

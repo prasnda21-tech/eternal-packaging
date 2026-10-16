@@ -7,6 +7,7 @@ import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
 import {
+  bookPhysicalDisplay,
   isOperationalWarehouse,
   openingReady,
   operationalOpeningWarehouses,
@@ -14,7 +15,6 @@ import {
   stockEmptyMessage,
   warehouseChoices,
   warehouseLocationLabel,
-  yogyakartaWarehouses,
 } from "../lib/physicalStockView";
 import BranchScopeSelect from "../components/BranchScopeSelect";
 
@@ -115,11 +115,19 @@ export default function StockSaatIni() {
       (row) => row.active !== false && isOperationalWarehouse(row),
     )
     : [];
-  const adjustWarehouses = effectiveBranchId
-    ? warehouseChoices(warehouses, effectiveBranchId).filter((row) => row.active !== false)
-    : yogyakartaWarehouses(branches, warehouses);
-  const singleWarehouse = adjustWarehouses.length === 1 ? adjustWarehouses[0] : null;
   const selectedFilterWarehouse = filterWarehouses.find((row) => row.id === warehouseId) || null;
+  // Adjust targets the selected warehouse when filtered; otherwise all active
+  // warehouses on the selected branch (ID-scoped — no YGY name/code hardcode).
+  const branchAdjustWarehouses = effectiveBranchId
+    ? warehouseChoices(warehouses, effectiveBranchId).filter((row) => row.active !== false)
+    : [];
+  const adjustWarehouses = selectedFilterWarehouse
+    ? [selectedFilterWarehouse]
+    : branchAdjustWarehouses;
+  const singleWarehouse = adjustWarehouses.length === 1 ? adjustWarehouses[0] : null;
+  const opnameHref = warehouseId
+    ? `/persediaan/stock-opname?warehouse_id=${encodeURIComponent(warehouseId)}`
+    : "/persediaan/stock-opname";
 
   const beginAdjust = (item) => {
     if (savingAdjust || saveLock.current) return;
@@ -183,7 +191,7 @@ export default function StockSaatIni() {
   });
 
   const physicalHeader = r2Active
-    ? (selectedFilterWarehouse ? "Saldo Buku R2 (gudang)" : "Saldo Buku R2 (cabang)")
+    ? "Stock Fisik"
     : "Stock Fisik (perusahaan)";
   const download = () => {
     const header = [
@@ -192,8 +200,8 @@ export default function StockSaatIni() {
       "Satuan Dasar",
       "Lokasi",
       physicalHeader,
-      "Qty Pesanan (cabang)",
-      "Qty Belum Terkirim (cabang)",
+      "Qty Pesanan",
+      "Qty Belum Terkirim",
       "Qty Tersedia",
       "Baseline",
       "Terakhir Update",
@@ -203,15 +211,16 @@ export default function StockSaatIni() {
       const location = selectedFilterWarehouse
         ? warehouseLocationLabel(selectedFilterWarehouse, branches)
         : (data?.effective_branch_code || "Cabang");
+      const book = bookPhysicalDisplay(row, { warehouseId: selectedFilterWarehouse?.id || "" });
       const cells = [
         row.item_code,
         row.item_name,
         row.base_unit,
         location,
-        row.physical_qty,
+        book.present ? book.qty : "",
         row.qty_pesanan,
         row.qty_belum_terkirim,
-        row.qty_tersedia,
+        row.qty_tersedia_valid === false ? "" : row.qty_tersedia,
         row.baseline_status || "",
         row.updated_at || "",
       ].map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`);
@@ -258,33 +267,30 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="stock-title">Stock Saat Ini</h1>
-          <p className="subhead" data-testid="stock-subtitle">Qty Tersedia = Stock Fisik - Qty Pesanan - Qty Belum Terkirim. Nilai negatif menunjukkan kebutuhan stock.</p>
+          <p className="subhead" data-testid="stock-subtitle">Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim. Nilai negatif = kebutuhan stok (tidak memblokir operasional).</p>
           {data && (
             <p className="muted small" data-testid="stock-read-mode">
               {r2Active
-                ? "Mode R2 aktif — sumber stok fisik: physical_stock_balances per cabang/gudang (bukan gabungan semua gudang)."
-                : "Mode kompatibilitas pra-cutover — stok fisik legacy digabung perusahaan (product_stock_state, baca saja); bukan saldo per gudang."}
+                ? "Mode R2 — stok fisik per cabang/gudang."
+                : (data.stock_read_mode_label
+                  || "Mode kompatibilitas — stok fisik legacy perusahaan (bukan per gudang).")}
             </p>
           )}
           {data && !r2Active && (
             <p className="muted small" data-testid="stock-compat-branch-note">
               {data.physical_qty_note
-                || "Angka di kolom Stock Fisik (perusahaan) adalah gabungan legacy company-wide — jangan dibaca sebagai saldo gudang. Filter cabang tidak mengubah qty fisik legacy. Opname/adjustment memakai saldo R2 per gudang setelah cutover."}
+                || "Angka Stock Fisik adalah gabungan legacy perusahaan — bukan saldo gudang."}
             </p>
           )}
-          {data && !r2Active && (
+          {data && !r2Active && !canAdjust && (
             <p className="muted small" data-testid="stock-adjust-blocked-reason">
-              Koreksi/Saldo Awal R2 dan Stock Opname R2 memerlukan r2_authority_active.
-              Preview utama masih mode kompatibilitas (R2 OFF) — endpoint adjustment
-              menolak dengan 409 sampai cutover. Qty tersedia negatif tidak memblokir pesanan.
+              {data.adjust_blocked_reason
+                || "Koreksi dan Saldo Awal memerlukan otoritas R2 aktif."}
             </p>
           )}
           {data && r2Active && (
             <p className="muted small" data-testid="stock-book-vs-count-note">
-              Kolom Saldo Buku R2 adalah buku stok (boleh negatif), bukan hasil hitung fisik.
-              Hitung fisik aktual dicatat lewat Stock Opname (≥ 0). Status “Saldo awal belum
-              direkonsiliasi” berarti belum ada opening/opname — bukan klaim fisik nol.
-              Qty Pesanan / Belum Terkirim lingkup cabang — tidak dialokasikan per gudang.
+              Qty Pesanan / Belum Terkirim lingkup cabang. Saldo belum direkonsiliasi ditandai per baris — bukan klaim nol.
             </p>
           )}
         </div>
@@ -297,7 +303,7 @@ export default function StockSaatIni() {
           >
             Saldo Awal
           </button>
-          <Link className="ghost" to="/persediaan/stock-opname" data-testid="stock-opname-button">
+          <Link className="ghost" to={opnameHref} data-testid="stock-opname-button">
             Stock Opname
           </Link>
           {canExport && (
@@ -394,16 +400,16 @@ export default function StockSaatIni() {
                 data-testid="stock-physical-header"
                 data-physical-scope={r2Active ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
                 title={r2Active
-                  ? "Saldo buku R2 (boleh negatif) — bukan hasil hitung fisik"
-                  : "Legacy company-wide — bukan saldo per gudang"}
+                  ? (selectedFilterWarehouse ? "Stock fisik gudang terpilih" : "Stock fisik cabang (agregat gudang)")
+                  : "Legacy perusahaan — bukan saldo per gudang"}
               >
                 {physicalHeader}
               </th>
               <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
-                Qty Pesanan{r2Active ? " (cabang)" : ""}
+                Qty Pesanan
               </th>
               <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
-                Qty Belum Terkirim{r2Active ? " (cabang)" : ""}
+                Qty Belum Terkirim
               </th>
               <th className="col-fit num">Qty Tersedia</th>
               <th className="col-fit">Terakhir Update</th>
@@ -418,7 +424,10 @@ export default function StockSaatIni() {
                 <td colSpan={9} className="muted small" data-testid="stock-empty">{emptyText}</td>
               </tr>
             )}
-            {tableView === "results" && items.map((it) => (
+            {tableView === "results" && items.map((it) => {
+              const book = bookPhysicalDisplay(it, { warehouseId: selectedFilterWarehouse?.id || "" });
+              const physicalText = book.present ? fmtQty(book.qty) : book.text;
+              return (
               <tr key={it.master_item_id} data-testid={`stock-row-${it.master_item_id}`}>
                 <td className="col-fit mono">{it.item_code || "—"}</td>
                 <td className="col-text">{it.item_name || "—"}</td>
@@ -429,9 +438,10 @@ export default function StockSaatIni() {
                     : (data?.effective_branch_code || "Cabang")}
                 </td>
                 <td
-                  className={`col-fit num mono${it.saldo_buku_negatif ? " stock-book-negative" : ""}`}
+                  className={`col-fit num mono${book.present && it.saldo_buku_negatif ? " stock-book-negative" : ""}`}
                   data-testid={`stock-physical-${it.master_item_id}`}
-                  data-negative={it.saldo_buku_negatif ? "true" : "false"}
+                  data-negative={book.present && it.saldo_buku_negatif ? "true" : "false"}
+                  data-balance-present={book.present ? "true" : "false"}
                 >
                   {canAdjust && inlineItemId === it.master_item_id && singleWarehouse ? (
                     <InlinePhysicalEditor
@@ -447,22 +457,19 @@ export default function StockSaatIni() {
                       data-testid={`stock-adjust-${it.master_item_id}`}
                       onClick={() => beginAdjust(it)}
                     >
-                      {fmtQty(it.physical_qty)}
+                      {physicalText}
                     </button>
-                  ) : fmtQty(it.physical_qty)}
-                  {!r2Active && it.physical_qty_warehouse_valid === false && (
-                    <div className="muted small" data-testid={`stock-legacy-physical-${it.master_item_id}`}>
-                      Legacy perusahaan — bukan saldo gudang
-                    </div>
+                  ) : (
+                    <span className={book.present ? undefined : "muted"}>{physicalText}</span>
                   )}
                   {it.baseline_status === "unreconciled" && (
                     <div className="muted small" data-testid={`stock-baseline-${it.master_item_id}`}>
-                      {it.baseline_label || "Saldo awal belum direkonsiliasi"}
+                      {it.baseline_label || "Belum direkonsiliasi"}
                     </div>
                   )}
-                  {it.saldo_buku_negatif && (
+                  {book.present && it.saldo_buku_negatif && (
                     <div className="stock-book-negative-note" data-testid={`stock-book-negative-${it.master_item_id}`}>
-                      Saldo buku negatif
+                      Saldo negatif
                     </div>
                   )}
                   {r2Active && !selectedFilterWarehouse && Array.isArray(it.warehouse_balances) && it.warehouse_balances.length > 0 && (
@@ -473,6 +480,7 @@ export default function StockSaatIni() {
                           data-testid={`stock-wh-bal-${it.master_item_id}-${wb.warehouse_code || wb.warehouse_id}`}
                           className={wb.saldo_buku_negatif ? "stock-book-negative" : undefined}
                           data-negative={wb.saldo_buku_negatif ? "true" : "false"}
+                          data-balance-present={wb.balance_present ? "true" : "false"}
                         >
                           <span className="mono">{wb.warehouse_code || wb.warehouse_name}</span>
                           {": "}
@@ -481,9 +489,6 @@ export default function StockSaatIni() {
                           </span>
                           {" "}
                           <span className="muted">{it.base_unit || "PCS"}</span>
-                          {!wb.balance_present && (
-                            <span className="muted small"> (belum ada saldo buku)</span>
-                          )}
                           {wb.baseline_status === "unreconciled" && (
                             <span className="muted small"> · belum direkonsiliasi</span>
                           )}
@@ -523,7 +528,8 @@ export default function StockSaatIni() {
                 </td>
                 <td className="col-fit small nowrap">{it.updated_at ? formatDate(it.updated_at) : "—"}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

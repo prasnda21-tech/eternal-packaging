@@ -37,7 +37,34 @@ MODE_FREEZE = "freeze"
 MODE_OPERATIONAL = "operational"
 ALLOWED_MODES = frozenset({MODE_FREEZE, MODE_OPERATIONAL})
 
+OPNAME_TXN_UNAVAILABLE_MSG = (
+    "Stock Opname membutuhkan transaksi MongoDB (replica set). "
+    "Transaksi tidak tersedia. Operasi ditolak; sesi, cutoff, hitungan, "
+    "freeze, saldo, dan ledger tidak diubah."
+)
+
 _fail_after_adjustments = False
+
+
+async def _require_opname_transaction_support(db) -> None:
+    """Fail closed with HTTP 503 when multi-document transactions are unavailable.
+
+    Does not bypass transactions and does not use a non-transactional write path.
+    """
+    from services.physical_stock import (
+        PhysicalStockUnavailableError,
+        _client,
+        require_transaction_support,
+    )
+
+    try:
+        await require_transaction_support(_client(db))
+    except PhysicalStockUnavailableError as exc:
+        detail = str(exc).strip()
+        message = OPNAME_TXN_UNAVAILABLE_MSG
+        if detail and detail not in message:
+            message = f"{message} ({detail})"
+        raise HTTPException(503, message) from exc
 
 
 class StockOpnameJsonBody(BaseModel):
@@ -642,9 +669,9 @@ async def list_stock_opname_sessions(
 
 
 async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
-    from services.physical_stock import _client, require_transaction_support
+    from services.physical_stock import _client
 
-    await require_transaction_support(_client(db))
+    await _require_opname_transaction_support(db)
     doc = await get_stock_opname_session(db, session_id, user=user)
     if doc["status"] in (STATUS_COUNTING, STATUS_REVIEW, STATUS_CONFIRMED):
         if doc["status"] == STATUS_CONFIRMED:
@@ -885,11 +912,10 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
         PhysicalStockAbortError,
         _client,
         apply_stock_opname_adjustments,
-        require_transaction_support,
     )
 
     actor = _actor(user)
-    await require_transaction_support(_client(db))
+    await _require_opname_transaction_support(db)
     async with await _client(db).start_session() as mongo_session:
         async with mongo_session.start_transaction():
             current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0}, session=mongo_session)
@@ -1027,11 +1053,18 @@ async def confirm_stock_opname_session(db, session_id: str, payload: Optional[di
                 InsufficientPhysicalStockError,
                 PhysicalStockAbortError,
                 PhysicalStockConflictError,
+                PhysicalStockUnavailableError,
                 PhysicalStockValidationError,
                 StockOpnameInProgressError,
             )
             if isinstance(exc, PhysicalStockAbortError):
                 raise
+            if isinstance(exc, PhysicalStockUnavailableError):
+                detail = str(exc).strip()
+                message = OPNAME_TXN_UNAVAILABLE_MSG
+                if detail and detail not in message:
+                    message = f"{message} ({detail})"
+                raise HTTPException(503, message) from exc
             if isinstance(exc, (StockOpnameInProgressError, PhysicalStockConflictError, InsufficientPhysicalStockError)):
                 raise HTTPException(409, str(exc)) from exc
             if isinstance(exc, PhysicalStockValidationError):

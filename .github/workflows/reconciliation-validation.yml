@@ -359,6 +359,15 @@ jobs:
         run: >-
           python -m pytest -vv -n 0 --tb=short
           tests/test_stock_opname_r2.py
+      # Local master create index readiness gates (replica set; dedicated TEST_DB).
+      - name: Run local master items mongo suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          DB_NAME: eternal_packaging_test_master_local_create
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_master_items_local_mongo.py
       - name: Run warehouse A/B separation suite (replica set)
         working-directory: backend
         env:
@@ -567,6 +576,12 @@ jobs:
           src/pages/PhysicalStockSettings.test.js
           src/pages/StockOpname.test.js
           src/lib/stockOpnameTime.test.js
+          src/lib/physicalStockView.test.js
+          src/lib/purchaseUi.receiveRefresh.test.js
+          src/pages/StockSaatIni.compatibility.test.js
+          src/pages/StockSaatIni.inlineAdjust.test.js
+          src/pages/PenerimaanBarang.warehouse.test.js
+          src/pages/PenerimaanBarang.receiveRefresh.test.js
           src/pages/ProductDetail.test.js
           src/pages/FakturPenjualan.test.js
           src/pages/FakturPenjualan.listFilters.test.js

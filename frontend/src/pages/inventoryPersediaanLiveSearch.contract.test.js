@@ -48,8 +48,11 @@ describe("Persediaan live search inventory scope", () => {
   });
 
   test("Stock Saat Ini shows operational availability buckets", () => {
-    expect(stock).toMatch(/Qty Tersedia = Stock Fisik - Qty Pesanan - Qty Belum Terkirim/);
-    expect(stock).toMatch(/Nilai negatif menunjukkan kebutuhan stock/);
+    expect(stock).toMatch(/Qty Tersedia = Stock Fisik [-\u2212] Qty Pesanan [-\u2212] Qty Belum Terkirim/);
+    expect(stock).toMatch(/Nilai negatif = kebutuhan stok/);
+    expect(stock).toMatch(/tidak memblokir operasional/);
+    expect(stock).toMatch(/bookPhysicalDisplay/);
+    expect(stock).toMatch(/data-balance-present/);
     expect(stock).toMatch(/api\.physicalStockCatalog\(/);
     expect(stock).toMatch(/Nama Barang/);
     expect(stock).toMatch(/Satuan Dasar/);

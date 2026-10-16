@@ -37,8 +37,13 @@ export function opnameWarehouseChoices(branches, warehouses) {
   ));
 }
 
+/**
+ * Goods receipt location choices: same ID-scoped rule as stock opname.
+ * Uses branch/warehouse ids from access-scoped API lists — no YGY name/code hardcode
+ * (UAT branches like UAT-YGY must appear when the API returns them).
+ */
 export function goodsReceiptWarehouseChoice(branches, warehouses) {
-  const rows = yogyakartaWarehouses(branches, warehouses);
+  const rows = opnameWarehouseChoices(branches, warehouses);
   if (rows.length === 1) return { rows, warehouseId: rows[0].id, blocked: false, explicit: false };
   if (!rows.length) return { rows, warehouseId: "", blocked: true, explicit: false };
   return { rows, warehouseId: "", blocked: false, explicit: true };
@@ -105,6 +110,34 @@ export function stockEmptyMessage({ masterItemCount = 0, warehouseCount = 0, bra
   if (readMode === "r2" && branchId && !warehouseCount) return "Cabang ini belum memiliki gudang.";
   if (readMode === "r2" && !warehouseCount) return "Tidak ada stok fisik untuk filter ini.";
   return "Tidak ada baris stok untuk filter ini.";
+}
+
+/**
+ * Book stock cell for Stock Saat Ini.
+ * Missing balance (balance_present=false) is NOT a proven zero — do not render 0.
+ * Only show numeric 0 when a balance document is present.
+ */
+export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
+  const balances = Array.isArray(item?.warehouse_balances) ? item.warehouse_balances : [];
+  const wid = String(warehouseId || "").trim();
+  if (wid) {
+    const wb = balances.find((row) => String(row?.warehouse_id || "") === wid)
+      || (balances.length === 1 ? balances[0] : null);
+    if (wb && wb.balance_present === false) {
+      return { present: false, qty: null, text: "Belum tersedia" };
+    }
+    if (wb && wb.balance_present === true) {
+      const qty = wb.physical_qty;
+      return { present: true, qty, text: null };
+    }
+  }
+  if (balances.length > 0 && balances.every((row) => row?.balance_present === false)) {
+    return { present: false, qty: null, text: "Belum tersedia" };
+  }
+  if (item?.balance_present === false) {
+    return { present: false, qty: null, text: "Belum tersedia" };
+  }
+  return { present: true, qty: item?.physical_qty, text: null };
 }
 
 export function openingReady({ itemId, branchId, warehouseId, qty }) {
