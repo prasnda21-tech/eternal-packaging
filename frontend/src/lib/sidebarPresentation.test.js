@@ -1,5 +1,6 @@
 import { NAV_KEYS, SETTINGS_TAB_IDS, SETTINGS_TILE_LABELS, cashBankMenuItems, dashboardMenuItems, employeeAdminMenuItems, hrPayrollMenuItems, inventoryMenuItems, ledgerMenuItems, productionMenuItems, purchasingMenuItems, reportsMenuItems, salesMenuItems, settingsMenuItems, taskMenuItems } from "./navAccess";
 import {
+  SIDEBAR_EXPANDED_WIDTH,
   SIDEBAR_RAIL_WIDTH,
   buildDesktopSidebar,
   groupedRailForPath,
@@ -99,6 +100,7 @@ describe("desktop sidebar presentation", () => {
       "Transfer",
       "Mutasi Kas & Bank",
       "Rekonsiliasi Bank",
+      "Rekonsiliasi Owner",
     ]);
     const finance = group(rails, "keuangan");
     expect(finance.sections[1].items.map((item) => item.label)).toEqual([
@@ -126,6 +128,7 @@ describe("desktop sidebar presentation", () => {
       "Slip Gaji",
       "Komponen Gaji",
       "Riwayat Payroll",
+      "Rekonsiliasi Payroll",
     ]);
     expect(group(rails, "settings").sections[0].items.map((item) => item.key)).toEqual([...SETTINGS_TAB_IDS]);
     expect(group(rails, "settings").sections[0].items.map((item) => item.label)).toEqual(
@@ -224,6 +227,7 @@ describe("desktop sidebar presentation", () => {
 
   test("chevron follows the active grouped rail and ignores direct links", () => {
     expect(SIDEBAR_RAIL_WIDTH).toBe(64);
+    expect(SIDEBAR_EXPANDED_WIDTH).toBe(220);
     expect(groupedRailForPath("/produksi")).toBe("produksi");
     expect(groupedRailForPath("/tasks/packing")).toBe("produksi");
     expect(groupedRailForPath("/tasks/surat-jalan")).toBe("pengiriman");

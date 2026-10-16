@@ -1457,7 +1457,13 @@ function Payroll() {
           {selected.status === "FINAL" && hasPerm("payroll.reopen") && <button className="ghost" onClick={reopen} disabled={Boolean(selected.accounting_journal_id)} title={selected.accounting_journal_id ? "Jurnal akuntansi masih aktif" : undefined} data-testid="hr-reopen-btn">Buka Ulang</button>}
           {canPostAccounting && <button type="button" className="ghost" onClick={() => { setErr(""); setPostOpen(true); }} data-testid="hr-payroll-post-accounting" title="Hanya pemulihan bila Finalkan sudah selesai tetapi jurnal kosong">Pemulihan: Post Accounting</button>}
           {readiness && <button type="button" className="ghost" onClick={() => setShowPreview((open) => !open)} data-testid="hr-payroll-accounting-preview-btn">Lihat Preview Accounting</button>}
-        </div></div>
+        </div>
+          {selected.status === "FINAL" && selected.accounting_journal_id && hasPerm("payroll.reopen") && (
+            <p className="muted small" data-testid="hr-reopen-blocked-hint">
+              Buka ulang diblokir karena jurnal akuntansi masih aktif.
+            </p>
+          )}
+        </div>
         {selected.accounting_journal_id && (
           <>
             <p className="hr-pay-facts" data-testid="hr-payroll-journal-number">Journal:<br />{postedJournal.number || "—"}</p>

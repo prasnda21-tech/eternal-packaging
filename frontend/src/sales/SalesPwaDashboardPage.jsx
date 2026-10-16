@@ -330,7 +330,7 @@ export default function SalesPwaDashboardPage() {
         {visible && (
           <>
             {actionVisible && (actionVisible.ready === false || paymentTotal > 0 || designQuiet) && (
-              <section className="spwa-panel" data-testid="sales-dashboard-actions">
+              <section className="spwa-panel is-action-priority" data-testid="sales-dashboard-actions">
                 <div className="spwa-section-head">
                   <div>
                     <p className="spwa-kicker">LAPANGAN</p>

@@ -1826,3 +1826,30 @@ body.so-col-resizing * {
     width: 100%;
   }
 }
+
+/* UX 9.0 Phase 2A — Data Table identity / numeric / status */
+.so-list-workspace .so-list-identity{
+  display:flex;flex-direction:column;gap:2px;min-width:0;
+}
+.so-list-workspace .so-list-customer{
+  font-size:13.5px;font-weight:700;letter-spacing:-0.01em;color:#0F172A;
+}
+.so-list-workspace .so-list-po{
+  font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;
+}
+.so-list-workspace .so-list-table td.so-list-qty,
+.so-list-workspace .so-list-table td.so-list-money,
+.so-list-workspace .so-list-table .so-list-money{
+  font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;
+}
+.so-list-workspace .so-list-toolbar{
+  gap:8px;padding:8px 0;
+}
+.so-list-workspace .so-list-empty,
+.so-list-workspace .so-list-loading{
+  padding:28px 16px;text-align:center;color:#64748B;font-size:13px;
+}
+@media (max-height:820px){
+  .so-list-workspace .so-list-header h1{font-size:18px;line-height:1.2}
+  .so-list-workspace .so-list-row{height:36px}
+}

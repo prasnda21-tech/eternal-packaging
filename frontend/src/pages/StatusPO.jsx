@@ -102,6 +102,14 @@ export default function StatusPO() {
     return () => clearTimeout(t);
   }, [filters]);
 
+  // Workflow 9.0: seed PO filter from `?po=` without inventing API params.
+  useEffect(() => {
+    if (deliveryTodayPage) return;
+    const poQ = String(params.get("po") || "").trim();
+    if (!poQ) return;
+    setFilters((prev) => (prev.po === poQ ? prev : { ...prev, po: poQ }));
+  }, [deliveryTodayPage, params]);
+
   useEffect(() => {
     setPage((prev) => (prev === 1 ? prev : 1));
   }, [view, filterKey]);

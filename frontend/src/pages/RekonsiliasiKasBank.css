@@ -350,3 +350,19 @@
   .kas-bank-page.recon-workspace .kb-matched-pair { gap:6px; }
   .kas-bank-page.recon-workspace .kb-single-amount strong { overflow-wrap:anywhere; white-space:normal; }
 }
+
+/* ===== UX 9.0 Phase 3B — Recon read vs action ===== */
+.recon-workspace .kb-summary-strip strong.kb-money,
+.recon-workspace .kb-summary-strip .kb-money{
+  font-size:15px;font-weight:700;letter-spacing:-.01em;
+}
+.recon-workspace .kb-card-actions .primary{
+  min-height:36px;font-weight:700;
+}
+.recon-workspace .recon-empty{
+  padding:16px 12px;text-align:center;color:#64748b;font-size:13px;
+  border:1px dashed #cbd5e1;border-radius:8px;background:#f8fafc;
+}
+.recon-workspace .recon-heading h1{
+  font-size:20px;letter-spacing:-.015em;
+}

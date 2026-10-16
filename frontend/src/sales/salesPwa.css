@@ -1523,3 +1523,35 @@ a.spwa-po-card {
 }
 .spwa-pred-agenda .spwa-primary { width: 100%; }
 .spwa-pred-notice { margin: 8px 10px; color: #08785d; font-size: 14px; font-weight: 700; }
+
+/* ===== UX 9.0 Phase 3A — Sales PWA emphasis ===== */
+.spwa-panel.is-action-priority{
+  border:1px solid #bae6fd;
+  background:linear-gradient(180deg,#f0f9ff 0%,#ffffff 55%);
+  box-shadow:0 1px 0 rgba(15,23,42,.04);
+}
+.spwa-panel.is-action-priority .spwa-section-head h2{
+  font-size:18px;letter-spacing:-.01em;
+}
+.spwa-action-empty{
+  padding:14px 12px;border-radius:10px;background:#f8fafc;border:1px dashed #cbd5e1;
+  text-align:center;
+}
+.spwa-action-empty p{margin:0;color:#475569;font-size:13px;line-height:1.35}
+.spwa-action-empty p + p{margin-top:4px;color:#64748b;font-size:12px}
+.spwa-nav a,
+.spwa-nav button{
+  min-height:48px;
+  min-width:48px;
+  padding:6px 4px;
+}
+.spwa-empty{
+  padding:18px 12px;text-align:center;color:#64748b;font-size:13px;line-height:1.4;
+}
+.spwa-empty.compact{padding:10px 8px}
+.spwa-err,
+.spwa-muted[role="status"]{
+  margin:8px 10px;padding:10px 12px;border-radius:8px;font-size:13px;
+}
+.spwa-err{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
+.spwa-main .spwa-panel:first-of-type{margin-top:8px}
