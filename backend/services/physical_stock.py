@@ -3010,18 +3010,29 @@ async def list_physical_stock_catalog(
 ) -> dict:
     """Operational Stock Saat Ini.
 
-    When r2_authority_active is FALSE: read-only compatibility adapter
-    (legacy physical state + orders + sales deliveries). No R2 writes.
+    When r2_authority_active is FALSE and warehouse_stock_standalone is OFF:
+    read-only compatibility adapter (legacy company physical + orders).
 
-    When r2_authority_active is TRUE: Stock fisik is the sum of R2 balances on
+    When r2_authority_active is TRUE, OR warehouse_stock_standalone is ON
+    (R2 still OFF): Stock fisik is the sum of physical_stock_balances on
     operational warehouses for ONE branch (default YGY). Never aggregates all
     branches. Optional warehouse_id further narrows within that branch.
+
+    Standalone mode reuses the same balance documents as R2 reads but never
+    activates R2 authority or multi-document transactions.
     """
     from services.r2_go_live import is_r2_authority_active
     from services.stock_compatibility_read import list_compatibility_stock_catalog
+    from services.warehouse_stock_standalone import (
+        MODE_WAREHOUSE_STANDALONE,
+        is_warehouse_stock_standalone_active,
+    )
 
-    if not await is_r2_authority_active(db):
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = False if r2_on else await is_warehouse_stock_standalone_active(db)
+    if not r2_on and not standalone_on:
         return await list_compatibility_stock_catalog(db, q=q, page=page, limit=limit)
+    catalog_mode = "r2" if r2_on else MODE_WAREHOUSE_STANDALONE
 
     all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
     requested = str(branch_id or "").strip()
@@ -3220,7 +3231,7 @@ async def list_physical_stock_catalog(
             "belum_terkirim_status": (
                 "BELUM_TERVERIFIKASI" if belum_unverified else "READY"
             ),
-            "stock_read_mode": "r2",
+            "stock_read_mode": catalog_mode,
             "baseline_status": baseline_status,
             "baseline_label": (
                 BASELINE_UNRECONCILED_LABEL if baseline_status == BASELINE_UNRECONCILED else None
@@ -3267,8 +3278,9 @@ async def list_physical_stock_catalog(
         "page_count": page_count,
         "master_item_count": len(masters),
         "warehouse_count": len(warehouses),
-        "stock_read_mode": "r2",
-        "r2_authority_active": True,
+        "stock_read_mode": catalog_mode,
+        "r2_authority_active": bool(r2_on),
+        "warehouse_stock_standalone": bool(standalone_on),
         "physical_qty_scope": "WAREHOUSE" if selected_warehouse else "BRANCH",
         "branch_filter_affects_physical_qty": True,
         "warehouse_filter_affects_physical_qty": bool(selected_warehouse),
@@ -3280,9 +3292,17 @@ async def list_physical_stock_catalog(
         ),
         "demand_scope": "BRANCH",
         "physical_qty_note": (
-            "Saldo buku R2 gudang terpilih (boleh negatif)."
+            (
+                "Saldo buku gudang terpilih (boleh negatif)."
+                if catalog_mode == MODE_WAREHOUSE_STANDALONE
+                else "Saldo buku R2 gudang terpilih (boleh negatif)."
+            )
             if selected_warehouse
-            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
+            else (
+                "Saldo buku agregat cabang; rincian per gudang ada di warehouse_balances."
+                if catalog_mode == MODE_WAREHOUSE_STANDALONE
+                else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
+            )
         ),
     }
 

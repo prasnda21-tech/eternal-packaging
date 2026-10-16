@@ -75,7 +75,9 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/kompatibilitas/i);
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/perusahaan/i);
     expect(container.querySelector('[data-testid="stock-compat-branch-note"]')?.textContent).toMatch(/perusahaan|gudang/i);
-    expect(container.querySelector('[data-testid="stock-adjust-blocked-reason"]')?.textContent).toMatch(/otoritas R2|R2 aktif/i);
+    expect(container.querySelector('[data-testid="stock-adjust-blocked-reason"]')?.textContent).toMatch(/r2_authority_active|warehouse_stock_standalone|R2/i);
+    expect(container.querySelector('[data-testid="saldo-awal-button"]')?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="stock-opname-button"]')?.disabled).toBe(true);
     expect(container.querySelector('[data-testid="stock-adjust-blocked-reason"]')?.textContent).not.toMatch(/Preview|R2 OFF/i);
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/Stock Fisik/i);
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("COMPANY");
@@ -140,7 +142,8 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik");
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("BRANCH");
     expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/belum direkonsiliasi|cabang/i);
+    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/Belum valid|belum direkonsiliasi|cabang/i);
+    expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toMatch(/stock-opname/);
     expect(container.textContent).not.toMatch(/Preview.*R2 OFF|R2 OFF/i);
   });
 });

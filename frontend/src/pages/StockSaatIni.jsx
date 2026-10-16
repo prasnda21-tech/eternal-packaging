@@ -184,13 +184,20 @@ export default function StockSaatIni() {
   });
   const readMode = data?.stock_read_mode || (data?.r2_authority_active ? "r2" : "compatibility");
   const r2Active = Boolean(data?.r2_authority_active);
+  // Warehouse-scoped UI when R2 OR explicit warehouse_stock_standalone is on.
+  const warehouseActive = Boolean(
+    r2Active
+    || data?.warehouse_stock_standalone
+    || readMode === "warehouse_standalone"
+    || readMode === "r2"
+  );
   const emptyText = stockEmptyMessage({
     masterItemCount: data?.master_item_count || 0,
     warehouseCount: data?.warehouse_count || 0,
     readMode,
   });
 
-  const physicalHeader = r2Active
+  const physicalHeader = warehouseActive
     ? "Stock Fisik"
     : "Stock Fisik (perusahaan)";
   const download = () => {
@@ -272,25 +279,28 @@ export default function StockSaatIni() {
             <p className="muted small" data-testid="stock-read-mode">
               {r2Active
                 ? "Mode R2 — stok fisik per cabang/gudang."
-                : (data.stock_read_mode_label
-                  || "Mode kompatibilitas — stok fisik legacy perusahaan (bukan per gudang).")}
+                : warehouseActive
+                  ? (data.stock_read_mode_label
+                    || "Mode warehouse standalone — stok fisik per cabang/gudang (tanpa Replica Set).")
+                  : (data.stock_read_mode_label
+                    || "Mode kompatibilitas — stok fisik legacy perusahaan (bukan per gudang).")}
             </p>
           )}
-          {data && !r2Active && (
+          {data && !warehouseActive && (
             <p className="muted small" data-testid="stock-compat-branch-note">
               {data.physical_qty_note
                 || "Angka Stock Fisik adalah gabungan legacy perusahaan — bukan saldo gudang."}
             </p>
           )}
-          {data && !r2Active && !canAdjust && (
+          {data && !warehouseActive && !canAdjust && (
             <p className="muted small" data-testid="stock-adjust-blocked-reason">
               {data.adjust_blocked_reason
-                || "Koreksi dan Saldo Awal memerlukan otoritas R2 aktif."}
+                || "Koreksi/Saldo Awal/Opname gudang memerlukan r2_authority_active atau warehouse_stock_standalone."}
             </p>
           )}
-          {data && r2Active && (
+          {data && warehouseActive && (
             <p className="muted small" data-testid="stock-book-vs-count-note">
-              Qty Pesanan / Belum Terkirim lingkup cabang. Saldo belum direkonsiliasi ditandai per baris — bukan klaim nol.
+              Qty Pesanan / Belum Terkirim lingkup cabang. Saldo belum ada = Belum tersedia; belum direkonsiliasi = Belum valid — bukan klaim nol siap jual.
             </p>
           )}
         </div>
@@ -299,13 +309,27 @@ export default function StockSaatIni() {
             type="button"
             className="ghost"
             onClick={() => setOpeningOpen(true)}
+            disabled={!canAdjust}
+            title={!canAdjust ? (data?.adjust_blocked_reason || "Saldo Awal belum tersedia pada mode ini") : undefined}
             data-testid="saldo-awal-button"
           >
             Saldo Awal
           </button>
-          <Link className="ghost" to={opnameHref} data-testid="stock-opname-button">
-            Stock Opname
-          </Link>
+          {warehouseActive ? (
+            <Link className="ghost" to={opnameHref} data-testid="stock-opname-button">
+              Stock Opname
+            </Link>
+          ) : (
+            <button
+              type="button"
+              className="ghost"
+              disabled
+              title={data?.adjust_blocked_reason || "Stock Opname memerlukan mesin gudang (R2 atau warehouse standalone)."}
+              data-testid="stock-opname-button"
+            >
+              Stock Opname
+            </button>
+          )}
           {canExport && (
             <button className="primary" onClick={download} data-testid="stock-export-button">
               <Download size={14} /> Export
@@ -325,7 +349,7 @@ export default function StockSaatIni() {
           <BranchScopeSelect
             branches={branches}
             value={effectiveBranchId}
-            canSwitch={Boolean(canSwitchBranches && r2Active)}
+            canSwitch={Boolean(canSwitchBranches && warehouseActive)}
             effectiveCode={data?.effective_branch_code}
             onChange={(next) => {
               setBranchId(next);
@@ -336,7 +360,7 @@ export default function StockSaatIni() {
             }}
             testId="stock-branch-select"
           />
-          {r2Active && (
+          {warehouseActive && (
             <label className="field stock-warehouse-filter" data-testid="stock-warehouse-filter">
               <span className="muted small">Gudang</span>
               <select
@@ -398,8 +422,8 @@ export default function StockSaatIni() {
               <th
                 className="col-fit num"
                 data-testid="stock-physical-header"
-                data-physical-scope={r2Active ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
-                title={r2Active
+                data-physical-scope={warehouseActive ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
+                title={warehouseActive
                   ? (selectedFilterWarehouse ? "Stock fisik gudang terpilih" : "Stock fisik cabang (agregat gudang)")
                   : "Legacy perusahaan — bukan saldo per gudang"}
               >
@@ -464,7 +488,7 @@ export default function StockSaatIni() {
                   )}
                   {it.baseline_status === "unreconciled" && (
                     <div className="muted small" data-testid={`stock-baseline-${it.master_item_id}`}>
-                      {it.baseline_label || "Belum direkonsiliasi"}
+                      {it.baseline_label || "Belum valid"}
                     </div>
                   )}
                   {book.present && it.saldo_buku_negatif && (
@@ -472,7 +496,7 @@ export default function StockSaatIni() {
                       Saldo negatif
                     </div>
                   )}
-                  {r2Active && !selectedFilterWarehouse && Array.isArray(it.warehouse_balances) && it.warehouse_balances.length > 0 && (
+                  {warehouseActive && !selectedFilterWarehouse && Array.isArray(it.warehouse_balances) && it.warehouse_balances.length > 0 && (
                     <ul className="stock-warehouse-breakdown" data-testid={`stock-warehouse-breakdown-${it.master_item_id}`}>
                       {it.warehouse_balances.map((wb) => (
                         <li
@@ -484,13 +508,13 @@ export default function StockSaatIni() {
                         >
                           <span className="mono">{wb.warehouse_code || wb.warehouse_name}</span>
                           {": "}
-                          <span className="mono">
-                            {wb.balance_present ? fmtQty(wb.physical_qty) : "—"}
+                          <span className={wb.balance_present ? "mono" : "muted"}>
+                            {wb.balance_present ? fmtQty(wb.physical_qty) : "Belum tersedia"}
                           </span>
                           {" "}
                           <span className="muted">{it.base_unit || "PCS"}</span>
                           {wb.baseline_status === "unreconciled" && (
-                            <span className="muted small"> · belum direkonsiliasi</span>
+                            <span className="muted small"> · Belum valid</span>
                           )}
                         </li>
                       ))}

@@ -28,13 +28,17 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 
 function catalog(physical = 0) {
   return {
-    can_adjust_physical_stock: false,
+    stock_read_mode: "warehouse_standalone",
+    r2_authority_active: false,
+    warehouse_stock_standalone: true,
+    can_adjust_physical_stock: true,
     items: [{
       master_item_id: "item-1",
       item_code: "OB-UAT-001",
       item_name: "Opening",
       base_unit: "PCS",
       physical_qty: physical,
+      balance_present: true,
       qty_pesanan: 0,
       qty_belum_terkirim: 0,
       qty_tersedia: physical,

@@ -502,6 +502,9 @@ async def _execute_operational_goods_receipt_cancel(
         if doc.get("r2_physical") is True:
             return await _cancel_r2_goods_receipt(db, doc, user, reason)
 
+        if doc.get("warehouse_standalone") is True:
+            return await _cancel_standalone_goods_receipt(db, doc, user, reason)
+
         reversal_ids = await apply_receipt_stock_reversals(
             db,
             doc["id"],
@@ -654,6 +657,148 @@ async def _commit_r2_goods_receipt(
                 continue
             _r2_http(exc)
     raise HTTPException(409, f"Gagal menyimpan penerimaan. {last_error}")
+
+
+async def _commit_standalone_goods_receipt(
+    db,
+    doc: dict,
+    *,
+    user: dict,
+    po_number: str,
+    existing_count: int,
+    warehouse_id: Optional[str],
+) -> dict:
+    """Persist receipt + per-line warehouse movements without multi-doc transactions."""
+    from services.physical_stock import (
+        PhysicalStockAbortError,
+        resolve_purchase_receipt_warehouse,
+    )
+    from services.warehouse_stock_standalone import (
+        ensure_receipt_movements_complete,
+        require_warehouse_stock_standalone,
+    )
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+    await require_warehouse_stock_standalone(db)
+    branch_id, resolved_warehouse = await resolve_purchase_receipt_warehouse(
+        db, None, warehouse_id=warehouse_id,
+    )
+    doc["branch_id"] = branch_id
+    doc["warehouse_id"] = resolved_warehouse
+    doc["r2_physical"] = False
+    doc["warehouse_standalone"] = True
+    for line in doc["lines"]:
+        line["branch_id"] = branch_id
+        line["warehouse_id"] = resolved_warehouse
+        line["received_qty"] = _whole_received_qty(line["received_qty"])
+
+    async def _finish_existing(existing: dict) -> dict:
+        """Idempotent retry must complete missing line movements, not assume stock is done."""
+        spec = {
+            "purchase_order_id": doc["purchase_order_id"],
+            "branch_id": branch_id,
+            "warehouse_id": resolved_warehouse,
+            "lines": _receipt_line_identity(doc.get("lines") or []),
+        }
+        if not _same_receipt_payload(existing, spec):
+            from services.physical_stock import PhysicalStockConflictError
+            raise PhysicalStockConflictError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda"
+            )
+        posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
+        if str(posting.get("status") or "").upper() != "COMPLETE":
+            try:
+                await ensure_receipt_movements_complete(db, existing, actor_id=actor_id)
+            except Exception as exc:
+                _r2_http(exc)
+            existing = await db[COLLECTION].find_one({"id": existing["id"]}, {"_id": 0}) or existing
+        return existing
+
+    if doc.get("idempotency_key"):
+        existing = await db[COLLECTION].find_one(
+            {"idempotency_key": doc["idempotency_key"]},
+            {"_id": 0},
+        )
+        if existing:
+            return await _finish_existing(existing)
+
+    number_index = existing_count + 1
+    candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, number_index)
+    while await db[COLLECTION].find_one({"receipt_number": candidate}, {"_id": 1}):
+        number_index += 1
+        candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, number_index)
+    doc["receipt_number"] = candidate
+
+    try:
+        await db[COLLECTION].insert_one(dict(doc))
+    except DuplicateKeyError as exc:
+        if doc.get("idempotency_key") and "idempotency_key" in str(exc):
+            existing = await db[COLLECTION].find_one(
+                {"idempotency_key": doc["idempotency_key"]}, {"_id": 0},
+            )
+            if existing:
+                return await _finish_existing(existing)
+        raise HTTPException(409, "Dokumen duplikat terdeteksi.") from exc
+
+    try:
+        outcome = await ensure_receipt_movements_complete(db, doc, actor_id=actor_id)
+        doc["stock_posting"] = {
+            "status": outcome.get("status"),
+            "posted_count": outcome.get("posted_count"),
+            "failed_count": outcome.get("failed_count"),
+            "engine": outcome.get("engine"),
+        }
+    except Exception as exc:
+        # Receipt row exists; movements may be partial — surface clearly for recovery.
+        _r2_http(exc)
+    doc.pop("_id", None)
+    return doc
+
+
+async def _cancel_standalone_goods_receipt(db, doc: dict, user: dict, reason: str) -> dict:
+    """Soft-cancel a warehouse-standalone GR and reverse its ledger rows (no multi-doc txn)."""
+    from services.physical_stock import PhysicalStockValidationError
+    from services.warehouse_stock_standalone import (
+        cancel_purchase_receipt_standalone,
+        require_warehouse_stock_standalone,
+    )
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+    await require_warehouse_stock_standalone(db)
+    current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0}) or doc
+    if is_cancelled(current):
+        return await get_purchase_goods_receipt(db, doc["id"], user=user)
+    try:
+        outcome = await cancel_purchase_receipt_standalone(
+            db, current, actor_id=actor_id, reason=reason,
+        )
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        _r2_http(exc)
+    reversal_ids = list(outcome.get("reversals") or [])
+    fields = cancellation_fields(user, reason)
+    fields.update({
+        "status": "CANCELLED",
+        "reversal_movement_id": reversal_ids[0] if reversal_ids else None,
+        "reversal_movement_ids": reversal_ids,
+        "stock_cancel": {
+            "engine": outcome.get("engine"),
+            "reversed_count": len(reversal_ids),
+        },
+    })
+    result = await db[COLLECTION].update_one(
+        {"id": doc["id"], "cancelled": {"$ne": True}},
+        {"$set": fields},
+    )
+    if result.matched_count != 1:
+        fresh = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+        if fresh and is_cancelled(fresh):
+            return await get_purchase_goods_receipt(db, doc["id"], user=user)
+        raise HTTPException(409, "Pembatalan penerimaan gagal karena perubahan bersamaan.")
+    from services.hpp_cutover import reverse_goods_receipt_hpp
+    await reverse_goods_receipt_hpp(db, doc, user)
+    return await get_purchase_goods_receipt(db, doc["id"], user=user)
 
 
 async def _cancel_r2_goods_receipt(db, doc: dict, user: dict, reason: str) -> dict:
@@ -874,14 +1019,29 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
             ygy = await find_branch_by_code(db, "YGY")
             if ygy and ygy.get("id"):
                 await require_branch_access(db, user, ygy["id"])
-        saved = await _commit_r2_goods_receipt(
-            db,
-            doc,
-            user=user,
-            po_number=preview["po_number"],
-            existing_count=existing_count,
-            warehouse_id=requested_warehouse_id,
-        )
+        from services.r2_go_live import is_r2_authority_active
+        from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
+        r2_on = await is_r2_authority_active(db)
+        standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+        if standalone_on:
+            saved = await _commit_standalone_goods_receipt(
+                db,
+                doc,
+                user=user,
+                po_number=preview["po_number"],
+                existing_count=existing_count,
+                warehouse_id=requested_warehouse_id,
+            )
+        else:
+            saved = await _commit_r2_goods_receipt(
+                db,
+                doc,
+                user=user,
+                po_number=preview["po_number"],
+                existing_count=existing_count,
+                warehouse_id=requested_warehouse_id,
+            )
         from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
         await register_baseline_participants(db, saved)
         await recognize_posted_goods_receipt(db, saved, user)
