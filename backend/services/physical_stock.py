@@ -2909,21 +2909,55 @@ async def _unique_accurate_owners(db) -> Dict[str, str]:
     return {accurate_id: master_id for accurate_id, master_id in owner.items() if counts[accurate_id] == 1}
 
 
-async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, float]:
+def _order_branch_id(order: Optional[dict]) -> str:
+    """Proven branch on an order. Empty when legacy attribution is missing."""
+    if not isinstance(order, dict):
+        return ""
+    return str(order.get("branch_id") or order.get("cabang_id") or "").strip()
+
+
+def _orders_for_branch(orders: Iterable[dict], branch_id: Optional[str]) -> List[dict]:
+    """Keep only orders proven for this branch — never invent YGY/SMG allocation.
+
+    Orders without branch_id/cabang_id are excluded (fail-closed). Callers must
+    not treat omission as zero demand when auditing legacy data separately.
+    """
+    wanted = str(branch_id or "").strip()
+    if not wanted:
+        return []
+    return [
+        order for order in orders
+        if _order_branch_id(order) == wanted
+    ]
+
+
+async def _r2_confirmed_delivery_qty(
+    db,
+    master_ids: List[str],
+    *,
+    branch_id: Optional[str] = None,
+) -> Dict[str, float]:
     """Delivered qty that already left R2 physical stock (net of reversals).
 
     The SALES_DELIVERY ledger movement is the proof. A legacy sales_deliveries
     row, surat jalan, or loading record does not reduce Qty Belum Terkirim.
     Reversed SALES_DELIVERY rows are excluded.
+
+    When branch_id is set, only ledger rows for that branch count — never mix
+    Yogyakarta deliveries into Semarang Belum Terkirim (or the reverse).
     """
     if not master_ids:
         return {}
+    query: Dict[str, Any] = {
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "master_item_id": {"$in": master_ids},
+    }
+    wanted_branch = str(branch_id or "").strip()
+    if wanted_branch:
+        query["branch_id"] = wanted_branch
     movements = await db[LEDGER_COLLECTION].find(
-        {
-            "movement_type": MOVEMENT_SALES_DELIVERY,
-            "master_item_id": {"$in": master_ids},
-        },
-        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1},
+        query,
+        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1, "branch_id": 1},
     ).to_list(20000)
     movement_ids = [str(row.get("id") or "") for row in movements if row.get("id")]
     reversed_ids = set()
@@ -3093,16 +3127,30 @@ async def list_physical_stock_catalog(
         }
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
-    orders = await db.orders.find({}, {"_id": 0}).to_list(20000)
+    # Demand is branch-scoped. Unattributed legacy orders are excluded — never
+    # invent Yogyakarta↔Semarang allocation of qty pesanan / belum terkirim.
+    order_query: Dict[str, Any] = {}
+    if operational_id:
+        order_query["$or"] = [
+            {"branch_id": operational_id},
+            {"cabang_id": operational_id},
+        ]
+    else:
+        # No resolvable branch → no inventable demand.
+        order_query = {"_id": {"$exists": False}}
+    orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
+    # Defense in depth: filter again in Python (cabang_id / stray docs).
+    orders = _orders_for_branch(orders, operational_id)
     progress = aggregate_operational_orders(
         orders, owners, exclude_master_ids=service_master_ids,
     )
     master_ids = [master["id"] for master in masters if master.get("id")]
-    delivered = await _r2_confirmed_delivery_qty(db, master_ids)
-    from services.r2_go_live import get_delivery_cutover_baseline
-
-    cutover = await get_delivery_cutover_baseline(db)
-    baseline_by_item = cutover.get("baseline_by_master_item_id") or {} if cutover.get("initialized") else {}
+    delivered = await _r2_confirmed_delivery_qty(
+        db, master_ids, branch_id=operational_id,
+    )
+    # Company-wide cutover baseline has no branch keys. Applying it to a branch
+    # catalog would invent cross-branch delivery — fail-closed: omit.
+    baseline_by_item: Dict[str, float] = {}
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
     warehouse_by_id = {
         str(row.get("id")): row for row in warehouses if row.get("id")

@@ -645,6 +645,7 @@ async def test_stock_saat_ini_follows_physical_difference(db):
     await db.orders.insert_one({
         "id": "so-1",
         "status": "open",
+        "branch_id": branch_id,
         "line_items": [{"master_item_id": item_id, "quantity": 30, "quantity_unit": "PCS"}],
         "operator_splits": [{"line_idx": 0, "qty_completed": 10}],
     })
@@ -683,6 +684,7 @@ async def test_count_excel_uses_cutoff_snapshot_and_recalculates(db):
     await db.orders.insert_one({
         "id": "so-opname",
         "status": "open",
+        "branch_id": branch_id,
         "line_items": [{
             "master_item_id": item_a,
             "quantity": 400,

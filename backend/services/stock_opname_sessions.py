@@ -182,17 +182,20 @@ async def _snapshot_order_buckets(
     mongo_session,
     lines: List[dict],
     *,
+    branch_id: Optional[str] = None,
     warehouse_id: Optional[str] = None,
 ) -> None:
     """Snapshot Qty Pesanan / Belum Terkirim with Stock Saat Ini readiness (print/non_print).
 
-    Order demand stays company-wide and unallocated (no auto warehouse assign).
-    Delivered qty for Belum Terkirim is scoped to the session warehouse when provided.
+    Order demand is branch-scoped (never invent YGY↔SMG allocation). Unattributed
+    legacy orders are excluded. Delivered qty for Belum Terkirim is further scoped
+    to the session warehouse when provided.
     """
     from services.physical_stock import (
         LEDGER_COLLECTION,
         MASTER_ITEMS_COLLECTION,
         MOVEMENT_SALES_DELIVERY,
+        _orders_for_branch,
         _qty_num,
         aggregate_operational_orders,
         operational_availability,
@@ -213,7 +216,14 @@ async def _snapshot_order_buckets(
         counts[accurate_id] = counts.get(accurate_id, 0) + 1
         owner[accurate_id] = master_id
     owners = {accurate_id: master_id for accurate_id, master_id in owner.items() if counts[accurate_id] == 1}
-    orders = await db.orders.find({}, {"_id": 0}, session=mongo_session).to_list(20000)
+    wanted_branch = str(branch_id or "").strip()
+    order_query: Dict[str, Any] = (
+        {"$or": [{"branch_id": wanted_branch}, {"cabang_id": wanted_branch}]}
+        if wanted_branch
+        else {"_id": {"$exists": False}}
+    )
+    orders = await db.orders.find(order_query, {"_id": 0}, session=mongo_session).to_list(20000)
+    orders = _orders_for_branch(orders, wanted_branch)
     progress = aggregate_operational_orders(orders, owners)
     ids = [str(line.get("master_item_id") or "") for line in lines if line.get("master_item_id")]
     movements = []
@@ -222,6 +232,8 @@ async def _snapshot_order_buckets(
             "movement_type": MOVEMENT_SALES_DELIVERY,
             "master_item_id": {"$in": ids},
         }
+        if wanted_branch:
+            query["branch_id"] = wanted_branch
         wid = str(warehouse_id or "").strip()
         if wid:
             query["warehouse_id"] = wid
@@ -356,7 +368,7 @@ def _line_snapshot(master: dict, book_qty: int, base_uom: str) -> dict:
     }
 
 
-async def _book_lines(db, session, *, warehouse_id: str) -> List[dict]:
+async def _book_lines(db, session, *, branch_id: str, warehouse_id: str) -> List[dict]:
     from services.physical_stock import (
         BALANCE_COLLECTION,
         MASTER_ITEMS_COLLECTION,
@@ -408,7 +420,9 @@ async def _book_lines(db, session, *, warehouse_id: str) -> List[dict]:
         str(row.get("item_name") or ""),
         str(row.get("master_item_id") or ""),
     ))
-    await _snapshot_order_buckets(db, session, lines, warehouse_id=warehouse_id)
+    await _snapshot_order_buckets(
+        db, session, lines, branch_id=branch_id, warehouse_id=warehouse_id,
+    )
     return lines
 
 
@@ -699,7 +713,12 @@ async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
             return _public(current)
         if current.get("status") != STATUS_DRAFT:
             raise HTTPException(400, "Cutoff hanya dapat dimulai dari draf.")
-        lines = await _book_lines(db, mongo_session, warehouse_id=current["warehouse_id"])
+        lines = await _book_lines(
+            db,
+            mongo_session,
+            branch_id=str(current.get("branch_id") or ""),
+            warehouse_id=current["warehouse_id"],
+        )
         cutoff_at = _now()
         result = await db[COLLECTION].update_one(
             {"id": current["id"], "status": STATUS_DRAFT},
