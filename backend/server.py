@@ -12483,22 +12483,25 @@ async def list_sales_deliveries_endpoint(
     status: Optional[str] = None,
     delivery_date_preset: Optional[str] = None,
     created_by: Optional[str] = None,
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 50,
     user=Depends(current_user),
 ):
-    """List sales deliveries (Pengiriman Pesanan) with search and status filtering."""
+    """List sales deliveries (Pengiriman Pesanan) with search, status filter, and pagination."""
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
-    deliveries = await _list_sales_deliveries(
+    return await _list_sales_deliveries(
         db,
         q=q,
         po_id=po_id,
         status=status,
         delivery_date_preset=delivery_date_preset,
         created_by=created_by,
+        page=page,
+        page_size=page_size,
     )
-    return {"deliveries": deliveries, "count": len(deliveries)}
 
 
 @api_router.get("/sales-deliveries/filter-options")
