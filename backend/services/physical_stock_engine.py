@@ -45,6 +45,7 @@ from services.product_stock_state import (
     STATUS_INITIALIZED,
     get_product_stock_state,
     require_product_stock_initialized,
+    require_product_stock_ready_for_receipt,
 )
 from services.product_unit_conversion import (
     get_product_unit_setting,
@@ -438,13 +439,19 @@ async def claim_durable_stock_event(
             raise HTTPException(404, f"Produk dengan ID '{mid}' tidak ditemukan.")
 
     aid = master.get("accurate_item_id")
-    await require_product_stock_initialized(db, mid)
+    m_type_early = str(movement_type or "").strip().upper()
+    # First stock-in may durable-bootstrap proven-new masters; outbound still
+    # requires an established initialized state (fail-closed for unknown legacy).
+    if m_type_early in (MOVEMENT_PENERIMAAN, "STOK_MASUK"):
+        await require_product_stock_ready_for_receipt(db, mid, user)
+    else:
+        await require_product_stock_initialized(db, mid)
 
     base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
         db, mid, transaction_qty, transaction_uom
     )
 
-    m_type = str(movement_type or "").strip().upper()
+    m_type = m_type_early
     is_p = bool(is_print) if is_print is not None else (
         str(production_process).strip().lower() != "non_print" if production_process else True
     )
@@ -1132,6 +1139,7 @@ async def handle_manual_receipt_created(
 async def precheck_manual_receipt_lines(
     db,
     lines: List[Dict[str, Any]],
+    user: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Fail-fast before persisting MANUAL receipt when Stock V2 goods_receipt is live."""
     from services.physical_stock import receipt_line_posts_physical_stock
@@ -1144,7 +1152,7 @@ async def precheck_manual_receipt_lines(
     for line in lines or []:
         mid = line.get("master_item_id")
         if mid and await receipt_line_posts_physical_stock(db, line):
-            await require_product_stock_initialized(db, mid)
+            await require_product_stock_ready_for_receipt(db, mid, user)
 
 
 async def is_operator_cetak_physical_stock_active(
@@ -1533,8 +1541,12 @@ async def precheck_goods_receipt_lines(
     db,
     lines: List[Dict[str, Any]],
     po_snapshot: Optional[Dict[str, Any]],
+    user: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Pre-checks that all master items in Receipt lines are initialized if physical stock is enabled with goods_receipt trigger."""
+    """Pre-checks BARANG lines are stock-ready when PO snapshot enables goods_receipt stock-in.
+
+    Proven brand-new masters may durable-bootstrap; unknown legacy fails closed.
+    """
     from services.physical_stock import receipt_line_posts_physical_stock
 
     snap = po_snapshot or {}
@@ -1543,7 +1555,7 @@ async def precheck_goods_receipt_lines(
     for line in lines:
         mid = line.get("master_item_id")
         if mid and await receipt_line_posts_physical_stock(db, line):
-            await require_product_stock_initialized(db, mid)
+            await require_product_stock_ready_for_receipt(db, mid, user)
 
 
 async def precheck_operator_progress(

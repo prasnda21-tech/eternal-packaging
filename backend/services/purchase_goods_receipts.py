@@ -694,7 +694,7 @@ async def _commit_legacy_pss_goods_receipt(
         line["received_qty"] = _whole_received_qty(line["received_qty"])
 
     po_snapshot = doc.get("physical_stock_snapshot")
-    await precheck_goods_receipt_lines(db, doc["lines"], po_snapshot)
+    await precheck_goods_receipt_lines(db, doc["lines"], po_snapshot, user=user)
 
     async def _alloc():
         idx = existing_count + 1

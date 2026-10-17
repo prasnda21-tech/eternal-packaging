@@ -1206,3 +1206,189 @@ async def require_product_stock_initialized(db, master_item_id: str) -> Dict[str
     if not state or not state.get("initialized") or state.get("status") != STATUS_INITIALIZED:
         raise HTTPException(400, f"Saldo awal stok fisik produk belum ditetapkan (ID: '{mid}').")
     return state
+
+
+# Provenance for system first-receipt bootstrap — NOT a manual Saldo Awal / physical count.
+BOOTSTRAP_SOURCE_FIRST_RECEIPT = "FIRST_RECEIPT_AUTO"
+BOOTSTRAP_KIND_SYSTEM = "system_first_receipt"
+FIRST_RECEIPT_BLOCKED_MSG = (
+    "Master item tidak dapat menerima stok pertama otomatis karena masih ada "
+    "jejak stok/transaksi historis. Tetapkan Saldo Awal atau Stock Opname secara eksplisit."
+)
+
+
+async def assess_first_receipt_eligibility(db, master_item_id: str) -> Dict[str, Any]:
+    """Multi-signal check: missing product_stock_state alone is NOT proof of zero stock.
+
+    Fail-closed when any relevant historical stock/receipt reference exists.
+    Already-INITIALIZED masters are ready (no bootstrap needed).
+    """
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        return {"eligible": False, "ready": False, "blockers": ["master_item_id_empty"]}
+
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0, "id": 1, "accurate_item_id": 1})
+    if not master:
+        master = await db.master_items.find_one({"accurate_item_id": mid}, {"_id": 0, "id": 1, "accurate_item_id": 1})
+        if master:
+            mid = str(master["id"])
+        else:
+            return {"eligible": False, "ready": False, "blockers": ["master_not_found"], "master_item_id": mid}
+
+    state = await get_product_stock_state(db, mid)
+    if state and state.get("initialized") and state.get("status") == STATUS_INITIALIZED:
+        return {
+            "eligible": False,
+            "ready": True,
+            "master_item_id": mid,
+            "blockers": [],
+            "bootstrap_source": state.get("bootstrap_source"),
+            "manual_opening": bool(state.get("opening_movement_id")) and not state.get("bootstrap_source"),
+        }
+
+    blockers: list = []
+    if state:
+        # Any prior PSS row that is not a clean INITIALIZED state implies legacy /
+        # interrupted / voided history — never treat as brand-new zero.
+        blockers.append("product_stock_state_exists")
+        if state.get("voided_opening_movement_id"):
+            blockers.append("voided_opening")
+        if state.get("opening_movement_id"):
+            blockers.append("opening_movement_present")
+        if state.get("pending_event"):
+            blockers.append("pending_event")
+        if state.get("status") == STATUS_INITIALIZING:
+            blockers.append("initializing")
+
+    mov_n = await db.stock_movements.count_documents({
+        "$or": [{"master_item_id": mid}, {"_id": mid}],
+    })
+    if mov_n:
+        blockers.append("stock_movements")
+
+    from services.physical_stock import BALANCE_COLLECTION, LEDGER_COLLECTION
+
+    bal_n = await db[BALANCE_COLLECTION].count_documents({"master_item_id": mid})
+    if bal_n:
+        blockers.append("warehouse_balances")
+    led_n = await db[LEDGER_COLLECTION].count_documents({"master_item_id": mid})
+    if led_n:
+        blockers.append("warehouse_ledger")
+
+    gr_n = await db["purchase_goods_receipts"].count_documents({
+        "cancelled": {"$ne": True},
+        "lines.master_item_id": mid,
+    })
+    if gr_n:
+        blockers.append("purchase_goods_receipts")
+
+    ar_n = await db["accurate_purchase_receipts"].count_documents({
+        "cancelled": {"$ne": True},
+        "valid": {"$ne": False},
+        "lines.master_item_id": mid,
+    })
+    if ar_n:
+        blockers.append("accurate_purchase_receipts")
+
+    return {
+        "eligible": len(blockers) == 0,
+        "ready": False,
+        "master_item_id": mid,
+        "blockers": blockers,
+        "accurate_item_id": (master or {}).get("accurate_item_id"),
+    }
+
+
+async def ensure_first_receipt_pss_bootstrap(
+    db,
+    master_item_id: str,
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Durable zero PSS ready for first PENERIMAAN when master is proven brand-new.
+
+    Does NOT write SALDO_AWAL / OPENING_BALANCE (not a fake manual opening).
+    Provenance: bootstrap_source=FIRST_RECEIPT_AUTO.
+    Fail-closed when historical signals exist.
+    """
+    assessment = await assess_first_receipt_eligibility(db, master_item_id)
+    mid = str(assessment.get("master_item_id") or master_item_id or "").strip()
+    if assessment.get("ready"):
+        state = await get_product_stock_state(db, mid)
+        if not state:
+            raise HTTPException(500, "State stok siap tetapi dokumen tidak ditemukan")
+        return state
+    if not assessment.get("eligible"):
+        detail = FIRST_RECEIPT_BLOCKED_MSG
+        blockers = assessment.get("blockers") or []
+        if blockers:
+            detail = f"{detail} (bukti: {', '.join(blockers)}; ID: '{mid}')"
+        else:
+            detail = f"{detail} (ID: '{mid}')"
+        raise HTTPException(400, detail)
+
+    master = await db.master_items.find_one({"id": mid}, {"_id": 0})
+    if not master:
+        raise HTTPException(404, f"Produk dengan ID '{mid}' tidak ditemukan")
+
+    unit_setting = await get_product_unit_setting(db, mid)
+    base_uom = normalize_uom(
+        (unit_setting or {}).get("base_uom") or master.get("unit") or "PCS"
+    )
+    actor = None
+    if isinstance(user, dict):
+        actor = {
+            "id": str(user.get("id") or user.get("_id") or ""),
+            "name": user.get("name") or user.get("email") or "User",
+            "email": user.get("email") or "",
+            "role": user.get("role") or "",
+        }
+    stamp = now_iso()
+    doc = {
+        "_id": mid,
+        "master_item_id": mid,
+        "accurate_item_id": master.get("accurate_item_id"),
+        "status": STATUS_INITIALIZED,
+        "initialized": True,
+        "total_qty": 0,
+        "unprinted_qty": 0,
+        "printed_qty": 0,
+        "base_uom": base_uom,
+        "opening_movement_id": None,
+        "opening_generation": 0,
+        "bootstrap_source": BOOTSTRAP_SOURCE_FIRST_RECEIPT,
+        "bootstrap_kind": BOOTSTRAP_KIND_SYSTEM,
+        "manual_opening": False,
+        "opening_is_physical_count": False,
+        "initialized_at": stamp,
+        "initialized_by": actor,
+        "created_at": stamp,
+        "updated_at": stamp,
+        "pending_event": None,
+    }
+    try:
+        await db[COLLECTION].insert_one(dict(doc))
+    except DuplicateKeyError:
+        # Concurrent bootstrap or race with manual opening — re-assess.
+        existing = await get_product_stock_state(db, mid)
+        if existing and existing.get("initialized") and existing.get("status") == STATUS_INITIALIZED:
+            return existing
+        raise HTTPException(409, FIRST_RECEIPT_BLOCKED_MSG)
+
+    public = dict(doc)
+    public.pop("_id", None)
+    return public
+
+
+async def require_product_stock_ready_for_receipt(
+    db,
+    master_item_id: str,
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Initialized PSS, or durable first-receipt bootstrap when proven brand-new."""
+    mid = str(master_item_id or "").strip()
+    if not mid:
+        raise HTTPException(400, "master_item_id wajib diisi")
+    state = await get_product_stock_state(db, mid)
+    if state and state.get("initialized") and state.get("status") == STATUS_INITIALIZED:
+        return state
+    return await ensure_first_receipt_pss_bootstrap(db, mid, user)

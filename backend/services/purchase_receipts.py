@@ -433,20 +433,228 @@ def _lines_from_goods_receipt(gr: dict) -> List[dict]:
     return lines
 
 
+def _r2_http_from_stock(exc: Exception) -> None:
+    from services.physical_stock import (
+        InsufficientPhysicalStockError,
+        PhysicalStockConflictError,
+        PhysicalStockValidationError,
+    )
+    if isinstance(exc, InsufficientPhysicalStockError):
+        raise HTTPException(409, str(exc)) from exc
+    if isinstance(exc, PhysicalStockConflictError):
+        raise HTTPException(409, str(exc)) from exc
+    if isinstance(exc, PhysicalStockValidationError):
+        raise HTTPException(400, str(exc)) from exc
+    raise exc
+
+
+async def _post_manual_direct_warehouse_stock(
+    db,
+    doc: dict,
+    *,
+    user: dict,
+    warehouse_id: Optional[str],
+) -> dict:
+    """Post BARANG lines for no-PO Langsung via exactly one warehouse engine."""
+    from services.branch_access import authorize_stock_location, find_branch_by_code, require_branch_access
+    from services.physical_stock import (
+        apply_purchase_receipt_lines,
+        resolve_purchase_receipt_warehouse,
+        require_transaction_support,
+        _client,
+    )
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        apply_purchase_receipt_lines_standalone,
+        is_warehouse_stock_standalone_active,
+        require_warehouse_stock_standalone,
+    )
+
+    actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+    requested_wh = str(warehouse_id or "").strip() or None
+    if requested_wh:
+        await authorize_stock_location(
+            db, user, warehouse_id=requested_wh, require_warehouse=True,
+        )
+    else:
+        ygy = await find_branch_by_code(db, "YGY")
+        if ygy and ygy.get("id"):
+            await require_branch_access(db, user, ygy["id"])
+
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+    if not r2_on and not standalone_on:
+        raise HTTPException(409, "Otoritas stok gudang tidak aktif untuk penerimaan langsung.")
+
+    stock_doc = {
+        "id": str(doc.get("id") or ""),
+        "accurate_receipt_id": doc.get("accurate_receipt_id"),
+        "receipt_number": doc.get("receipt_number") or "",
+        "purchase_order_id": "",
+        "supplier": doc.get("supplier") or "",
+        "lines": list(doc.get("lines") or []),
+    }
+    for line in stock_doc["lines"]:
+        qty = line.get("received_qty")
+        if isinstance(qty, float) and qty.is_integer():
+            line["received_qty"] = int(qty)
+
+    if standalone_on:
+        await require_warehouse_stock_standalone(db)
+        branch_id, resolved_wh = await resolve_purchase_receipt_warehouse(
+            db, None, warehouse_id=requested_wh,
+        )
+        stock_doc["branch_id"] = branch_id
+        stock_doc["warehouse_id"] = resolved_wh
+        try:
+            outcome = await apply_purchase_receipt_lines_standalone(
+                db, stock_doc, actor_id=actor_id,
+            )
+        except Exception as exc:
+            _r2_http_from_stock(exc)
+        posting = {
+            "status": outcome.get("status"),
+            "posted_count": outcome.get("posted_count"),
+            "failed_count": outcome.get("failed_count"),
+            "skipped_non_inventory": outcome.get("skipped_non_inventory"),
+            "engine": "warehouse_standalone",
+            "updated_at": now_iso(),
+        }
+        patch = {
+            "branch_id": branch_id,
+            "warehouse_id": resolved_wh,
+            "warehouse_standalone": True,
+            "r2_physical": False,
+            "stock_posting": posting,
+        }
+        await db[COLLECTION].update_one(
+            {"accurate_receipt_id": doc["accurate_receipt_id"]},
+            {"$set": patch},
+        )
+        doc.update(patch)
+        if str(posting.get("status") or "").upper() not in {"COMPLETE", ""}:
+            if int(posting.get("failed_count") or 0) > 0:
+                raise HTTPException(
+                    409,
+                    "Penerimaan tersimpan tetapi posting stok gudang belum lengkap. "
+                    "Ulangi dengan idempotency key yang sama.",
+                )
+        return doc
+
+    await require_r2_authority_active(db)
+    await require_transaction_support(_client(db))
+    try:
+        async with await _client(db).start_session() as session:
+            async with session.start_transaction():
+                branch_id, resolved_wh = await resolve_purchase_receipt_warehouse(
+                    db, session, warehouse_id=requested_wh,
+                )
+                stock_doc["branch_id"] = branch_id
+                stock_doc["warehouse_id"] = resolved_wh
+                await apply_purchase_receipt_lines(
+                    db, session, stock_doc, actor_id=actor_id,
+                )
+    except Exception as exc:
+        _r2_http_from_stock(exc)
+    patch = {
+        "branch_id": stock_doc["branch_id"],
+        "warehouse_id": stock_doc["warehouse_id"],
+        "r2_physical": True,
+        "warehouse_standalone": False,
+        "stock_posting": {
+            "status": "COMPLETE",
+            "engine": "r2",
+            "updated_at": now_iso(),
+        },
+    }
+    await db[COLLECTION].update_one(
+        {"accurate_receipt_id": doc["accurate_receipt_id"]},
+        {"$set": patch},
+    )
+    doc.update(patch)
+    return doc
+
+
+async def _resume_manual_direct_stock(db, existing: dict, user: dict) -> dict:
+    """Idempotent resume for no-PO Langsung stock posting."""
+    from services.physical_stock_engine import handle_manual_receipt_created
+    from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        apply_purchase_receipt_lines_standalone,
+        is_warehouse_stock_standalone_active,
+    )
+
+    if existing.get("goods_receipt_id") or is_cancelled(existing):
+        return existing
+
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+    if existing.get("warehouse_standalone") or (standalone_on and not existing.get("r2_physical")):
+        posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
+        if str(posting.get("status") or "").upper() == "COMPLETE":
+            return existing
+        actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+        stock_doc = {
+            "id": str(existing.get("id") or ""),
+            "receipt_number": existing.get("receipt_number") or "",
+            "purchase_order_id": "",
+            "branch_id": existing.get("branch_id") or "",
+            "warehouse_id": existing.get("warehouse_id") or "",
+            "lines": list(existing.get("lines") or []),
+        }
+        if not stock_doc["branch_id"] or not stock_doc["warehouse_id"]:
+            return await _post_manual_direct_warehouse_stock(
+                db, existing, user=user, warehouse_id=existing.get("warehouse_id"),
+            )
+        try:
+            outcome = await apply_purchase_receipt_lines_standalone(
+                db, stock_doc, actor_id=actor_id,
+            )
+        except Exception as exc:
+            _r2_http_from_stock(exc)
+        posting = {
+            "status": outcome.get("status"),
+            "posted_count": outcome.get("posted_count"),
+            "failed_count": outcome.get("failed_count"),
+            "skipped_non_inventory": outcome.get("skipped_non_inventory"),
+            "engine": "warehouse_standalone",
+            "updated_at": now_iso(),
+        }
+        await db[COLLECTION].update_one(
+            {"accurate_receipt_id": existing["accurate_receipt_id"]},
+            {"$set": {"stock_posting": posting, "warehouse_standalone": True, "r2_physical": False}},
+        )
+        existing["stock_posting"] = posting
+        existing["warehouse_standalone"] = True
+        return existing
+
+    if existing.get("r2_physical") or r2_on:
+        posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
+        if str(posting.get("status") or "").upper() == "COMPLETE":
+            return existing
+        return await _post_manual_direct_warehouse_stock(
+            db, existing, user=user, warehouse_id=existing.get("warehouse_id"),
+        )
+
+    await handle_manual_receipt_created(db, existing, user)
+    return existing
+
+
 async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict) -> dict:
     """Create a local Penerimaan Barang document in accurate_purchase_receipts.
 
-    Does not write journals or call HPP. Does not update Accurate.
-    Standalone (no PO): when Stock V2 is enabled with stock_in_trigger=goods_receipt,
-    appends idempotent PENERIMAAN movements and updates product_stock_state.
-    With PO: reuses official create_purchase_goods_receipt (PO remaining + physical
-    stock engine), then stores a list projection with source=manual.
-    Manual receipts remain excluded from Accurate Pembelian Barang aggregation.
+    Does not update Accurate. With PO: reuses create_purchase_goods_receipt.
+    Without PO (Langsung): posts BARANG via exactly one engine —
+    Mode A legacy PSS, Mode B standalone warehouse, or Mode C R2.
+    SERVICE lines never mutate physical stock. Manual docs stay excluded from
+    Accurate Pembelian Barang aggregation.
     """
     from services.physical_stock_engine import (
         handle_manual_receipt_created,
         precheck_manual_receipt_lines,
     )
+    from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
 
     async with get_named_lock("purchase_receipt_manual"):
         idem = str(payload.get("idempotency_key") or "").strip()
@@ -454,11 +662,12 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
             existing = await db[COLLECTION].find_one({"idempotency_key": idem}, {"_id": 0})
             if existing:
                 if not existing.get("goods_receipt_id") and not is_cancelled(existing):
-                    await handle_manual_receipt_created(db, existing, user)
+                    existing = await _resume_manual_direct_stock(db, existing, user)
                 return existing
 
         po_id = str(payload.get("purchase_order_id") or "").strip()
         goods_receipt = None
+        requested_warehouse_id = str(payload.get("warehouse_id") or "").strip() or None
         if po_id:
             from services.purchase_goods_receipts import create_purchase_goods_receipt
             goods_receipt = await create_purchase_goods_receipt(db, payload, user)
@@ -476,7 +685,11 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
             receipt_number = goods_receipt.get("receipt_number") or ""
         else:
             lines = _normalize_manual_lines(payload.get("lines") or payload.get("line_items"))
-            await precheck_manual_receipt_lines(db, lines)
+            r2_on = await is_r2_authority_active(db)
+            standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+            # Mode A PSS precheck (bootstrap / fail-closed); warehouse modes skip PSS.
+            if not r2_on and not standalone_on:
+                await precheck_manual_receipt_lines(db, lines, user=user)
             supplier = str(payload.get("supplier") or payload.get("supplier_name") or "").strip()
             if not supplier:
                 raise HTTPException(400, "Supplier wajib diisi.")
@@ -493,12 +706,14 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
         accurate_receipt_id = f"{MANUAL_RECEIPT_ID_PREFIX}{doc_id}"
         if goods_receipt and goods_receipt.get("id"):
             accurate_receipt_id = f"{MANUAL_RECEIPT_ID_PREFIX}{goods_receipt['id']}"
+            doc_id = str(goods_receipt["id"])
 
         collision = await db[COLLECTION].find_one({"accurate_receipt_id": accurate_receipt_id}, {"_id": 1})
         if collision:
             raise HTTPException(409, "Identitas penerimaan bentrok dengan dokumen yang sudah ada.")
 
         doc = {
+            "id": doc_id,
             "accurate_receipt_id": accurate_receipt_id,
             "receipt_number": receipt_number,
             "receipt_date": receipt_date,
@@ -515,6 +730,15 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
         }
         if idem:
             doc["idempotency_key"] = idem
+        if goods_receipt:
+            if goods_receipt.get("warehouse_id"):
+                doc["warehouse_id"] = goods_receipt.get("warehouse_id")
+            if goods_receipt.get("branch_id"):
+                doc["branch_id"] = goods_receipt.get("branch_id")
+            if goods_receipt.get("warehouse_standalone"):
+                doc["warehouse_standalone"] = True
+            if goods_receipt.get("r2_physical"):
+                doc["r2_physical"] = True
 
         if not doc["receipt_number"]:
             doc["receipt_number"] = await next_dated_seq(db, COLLECTION, "receipt_number", PREFIX_GOODS_RECEIPT)
@@ -522,7 +746,14 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
         await db[COLLECTION].insert_one(dict(doc))
         doc.pop("_id", None)
         if not doc.get("goods_receipt_id"):
-            await handle_manual_receipt_created(db, doc, user)
+            r2_on = await is_r2_authority_active(db)
+            standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+            if standalone_on or r2_on:
+                doc = await _post_manual_direct_warehouse_stock(
+                    db, doc, user=user, warehouse_id=requested_warehouse_id,
+                )
+            else:
+                await handle_manual_receipt_created(db, doc, user)
         return doc
 
 
@@ -569,6 +800,67 @@ async def cancel_manual_purchase_receipt(
             reversal_ids = list(linked_gr.get("reversal_movement_ids") or [])
             if linked_gr.get("reversal_movement_id") and not reversal_ids:
                 reversal_ids = [linked_gr["reversal_movement_id"]]
+        elif doc.get("warehouse_standalone"):
+            from services.warehouse_stock_standalone import cancel_purchase_receipt_standalone
+
+            actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+            stock_doc = {
+                "id": str(doc.get("id") or ""),
+                "receipt_number": doc.get("receipt_number") or "",
+                "branch_id": doc.get("branch_id") or "",
+                "warehouse_id": doc.get("warehouse_id") or "",
+                "lines": list(doc.get("lines") or []),
+            }
+            try:
+                cancelled = await cancel_purchase_receipt_standalone(
+                    db, stock_doc, actor_id=actor_id, reason=why,
+                )
+            except Exception as exc:
+                _r2_http_from_stock(exc)
+            reversal_ids = list(cancelled.get("reversals") or [])
+        elif doc.get("r2_physical"):
+            from services.physical_stock import (
+                LEDGER_COLLECTION,
+                MOVEMENT_PURCHASE_RECEIPT,
+                reverse_movement_in_session,
+                require_transaction_support,
+                _client,
+            )
+            from services.r2_go_live import require_r2_authority_active
+
+            actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
+            receipt_key = str(doc.get("id") or "")
+            await require_r2_authority_active(db)
+            await require_transaction_support(_client(db))
+            originals = await db[LEDGER_COLLECTION].find(
+                {
+                    "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+                    "metadata.receipt_id": receipt_key,
+                },
+                {"_id": 0, "id": 1},
+            ).to_list(500)
+            if not originals:
+                raise HTTPException(
+                    409,
+                    "Penerimaan tidak memiliki movement stok fisik yang dapat dibatalkan.",
+                )
+            try:
+                async with await _client(db).start_session() as session:
+                    async with session.start_transaction():
+                        for original in originals:
+                            movement = await reverse_movement_in_session(
+                                db,
+                                session,
+                                original["id"],
+                                actor_id=actor_id,
+                                idempotency_key=(
+                                    f"purchase-receipt-reversal:{receipt_key}:{original['id']}"
+                                ),
+                                reason=why,
+                            )
+                            reversal_ids.append(movement["id"])
+            except Exception as exc:
+                _r2_http_from_stock(exc)
         else:
             from services.purchase_goods_receipts import apply_receipt_stock_reversals
 

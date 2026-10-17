@@ -1237,7 +1237,7 @@ async def test_mode_a_po_receipt_posts_pss_without_r2_409(db):
     state2 = await get_product_stock_state(db, item["id"])
     assert float(state2["total_qty"]) == 24.0
 
-    # Brand-new uninitialized BARANG: Mode A keeps legacy 400 (not R2 409).
+    # Brand-new BARANG: Mode A first-receipt bootstrap (no fake SALDO_AWAL).
     fresh = {
         "id": f"item-{uuid.uuid4().hex[:8]}",
         "item_code": "NEW-MA",
@@ -1259,14 +1259,67 @@ async def test_mode_a_po_receipt_posts_pss_without_r2_409(db):
             "unit_price": 500,
         }],
     }, user)
+    receipt_new = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po2["id"],
+        "idempotency_key": f"gr-ma-new-{uuid.uuid4().hex[:8]}",
+        "lines": [{"purchase_order_line_id": po2["lines"][0]["line_id"], "received_qty": 5}],
+    }, user)
+    fresh_state = await get_product_stock_state(db, fresh["id"])
+    assert fresh_state is not None
+    assert fresh_state.get("bootstrap_source") == "FIRST_RECEIPT_AUTO"
+    assert fresh_state.get("manual_opening") is False
+    assert fresh_state.get("opening_movement_id") in (None, "")
+    assert float(fresh_state["total_qty"]) == 5.0
+    assert await db.stock_movements.count_documents({
+        "master_item_id": fresh["id"],
+        "movement_type": "SALDO_AWAL",
+    }) == 0
+    assert await db.stock_movements.count_documents({
+        "master_item_id": fresh["id"],
+        "reference_id": receipt_new["id"],
+        "movement_type": "PENERIMAAN",
+    }) == 1
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": fresh["id"]}) == 0
+
+    # Legacy unknown: PSS missing but warehouse balance exists → fail closed.
+    legacy = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "LEG-MA",
+        "item_name": "Legacy Unknown",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(legacy)
+    await db[BALANCE_COLLECTION].insert_one({
+        "id": str(uuid.uuid4()),
+        "master_item_id": legacy["id"],
+        "branch_id": branch["id"],
+        "warehouse_id": wh_a["id"],
+        "physical_qty": 0,
+        "baseline_status": "unreconciled",
+        "version": 0,
+    })
+    po_leg = await create_purchase_order(db, {
+        "supplier": "Supplier Mode A",
+        "idempotency_key": f"po-ma-leg-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": legacy["id"],
+            "item_code": "LEG-MA",
+            "item_name": "Legacy Unknown",
+            "unit": "PCS",
+            "ordered_qty": 2,
+            "unit_price": 100,
+        }],
+    }, user)
     with pytest.raises(HTTPException) as excinfo:
         await create_purchase_goods_receipt(db, {
-            "purchase_order_id": po2["id"],
-            "idempotency_key": f"gr-ma-new-{uuid.uuid4().hex[:8]}",
-            "lines": [{"purchase_order_line_id": po2["lines"][0]["line_id"], "received_qty": 5}],
+            "purchase_order_id": po_leg["id"],
+            "idempotency_key": f"gr-ma-leg-{uuid.uuid4().hex[:8]}",
+            "lines": [{"purchase_order_line_id": po_leg["lines"][0]["line_id"], "received_qty": 2}],
         }, user)
     assert excinfo.value.status_code == 400
-    assert "Saldo awal" in str(excinfo.value.detail)
+    assert "jejak stok" in str(excinfo.value.detail).lower() or "historis" in str(excinfo.value.detail).lower()
 
 
 async def test_mode_a_service_line_skips_pss(db):
@@ -1327,6 +1380,123 @@ async def test_mode_a_service_line_skips_pss(db):
     assert float(state["total_qty"]) == 8.0
     assert await db.stock_movements.count_documents({"master_item_id": service["id"]}) == 0
     assert await get_product_stock_state(db, service["id"]) is None
+
+
+async def test_mode_b_langsung_posts_warehouse_skips_service_and_pss(db):
+    """Mode B Langsung (no PO): BARANG posts warehouse; SERVICE skipped; no PSS dual-write."""
+    from services.purchase_receipts import (
+        cancel_manual_purchase_receipt,
+        create_manual_purchase_receipt,
+    )
+
+    item, branch, wh_a, wh_b = await _seed(db, code="LANG")
+    service = {
+        "id": f"svc-{uuid.uuid4().hex[:8]}",
+        "item_code": "ADDON-L",
+        "item_name": "Desain",
+        "unit": "PCS",
+        "item_type": "SERVICE",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(service)
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True)
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+
+    # First receipt brand-new BARANG without opening.
+    doc = await create_manual_purchase_receipt(db, {
+        "supplier": "Supplier Langsung",
+        "receipt_date": "2026-10-17",
+        "warehouse_id": wh_a["id"],
+        "idempotency_key": f"lang-{uuid.uuid4().hex[:8]}",
+        "lines": [
+            {"master_item_id": item["id"], "item_code": "LANG", "item_name": "Barang",
+             "unit": "PCS", "received_qty": 7},
+            {"master_item_id": service["id"], "item_code": "ADDON-L", "item_name": "Desain",
+             "unit": "PCS", "received_qty": 7},
+        ],
+    }, user)
+    assert doc.get("warehouse_standalone") is True
+    assert doc.get("warehouse_id") == wh_a["id"]
+    assert await _qty(db, item["id"], wh_a["id"]) == 7
+    bal = await db[BALANCE_COLLECTION].find_one({
+        "master_item_id": item["id"], "warehouse_id": wh_a["id"],
+    })
+    assert bal.get("baseline_status") == "unreconciled"
+    assert await db[BALANCE_COLLECTION].find_one({"master_item_id": service["id"]}) is None
+    assert await db.product_stock_state.count_documents({}) == 0
+    assert await _qty(db, item["id"], wh_b["id"]) == 0
+
+    # Idempotent retry
+    again = await create_manual_purchase_receipt(db, {
+        "supplier": "Supplier Langsung",
+        "receipt_date": "2026-10-17",
+        "warehouse_id": wh_a["id"],
+        "idempotency_key": doc["idempotency_key"],
+        "lines": [
+            {"master_item_id": item["id"], "item_code": "LANG", "item_name": "Barang",
+             "unit": "PCS", "received_qty": 7},
+            {"master_item_id": service["id"], "item_code": "ADDON-L", "item_name": "Desain",
+             "unit": "PCS", "received_qty": 7},
+        ],
+    }, user)
+    assert again["accurate_receipt_id"] == doc["accurate_receipt_id"]
+    assert await _qty(db, item["id"], wh_a["id"]) == 7
+
+    # Cancel reverses warehouse only.
+    cancelled = await cancel_manual_purchase_receipt(
+        db, doc["accurate_receipt_id"], user, reason="UAT cancel langsung",
+    )
+    assert cancelled.get("cancelled") is True
+    assert await _qty(db, item["id"], wh_a["id"]) == 0
+    assert await db.product_stock_state.count_documents({}) == 0
+
+
+async def test_mode_a_langsung_first_receipt_bootstrap(db):
+    """Mode A Langsung: proven-new BARANG bootstraps PSS; SERVICE skipped."""
+    from services.physical_stock_settings import update_physical_stock_settings
+    from services.product_stock_state import get_product_stock_state
+    from services.purchase_receipts import create_manual_purchase_receipt
+
+    item, _, _, _ = await _seed(db, code="MLA")
+    service = {
+        "id": f"svc-{uuid.uuid4().hex[:8]}",
+        "item_code": "ADDON-MLA",
+        "item_name": "Sablon",
+        "unit": "PCS",
+        "item_type": "SERVICE",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(service)
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    await update_physical_stock_settings(
+        db,
+        {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        user={"email": "t@test"},
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    doc = await create_manual_purchase_receipt(db, {
+        "supplier": "Supplier A",
+        "receipt_date": "2026-10-17",
+        "idempotency_key": f"mla-{uuid.uuid4().hex[:8]}",
+        "lines": [
+            {"master_item_id": item["id"], "item_code": "MLA", "item_name": "Barang",
+             "unit": "PCS", "received_qty": 3},
+            {"master_item_id": service["id"], "item_code": "ADDON-MLA", "item_name": "Sablon",
+             "unit": "PCS", "received_qty": 3},
+        ],
+    }, user)
+    state = await get_product_stock_state(db, item["id"])
+    assert float(state["total_qty"]) == 3.0
+    assert state.get("bootstrap_source") == "FIRST_RECEIPT_AUTO"
+    assert await db.stock_movements.count_documents({"master_item_id": service["id"]}) == 0
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+    assert doc.get("warehouse_standalone") is not True
 
 
 async def test_create_gr_idempotency_resumes_partial_standalone(db):
