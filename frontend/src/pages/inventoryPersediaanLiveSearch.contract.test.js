@@ -55,11 +55,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-legend-bar/);
     expect(stock).toMatch(/Filter lanjutan/);
     expect(stock).toMatch(/Lihat penjelasan lengkap/);
-    expect(stock).toMatch(/stock-filter-focus/);
-    expect(stock).toMatch(/Filter \(fokus\)/);
+    expect(stock).not.toMatch(/stock-filter-focus/);
+    expect(stock).not.toMatch(/Filter \(fokus\)/);
     expect(stock).toMatch(/stock-expand-panel/);
     expect(stock).toMatch(/Detail per gudang/);
     expect(stock).toMatch(/stock-mobile-list/);
+    expect(stock).toMatch(/data-testid="stock-filters"/);
+    expect(stock).toMatch(/data-testid="stock-search"/);
     expect(stock).toMatch(/bookPhysicalDisplay/);
     expect(stock).toMatch(/stockPhysicalPrimaryDisplay/);
     expect(stock).toMatch(/data-balance-present/);

@@ -455,9 +455,7 @@ export default function StockSaatIni() {
         </div>
       )}
 
-      <div className="stock-layout">
-        <div className="stock-main">
-          <div className="stock-filter-bar" data-testid="stock-filters">
+      <div className="stock-filter-bar" data-testid="stock-filters">
             <div className="stock-filter-field stock-filter-field--branch">
               {canSwitchBranches && warehouseActive ? (
                 <BranchScopeSelect
@@ -871,96 +869,13 @@ export default function StockSaatIni() {
             })}
           </div>
 
-          {pageCount > 1 && (
-            <div className="master-pager stock-pager" data-testid="stock-pager">
-              <button className="stock-btn-outline sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
-              <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} baris</span>
-              <button className="stock-btn-outline sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
-            </div>
-          )}
+      {pageCount > 1 && (
+        <div className="master-pager stock-pager" data-testid="stock-pager">
+          <button className="stock-btn-outline sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
+          <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} baris</span>
+          <button className="stock-btn-outline sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
         </div>
-
-        <aside className="stock-side-panel" data-testid="stock-filter-focus" aria-label="Filter fokus">
-          <h2 className="stock-side-panel-title">Filter (fokus)</h2>
-          <p className="stock-side-panel-sub">Shortcut filter yang sama dengan bar utama.</p>
-          <div className="stock-side-panel-fields">
-            <div className="stock-filter-field stock-filter-field--branch">
-              {canSwitchBranches && warehouseActive ? (
-                <BranchScopeSelect
-                  branches={branches}
-                  value={effectiveBranchId}
-                  canSwitch
-                  effectiveCode={data?.effective_branch_code || branchLabel}
-                  onChange={onBranchChange}
-                  testId="stock-focus-branch-select"
-                />
-              ) : (
-                <label className="stock-filter-ro" data-testid="stock-focus-branch-fixed">
-                  <span>Cabang</span>
-                  <div className="stock-filter-ro-value">{branchLabel}</div>
-                </label>
-              )}
-            </div>
-            {warehouseActive && (
-              <label className="stock-filter-field" data-testid="stock-focus-warehouse-filter">
-                <span>Gudang</span>
-                <select
-                  value={warehouseId}
-                  onChange={(e) => onWarehouseChange(e.target.value)}
-                  data-testid="stock-focus-warehouse-select"
-                  aria-label="Filter gudang (fokus)"
-                >
-                  <option value="">Semua Gudang</option>
-                  {filterWarehouses.map((wh) => (
-                    <option key={wh.id} value={wh.id}>
-                      {wh.code ? `${wh.code} — ${wh.name || wh.code}` : (wh.name || wh.id)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <form className="stock-filter-search" onSubmit={doSearch}>
-              <Search size={16} aria-hidden="true" />
-              <input
-                type="text"
-                value={qInput}
-                onChange={(e) => setQInput(e.target.value)}
-                placeholder="Cari kode, nama, atau Accurate ID…"
-                data-testid="stock-focus-search"
-                aria-label="Cari (fokus)"
-              />
-              {q && (
-                <button type="button" className="stock-search-clear" onClick={clearSearch} aria-label="Bersihkan">
-                  <X size={14} />
-                </button>
-              )}
-            </form>
-            <label className="stock-filter-field stock-filter-field--pagesize">
-              <span>Per halaman</span>
-              <select
-                value={pageSize}
-                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
-                data-testid="stock-focus-page-size"
-                aria-label="Jumlah baris per halaman (fokus)"
-              >
-                <option value={25}>25 / halaman</option>
-                <option value={50}>50 / halaman</option>
-                <option value={100}>100 / halaman</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              className={`stock-filter-advanced${advancedOpen ? " is-open" : ""}`}
-              data-testid="stock-focus-filter-advanced"
-              aria-expanded={advancedOpen}
-              onClick={() => setAdvancedOpen((v) => !v)}
-            >
-              <SlidersHorizontal size={15} aria-hidden="true" />
-              Filter lanjutan
-            </button>
-          </div>
-        </aside>
-      </div>
+      )}
 
       {openingOpen && (
         <SaldoAwalModal
