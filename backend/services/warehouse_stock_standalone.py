@@ -738,12 +738,18 @@ async def apply_purchase_receipt_lines_standalone(
     db, receipt: dict, *, actor_id: str
 ) -> Dict[str, Any]:
     """Post each GR line idempotently. Returns COMPLETE or PARTIAL summary."""
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     lines = receipt.get("lines") if isinstance(receipt.get("lines"), list) else []
     if not lines:
         raise PhysicalStockValidationError("Minimal satu baris penerimaan")
     movements = []
     failures = []
+    skipped = 0
     for line in lines:
+        if not await receipt_line_posts_physical_stock(db, line):
+            skipped += 1
+            continue
         req = _purchase_receipt_request(receipt, line, actor_id=actor_id)
         try:
             mov = await apply_standalone_movement(db, req, actor_id=actor_id)
@@ -753,6 +759,7 @@ async def apply_purchase_receipt_lines_standalone(
                 "line_id": str(line.get("line_id") or ""),
                 "error": str(exc),
             })
+    # All-SERVICE receipt: no physical lines to post → COMPLETE with zero movements.
     status = "COMPLETE" if not failures else ("PARTIAL" if movements else "FAILED")
     return {
         "status": status,
@@ -760,6 +767,7 @@ async def apply_purchase_receipt_lines_standalone(
         "failures": failures,
         "posted_count": len(movements),
         "failed_count": len(failures),
+        "skipped_non_inventory": skipped,
         "engine": MODE_WAREHOUSE_STANDALONE,
     }
 

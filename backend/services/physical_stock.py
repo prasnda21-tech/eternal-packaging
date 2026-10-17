@@ -1131,6 +1131,23 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
     }
 
 
+async def receipt_line_posts_physical_stock(db, line: dict) -> bool:
+    """True when a GR line should mutate warehouse physical stock / HPP layers.
+
+    Explicit SERVICE (process Add On) never posts physical qty. Legacy masters
+    with missing/blank item_type still post (inventory default). Document lines
+    may still exist on the GR either way.
+    """
+    from services.inventory_accounting import ITEM_TYPE_SERVICE
+
+    mid = str((line or {}).get("master_item_id") or "").strip()
+    if not mid:
+        return False
+    master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0, "item_type": 1})
+    raw = str((master or {}).get("item_type") or "").strip().upper()
+    return raw != ITEM_TYPE_SERVICE
+
+
 async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: str) -> List[dict]:
     """Post every PURCHASE_RECEIPT line inside the caller's transaction."""
     lines = receipt.get("lines") if isinstance(receipt.get("lines"), list) else []
@@ -1138,6 +1155,8 @@ async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: 
         raise PhysicalStockValidationError("Minimal satu baris penerimaan")
     movements = []
     for line in lines:
+        if not await receipt_line_posts_physical_stock(db, line):
+            continue
         movements.append(await _apply_movement_in_session(
             db,
             _purchase_receipt_request(receipt, line, actor_id=actor_id),

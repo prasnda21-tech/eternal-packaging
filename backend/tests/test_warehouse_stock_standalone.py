@@ -758,6 +758,59 @@ async def test_no_auto_copy_company_to_warehouse(db):
     assert row["qty_tersedia_valid"] is False
 
 
+
+async def test_mixed_service_gr_skips_physical_and_hpp_layers(db):
+    """SERVICE Add On on a PO-linked GR must not post physical qty or HPP layers."""
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, branch, wh_a, _ = await _seed(db, code="MIX")
+    service = {
+        "id": f"svc-{uuid.uuid4().hex[:8]}",
+        "item_code": "ADDON-GR",
+        "item_name": "Proses Cetak",
+        "unit": "PCS",
+        "item_type": "SERVICE",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(service)
+    await post_opening_balance_standalone(
+        db, item["id"],
+        {"branch_id": branch["id"], "warehouse_id": wh_a["id"], "physical_qty": 10,
+         "idempotency_key": "open-mix-svc"},
+        actor_id="u1",
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    await db.warehouses.update_one({"id": wh_a["id"]}, {"$set": {"is_default": True, "code": "MAIN"}})
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier",
+        "idempotency_key": f"po-mix-{uuid.uuid4().hex[:8]}",
+        "lines": [
+            {"master_item_id": item["id"], "item_code": "MIX", "item_name": "Barang",
+             "unit": "PCS", "ordered_qty": 5, "unit_price": 1000},
+            {"master_item_id": service["id"], "item_code": "ADDON-GR", "item_name": "Proses Cetak",
+             "unit": "PCS", "ordered_qty": 5, "unit_price": 500},
+        ],
+    }, user)
+    receipt = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "warehouse_id": wh_a["id"],
+        "idempotency_key": f"gr-mix-{uuid.uuid4().hex[:8]}",
+        "lines": [
+            {"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 5},
+            {"purchase_order_line_id": po["lines"][1]["line_id"], "received_qty": 5},
+        ],
+    }, user)
+    assert len(receipt["lines"]) == 2
+    assert await _qty(db, item["id"], wh_a["id"]) == 15
+    assert await db[BALANCE_COLLECTION].find_one({"master_item_id": service["id"]}) is None
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": service["id"]}) == 0
+    recognized = await db["hpp_recognition_events"].count_documents({
+        "master_item_id": service["id"], "status": "RECOGNIZED",
+    })
+    assert recognized == 0
+
+
 async def test_service_addon_excluded_from_catalog_physical(db):
     item, branch, wh_a, _ = await _seed(db, code="INV")
     service = {

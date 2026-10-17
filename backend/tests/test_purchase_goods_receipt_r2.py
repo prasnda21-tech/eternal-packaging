@@ -264,6 +264,9 @@ async def test_r2_failure_rolls_back_receipt(db):
 
 
 async def test_cancellation_reverses_once_and_blocks_invoice_or_shortage(db):
+    """Invoice still blocks cancel. Book shortage after consume does NOT block:
+    physical stock allows negative book; cancel still reverses once.
+    """
     await _org(db, [("wh-main", "MAIN", "Gudang Yogyakarta")])
     item_id = await _item(db)
     po = await _po(db, [_line(item_id, 100)])
@@ -283,21 +286,10 @@ async def test_cancellation_reverses_once_and_blocks_invoice_or_shortage(db):
         "idempotency_key": "consume-80",
         "reason": "test consume",
     }, actor_id="user-1")
-    with pytest.raises(HTTPException) as short:
-        await cancel_purchase_goods_receipt(db, receipt["id"], USER, reason="batal")
-    assert short.value.status_code == 409
-    assert (await db.purchase_goods_receipts.find_one({"id": receipt["id"]})).get("cancelled") is not True
-    await post_movement(db, {
-        "master_item_id": item_id,
-        "branch_id": receipt["branch_id"],
-        "warehouse_id": "wh-main",
-        "movement_type": MOVEMENT_MANUAL_ADJUSTMENT,
-        "qty_delta": 80,
-        "idempotency_key": "restore-80",
-        "reason": "test restore",
-    }, actor_id="user-1")
+    # Allow-negative book: cancel proceeds even though remaining book (20) < receipt qty (100).
     cancelled = await cancel_purchase_goods_receipt(db, receipt["id"], USER, reason="batal")
     assert cancelled["status"] == "CANCELLED"
+    assert (await get_balance(db, item_id, receipt["branch_id"], "wh-main"))["physical_qty"] == -80
     again = await cancel_purchase_goods_receipt(db, receipt["id"], USER, reason="batal")
     assert again["status"] == "CANCELLED"
     rows = await db[LEDGER_COLLECTION].find(
@@ -309,7 +301,6 @@ async def test_cancellation_reverses_once_and_blocks_invoice_or_shortage(db):
     assert reversals == 1
     original = await db[LEDGER_COLLECTION].find_one({"metadata.receipt_id": receipt["id"]})
     assert original["qty_delta"] == 100
-    assert (await get_balance(db, item_id, receipt["branch_id"], "wh-main"))["physical_qty"] == 0
     assert await db.stock_movements.count_documents({}) == 0
 
 
