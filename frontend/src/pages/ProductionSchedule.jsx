@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import "../productionSheet.css";
 import { Download, Filter, LayoutGrid, RefreshCw, Table as TableIcon } from "lucide-react";
@@ -11,7 +11,16 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
 import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
 import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
 import {
+  PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS,
+  clampProductionScheduleColWidth,
+  clearProductionScheduleColWidths,
+  productionScheduleStickyCssVars,
+  readProductionScheduleColWidths,
+  writeProductionScheduleColWidths,
+} from "../lib/productionScheduleColWidths";
+import {
   FILTER_DEFAULTS,
+  PRODUCTION_SCHEDULE_STATUS_TABS,
   applyProductionFilters,
   applyProductionScheduleDisplayRowFilters,
   applyDeadlineTodayShortcut,
@@ -19,6 +28,7 @@ import {
   applyWorkDateRangeControl,
   applyWorkDateTodayShortcut,
   buildHariIniDisplayRows,
+  computeProductionScheduleStatusTabCounts,
   countUniqueProductionSchedulePos,
   isScheduledToday,
   DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT,
@@ -85,7 +95,29 @@ function ingestProductionDashboard(d) {
   return { rows: nextRows, total };
 }
 
-function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onClear, children }) {
+function ProdColResizeHandle({ colKey, onPointerDown, onDoubleClick }) {
+  return (
+    <span
+      className="prod-col-resize"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Ubah lebar kolom ${colKey}`}
+      data-testid={`prod-resize-${colKey}`}
+      onPointerDown={(event) => onPointerDown(event, colKey)}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onDoubleClick?.(colKey);
+      }}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    />
+  );
+}
+
+function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onClear, children, resizeSlot }) {
   return (
     <div className="prod-th-inner">
       {sortable ? (
@@ -118,18 +150,23 @@ function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onCle
           )}
         </PopoverContent>
       </Popover>
+      {resizeSlot}
     </div>
   );
 }
 
 export default function ProductionSchedule() {
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
+  const listUserId = user?.id || user?.email || user?.sub || "";
   const canExport = hasPerm("dashboard.production.export");
   const [mode, setMode] = useState("tabel"); // 'kartu' | 'tabel'
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [err, setErr] = useState("");
   const [total, setTotal] = useState(0);
+  const [colWidths, setColWidths] = useState(() => readProductionScheduleColWidths(listUserId));
+  const colResizeRef = useRef(null);
   const [q, setQ] = useState(FILTER_DEFAULTS.q);
   const [poFilter, setPoFilter] = useState(FILTER_DEFAULTS.poFilter);
   const [statusFilter, setStatusFilter] = useState(FILTER_DEFAULTS.statusFilter);
@@ -137,6 +174,7 @@ export default function ProductionSchedule() {
   const [customerFilter, setCustomerFilter] = useState(FILTER_DEFAULTS.customerFilter);
   const [urgentOnly, setUrgentOnly] = useState(FILTER_DEFAULTS.urgentOnly);
   const [holdOnly, setHoldOnly] = useState(FILTER_DEFAULTS.holdOnly);
+  const [scheduleStatusTab, setScheduleStatusTab] = useState(FILTER_DEFAULTS.scheduleStatusTab);
   const [screenerFilter, setScreenerFilter] = useState(FILTER_DEFAULTS.screenerFilter);
   const [helperFilter, setHelperFilter] = useState(FILTER_DEFAULTS.helperFilter);
   const [packingFilter, setPackingFilter] = useState(FILTER_DEFAULTS.packingFilter);
@@ -152,34 +190,70 @@ export default function ProductionSchedule() {
   const [includeCompleted, setIncludeCompleted] = useState(FILTER_DEFAULTS.includeCompleted);
   const [exporting, setExporting] = useState(false);
   const sheetZoom = useProductionSheetZoom();
+  /** Monotonic id for list GETs — success/error apply only if still the latest request. */
+  const listReqIdRef = useRef(0);
+
+  useEffect(() => {
+    setColWidths(readProductionScheduleColWidths(listUserId));
+  }, [listUserId]);
 
   useEffect(() => {
     let cancelled = false;
+    const reqId = ++listReqIdRef.current;
     setBusy(true);
     setErr("");
     api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter }))
       .then((payload) => {
-        if (cancelled) return;
+        if (cancelled || reqId !== listReqIdRef.current) return;
         const ingested = ingestProductionDashboard(payload);
         setRows(ingested.rows);
         setTotal(ingested.total);
+        setHasLoadedOnce(true);
+        setErr("");
       })
       .catch((error) => {
-        if (!cancelled) setErr(error.response?.data?.detail || "Gagal memuat");
+        if (cancelled || reqId !== listReqIdRef.current) return;
+        setErr(error.response?.data?.detail || "Gagal memuat");
+        setHasLoadedOnce(true);
       })
       .finally(() => {
-        if (!cancelled) setBusy(false);
+        if (!cancelled && reqId === listReqIdRef.current) setBusy(false);
       });
     return () => { cancelled = true; };
   }, [includeCancelled, includeCompleted, workDateFilter]);
 
   const { lastUpdated: schedLastUpdated, isPolling: schedIsPolling, refreshNow: refreshSched } = useAutoRefresh(
-    () => api.productionDashboard(productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter })),
-    { intervalMs: 30_000, enabled: true, onData: (d) => {
-      const ingested = ingestProductionDashboard(d);
-      setRows(ingested.rows);
-      setTotal(ingested.total);
-    } }
+    async () => {
+      const reqId = ++listReqIdRef.current;
+      try {
+        const payload = await api.productionDashboard(
+          productionDashboardRequestParams({ includeCancelled, includeCompleted, workDateFilter })
+        );
+        return { reqId, payload };
+      } catch (error) {
+        if (error && typeof error === "object") error.__prodListReqId = reqId;
+        throw error;
+      }
+    },
+    {
+      intervalMs: 30_000,
+      enabled: true,
+      onData: (result) => {
+        const reqId = result?.reqId;
+        if (reqId == null || reqId !== listReqIdRef.current) return;
+        const ingested = ingestProductionDashboard(result.payload);
+        setRows(ingested.rows);
+        setTotal(ingested.total);
+        setHasLoadedOnce(true);
+        setErr("");
+      },
+      onError: (error) => {
+        const reqId = error?.__prodListReqId;
+        if (reqId == null || reqId !== listReqIdRef.current) return;
+        setErr(error.response?.data?.detail || "Gagal memuat");
+        setHasLoadedOnce(true);
+      },
+    }
   );
   useEffect(() => {
     if (statusFilter === "selesai" && !includeCompleted) setIncludeCompleted(true);
@@ -205,6 +279,7 @@ export default function ProductionSchedule() {
     setCustomerFilter(FILTER_DEFAULTS.customerFilter);
     setUrgentOnly(FILTER_DEFAULTS.urgentOnly);
     setHoldOnly(FILTER_DEFAULTS.holdOnly);
+    setScheduleStatusTab(FILTER_DEFAULTS.scheduleStatusTab);
     setScreenerFilter(FILTER_DEFAULTS.screenerFilter);
     setHelperFilter(FILTER_DEFAULTS.helperFilter);
     setPackingFilter(FILTER_DEFAULTS.packingFilter);
@@ -222,15 +297,32 @@ export default function ProductionSchedule() {
 
   const filterState = {
     q, poFilter, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+    scheduleStatusTab,
     screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
     dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, sortBy,
     includeCancelled, includeCompleted,
   };
 
+  /** C2 base: all active filters except the status tab itself. */
+  const filterContextRows = useMemo(
+    () => applyProductionFilters(rows, { ...filterState, scheduleStatusTab: "all" }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, q, poFilter, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+      screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
+      dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo,
+      includeCancelled, includeCompleted]
+  );
+
+  const statusTabCounts = useMemo(
+    () => (hasLoadedOnce && !err ? computeProductionScheduleStatusTabCounts(filterContextRows) : null),
+    [hasLoadedOnce, err, filterContextRows]
+  );
+
   const filtered = useMemo(
     () => applyProductionFilters(rows, filterState),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, q, poFilter, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
+      scheduleStatusTab,
       screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
       dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo,
       includeCancelled, includeCompleted]
@@ -435,10 +527,113 @@ export default function ProductionSchedule() {
     }
   };
 
+  const resetColumnWidths = useCallback(() => {
+    clearProductionScheduleColWidths(listUserId);
+    setColWidths({ ...PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS });
+  }, [listUserId]);
+
+  const resetOneColumnWidth = useCallback((key) => {
+    setColWidths((prev) => {
+      const next = {
+        ...prev,
+        [key]: PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS[key] ?? prev[key],
+      };
+      writeProductionScheduleColWidths(next, listUserId);
+      return next;
+    });
+  }, [listUserId]);
+
+  const onColResizePointerDown = useCallback((event, key) => {
+    if (event.button != null && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const handleEl = event.currentTarget;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startW = colWidths[key] ?? PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS[key];
+    try {
+      handleEl.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    document.body.classList.add("prod-col-resizing");
+    handleEl.classList.add("is-active");
+
+    const onMove = (moveEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      const nextW = clampProductionScheduleColWidth(key, startW + (moveEvent.clientX - startX));
+      setColWidths((prev) => {
+        if (prev[key] === nextW) return prev;
+        return { ...prev, [key]: nextW };
+      });
+    };
+    const onUp = (upEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      handleEl.removeEventListener("pointermove", onMove);
+      handleEl.removeEventListener("pointerup", onUp);
+      handleEl.removeEventListener("pointercancel", onUp);
+      try {
+        handleEl.releasePointerCapture(pointerId);
+      } catch {
+        /* already released */
+      }
+      handleEl.classList.remove("is-active");
+      document.body.classList.remove("prod-col-resizing");
+      setColWidths((prev) => {
+        writeProductionScheduleColWidths(prev, listUserId);
+        return prev;
+      });
+      if (colResizeRef.current?.pointerId === pointerId) colResizeRef.current = null;
+    };
+
+    colResizeRef.current = { pointerId, handleEl, onMove, onUp };
+    handleEl.addEventListener("pointermove", onMove);
+    handleEl.addEventListener("pointerup", onUp);
+    handleEl.addEventListener("pointercancel", onUp);
+  }, [colWidths, listUserId]);
+
+  useEffect(() => () => {
+    const active = colResizeRef.current;
+    if (!active) return;
+    active.handleEl.removeEventListener("pointermove", active.onMove);
+    active.handleEl.removeEventListener("pointerup", active.onUp);
+    active.handleEl.removeEventListener("pointercancel", active.onUp);
+    document.body.classList.remove("prod-col-resizing");
+    colResizeRef.current = null;
+  }, []);
+
+  const sheetStyle = useMemo(() => ({
+    ...productionSheetZoomStyle(sheetZoom.zoom),
+    ...productionScheduleStickyCssVars(colWidths),
+  }), [sheetZoom.zoom, colWidths]);
+
+  const initialLoading = busy && !hasLoadedOnce && rows.length === 0;
+  const refreshing = (busy || schedIsPolling) && hasLoadedOnce;
+
   return (
     <div className="prod-page prod-schedule-page" data-testid="production-schedule-page">
       <div className="prod-schedule-chrome">
-        <h1 className="prod-schedule-sr-title">Jadwal Produksi · {total} PO</h1>
+        <div className="prod-schedule-heading" data-testid="prod-schedule-heading">
+          <div className="prod-schedule-heading-main">
+            <h1 className="prod-schedule-title" data-testid="prod-schedule-title">Jadwal Produksi</h1>
+            {hasLoadedOnce && Number.isFinite(Number(total)) && (
+              <span className="prod-schedule-count-pill" data-testid="prod-schedule-count">
+                {Number(total).toLocaleString("id-ID")} pekerjaan
+              </span>
+            )}
+          </div>
+          <div className="prod-schedule-heading-actions">
+            <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling || busy} data-testid="prod-refresh-button" title="Refresh sekarang">
+              <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
+            </button>
+            {canExport && (
+              <>
+                <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
+                <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
+              </>
+            )}
+          </div>
+        </div>
         {schedLastUpdated && (
           <span data-testid="prod-last-updated" hidden>
             {new Date(schedLastUpdated).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
@@ -446,6 +641,34 @@ export default function ProductionSchedule() {
         )}
 
         <div className="prod-toolbar" data-testid="prod-filters">
+          <div className="prod-schedule-status-tabs" role="tablist" aria-label="Status jadwal produksi" data-testid="prod-status-tabs">
+            {PRODUCTION_SCHEDULE_STATUS_TABS.map((tab) => {
+              const selected = scheduleStatusTab === tab.id;
+              const count = statusTabCounts == null ? null : Number(statusTabCounts[tab.id] ?? 0);
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  className={
+                    "prod-schedule-status-tab"
+                    + (selected ? " is-active" : "")
+                    + (tab.id === "hold" ? " is-hold" : "")
+                  }
+                  onClick={() => setScheduleStatusTab(tab.id)}
+                  data-testid={`prod-status-tab-${tab.id}`}
+                >
+                  <span className="prod-schedule-status-tab-label">{tab.label}</span>
+                  {count != null && (
+                    <span className="prod-schedule-status-tab-count" data-testid={`prod-status-tab-count-${tab.id}`}>
+                      {count.toLocaleString("id-ID")}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
           <ProductionScheduleSearchCluster
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -459,22 +682,26 @@ export default function ProductionSchedule() {
           <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT}>
             Reset Filter
           </button>
-          {canExport && (
-            <>
-              <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
-              <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
-            </>
-          )}
+          <button type="button" className="ghost sm prod-reset-widths" onClick={resetColumnWidths} data-testid="prod-reset-col-widths" title="Reset lebar kolom">
+            Reset Lebar
+          </button>
           <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
-            <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling} data-testid="prod-refresh-button" title="Refresh sekarang">
-              <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
-            </button>
             <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
             <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
           </div>
         </div>
 
-        {err && <div className="error" data-testid="prod-error">{err}</div>}
+        {err && <div className="error" data-testid="prod-error" role="alert">{err}</div>}
+        {initialLoading && (
+          <div className="prod-schedule-loading" data-testid="prod-loading" role="status" aria-live="polite">
+            Memuat jadwal produksi…
+          </div>
+        )}
+        {refreshing && !initialLoading && !err && (
+          <div className="prod-schedule-refreshing" data-testid="prod-refreshing" role="status" aria-live="polite">
+            Menyegarkan data…
+          </div>
+        )}
       </div>
 
       {mode === "tabel" ? (
@@ -482,15 +709,22 @@ export default function ProductionSchedule() {
           className="prod-table-wrap prod-schedule-grid production-sheet production-sheet-viewport"
           data-testid="prod-table"
           ref={sheetZoom.setViewportRef}
-          style={productionSheetZoomStyle(sheetZoom.zoom)}
+          style={sheetStyle}
         >
-          <table className="production-sheet-table" data-testid="production-sheet-table">
+          {initialLoading && (
+            <div className="prod-schedule-skeleton" data-testid="prod-skeleton" aria-hidden="true">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="prod-schedule-skeleton-row" />
+              ))}
+            </div>
+          )}
+          <table className="production-sheet-table" data-testid="production-sheet-table" hidden={initialLoading}>
             <colgroup>
               {DESKTOP_COLS.map((c) => (
                 <col
                   key={c.key}
                   className={c.sticky === "po" ? "prod-col-po" : c.sticky === "customer" ? "prod-col-customer" : undefined}
-                  style={c.sticky ? undefined : productionSheetColumnStyle(c)}
+                  style={productionSheetColumnStyle(c, colWidths[c.key])}
                 />
               ))}
             </colgroup>
@@ -518,8 +752,15 @@ export default function ProductionSchedule() {
                     c.sticky === "customer" ? "prod-sticky-col prod-sticky-customer" : "",
                     c.groupStart ? "prod-group-start" : "",
                   ].filter(Boolean).join(" ");
+                  const resizeSlot = (
+                    <ProdColResizeHandle
+                      colKey={c.key}
+                      onPointerDown={onColResizePointerDown}
+                      onDoubleClick={resetOneColumnWidth}
+                    />
+                  );
                   return (
-                    <th key={c.key} className={thClass} data-testid={c.testid} scope="col" style={c.sticky ? undefined : productionSheetColumnStyle(c)}>
+                    <th key={c.key} className={thClass} data-testid={c.testid} scope="col" style={productionSheetColumnStyle(c, colWidths[c.key])}>
                       {c.filter ? (
                         <HeaderFilter
                           label={c.label}
@@ -529,11 +770,15 @@ export default function ProductionSchedule() {
                           sortHint={c.sort === "work_date" ? "Urutkan tanggal pengerjaan" : "Urutkan deadline"}
                           onSort={() => cycleSort(c.sort)}
                           onClear={() => clearColumn(c.filter)}
+                          resizeSlot={resizeSlot}
                         >
                           {renderColumnFilter(c)}
                         </HeaderFilter>
                       ) : (
-                        <span className="prod-th-label">{c.label}</span>
+                        <div className="prod-th-inner">
+                          <span className="prod-th-label">{c.label}</span>
+                          {resizeSlot}
+                        </div>
                       )}
                     </th>
                   );
@@ -560,13 +805,17 @@ export default function ProductionSchedule() {
                     qtyProg={qtyProg}
                     cetakProg={cetakProg}
                     isToday={isToday}
-                    poHref={productionSchedulePoHref(r.id)}
+                    poHref={productionSchedulePoHref(r.id, { stage: "penjadwalan" })}
                   />
                 </tr>
                 );
               })}
-              {!sorted.length && !busy && (
-                <tr><td colSpan={DESKTOP_COLS.length} className="production-sheet-empty">Tidak ada PO cocok dengan filter.</td></tr>
+              {!sorted.length && !busy && !initialLoading && (
+                <tr>
+                  <td colSpan={DESKTOP_COLS.length} className="production-sheet-empty" data-testid="prod-empty">
+                    Tidak ada PO cocok dengan filter.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -574,7 +823,7 @@ export default function ProductionSchedule() {
       ) : (
         <section className="prod-cards prod-schedule-cards" data-testid="prod-cards">
           {sorted.map((r) => (
-            <Link key={r.id} to={productionSchedulePoHref(r.id)} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
+            <Link key={r.id} to={productionSchedulePoHref(r.id, { stage: "penjadwalan" })} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
               <header>
                 <strong>{r.po_number}</strong>
                 {r.urgent && <span className="urgent-badge">URGENT</span>}

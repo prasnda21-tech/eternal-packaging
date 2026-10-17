@@ -21,7 +21,7 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
-  useAuth: () => ({ hasPerm: (perm) => mockHasPerm(perm) }),
+  useAuth: () => ({ user: { id: "sheet-user" }, hasPerm: (perm) => mockHasPerm(perm) }),
 }));
 
 jest.mock("../lib/useAutoRefresh", () => ({
