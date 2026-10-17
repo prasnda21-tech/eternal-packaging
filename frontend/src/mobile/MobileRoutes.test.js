@@ -183,8 +183,9 @@ describe("mobile route wiring", () => {
     expect(css).toMatch(/\.production-sheet-table \.urgent-badge/);
     expect(css).toMatch(/\.production-sheet-table \.standard-badge/);
     expect(css).toMatch(/\.production-sheet-table \.pill\.sm/);
-    expect(css).toMatch(/font-size:\s*calc\(9px \* var\(--production-sheet-zoom/);
-    expect(css).toMatch(/padding:\s*calc\(1px \* var\(--production-sheet-zoom/);
+    // UX 9.1: keep badge text in a readable 11–12px band (still zoom-aware, no page transform).
+    expect(css).toMatch(/font-size:\s*clamp\(11px,\s*calc\(11\.5px \* var\(--production-sheet-zoom/);
+    expect(css).toMatch(/min-height:\s*20px/);
     expect(css).not.toMatch(/transform:\s*scale\(/);
     expect(appCss).toMatch(/\.urgent-badge,\.standard-badge,\.status\{font:10\.5px 'IBM Plex Mono'/);
     expect(appCss).not.toMatch(/mop-sched-zoom/);
