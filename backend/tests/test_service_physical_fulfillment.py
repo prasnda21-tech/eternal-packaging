@@ -6,12 +6,14 @@ stays SERVICE (no Eternal stock/HPP). Process-only SERVICE unchanged.
 from __future__ import annotations
 
 from quantity_rules import (
+    apply_legacy_line_identity_repair,
     apply_line_physical_fulfillment_override,
     available_for_packing,
     available_for_packing_line,
     is_process_only_service_line,
     is_service_process_line,
     line_physical_fulfillment,
+    mint_eternal_line_id,
     packing_line_breakdown,
     packing_required_total,
     packing_shortfall_for_sj_match,
@@ -21,6 +23,7 @@ from quantity_rules import (
     stamp_line_physical_fulfillment,
     validate_packing_lines,
 )
+from services.accurate import merge_eternal_line_fields_by_accurate_line_id
 from services.inventory_accounting import classify_inventory_item_type
 from services.order_line_addon import order_has_unlinked_process_addons
 from services.workflow_stage_status import STAGE_PACKING, resolve_stage_chip
@@ -28,6 +31,7 @@ from services.workflow_stage_status import STAGE_PACKING, resolve_stage_chip
 ELEMENT_OID = "16518ea4-80f9-42a6-9ace-9fef2431a9c1"
 ELEMENT_MID = "9bfd5938-6868-4d1b-bf9b-6212225134a2"
 ELEMENT_LINE_ID = "ln-hitam"
+ELEMENT_ACC_LINE = "103136"
 
 
 def _element_like(*, physical_fulfillment=True, packed=0, helper=10000, completed=10000):
@@ -382,3 +386,241 @@ def test_other_po_untouched_when_element_overridden():
     assert element["line_items"][0]["physical_fulfillment"] is True
     assert "physical_fulfillment" not in other["line_items"][0]
     assert available_for_packing(other) == 0
+
+
+def _legacy_element(*, accurate_line_id=ELEMENT_ACC_LINE, **extra):
+    """ELEMENT-shaped line without Eternal line_id (Accurate import shape)."""
+    line = {
+        "name": "Add On Warna Sablon HITAM",
+        "quantity": 10000,
+        "production_process": "print",
+        "master_item_id": ELEMENT_MID,
+        "item_type": "SERVICE",
+        "accurate_line_id": accurate_line_id,
+        "accurate_item_id": "acc-item-hitam",
+    }
+    line.update(extra)
+    return {
+        "id": ELEMENT_OID,
+        "po_number": "PO/14/10/2026/000007",
+        "cancelled": False,
+        "current_stage": 11,
+        "design_status": "Approved",
+        "payment_status": "Approved",
+        "sample_approved": True,
+        "requires_printing": True,
+        "line_items": [line],
+        "operator_splits": [
+            {"line_idx": 0, "quantity": 10000, "qty_completed": 10000},
+        ],
+        "helper_prep": {
+            "qty_prepared": 10000,
+            "items": [{"line_idx": 0, "qty_prepared": 10000}],
+        },
+        "packing_info": {},
+        "packing_status": "Belum",
+    }
+
+
+def test_mint_eternal_line_id_format():
+    lid = mint_eternal_line_id()
+    assert lid.startswith("ln-")
+    assert len(lid) > 10
+    # uuid4 string after prefix
+    import uuid
+    uuid.UUID(lid[3:])
+
+
+def test_legacy_repair_resolves_exactly_one_and_mints():
+    o = _legacy_element()
+    before, after, changed = apply_legacy_line_identity_repair(
+        o,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        physical_fulfillment=True,
+        mint_id=lambda: "ln-11111111-1111-4111-8111-111111111111",
+    )
+    assert changed is True
+    assert before["line_id"] is None
+    assert before["physical_fulfillment"] is None
+    assert after["line_id"] == "ln-11111111-1111-4111-8111-111111111111"
+    assert after["physical_fulfillment"] is True
+    assert after["line_idx"] == 0
+    assert after["quantity"] == 10000
+    assert o["line_items"][0]["line_id"] == after["line_id"]
+    assert o["line_items"][0]["accurate_line_id"] == ELEMENT_ACC_LINE
+    assert o["line_items"][0]["item_type"] == "SERVICE"
+    assert o["line_items"][0]["quantity"] == 10000
+    assert available_for_packing_line(o, 0) == 10000
+
+
+def test_legacy_repair_rejects_zero_and_duplicate_match():
+    o = _legacy_element()
+    try:
+        apply_legacy_line_identity_repair(
+            o, accurate_line_id="nope", master_item_id=ELEMENT_MID,
+        )
+        assert False
+    except ValueError as e:
+        assert "tidak ditemukan" in str(e)
+    o["line_items"].append(dict(o["line_items"][0]))
+    try:
+        apply_legacy_line_identity_repair(
+            o, accurate_line_id=ELEMENT_ACC_LINE, master_item_id=ELEMENT_MID,
+        )
+        assert False
+    except ValueError as e:
+        assert "ambigu" in str(e)
+
+
+def test_legacy_repair_idempotent_keeps_valid_line_id():
+    o = _legacy_element()
+    _, after1, c1 = apply_legacy_line_identity_repair(
+        o,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        mint_id=lambda: "ln-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    )
+    assert c1 is True
+    kept = after1["line_id"]
+    _, after2, c2 = apply_legacy_line_identity_repair(
+        o,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        mint_id=lambda: "ln-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    )
+    assert c2 is False
+    assert after2["line_id"] == kept
+    assert o["line_items"][0]["line_id"] == kept
+
+
+def test_legacy_repair_replaces_accurate_id_misused_as_line_id():
+    o = _legacy_element(line_id=ELEMENT_ACC_LINE)
+    before, after, changed = apply_legacy_line_identity_repair(
+        o,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        mint_id=lambda: "ln-cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    )
+    assert changed is True
+    assert before["line_id"] == ELEMENT_ACC_LINE
+    assert after["line_id"] == "ln-cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    assert after["line_id"] != ELEMENT_ACC_LINE
+
+
+def test_legacy_repair_audit_snapshots_and_frozen_fields():
+    o = _legacy_element()
+    splits_before = list(o["operator_splits"])
+    helper_before = dict(o["helper_prep"])
+    before, after, _ = apply_legacy_line_identity_repair(
+        o,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        mint_id=lambda: "ln-dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    )
+    assert before["order_id"] == ELEMENT_OID
+    assert after["accurate_line_id"] == ELEMENT_ACC_LINE
+    assert after["master_item_id"] == ELEMENT_MID
+    assert o["operator_splits"] == splits_before
+    assert o["helper_prep"] == helper_before
+    assert o["line_items"][0]["accurate_item_id"] == "acc-item-hitam"
+
+
+def test_accurate_resync_preserves_eternal_fields_by_accurate_line_id():
+    existing = [{
+        "accurate_line_id": "103136",
+        "name": "Add On Warna Sablon HITAM",
+        "quantity": 10000,
+        "line_id": "ln-keep-me",
+        "physical_fulfillment": True,
+        "production_process": "print",
+        "item_type": "SERVICE",
+        "parent_line_id": "ln-parent",
+        "master_item_id": ELEMENT_MID,
+    }, {
+        "accurate_line_id": "999",
+        "name": "Other",
+        "quantity": 1,
+        "line_id": "ln-other",
+        "physical_fulfillment": True,
+        "item_type": "SERVICE",
+        "production_process": "print",
+    }]
+    incoming = [{
+        "accurate_line_id": "103136",
+        "name": "Add On Warna Sablon HITAM",
+        "quantity": 10000,
+        "master_item_id": ELEMENT_MID,
+        # Accurate refresh has no Eternal keys
+    }, {
+        "accurate_line_id": "999",
+        "name": "Other refreshed",
+        "quantity": 1,
+    }]
+    merged = merge_eternal_line_fields_by_accurate_line_id(existing, incoming)
+    assert merged[0]["line_id"] == "ln-keep-me"
+    assert merged[0]["physical_fulfillment"] is True
+    assert merged[0]["production_process"] == "print"
+    assert merged[0]["item_type"] == "SERVICE"
+    assert merged[0]["parent_line_id"] == "ln-parent"
+    assert merged[1]["line_id"] == "ln-other"
+    assert merged[1]["name"] == "Other refreshed"
+
+
+def test_accurate_resync_does_not_cross_copy_eternal_fields():
+    existing = [{
+        "accurate_line_id": "103136",
+        "line_id": "ln-a",
+        "physical_fulfillment": True,
+        "production_process": "print",
+        "item_type": "SERVICE",
+    }]
+    incoming = [{
+        "accurate_line_id": "888888",
+        "name": "Different Accurate line",
+        "quantity": 5,
+    }]
+    merged = merge_eternal_line_fields_by_accurate_line_id(existing, incoming)
+    assert "line_id" not in merged[0]
+    assert "physical_fulfillment" not in merged[0]
+
+
+def test_accurate_resync_skips_ambiguous_accurate_line_id():
+    existing = [
+        {"accurate_line_id": "103136", "line_id": "ln-1", "physical_fulfillment": True},
+        {"accurate_line_id": "103136", "line_id": "ln-2", "physical_fulfillment": False},
+    ]
+    incoming = [{"accurate_line_id": "103136", "name": "x", "quantity": 1}]
+    merged = merge_eternal_line_fields_by_accurate_line_id(existing, incoming)
+    assert "line_id" not in merged[0]
+    assert "physical_fulfillment" not in merged[0]
+
+
+def test_legacy_repair_then_packing_gates():
+    o = _legacy_element()
+    apply_legacy_line_identity_repair(
+        o,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        mint_id=lambda: "ln-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    )
+    assert available_for_packing_line(o, 0) == 10000
+    assert packing_required_total(o) == 10000
+    # packed 0 still blocks loading
+    blocked = _sj(o, 5000)
+    assert physical_qty_for_loading_line(blocked, 0) == 0
+    assert packing_shortfall_for_sj_match(blocked, "sj-el")
+    # packed 5000 allows partial
+    partial = _sj(_legacy_element(), 5000)
+    apply_legacy_line_identity_repair(
+        partial,
+        accurate_line_id=ELEMENT_ACC_LINE,
+        master_item_id=ELEMENT_MID,
+        mint_id=lambda: "ln-ffffffff-ffff-4fff-8fff-ffffffffffff",
+    )
+    partial["packing_info"] = {
+        "lines": [{"line_idx": 0, "packed_qty": 5000}],
+        "qty_packed": 5000,
+    }
+    assert physical_qty_for_loading_line(partial, 0) == 5000
+    assert packing_shortfall_for_sj_match(partial, "sj-el") is None
