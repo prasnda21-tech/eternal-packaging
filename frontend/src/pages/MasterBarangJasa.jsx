@@ -245,6 +245,31 @@ export default function MasterBarangJasa() {
     }
   };
 
+  const savePhysicalFulfillment = async (itemId, physical_fulfillment) => {
+    if (!canManage || !itemId || processBusyId) return;
+    setProcessBusyId(itemId);
+    setProcessError("");
+    try {
+      const updated = await api.masterItemsSetPhysicalFulfillment(itemId, physical_fulfillment);
+      setData((prev) => {
+        if (!prev?.items) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((row) => (
+            row.id === itemId || row.accurate_item_id === itemId
+              ? { ...row, physical_fulfillment: !!updated.physical_fulfillment }
+              : row
+          )),
+        };
+      });
+    } catch (ex) {
+      const det = ex.response?.data?.detail;
+      setProcessError(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal menyimpan penanda packing fisik jasa"));
+    } finally {
+      setProcessBusyId("");
+    }
+  };
+
   const bannerError = syncError || loadError || processError;
 
   const summary = data?.summary || {};
@@ -484,6 +509,7 @@ export default function MasterBarangJasa() {
               <th className="col-fit">Jenis</th>
               <th className="col-fit">Satuan</th>
               <th className="col-fit">Cetak / Tidak cetak</th>
+              <th className="col-fit">Packing fisik (jasa)</th>
               <th className="col-fit">Status</th>
               <th className="col-fit">Sumber</th>
               <th className="col-fit">Accurate ID</th>
@@ -492,11 +518,11 @@ export default function MasterBarangJasa() {
           </thead>
           <tbody data-testid="master-items-tbody" data-search-state={tableView}>
             {tableView === "loading" && (
-              <tr data-testid="master-items-loading"><td colSpan={9} className="muted small">Memuat…</td></tr>
+              <tr data-testid="master-items-loading"><td colSpan={10} className="muted small">Memuat…</td></tr>
             )}
             {tableView === "empty" && (
               <tr>
-                <td colSpan={9} className="muted small" data-testid="master-items-empty">
+                <td colSpan={10} className="muted small" data-testid="master-items-empty">
                   Belum ada Barang/Jasa.
                   {canManage ? " Klik Tambah Barang/Jasa." : ""}
                   {canSync ? " Atau Sinkronkan dari Accurate." : (!canManage ? " Hubungi Admin." : "")}
@@ -543,6 +569,29 @@ export default function MasterBarangJasa() {
                     </select>
                   ) : (
                     <span data-testid={`master-item-process-label-${it.id}`}>{processLabel(it.production_process)}</span>
+                  )}
+                </td>
+                <td className="col-fit" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                  {String(it.item_type || "").toUpperCase() === "SERVICE" ? (
+                    canManage ? (
+                      <label className="small" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={!!it.physical_fulfillment}
+                          disabled={processBusyId === it.id}
+                          onChange={(e) => savePhysicalFulfillment(it.id, e.target.checked)}
+                          data-testid={`master-item-physical-fulfillment-${it.id}`}
+                          aria-label={`Packing fisik untuk jasa ${it.item_name || it.item_code}`}
+                        />
+                        <span>Ya</span>
+                      </label>
+                    ) : (
+                      <span data-testid={`master-item-physical-fulfillment-label-${it.id}`}>
+                        {it.physical_fulfillment ? "Ya" : "Tidak"}
+                      </span>
+                    )
+                  ) : (
+                    <span className="muted small">—</span>
                   )}
                 </td>
                 <td className="col-fit">
