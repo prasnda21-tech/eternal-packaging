@@ -81,6 +81,8 @@ describe("Sales document clickable rows + form open", () => {
     expect(densityCss).toMatch(/sd-clickable-row/);
     expect(densityCss).toMatch(/focus-visible/);
     expect(densityCss).toMatch(/height:38px/);
-    expect(pesananCss).toMatch(/height: 38px/);
+    // UX 9.1: Pesanan list rows use content-safe auto height (identity stack), not fixed 38px.
+    expect(pesananCss).toMatch(/\.so-list-workspace \.so-list-row \{ cursor: pointer; height: auto; \}/);
+    expect(pesananCss).toMatch(/\.so-list-identity-stack/);
   });
 });
