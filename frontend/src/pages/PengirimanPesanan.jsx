@@ -22,21 +22,16 @@ import { formatDisplayDate } from "../lib/constants";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
 import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
-import { loadedRangeLabel, showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
+import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import "./salesSubmenuDensity.css";
+import "./pengirimanPesananList.css";
 
-/** Soft disclosure when list length hits the known API `.to_list(1000)` ceiling. */
+/** Legacy API-cap constant (PR #605). Kept for tests/compat; UI uses server page+total. */
 export const DELIVERY_LIST_API_CAP = 1000;
-
-const DELIVERY_STATUS_TABS = [
-  { id: "all", label: "Semua" },
-  { id: "SEBAGIAN", label: "Sebagian" },
-  { id: "SELESAI", label: "Selesai" },
-];
 
 function getTodayString() {
   const d = new Date();
@@ -54,6 +49,55 @@ export function recipientWhatsappDigits(value) {
   if (digits.startsWith("0")) digits = `62${digits.slice(1)}`;
   if (digits.startsWith("8") && digits.length >= 9) digits = `62${digits}`;
   return digits;
+}
+
+/** List-row Sales label — uses delivery.sales / sales_name only (never created_by). */
+export function deliveryListSalesLabel(row) {
+  return String(row?.sales_name || row?.sales || "").trim();
+}
+
+/** Counts for status tabs from a full filter-context list (no status param). */
+export function computeDeliveryStatusCounts(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let SEBAGIAN = 0;
+  let SELESAI = 0;
+  for (const d of list) {
+    if (String(d?.status || "").toUpperCase() === "SELESAI") SELESAI += 1;
+    else SEBAGIAN += 1;
+  }
+  return { all: list.length, SEBAGIAN, SELESAI };
+}
+
+export const DELIVERY_DEFAULT_PAGE_SIZE = 50;
+export const DELIVERY_PAGE_SIZES = Object.freeze([10, 25, 50, 100]);
+
+export function parseDeliveryPageSize(raw) {
+  const value = Number(raw);
+  return DELIVERY_PAGE_SIZES.includes(value) ? value : DELIVERY_DEFAULT_PAGE_SIZE;
+}
+
+export function deliveryListRangeLabel(total, page, pageSize) {
+  const count = Number(total) || 0;
+  const size = Number(pageSize) || DELIVERY_DEFAULT_PAGE_SIZE;
+  const current = Number(page) || 1;
+  if (count <= 0) return "Menampilkan 0 pengiriman";
+  const from = (current - 1) * size + 1;
+  const to = Math.min(count, current * size);
+  return `Menampilkan ${from.toLocaleString("id-ID")}–${to.toLocaleString("id-ID")} dari ${count.toLocaleString("id-ID")} pengiriman`;
+}
+
+export function deliveryStatusCountsFromResponse(res) {
+  const raw = res?.counts;
+  if (!raw || typeof raw !== "object") return null;
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return {
+    all: num(raw.all),
+    SEBAGIAN: num(raw.SEBAGIAN),
+    SELESAI: num(raw.SELESAI),
+  };
 }
 
 export default function PengirimanPesanan() {
@@ -90,6 +134,14 @@ export default function PengirimanPesanan() {
   const [deliveryDatePreset, setDeliveryDatePreset] = useState(() => searchParams.get("period") || "all");
   const [createdByFilter, setCreatedByFilter] = useState(() => searchParams.get("created_by") || "");
   const [createdByOptions, setCreatedByOptions] = useState([]);
+  const [page, setPage] = useState(() => {
+    const value = Number(searchParams.get("page"));
+    return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => parseDeliveryPageSize(searchParams.get("page_size")));
+  const [listTotal, setListTotal] = useState(0);
+  /** null = loading/unavailable (not zero). From backend counts (filter context sans status). */
+  const [statusCounts, setStatusCounts] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -136,7 +188,7 @@ export default function PengirimanPesanan() {
   const [availablePOs, setAvailablePOs] = useState([]);
   const [loadingPOs, setLoadingPOs] = useState(false);
 
-  // Load deliveries — display-only SWR (no server pagination; never authorizes qty writes).
+  // Load deliveries — display-only SWR with server pagination (never authorizes qty writes).
   const loadDeliveries = useCallback(async ({ force = false } = {}) => {
     const cacheKey = salesDeliveryListCache.buildKey({
       u: listUserId,
@@ -145,15 +197,21 @@ export default function PengirimanPesanan() {
       status: statusFilter,
       period: deliveryDatePreset,
       createdBy: createdByFilter,
+      page,
+      pageSize,
     });
     const cached = salesDeliveryListCache.get(cacheKey);
     const hasCache = Boolean(cached?.data);
     if (hasCache) {
-      setDeliveries(Array.isArray(cached.data.deliveries) ? cached.data.deliveries : []);
+      const cachedRows = Array.isArray(cached.data.deliveries) ? cached.data.deliveries : [];
+      setDeliveries(cachedRows);
+      setListTotal(Number(cached.data.total) || cachedRows.length);
+      if (cached.data.statusCounts) setStatusCounts(cached.data.statusCounts);
       setListShowingCache(true);
       setSelectedIds(new Set());
     } else {
       setDeliveries([]);
+      setStatusCounts(null);
       setListShowingCache(false);
     }
 
@@ -168,18 +226,34 @@ export default function PengirimanPesanan() {
     }
     setListErr("");
     try {
-      const params = {};
-      if (searchQuery.trim()) params.q = searchQuery.trim();
-      if (statusFilter !== "all") params.status = statusFilter;
+      const listParams = {
+        page,
+        page_size: pageSize,
+      };
+      if (searchQuery.trim()) listParams.q = searchQuery.trim();
       if (deliveryDatePreset && deliveryDatePreset !== "all") {
-        params.delivery_date_preset = deliveryDatePreset;
+        listParams.delivery_date_preset = deliveryDatePreset;
       }
-      if (createdByFilter.trim()) params.created_by = createdByFilter.trim();
-      const res = await api.listSalesDeliveries(params);
+      if (createdByFilter.trim()) listParams.created_by = createdByFilter.trim();
+      if (statusFilter !== "all") listParams.status = statusFilter;
+
+      const res = await api.listSalesDeliveries(listParams);
       if (seq !== requestSeq.current) return;
       const rows = res.deliveries || [];
-      salesDeliveryListCache.set(cacheKey, { deliveries: rows, res });
+      const total = Number(res.total);
+      const nextTotal = Number.isFinite(total) ? total : rows.length;
+      const nextCounts = deliveryStatusCountsFromResponse(res);
+      const safePage = Math.max(1, Number(res.page) || page);
+      if (safePage !== page) setPage(safePage);
+      salesDeliveryListCache.set(cacheKey, {
+        deliveries: rows,
+        res,
+        total: nextTotal,
+        statusCounts: nextCounts,
+      });
       setDeliveries(rows);
+      setListTotal(nextTotal);
+      setStatusCounts(nextCounts);
       setListShowingCache(false);
       setListSyncErr("");
       setSelectedIds(new Set());
@@ -192,6 +266,8 @@ export default function PengirimanPesanan() {
         setListShowingCache(true);
       } else {
         setListErr(message);
+        setStatusCounts(null);
+        setListTotal(0);
       }
     } finally {
       if (seq === requestSeq.current) {
@@ -199,7 +275,7 @@ export default function PengirimanPesanan() {
         setListRefreshing(false);
       }
     }
-  }, [createdByFilter, deliveryDatePreset, listBranchId, listUserId, searchQuery, statusFilter]);
+  }, [createdByFilter, deliveryDatePreset, listBranchId, listUserId, page, pageSize, searchQuery, statusFilter]);
 
   const reloadDeliveryListAuthoritative = useCallback(async () => {
     salesDeliveryListCache.invalidate();
@@ -222,6 +298,7 @@ export default function PengirimanPesanan() {
     setStatusFilter("all");
     setDeliveryDatePreset("all");
     setCreatedByFilter("");
+    setPage(1);
   };
 
   const createdBySelectOptions = useMemo(() => ([
@@ -337,6 +414,8 @@ export default function PengirimanPesanan() {
     if (statusFilter && statusFilter !== "all") next.set("status", statusFilter);
     if (deliveryDatePreset && deliveryDatePreset !== "all") next.set("period", deliveryDatePreset);
     if (createdByFilter.trim()) next.set("created_by", createdByFilter.trim());
+    if (page > 1) next.set("page", String(page));
+    if (pageSize !== DELIVERY_DEFAULT_PAGE_SIZE) next.set("page_size", String(pageSize));
     if (next.toString() === searchParams.toString()) return;
     setSearchParams(next, { replace: true });
   }, [
@@ -345,9 +424,20 @@ export default function PengirimanPesanan() {
     statusFilter,
     deliveryDatePreset,
     createdByFilter,
+    page,
+    pageSize,
     searchParams,
     setSearchParams,
   ]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, statusFilter, deliveryDatePreset, createdByFilter, pageSize]);
+
+  useEffect(() => {
+    const pageCount = Math.max(1, Math.ceil((Number(listTotal) || 0) / pageSize) || 1);
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageSize, listTotal]);
 
   useEffect(() => {
     if (prevListUserRef.current === listUserId) return;
@@ -639,8 +729,23 @@ export default function PengirimanPesanan() {
     && deliveryDatePreset === "all"
     && !createdByFilter;
 
+  const deliveryCountLabel = statusCounts == null
+    ? listTotal
+    : (statusFilter === "all" ? statusCounts.all : (statusCounts[statusFilter] ?? listTotal));
+  const pageCount = Math.max(1, Math.ceil((Number(listTotal) || 0) / pageSize) || 1);
+  const pageWindowStart = Math.max(1, page - 2);
+  const pageWindowEnd = Math.min(pageCount, pageWindowStart + 4);
+  const pageButtons = [];
+  for (let n = pageWindowStart; n <= pageWindowEnd; n += 1) pageButtons.push(n);
+
   return (
-    <div className={"page-container penjualan-page penjualan-workspace sd-density " + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}>
+    <div
+      className={
+        "page-container penjualan-page penjualan-workspace sd-density "
+        + (viewMode === "list" ? "sd-list-mode sd-delivery-list" : "sd-form-mode")
+      }
+      data-testid="pengiriman-pesanan-page"
+    >
       <header className={viewMode === "list" ? "sd-list-header" : "sd-form-header"}>
         <div className={viewMode === "list" ? "sd-list-heading" : "sd-form-heading"}>
           {viewMode === "create" && (
@@ -659,7 +764,7 @@ export default function PengirimanPesanan() {
           <h1>{viewMode === "create" ? "Buat Pengiriman Pesanan" : "Pengiriman Pesanan"}</h1>
           {viewMode === "list" && showDeliveryCount && (
             <div className="sd-list-summary" data-testid="delivery-list-count">
-              <strong>{deliveries.length.toLocaleString("id-ID")}</strong>
+              <strong>{Number(deliveryCountLabel).toLocaleString("id-ID")}</strong>
               <span>pengiriman</span>
               {listRefreshing ? <span data-testid="delivery-list-refreshing"> · menyegarkan</span> : null}
             </div>
@@ -691,9 +796,9 @@ export default function PengirimanPesanan() {
               className="sd-list-refresh"
               onClick={() => { void reloadDeliveryListAuthoritative(); }}
               disabled={listLoading || listRefreshing}
-              title="Segarkan"
-              aria-label="Segarkan"
               data-testid="refresh-delivery-btn"
+              aria-label="Muat ulang"
+              title="Muat ulang"
             >
               <RefreshCw size={16} className={(listLoading || listRefreshing) ? "spin" : ""} />
             </button>
@@ -1226,13 +1331,18 @@ export default function PengirimanPesanan() {
 
           <div className="sd-list-chrome">
             <div
-              className="fp-invoice-tabs"
+              className="sd-delivery-tabs"
               role="tablist"
               aria-label="Status pengiriman"
               data-testid="delivery-list-tabs"
             >
-              {DELIVERY_STATUS_TABS.map((tab) => {
+              {[
+                { id: "all", label: "Semua" },
+                { id: "SEBAGIAN", label: "Sebagian" },
+                { id: "SELESAI", label: "Selesai" },
+              ].map((tab) => {
                 const selected = statusFilter === tab.id;
+                const count = statusCounts == null ? null : Number(statusCounts[tab.id] ?? 0);
                 return (
                   <button
                     key={tab.id}
@@ -1242,8 +1352,14 @@ export default function PengirimanPesanan() {
                     className={selected ? "is-active" : ""}
                     onClick={() => setStatusFilter(tab.id)}
                     data-testid={`filter-status-${tab.id}`}
+                    aria-label={count == null ? tab.label : `${tab.label} ${count}`}
                   >
                     {tab.label}
+                    {count == null ? null : (
+                      <span className="sd-delivery-tab-count" data-testid={`filter-status-count-${tab.id}`}>
+                        {count.toLocaleString("id-ID")}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -1366,6 +1482,7 @@ export default function PengirimanPesanan() {
                       key={d.id}
                       {...clickableDocumentRowProps({
                         onOpen: () => openDeliveryDetail(d),
+                        className: selectedIds.has(d.id) ? "is-selected" : "",
                         "data-testid": `delivery-row-${d.id}`,
                         ariaLabel: `Buka pengiriman ${d.sj_number || d.id}`,
                       })}
@@ -1379,6 +1496,9 @@ export default function PengirimanPesanan() {
                         <div className="sd-customer">{d.customer || "-"}</div>
                         <span className="sd-doc is-static" data-testid={`sj-number-${d.sj_number}`}>{d.sj_number}</span>
                         {d.outlet ? <span className="sd-support">{d.outlet}</span> : null}
+                        <span className="sd-support sd-sales" data-testid={`delivery-sales-${d.id}`}>
+                          Sales · {deliveryListSalesLabel(d) || "—"}
+                        </span>
                       </td>
                       <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <Link to={`/po/${d.po_id}`} className="sd-doc" data-testid={`po-link-${d.po_number}`}>
@@ -1386,7 +1506,7 @@ export default function PengirimanPesanan() {
                         </Link>
                       </td>
                       <td>{formatDisplayDate(d.delivery_date) || "-"}</td>
-                      <td className="sd-money">{Number(d.total_qty || 0).toLocaleString("id-ID")} pcs</td>
+                      <td className="sd-qty-cell">{Number(d.total_qty || 0).toLocaleString("id-ID")} pcs</td>
                       <td>
                         <span
                           className={
@@ -1398,30 +1518,32 @@ export default function PengirimanPesanan() {
                           {String(d.status).toUpperCase() === "SELESAI" ? "SELESAI" : "SEBAGIAN"}
                         </span>
                       </td>
-                      <td className="sd-support-text">
+                      <td className="sd-creator-cell">
                         {d.created_by_name || d.created_by || "-"}
                       </td>
                       <td data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <div className="sd-actions">
-                          <button
-                            type="button"
-                            className="sd-act sd-act-view"
-                            onClick={() => openDeliveryDetail(d)}
-                            data-testid={`btn-view-delivery-${d.id}`}
-                          >
-                            Lihat
-                          </button>
-                          {canPrint && (
+                          <div className="sd-actions-main">
                             <button
                               type="button"
                               className="sd-act sd-act-view"
-                              onClick={() => handlePrintPdf(d.id)}
-                              data-testid={`btn-print-delivery-${d.id}`}
-                              title="Cetak PDF Surat Jalan"
+                              onClick={() => openDeliveryDetail(d)}
+                              data-testid={`btn-view-delivery-${d.id}`}
                             >
-                              <Printer size={14} /> PDF
+                              Lihat
                             </button>
-                          )}
+                            {canPrint && (
+                              <button
+                                type="button"
+                                className="sd-act sd-act-pdf"
+                                onClick={() => handlePrintPdf(d.id)}
+                                data-testid={`btn-print-delivery-${d.id}`}
+                                title="Cetak PDF Surat Jalan"
+                              >
+                                <Printer size={14} /> PDF
+                              </button>
+                            )}
+                          </div>
                           {canDelete && !d.is_cancelled && String(d.status || "").toUpperCase() !== "DIBATALKAN" && (
                             <button
                               type="button"
@@ -1448,39 +1570,78 @@ export default function PengirimanPesanan() {
               </tbody>
             </table>
           </div>
-          <footer className="sd-list-footer sd-delivery-list-footer" data-testid="delivery-list-footer">
+          <footer className="sd-list-footer sd-delivery-pager" data-testid="delivery-list-footer">
             <span data-testid="delivery-list-range">
-              {listLoading
+              {listLoading && deliveries.length === 0
                 ? "Memuat daftar pengiriman..."
                 : listErr
                 ? "Daftar pengiriman belum dapat ditampilkan"
-                : loadedRangeLabel(deliveries.length, "pengiriman")}
+                : deliveryListRangeLabel(listTotal, page, pageSize)}
             </span>
-            {!listLoading && !listErr && deliveries.length >= DELIVERY_LIST_API_CAP ? (
-              <span className="sd-list-cap-note" data-testid="delivery-list-api-cap-note">
-                Daftar dapat dibatasi API (maks. {DELIVERY_LIST_API_CAP.toLocaleString("id-ID")} baris per permintaan). Sempitkan filter atau pencarian bila perlu.
-              </span>
-            ) : null}
+            <span className="sd-list-footer-note">Klik baris untuk membuka detail.</span>
+            <label className="sd-delivery-page-size">
+              Baris per halaman
+              <select
+                data-testid="delivery-page-size"
+                value={pageSize}
+                onChange={(e) => setPageSize(parseDeliveryPageSize(e.target.value))}
+                disabled={listLoading && deliveries.length === 0}
+              >
+                {DELIVERY_PAGE_SIZES.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </label>
+            <div className="sd-delivery-pages">
+              <button
+                type="button"
+                data-testid="delivery-page-prev"
+                disabled={page <= 1 || (listLoading && deliveries.length === 0)}
+                onClick={() => setPage((value) => Math.max(1, value - 1))}
+              >
+                Sebelumnya
+              </button>
+              {pageButtons.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  data-testid={`delivery-page-${n}`}
+                  aria-current={n === page ? "page" : undefined}
+                  className={n === page ? "is-current" : ""}
+                  onClick={() => setPage(n)}
+                >
+                  {n}
+                </button>
+              ))}
+              <button
+                type="button"
+                data-testid="delivery-page-next"
+                disabled={page >= pageCount || (listLoading && deliveries.length === 0)}
+                onClick={() => setPage((value) => value + 1)}
+              >
+                Berikutnya
+              </button>
+            </div>
           </footer>
         </section>
       )}
 
-      {/* DETAIL MODAL */}
+      {/* DETAIL MODAL — sticky header/footer; body scrolls (presentation only) */}
       {selectedDeliveryId && detailData && (
         <div
-          className="modal-overlay"
+          className="modal-overlay sd-delivery-detail-modal"
           data-testid="delivery-detail-modal"
           role="dialog"
           aria-modal="true"
           aria-labelledby="delivery-detail-title"
         >
-          <div className="modal-content sd-modal-card sd-delivery-detail-card">
-            <div className="sd-delivery-detail-header">
-              <div className="sd-delivery-detail-heading">
+          <div className="modal-content sd-modal-card sd-delivery-detail-panel">
+            <header className="sd-delivery-detail-head">
+              <div className="sd-delivery-detail-title">
                 <div className="sd-delivery-detail-icon" aria-hidden="true">
-                  <Truck size={20} />
+                  <Truck size={18} />
                 </div>
-                <div>
+                <div className="sd-delivery-detail-title-copy">
                   <h2 id="delivery-detail-title">
                     Detail Surat Jalan: <span>{detailData.delivery?.sj_number}</span>
                   </h2>
@@ -1491,214 +1652,185 @@ export default function PengirimanPesanan() {
               </div>
               <button
                 type="button"
-                className="sd-delivery-detail-close"
+                className="sd-delivery-detail-x"
                 onClick={() => {
                   setSelectedDeliveryId(null);
                   setDetailData(null);
                 }}
                 data-testid="btn-close-delivery-modal"
-                aria-label="Tutup detail pengiriman"
+                aria-label="Tutup"
               >
                 <X size={20} />
               </button>
-            </div>
-            <div className="sd-modal-body">
+            </header>
 
-            {/* PO Progress Summary Box */}
-            {detailData.po_summary && (
-              <div
-                style={{
-                  background: "#f0f9ff",
-                  border: "1px solid #bae6fd",
-                  borderRadius: 8,
-                  padding: "14px 16px",
-                  marginBottom: 16,
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                  gap: 12,
-                }}
-                data-testid="delivery-po-progress-summary"
-              >
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    TOTAL QTY PO
-                  </span>
-                  <strong style={{ fontSize: "1.1rem", color: "#0c4a6e" }} data-testid="detail-total-po-qty">
-                    {Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs
-                  </strong>
+            <div className="sd-delivery-detail-body" data-testid="delivery-detail-body">
+              {detailData.po_summary && (
+                <div
+                  className="sd-delivery-detail-kpi"
+                  data-testid="delivery-po-progress-summary"
+                >
+                  <div>
+                    <span className="sd-delivery-detail-kpi-label">TOTAL QTY PO</span>
+                    <strong data-testid="detail-total-po-qty">
+                      {Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="sd-delivery-detail-kpi-label">SUDAH DIBUAT SURAT JALAN</span>
+                    <strong className="is-shipped" data-testid="detail-cumulative-sj-qty">
+                      {Number(detailData.po_summary.total_shipped || 0).toLocaleString("id-ID")} pcs
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="sd-delivery-detail-kpi-label">SISA</span>
+                    <strong
+                      className={Number(detailData.po_summary.total_remaining || 0) === 0 ? "is-ok" : "is-remain"}
+                      data-testid="detail-remaining-po-qty"
+                    >
+                      {Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="sd-delivery-detail-kpi-label">STATUS</span>
+                    <span
+                      data-testid="detail-delivery-status"
+                      className={
+                        "sd-delivery-detail-status" +
+                        ((detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI")
+                          ? " is-done"
+                          : " is-partial")
+                      }
+                    >
+                      {(detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "SELESAI" : "SEBAGIAN"}
+                    </span>
+                  </div>
                 </div>
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    SUDAH DIBUAT SURAT JALAN
-                  </span>
-                  <strong style={{ fontSize: "1.1rem", color: "#0284c7" }} data-testid="detail-cumulative-sj-qty">
-                    {Number(detailData.po_summary.total_shipped || 0).toLocaleString("id-ID")} pcs
-                  </strong>
-                </div>
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    SISA
-                  </span>
-                  <strong style={{ fontSize: "1.1rem", color: Number(detailData.po_summary.total_remaining || 0) === 0 ? "#16a34a" : "#ea580c" }} data-testid="detail-remaining-po-qty">
-                    {Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs
-                  </strong>
-                </div>
-                <div>
-                  <span style={{ color: "#0369a1", fontSize: "0.75rem", fontWeight: 600, display: "block", textTransform: "uppercase" }}>
-                    STATUS
-                  </span>
-                  <span
-                    data-testid="detail-delivery-status"
-                    style={{
-                      display: "inline-block",
-                      marginTop: 2,
-                      padding: "3px 10px",
-                      background: (detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "#dcfce7" : "#e0f2fe",
-                      color: (detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "#166534" : "#075985",
-                      borderRadius: 12,
-                      fontSize: "0.8rem",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {(detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "SELESAI" : "SEBAGIAN"}
-                  </span>
-                </div>
-              </div>
-            )}
+              )}
 
-            {/* Delivery Meta Grid */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, background: "#f8fafc", padding: 16, borderRadius: 8, marginBottom: 16, fontSize: "0.85rem" }}>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Nomor PO:</span>
-                <Link to={`/po/${detailData.delivery?.po_id}`} style={{ color: "#0284c7", fontWeight: 600, textDecoration: "none" }}>
-                  {detailData.delivery?.po_number}
-                </Link>
+              <div className="sd-delivery-detail-meta">
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Nomor PO:</span>
+                  <Link to={`/po/${detailData.delivery?.po_id}`} className="sd-delivery-detail-po-link">
+                    {detailData.delivery?.po_number}
+                  </Link>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Customer:</span>
+                  <strong>{detailData.delivery?.customer || "-"}</strong>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Outlet:</span>
+                  <strong>{detailData.delivery?.outlet || "-"}</strong>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Tanggal Kirim:</span>
+                  <strong>{formatDisplayDate(detailData.delivery?.delivery_date) || "-"}</strong>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Penerima (PIC):</span>
+                  <strong>{detailData.delivery?.recipient || "-"}</strong>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Sales:</span>
+                  <strong>{detailData.delivery?.sales || "-"}</strong>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Ekspedisi / Zona:</span>
+                  <strong>{detailData.delivery?.expedition || "-"} ({detailData.delivery?.delivery_zone || "-"})</strong>
+                </div>
+                <div>
+                  <span className="sd-delivery-detail-meta-label">Dibuat Oleh:</span>
+                  <strong>{detailData.delivery?.created_by_name || detailData.delivery?.created_by || "-"}</strong>
+                </div>
+                <div className="sd-delivery-detail-meta-wide">
+                  <span className="sd-delivery-detail-meta-label">Alamat Lengkap:</span>
+                  <strong>{detailData.delivery?.address || "-"}</strong>
+                </div>
+                {detailData.delivery?.notes && (
+                  <div className="sd-delivery-detail-meta-wide">
+                    <span className="sd-delivery-detail-meta-label">Catatan:</span>
+                    <strong>{detailData.delivery?.notes}</strong>
+                  </div>
+                )}
               </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Customer:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.customer || "-"}</strong>
+
+              <div className="sd-delivery-detail-items">
+                <h4>Daftar Barang Dikirim pada Surat Jalan Ini:</h4>
+                <table className="sd-delivery-detail-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Barang / Jasa</th>
+                      <th>Proses</th>
+                      <th className="num">Qty Kirim</th>
+                      <th>Satuan</th>
+                      <th>Catatan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(detailData.delivery?.line_items || []).map((li, idx) => (
+                      <tr key={idx}>
+                        <td className="muted">{idx + 1}</td>
+                        <td className="item-name">
+                          {li.name}
+                          {li.color && <div className="item-color">{li.color}</div>}
+                        </td>
+                        <td>
+                          <span className={"sd-delivery-detail-process" + (li.production_process === "non_print" ? " is-nonprint" : "")}>
+                            {li.production_process === "non_print" ? "Non-Cetak" : "Cetak"}
+                          </span>
+                        </td>
+                        <td className="num qty">
+                          {Number(li.qty || li.quantity || 0).toLocaleString("id-ID")}
+                        </td>
+                        <td>{li.unit || "pcs"}</td>
+                        <td className="muted">{li.notes || "-"}</td>
+                      </tr>
+                    ))}
+                    <tr className="sd-delivery-detail-total-row">
+                      <td colSpan={3} className="num-label">Total Kuantitas:</td>
+                      <td className="num total-qty">
+                        {Number(detailData.delivery?.total_qty || 0).toLocaleString("id-ID")}
+                      </td>
+                      <td colSpan={2}>pcs</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Outlet:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.outlet || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Tanggal Kirim:</span>
-                <strong style={{ color: "#1e293b" }}>{formatDisplayDate(detailData.delivery?.delivery_date) || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Penerima (PIC):</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.recipient || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Sales:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.sales || "-"}</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Ekspedisi / Zona:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.expedition || "-"} ({detailData.delivery?.delivery_zone || "-"})</strong>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", display: "block" }}>Dibuat Oleh:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.created_by_name || detailData.delivery?.created_by || "-"}</strong>
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <span style={{ color: "#64748b", display: "block" }}>Alamat Lengkap:</span>
-                <strong style={{ color: "#1e293b" }}>{detailData.delivery?.address || "-"}</strong>
-              </div>
-              {detailData.delivery?.notes && (
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <span style={{ color: "#64748b", display: "block" }}>Catatan:</span>
-                  <strong style={{ color: "#1e293b" }}>{detailData.delivery?.notes}</strong>
+
+              {detailData.all_po_deliveries?.length > 1 && (
+                <div className="sd-delivery-detail-history">
+                  <h4>
+                    <Clock size={16} /> Riwayat Pengiriman untuk PO {detailData.delivery?.po_number}:
+                  </h4>
+                  <div className="sd-delivery-detail-history-list">
+                    {detailData.all_po_deliveries.map((shipment) => (
+                      <div
+                        key={shipment.id}
+                        className={
+                          "sd-delivery-detail-history-row" +
+                          (shipment.id === detailData.delivery?.id ? " is-current" : "")
+                        }
+                      >
+                        <span>
+                          Surat Jalan <strong>{shipment.sj_number}</strong> (Kirim #{shipment.shipment_index}) - {formatDisplayDate(shipment.delivery_date)}
+                        </span>
+                        <span className="qty">
+                          {Number(shipment.total_qty || 0).toLocaleString("id-ID")} pcs
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* Line Items on this SJ */}
-            <div style={{ marginBottom: 20 }}>
-              <h4 style={{ margin: "0 0 8px 0", fontSize: "0.95rem", color: "#1e293b" }}>Daftar Barang Dikirim pada Surat Jalan Ini:</h4>
-              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.85rem" }}>
-                <thead>
-                  <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1", color: "#475569" }}>
-                    <th style={{ padding: "8px" }}>#</th>
-                    <th style={{ padding: "8px" }}>Barang / Jasa</th>
-                    <th style={{ padding: "8px" }}>Proses</th>
-                    <th style={{ padding: "8px", textAlign: "right" }}>Qty Kirim</th>
-                    <th style={{ padding: "8px" }}>Satuan</th>
-                    <th style={{ padding: "8px" }}>Catatan</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detailData.delivery?.line_items || []).map((li, idx) => (
-                    <tr key={idx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                      <td style={{ padding: "8px", color: "#64748b" }}>{idx + 1}</td>
-                      <td style={{ padding: "8px", fontWeight: 600, color: "#1e293b" }}>
-                        {li.name}
-                        {li.color && <div style={{ fontSize: "0.75rem", color: "#64748b", fontWeight: 400 }}>{li.color}</div>}
-                      </td>
-                      <td style={{ padding: "8px" }}>
-                        <span style={{ fontSize: "0.75rem", padding: "2px 6px", borderRadius: 4, background: li.production_process === "non_print" ? "#fef3c7" : "#e0f2fe", color: li.production_process === "non_print" ? "#92400e" : "#0369a1" }}>
-                          {li.production_process === "non_print" ? "Non-Cetak" : "Cetak"}
-                        </span>
-                      </td>
-                      <td style={{ padding: "8px", textAlign: "right", fontWeight: 700, color: "#0f172a" }}>
-                        {Number(li.qty || li.quantity || 0).toLocaleString("id-ID")}
-                      </td>
-                      <td style={{ padding: "8px", color: "#475569" }}>{li.unit || "pcs"}</td>
-                      <td style={{ padding: "8px", color: "#64748b" }}>{li.notes || "-"}</td>
-                    </tr>
-                  ))}
-                  <tr style={{ background: "#f8fafc", fontWeight: 700, borderTop: "2px solid #cbd5e1" }}>
-                    <td colSpan={3} style={{ padding: "8px", textAlign: "right" }}>Total Kuantitas:</td>
-                    <td style={{ padding: "8px", textAlign: "right", color: "#0284c7" }}>
-                      {Number(detailData.delivery?.total_qty || 0).toLocaleString("id-ID")}
-                    </td>
-                    <td colSpan={2} style={{ padding: "8px" }}>pcs</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            {/* Shipment History for this PO */}
-            {detailData.all_po_deliveries?.length > 1 && (
-              <div style={{ marginBottom: 20, padding: 14, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8 }}>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: "0.9rem", color: "#166534", display: "flex", alignItems: "center", gap: 6 }}>
-                  <Clock size={16} /> Riwayat Pengiriman untuk PO {detailData.delivery?.po_number}:
-                </h4>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: "0.85rem" }}>
-                  {detailData.all_po_deliveries.map((shipment) => (
-                    <div
-                      key={shipment.id}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        padding: "6px 10px",
-                        background: shipment.id === detailData.delivery?.id ? "#dcfce7" : "#fff",
-                        border: "1px solid",
-                        borderColor: shipment.id === detailData.delivery?.id ? "#86efac" : "#e2e8f0",
-                        borderRadius: 6,
-                        fontWeight: shipment.id === detailData.delivery?.id ? 600 : 400,
-                      }}
-                    >
-                      <span>
-                        Surat Jalan <strong>{shipment.sj_number}</strong> (Kirim #{shipment.shipment_index}) - {formatDisplayDate(shipment.delivery_date)}
-                      </span>
-                      <span style={{ fontWeight: 700, color: "#15803d" }}>
-                        {Number(shipment.total_qty || 0).toLocaleString("id-ID")} pcs
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            </div>
-
-            <div className="sd-modal-footer" data-testid="delivery-detail-footer">
+            <footer className="sd-delivery-detail-foot">
               {canPrint && (
                 <button
                   type="button"
-                  className="sd-btn-primary"
+                  className="sd-delivery-detail-print"
                   onClick={() => handlePrintPdf(detailData.delivery?.id)}
                   data-testid="btn-print-modal-pdf"
                 >
@@ -1707,7 +1839,7 @@ export default function PengirimanPesanan() {
               )}
               <button
                 type="button"
-                className="sd-list-reset"
+                className="sd-delivery-detail-close"
                 onClick={() => {
                   setSelectedDeliveryId(null);
                   setDetailData(null);
@@ -1716,7 +1848,7 @@ export default function PengirimanPesanan() {
               >
                 Tutup
               </button>
-            </div>
+            </footer>
           </div>
         </div>
       )}

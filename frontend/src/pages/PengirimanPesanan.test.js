@@ -3,7 +3,15 @@ import path from "path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, __reset as resetRouter } from "react-router-dom";
-import PengirimanPesanan, { recipientWhatsappDigits } from "./PengirimanPesanan";
+import PengirimanPesanan, {
+  recipientWhatsappDigits,
+  deliveryListSalesLabel,
+  computeDeliveryStatusCounts,
+  deliveryStatusCountsFromResponse,
+  deliveryListRangeLabel,
+  DELIVERY_DEFAULT_PAGE_SIZE,
+  DELIVERY_PAGE_SIZES,
+} from "./PengirimanPesanan";
 import MobileDeliveryWorkspace from "../mobile/workspaces/MobileDeliveryWorkspace";
 
 jest.mock("react-router-dom", () => {
@@ -86,6 +94,10 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/viewMode === "create"/);
     expect(src).toMatch(/viewMode === "list"/);
     expect(src).toMatch(/delivery-detail-modal/);
+    expect(src).toMatch(/sd-delivery-detail-head/);
+    expect(src).toMatch(/sd-delivery-detail-body/);
+    expect(src).toMatch(/sd-delivery-detail-foot/);
+    expect(src).toMatch(/data-testid="delivery-detail-body"/);
     expect(src).toMatch(/Cetak PDF/);
     expect(src).toMatch(/Riwayat Pengiriman untuk PO/);
   });
@@ -155,12 +167,26 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
 
   test("implements SEBAGIAN and SELESAI status filters and badges without Dikirim/Terkirim", () => {
     // Filter tabs
+    expect(src).toMatch(/id:\s*"all",\s*label:\s*"Semua"/);
     expect(src).toMatch(/id:\s*"SEBAGIAN",\s*label:\s*"Sebagian"/);
     expect(src).toMatch(/id:\s*"SELESAI",\s*label:\s*"Selesai"/);
     expect(src).not.toMatch(/id:\s*"Dikirim"/);
     expect(src).not.toMatch(/id:\s*"Terkirim"/);
-    expect(src).not.toMatch(/SALES_LIST_TABS/);
-    expect(src).not.toMatch(/tab-faktur-/);
+    expect(src).toMatch(/computeDeliveryStatusCounts/);
+    expect(src).toMatch(/filter-status-count-/);
+    expect(src).toMatch(/delivery-sales-/);
+    expect(src).toMatch(/deliveryListSalesLabel/);
+    expect(src).toMatch(/sd-act-pdf/);
+    expect(src).toMatch(/sd-actions-main/);
+    expect(src).toMatch(/sd-delivery-list/);
+    expect(src).toMatch(/sd-delivery-tabs/);
+    expect(src).toMatch(/refresh-delivery-btn/);
+    expect(src).toMatch(/reloadDeliveryListAuthoritative/);
+    expect(src).toMatch(/page_size/);
+    expect(src).toMatch(/delivery-page-size/);
+    expect(src).toMatch(/delivery-page-prev/);
+    expect(src).toMatch(/deliveryStatusCountsFromResponse/);
+    expect(src).not.toMatch(/deliveryListSalesLabel\(d\) \|\| d\.created_by/);
 
     // Detail modal PO Progress Summary
     expect(src).toMatch(/data-testid="delivery-po-progress-summary"/);
@@ -172,25 +198,6 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/detail-cumulative-sj-qty/);
     expect(src).toMatch(/detail-remaining-po-qty/);
     expect(src).toMatch(/detail-delivery-status/);
-  });
-
-  test("list chrome follows sd-density: refresh, status strip, debounce, density, cap note", () => {
-    expect(src).toMatch(/useDebouncedLiveSearch/);
-    expect(src).toMatch(/sd-list-chrome/);
-    expect(src).toMatch(/delivery-list-tabs/);
-    expect(src).toMatch(/sd-list-refresh/);
-    expect(src).toMatch(/refresh-delivery-btn/);
-    expect(src).toMatch(/reloadDeliveryListAuthoritative/);
-    expect(src).toMatch(/DELIVERY_LIST_API_CAP/);
-    expect(src).toMatch(/delivery-list-api-cap-note/);
-    expect(src).toMatch(/sd-delivery-status/);
-    expect(src).toMatch(/sd-btn-primary/);
-    expect(src).toMatch(/sd-list-empty/);
-    expect(src).toMatch(/sd-banner is-error/);
-    expect(src).toMatch(/delivery-list-sync-error/);
-    expect(src).toMatch(/sd-modal-card/);
-    expect(src).toMatch(/btn-close-delivery-modal/);
-    expect(src).toMatch(/await loadDeliveries\(\{ force: true \}\)/);
   });
 });
 
@@ -446,6 +453,191 @@ describe("Recipient WhatsApp on Buat Pengiriman", () => {
     expect(container.querySelector('[data-testid="input-recipient-phone"]')).toBeNull();
     expect(container.querySelector('[data-testid="display-customer-phone"]').value).toBe("081222222222");
     expect(container.querySelector('[data-testid="phone-source-customer"]').checked).toBe(true);
+  });
+});
+
+describe("Delivery list desktop UX 9.0 — Sales, actions, status counts", () => {
+  test("deliveryListSalesLabel prefers sales fields and never invents created_by", () => {
+    expect(deliveryListSalesLabel({ sales: "Vira", sales_name: "Vira Sales", created_by_name: "Admin" })).toBe("Vira Sales");
+    expect(deliveryListSalesLabel({ sales: "Vira", created_by_name: "Admin" })).toBe("Vira");
+    expect(deliveryListSalesLabel({ created_by_name: "Admin", created_by: "u1" })).toBe("");
+    expect(deliveryListSalesLabel({})).toBe("");
+  });
+
+  test("computeDeliveryStatusCounts totals filter-context rows without guessing", () => {
+    expect(computeDeliveryStatusCounts([
+      { status: "SEBAGIAN" },
+      { status: "SELESAI" },
+      { status: "SELESAI" },
+      { status: "sebagian" },
+    ])).toEqual({ all: 4, SEBAGIAN: 2, SELESAI: 2 });
+    expect(computeDeliveryStatusCounts([])).toEqual({ all: 0, SEBAGIAN: 0, SELESAI: 0 });
+    expect(computeDeliveryStatusCounts(null)).toEqual({ all: 0, SEBAGIAN: 0, SELESAI: 0 });
+  });
+
+  test("delivery pagination helpers match Pesanan-style defaults", () => {
+    expect(DELIVERY_DEFAULT_PAGE_SIZE).toBe(50);
+    expect(DELIVERY_PAGE_SIZES).toEqual([10, 25, 50, 100]);
+    expect(deliveryListRangeLabel(120, 2, 50)).toBe("Menampilkan 51–100 dari 120 pengiriman");
+    expect(deliveryStatusCountsFromResponse({
+      counts: { all: 4, SEBAGIAN: 2, SELESAI: 2 },
+    })).toEqual({ all: 4, SEBAGIAN: 2, SELESAI: 2 });
+    expect(deliveryStatusCountsFromResponse({})).toBeNull();
+  });
+
+  let container;
+  let root;
+
+  beforeEach(() => {
+    jest.spyOn(api, "salesDeliveryFilterOptions").mockResolvedValue({ created_by_options: [] });
+    jest.spyOn(api, "listSalesOrders").mockResolvedValue({ orders: [] });
+    require("../lib/auth").useAuth.mockReturnValue({
+      user: { id: "u1", role: "sales" },
+      hasPerm: (k) => (
+        k === "sales.delivery.view"
+        || k === "sales.delivery.print"
+        || k === "sales_order.view"
+      ),
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    jest.restoreAllMocks();
+  });
+
+  async function renderList() {
+    resetRouter("");
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/penjualan/pengiriman-pesanan"]}>
+          <PengirimanPesanan />
+        </MemoryRouter>,
+      );
+    });
+    await flush();
+    await flush();
+  }
+
+  test("shows Sales from list payload, status counts, and keeps PDF secondary without Batal when unauthorized", async () => {
+    const listSpy = jest.spyOn(api, "listSalesDeliveries").mockResolvedValue({
+      deliveries: [
+        {
+          id: "d1",
+          sj_number: "SJ-1",
+          po_id: "po-1",
+          po_number: "PO-1",
+          customer: "PT A",
+          outlet: "Outlet A",
+          sales: "Vira",
+          sales_name: "Vira",
+          created_by_name: "Admin Creator",
+          delivery_date: "2026-10-16",
+          total_qty: 10,
+          status: "SEBAGIAN",
+        },
+        {
+          id: "d2",
+          sj_number: "SJ-2",
+          po_id: "po-2",
+          po_number: "PO-2",
+          customer: "PT B",
+          outlet: "Outlet B",
+          sales: "",
+          created_by_name: "Admin Creator",
+          delivery_date: "2026-10-16",
+          total_qty: 5,
+          status: "SELESAI",
+        },
+      ],
+      count: 2,
+      total: 2,
+      page: 1,
+      page_size: 50,
+      total_pages: 1,
+      counts: { all: 2, SEBAGIAN: 1, SELESAI: 1 },
+    });
+
+    await renderList();
+
+    expect(container.querySelector('[data-testid="delivery-sales-d1"]').textContent).toMatch(/Sales · Vira/);
+    expect(container.querySelector('[data-testid="delivery-sales-d1"]').textContent).not.toMatch(/Admin Creator/);
+    expect(container.querySelector('[data-testid="delivery-sales-d2"]').textContent).toMatch(/Sales · —/);
+    expect(container.querySelector('[data-testid="filter-status-count-all"]').textContent).toBe("2");
+    expect(container.querySelector('[data-testid="filter-status-count-SEBAGIAN"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="filter-status-count-SELESAI"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="refresh-delivery-btn"]')).toBeTruthy();
+    expect(container.querySelector(".sd-delivery-tabs")).toBeTruthy();
+    expect(container.querySelector('[data-testid="delivery-page-size"]').value).toBe("50");
+    expect(container.querySelector('[data-testid="delivery-list-range"]').textContent).toMatch(/Menampilkan 1–2 dari 2 pengiriman/);
+    expect(container.querySelector('[data-testid="btn-view-delivery-d1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="btn-print-delivery-d1"]')?.className).toMatch(/sd-act-pdf/);
+    expect(container.querySelector('[data-testid="btn-batal-delivery-d1"]')).toBeNull();
+    expect(listSpy).toHaveBeenCalled();
+    expect(listSpy.mock.calls[0][0]).toMatchObject({ page: 1, page_size: 50 });
+    expect(listSpy.mock.calls[0][0]).not.toHaveProperty("status");
+  });
+
+  test("when status filter is active, one list call returns page rows and filter-context counts", async () => {
+    const listSpy = jest.spyOn(api, "listSalesDeliveries").mockResolvedValue({
+      deliveries: [{
+        id: "d1",
+        sj_number: "SJ-1",
+        po_id: "po-1",
+        po_number: "PO-1",
+        customer: "PT A",
+        sales: "Vira",
+        delivery_date: "2026-10-16",
+        total_qty: 10,
+        status: "SEBAGIAN",
+      }],
+      count: 1,
+      total: 1,
+      page: 1,
+      page_size: 50,
+      total_pages: 1,
+      counts: { all: 2, SEBAGIAN: 1, SELESAI: 1 },
+    });
+
+    resetRouter("status=SEBAGIAN");
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/penjualan/pengiriman-pesanan?status=SEBAGIAN"]}>
+          <PengirimanPesanan />
+        </MemoryRouter>,
+      );
+    });
+    await flush();
+    await flush();
+
+    expect(listSpy).toHaveBeenCalled();
+    expect(listSpy.mock.calls.every((c) => c[0]?.status === "SEBAGIAN")).toBe(true);
+    expect(listSpy.mock.calls.some((c) => !c[0]?.status)).toBe(false);
+    expect(container.querySelector('[data-testid="filter-status-count-all"]').textContent).toBe("2");
+    expect(container.querySelector('[data-testid="filter-status-count-SEBAGIAN"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="filter-status-count-SELESAI"]').textContent).toBe("1");
+    expect(container.querySelectorAll('[data-testid^="delivery-row-"]').length).toBe(1);
+  });
+
+  test("continuous typing in list search keeps focus", async () => {
+    jest.spyOn(api, "listSalesDeliveries").mockResolvedValue({
+      deliveries: [],
+      count: 0,
+      total: 0,
+      page: 1,
+      page_size: 50,
+      counts: { all: 0, SEBAGIAN: 0, SELESAI: 0 },
+    });
+    await renderList();
+    const input = container.querySelector('[data-testid="search-deliveries-input"]');
+    expect(input).toBeTruthy();
+    await typeInto(input, "ABCDE123");
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("ABCDE123");
   });
 });
 

@@ -1048,6 +1048,59 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
         raise HTTPException(500, "Gagal membuat Pengiriman Pesanan.")
 
 
+DELIVERY_LIST_SORT = [("created_at", -1), ("id", -1)]
+DELIVERY_LIST_HARD_MAX = 50000
+DELIVERY_DEFAULT_PAGE_SIZE = 50
+DELIVERY_PAGE_SIZE_MAX = 100
+DELIVERY_PAGE_SIZES = frozenset({10, 25, 50, 100})
+
+
+async def _po_delivery_statuses(db, po_ids: List[str]) -> Dict[str, str]:
+    """Authoritative SELESAI/SEBAGIAN from parent PO fulfillment (same rules as before)."""
+    po_statuses: Dict[str, str] = {}
+    if not po_ids:
+        return po_statuses
+    orders_map = {
+        o["id"]: o
+        async for o in db.orders.find({"id": {"$in": po_ids}}, {"_id": 0})
+    }
+    pipe = [
+        {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
+        {"$unwind": "$line_items"},
+        {"$group": {
+            "_id": {"po_id": "$po_id", "line_idx": "$line_items.line_idx"},
+            "total_qty": {"$sum": {"$ifNull": ["$line_items.qty", "$line_items.quantity"]}},
+        }},
+    ]
+    line_shipped_agg: Dict[str, Dict[int, int]] = {}
+    async for doc in db.sales_deliveries.aggregate(pipe):
+        pid = doc["_id"]["po_id"]
+        l_idx = int(doc["_id"]["line_idx"])
+        line_shipped_agg.setdefault(pid, {})[l_idx] = int(doc["total_qty"] or 0)
+
+    for pid, ord_doc in orders_map.items():
+        raw_lines = ord_doc.get("line_items") or []
+        tot_ord = sum(int(l.get("quantity") or 0) for l in raw_lines)
+        shipped_map = line_shipped_agg.get(pid, {})
+        tot_ship = sum(shipped_map.values())
+        all_fulfilled = len(raw_lines) > 0 and all(
+            shipped_map.get(idx, 0) >= int(l.get("quantity") or 0)
+            for idx, l in enumerate(raw_lines)
+        )
+        if all_fulfilled or (tot_ord > 0 and tot_ship >= tot_ord):
+            po_statuses[pid] = "SELESAI"
+        else:
+            po_statuses[pid] = "SEBAGIAN"
+    return po_statuses
+
+
+def _normalize_delivery_list_status(raw: Any, *, fallback: str = "SELESAI") -> str:
+    derived = str(raw or fallback).strip().upper() or fallback
+    if derived not in ("SELESAI", "SEBAGIAN"):
+        return "SELESAI" if derived == "TERKIRIM" else "SEBAGIAN"
+    return derived
+
+
 async def list_sales_deliveries(
     db,
     q: Optional[str] = None,
@@ -1055,9 +1108,26 @@ async def list_sales_deliveries(
     status: Optional[str] = None,
     delivery_date_preset: Optional[str] = None,
     created_by: Optional[str] = None,
-) -> List[dict]:
-    """Query list of sales deliveries with search and filter."""
+    page: Any = 1,
+    page_size: Any = DELIVERY_DEFAULT_PAGE_SIZE,
+) -> Dict[str, Any]:
+    """List sales deliveries with search/filter, status counts, and server pagination.
+
+    Status SEBAGIAN/SELESAI is derived from parent PO fulfillment (unchanged business rule).
+    Counts are computed for the same q/date/created_by context without the status filter.
+    Full documents are loaded only for the requested page (light projection for classify/count).
+    """
     from services.sales_date_presets import match_shipping_date
+    from services.sales_list_tabs import parse_page_params
+
+    try:
+        page_num, size = parse_page_params(
+            page, page_size if page_size is not None else DELIVERY_DEFAULT_PAGE_SIZE
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if size > DELIVERY_PAGE_SIZE_MAX:
+        raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
 
     query: dict = {"is_cancelled": {"$ne": True}}
 
@@ -1079,63 +1149,82 @@ async def list_sales_deliveries(
             {"sales": {"$regex": needle, "$options": "i"}},
         ]
 
-    deliveries = await db.sales_deliveries.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    light_proj = {
+        "_id": 0,
+        "id": 1,
+        "po_id": 1,
+        "delivery_date": 1,
+        "created_at": 1,
+        "status": 1,
+    }
+    light_rows = await db.sales_deliveries.find(query, light_proj).sort(
+        DELIVERY_LIST_SORT
+    ).to_list(DELIVERY_LIST_HARD_MAX + 1)
+    if len(light_rows) > DELIVERY_LIST_HARD_MAX:
+        raise HTTPException(
+            409,
+            f"Hasil daftar pengiriman melebihi batas aman ({DELIVERY_LIST_HARD_MAX}). "
+            "Perhalus pencarian/filter.",
+        )
 
-    # Derive authoritative status from parent PO
-    po_ids = list({d["po_id"] for d in deliveries if d.get("po_id")})
-    po_statuses: Dict[str, str] = {}
-    if po_ids:
-        orders_cursor = db.orders.find({"id": {"$in": po_ids}}, {"_id": 0})
-        orders_map = {o["id"]: o async for o in orders_cursor}
-
-        pipe = [
-            {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
-            {"$unwind": "$line_items"},
-            {"$group": {
-                "_id": {"po_id": "$po_id", "line_idx": "$line_items.line_idx"},
-                "total_qty": {"$sum": {"$ifNull": ["$line_items.qty", "$line_items.quantity"]}}
-            }}
-        ]
-        line_shipped_agg: Dict[str, Dict[int, int]] = {}
-        async for doc in db.sales_deliveries.aggregate(pipe):
-            pid = doc["_id"]["po_id"]
-            l_idx = int(doc["_id"]["line_idx"])
-            if pid not in line_shipped_agg:
-                line_shipped_agg[pid] = {}
-            line_shipped_agg[pid][l_idx] = int(doc["total_qty"] or 0)
-
-        for pid, ord_doc in orders_map.items():
-            raw_lines = ord_doc.get("line_items") or []
-            tot_ord = sum(int(l.get("quantity") or 0) for l in raw_lines)
-            shipped_map = line_shipped_agg.get(pid, {})
-            tot_ship = sum(shipped_map.values())
-            all_fulfilled = len(raw_lines) > 0 and all(
-                shipped_map.get(idx, 0) >= int(l.get("quantity") or 0)
-                for idx, l in enumerate(raw_lines)
-            )
-            if all_fulfilled or (tot_ord > 0 and tot_ship >= tot_ord):
-                po_statuses[pid] = "SELESAI"
-            else:
-                po_statuses[pid] = "SEBAGIAN"
+    po_ids = list({d["po_id"] for d in light_rows if d.get("po_id")})
+    po_statuses = await _po_delivery_statuses(db, po_ids)
 
     date_preset = str(delivery_date_preset or "all").strip().lower() or "all"
-    enriched_deliveries = []
     filter_norm = (status or "").strip().upper()
-    for d in deliveries:
-        derived = po_statuses.get(d.get("po_id")) or d.get("status") or "SELESAI"
-        if derived not in ("SELESAI", "SEBAGIAN"):
-            derived = "SELESAI" if derived == "Terkirim" else "SEBAGIAN"
-        d["status"] = derived
+    counts = {"all": 0, "SEBAGIAN": 0, "SELESAI": 0}
+    eligible_ids: List[str] = []
 
+    for row in light_rows:
+        if date_preset not in ("", "all"):
+            if not match_shipping_date(row.get("delivery_date"), date_preset):
+                continue
+        derived = _normalize_delivery_list_status(
+            po_statuses.get(row.get("po_id")) or row.get("status")
+        )
+        counts["all"] += 1
+        counts[derived] += 1
         if filter_norm and filter_norm not in ("ALL", "SEMUA", "SEMUA STATUS"):
             if derived != filter_norm:
                 continue
-        if date_preset not in ("", "all"):
-            if not match_shipping_date(d.get("delivery_date"), date_preset):
-                continue
-        enriched_deliveries.append(d)
+        row_id = str(row.get("id") or "").strip()
+        if row_id:
+            eligible_ids.append(row_id)
 
-    return enriched_deliveries
+    total = len(eligible_ids)
+    total_pages = max(1, (total + size - 1) // size) if total else 1
+    if page_num > total_pages:
+        page_num = total_pages
+    start = (page_num - 1) * size
+    page_ids = eligible_ids[start:start + size]
+
+    page_rows: List[dict] = []
+    if page_ids:
+        found = await db.sales_deliveries.find(
+            {"id": {"$in": page_ids}},
+            {"_id": 0},
+        ).to_list(len(page_ids))
+        by_id = {str(d.get("id")): d for d in found}
+        for rid in page_ids:
+            doc = by_id.get(rid)
+            if not doc:
+                continue
+            doc["status"] = _normalize_delivery_list_status(
+                po_statuses.get(doc.get("po_id")) or doc.get("status")
+            )
+            page_rows.append(doc)
+
+    return {
+        "deliveries": page_rows,
+        # Page length (aligned with Faktur/Pesanan list contract).
+        "count": len(page_rows),
+        "total": total,
+        "page": page_num,
+        "page_size": size,
+        "total_pages": total_pages,
+        # Same q/date/created_by context; not limited to the current page.
+        "counts": counts,
+    }
 
 
 async def list_sales_delivery_filter_options(db) -> Dict[str, Any]:
