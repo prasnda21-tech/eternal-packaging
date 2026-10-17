@@ -93,6 +93,132 @@ def stamp_line_physical_fulfillment(
             li["physical_fulfillment"] = True
 
 
+def is_synthetic_line_id(value: Optional[str]) -> bool:
+    """True for in-memory idx:N identities — never valid for PATCH/repair persist."""
+    return str(value or "").strip().startswith("idx:")
+
+
+def stable_eternal_line_id(li: Optional[dict]) -> Optional[str]:
+    """Return a non-synthetic Eternal line identity, or None if missing."""
+    if not isinstance(li, dict):
+        return None
+    for key in ("line_id", "id"):
+        raw = str(li.get(key) or "").strip()
+        if raw and not is_synthetic_line_id(raw):
+            return raw
+    return None
+
+
+def mint_eternal_line_id() -> str:
+    """Allocate a new Eternal line_id (ln-{uuid}). Never uses Accurate ids."""
+    import uuid
+
+    return f"ln-{uuid.uuid4()}"
+
+
+def apply_legacy_line_identity_repair(
+    order: dict,
+    *,
+    accurate_line_id: str,
+    master_item_id: str,
+    physical_fulfillment: bool = True,
+    mint_id=None,
+) -> tuple:
+    """Mint stable Eternal line_id + optional physical_fulfillment on one legacy line.
+
+    Resolves uniquely by accurate_line_id + master_item_id + SERVICE + print.
+    Idempotent: keeps an existing non-synthetic line_id. Never sets line_id from
+    Accurate. Mutates ``order['line_items']`` only. Returns
+    ``(before_snapshot, after_snapshot, changed)``.
+
+    Raises ValueError with an operator-facing Indonesian message on failure.
+    """
+    want_acc = str(accurate_line_id or "").strip()
+    want_master = str(master_item_id or "").strip()
+    if not want_acc:
+        raise ValueError("accurate_line_id wajib untuk resolusi line legacy.")
+    if not want_master:
+        raise ValueError("master_item_id wajib.")
+
+    lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+    hits = []
+    for i, li in enumerate(lis):
+        if not isinstance(li, dict):
+            continue
+        if str(li.get("accurate_line_id") or "").strip() != want_acc:
+            continue
+        if str(li.get("master_item_id") or "").strip() != want_master:
+            continue
+        if not is_service_process_line(li):
+            continue
+        if not is_print_line(li):
+            continue
+        hits.append(i)
+
+    if not hits:
+        raise ValueError(
+            "Line legacy tidak ditemukan (accurate_line_id + master SERVICE print)."
+        )
+    if len(hits) > 1:
+        raise ValueError(
+            f"Resolusi line legacy ambigu ({len(hits)} cocok). Koreksi ditolak."
+        )
+
+    idx = hits[0]
+    row = lis[idx]
+    existing_id = stable_eternal_line_id(row)
+    before_line_id = str(row.get("line_id") or "").strip() or None
+    before_pf = row.get("physical_fulfillment") if "physical_fulfillment" in row else None
+
+    mint = mint_id or mint_eternal_line_id
+    # Keep a prior Eternal id only when it is not the Accurate source id.
+    if existing_id and existing_id != want_acc:
+        new_line_id = existing_id
+    else:
+        minted = str(mint() or "").strip()
+        if not minted.startswith("ln-") or is_synthetic_line_id(minted):
+            raise ValueError("Gagal mint line_id Eternal (format ln-{uuid}).")
+        if minted == want_acc:
+            raise ValueError("line_id Eternal tidak boleh sama dengan accurate_line_id.")
+        new_line_id = minted
+
+    want_pf = bool(physical_fulfillment)
+    row["line_id"] = new_line_id
+    row["physical_fulfillment"] = want_pf
+
+    lis[idx] = row
+    order["line_items"] = lis
+
+    after_line_id = str(row.get("line_id") or "").strip() or None
+    changed = (before_line_id != after_line_id) or (bool(before_pf is True) != want_pf)
+
+    before = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_idx": idx,
+        "line_id": before_line_id,
+        "accurate_line_id": want_acc,
+        "master_item_id": want_master,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": before_pf,
+        "quantity": row.get("quantity"),
+    }
+    after = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_idx": idx,
+        "line_id": after_line_id,
+        "accurate_line_id": want_acc,
+        "master_item_id": want_master,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": bool(row.get("physical_fulfillment") is True),
+        "quantity": row.get("quantity"),
+    }
+    return before, after, changed
+
+
 def apply_line_physical_fulfillment_override(
     order: dict,
     *,

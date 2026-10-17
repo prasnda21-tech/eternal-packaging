@@ -3761,6 +3761,95 @@ async def set_line_item_physical_fulfillment(
     return {"order": order}
 
 
+class LegacyLineIdentityRepairPayload(BaseModel):
+    """One-PO legacy repair: mint Eternal line_id + set physical_fulfillment.
+
+    Requires explicit confirm=true. Resolve uniquely via accurate_line_id +
+    master_item_id + SERVICE + print. Not a global backfill.
+    """
+
+    accurate_line_id: str
+    master_item_id: str
+    physical_fulfillment: bool = True
+    confirm: bool = False
+
+
+@api_router.post("/orders/{order_id}/line-items/legacy-line-identity-repair")
+async def repair_legacy_line_identity(
+    order_id: str,
+    payload: LegacyLineIdentityRepairPayload,
+    user=Depends(current_user),
+):
+    """Targeted repair for Accurate-imported lines missing Eternal line_id.
+
+    Fail-closed on zero/duplicate match. Idempotent when line_id already
+    stable and physical_fulfillment already matches. Optimistic updated_at
+    lock. Does not touch Master, qty, packing/loading/SJ, stock, or HPP.
+    """
+    from quantity_rules import apply_legacy_line_identity_repair
+
+    await _require_perm(user, "production.route.edit")
+    if not bool(payload.confirm):
+        raise HTTPException(
+            400,
+            "Konfirmasi eksplisit wajib (confirm=true). Operasi ini mengubah satu PO secara terarah.",
+        )
+
+    want_acc = str(payload.accurate_line_id or "").strip()
+    before_holder = {"line": None}
+    after_holder = {"line": None}
+
+    def _mutate(order: dict):
+        try:
+            before, after, changed = apply_legacy_line_identity_repair(
+                order,
+                accurate_line_id=payload.accurate_line_id,
+                master_item_id=payload.master_item_id,
+                physical_fulfillment=bool(payload.physical_fulfillment),
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            code = 404 if "tidak ditemukan" in msg else 400
+            raise HTTPException(code, msg) from exc
+        before_holder["line"] = before
+        after_holder["line"] = after
+        if not changed:
+            raise _OrderMutationSkipped()
+
+    try:
+        order = await _with_quantity_lock(
+            order_id, _mutate, persist_keys=("line_items",),
+        )
+    except _OrderMutationSkipped:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not order:
+            raise HTTPException(404, "PO tidak ditemukan")
+        return {
+            "order": order,
+            "before": before_holder["line"],
+            "after": after_holder["line"],
+            "changed": False,
+        }
+
+    await _audit_po(
+        order,
+        "production.line.legacy_identity.repair",
+        user,
+        before=before_holder["line"],
+        after=after_holder["line"],
+        note=(
+            f"Legacy line_id repair accurate_line_id={want_acc} "
+            f"→ line_id={after_holder['line'].get('line_id') if after_holder['line'] else None}"
+        ),
+    )
+    return {
+        "order": order,
+        "before": before_holder["line"],
+        "after": after_holder["line"],
+        "changed": True,
+    }
+
+
 # ---- Batch 3: Dashboard Action Center ----
 _ACTION_CENTER_LIMIT = 2000
 
