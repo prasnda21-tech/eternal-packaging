@@ -195,7 +195,7 @@ def evaluate_process_group(
     Partial never invents siap via min(). Ambiguous relation → UNVERIFIED.
     """
     from quantity_rules import is_print_line as _default_is_print
-    from quantity_rules import is_service_process_line
+    from quantity_rules import is_process_only_service_line, is_service_process_line
 
     is_print = is_print_line or _default_is_print
     lines = list(order.get("line_items") or [])
@@ -227,18 +227,20 @@ def evaluate_process_group(
     else:
         parent_done = min(line_operator_completed(order, parent_idx), ordered)
 
-    # Resolve linked process children (SERVICE masters and/or stamped SERVICE).
+    # Resolve linked process children (process-only SERVICE).
     mids = list(master_ids) if master_ids is not None else [
         str((li or {}).get("master_item_id") or "").strip() if isinstance(li, dict) else ""
         for li in lines
     ]
     process_ids = set(process_master_ids or set())
-    # Also treat stamped SERVICE lines as process even if master set empty.
+    # Process-only SERVICE lines are Add Ons; physical_fulfillment SERVICE is not.
     for i, li in enumerate(lines):
-        if isinstance(li, dict) and is_service_process_line(li):
+        if isinstance(li, dict) and is_process_only_service_line(li):
             mid = mids[i] if i < len(mids) else ""
             if mid:
                 process_ids.add(mid)
+        elif isinstance(li, dict) and is_service_process_line(li):
+            continue
 
     children, unlinked = process_children_for_parent(
         parent_idx,
@@ -333,7 +335,7 @@ def _process_master_ids_for_order(
     *,
     process_master_ids: Optional[Set[str]] = None,
 ) -> Tuple[List[str], Set[str]]:
-    from quantity_rules import is_service_process_line
+    from quantity_rules import is_process_only_service_line, is_service_process_line
 
     lines = list(order.get("line_items") or [])
     mids = [
@@ -342,7 +344,11 @@ def _process_master_ids_for_order(
     ]
     process_ids = set(process_master_ids or set())
     for i, li in enumerate(lines):
-        if isinstance(li, dict) and is_service_process_line(li):
+        # SERVICE with physical_fulfillment is customer-goods fulfillment, not a
+        # process Add On that must link to an inventory induk.
+        if isinstance(li, dict) and is_service_process_line(li) and not is_process_only_service_line(li):
+            continue
+        if isinstance(li, dict) and is_process_only_service_line(li):
             mid = mids[i] if i < len(mids) else ""
             if mid:
                 process_ids.add(mid)

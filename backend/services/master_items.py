@@ -36,7 +36,7 @@ ORIGIN_ACCURATE = "accurate"
 ALLOWED_LOCAL_ITEM_TYPES = frozenset({"INVENTORY", "SERVICE", "NON_INVENTORY"})
 ALLOWED_PRODUCTION_PROCESS = frozenset({"print", "non_print"})
 # ERP-owned: never taken from Accurate sync payloads.
-ERP_OWNED_FIELDS = frozenset({"production_process"})
+ERP_OWNED_FIELDS = frozenset({"production_process", "physical_fulfillment"})
 ACCURATE_ID_PARTIAL_INDEX = "accurate_item_id_partial_unique"
 LEGACY_ACCURATE_ID_INDEX = "accurate_item_id_1"
 CODE_CLAIMS_INDEX = "code_key_unique"
@@ -104,6 +104,7 @@ def public_master_item(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "unit": doc.get("unit"),
         "is_active": doc.get("is_active"),
         "production_process": normalize_production_process(doc.get("production_process")),
+        "physical_fulfillment": bool(doc.get("physical_fulfillment") is True),
         "origin": resolve_master_origin(doc),
         "accurate_updated_at": doc.get("accurate_updated_at"),
         "last_synced_at": doc.get("last_synced_at"),
@@ -493,6 +494,54 @@ async def update_master_production_process(
             "production_process": proc,
             "production_process_updated_at": now,
             "production_process_updated_by": actor or None,
+            "updated_at": now,
+        }},
+    )
+    fresh = await db[COLLECTION].find_one({"id": existing["id"]}, {"_id": 0})
+    return public_master_item(fresh)
+
+
+async def update_master_physical_fulfillment(
+    db,
+    item_id: str,
+    physical_fulfillment: Any,
+    *,
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Set ERP flag: SERVICE with customer goods that still pack/ship.
+
+    Does not mutate item_type, orders, stock, or Accurate-owned fields.
+    Only meaningful for SERVICE masters; INVENTORY already packs via type.
+    """
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        raise HTTPException(400, "ID barang/jasa wajib.")
+    flag = physical_fulfillment is True or str(physical_fulfillment).strip().lower() in (
+        "1", "true", "yes",
+    )
+    existing = await db[COLLECTION].find_one(
+        {"$or": [{"id": item_id}, {"accurate_item_id": item_id}]},
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(404, "Barang/jasa tidak ditemukan.")
+    itype = str(existing.get("item_type") or "").strip().upper()
+    if flag and itype and itype != "SERVICE":
+        raise HTTPException(
+            400,
+            "physical_fulfillment hanya untuk item_type SERVICE "
+            "(barang inventory sudah memakai alur packing fisik).",
+        )
+    now = now_iso()
+    actor = ""
+    if isinstance(user, dict):
+        actor = str(user.get("email") or user.get("id") or "").strip()
+    await db[COLLECTION].update_one(
+        {"id": existing["id"]},
+        {"$set": {
+            "physical_fulfillment": bool(flag),
+            "physical_fulfillment_updated_at": now,
+            "physical_fulfillment_updated_by": actor or None,
             "updated_at": now,
         }},
     )

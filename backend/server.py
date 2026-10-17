@@ -41,6 +41,7 @@ from services.master_items import (
     resolve_po_line_items,
     sync_master_items,
     update_master_production_process,
+    update_master_physical_fulfillment,
 )
 from services.shipment_status import (
     SHIPMENT_STATUS_PROJECTION,
@@ -2155,30 +2156,41 @@ async def _stamp_order_line_item_types(order: dict) -> None:
     """In-memory stamp of master item_type onto lines missing it (not persisted).
 
     Enables sync packing/SJ/loading helpers to exclude SERVICE process qty.
+    Also stamps physical_fulfillment when the line key is absent.
     """
-    from quantity_rules import stamp_line_item_types
+    from quantity_rules import stamp_line_item_types, stamp_line_physical_fulfillment
 
-    need: list = []
+    need_type: list = []
+    need_fulfillment: list = []
     for li in (order.get("line_items") or []):
         if not isinstance(li, dict):
             continue
-        if str(li.get("item_type") or "").strip():
-            continue
         mid = str(li.get("master_item_id") or "").strip()
-        if mid:
-            need.append(mid)
+        if not mid:
+            continue
+        if not str(li.get("item_type") or "").strip():
+            need_type.append(mid)
+        if "physical_fulfillment" not in li:
+            need_fulfillment.append(mid)
+    need = list(set(need_type + need_fulfillment))
     if not need:
         return
     rows = await db.master_items.find(
-        {"id": {"$in": list(set(need))}},
-        {"_id": 0, "id": 1, "item_type": 1},
-    ).to_list(len(set(need)))
+        {"id": {"$in": need}},
+        {"_id": 0, "id": 1, "item_type": 1, "physical_fulfillment": 1},
+    ).to_list(len(need))
     type_by_master = {
         str(r.get("id") or "").strip(): str(r.get("item_type") or "").strip().upper()
         for r in rows
         if str(r.get("id") or "").strip() and str(r.get("item_type") or "").strip()
     }
+    fulfillment_by_master = {
+        str(r.get("id") or "").strip(): True
+        for r in rows
+        if str(r.get("id") or "").strip() and r.get("physical_fulfillment") is True
+    }
     stamp_line_item_types(order, type_by_master)
+    stamp_line_physical_fulfillment(order, fulfillment_by_master)
 
 
 async def _load_order_for_mutation(order_id: str) -> dict:
@@ -13575,6 +13587,22 @@ async def master_items_set_production_process(
     """Owner default Cetak/Tidak cetak. ERP-owned; Accurate sync does not overwrite."""
     return await update_master_production_process(
         db, item_id, payload.production_process, user=user,
+    )
+
+
+class MasterItemPhysicalFulfillmentPayload(BaseModel):
+    physical_fulfillment: bool
+
+
+@api_router.patch("/master-items/{item_id}/physical-fulfillment")
+async def master_items_set_physical_fulfillment(
+    item_id: str,
+    payload: MasterItemPhysicalFulfillmentPayload,
+    user=Depends(require_perm("master_items.manage")),
+):
+    """SERVICE with customer-owned goods that still pack/ship. ERP-owned."""
+    return await update_master_physical_fulfillment(
+        db, item_id, payload.physical_fulfillment, user=user,
     )
 
 
