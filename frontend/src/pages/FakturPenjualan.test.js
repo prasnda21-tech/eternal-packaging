@@ -204,4 +204,23 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Sudah Diterima \(AR\)/);
     expect(pageSrc).toMatch(/Sisa Tagihan \(AR\)/);
   });
+
+  test("list identity cell keeps stacked customer/invoice/outlet with titles and unclipped row height", () => {
+    const densityCss = fs.readFileSync(path.join(__dirname, "salesSubmenuDensity.css"), "utf8");
+    expect(pageSrc).toMatch(/className="sd-identity"/);
+    expect(pageSrc).toMatch(/className="sd-identity-stack"/);
+    expect(pageSrc).toMatch(/className="sd-customer"[\s\S]{0,40}title=\{inv\.customer/);
+    expect(pageSrc).toMatch(/invoice-number-\$\{inv\.id\}[\s\S]{0,80}title=\{inv\.invoice_number/);
+    expect(pageSrc).toMatch(/sd-support" title=\{inv\.outlet\}/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-list-table tbody td\{[\s\S]*?height:auto/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-list-table td\.sd-identity\{[\s\S]*?min-height:56px/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-list-table td\.sd-identity\{[\s\S]*?min-width:200px/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-identity-stack\{[\s\S]*?display:flex/);
+    expect(pageSrc).toMatch(/fp-identity-col/);
+    expect(pageSrc).toMatch(/width:\s*260/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-list-table col\.fp-identity-col\{[\s\S]*?width:260px/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-customer\{[\s\S]*?text-overflow:ellipsis/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-doc\.is-static\{[\s\S]*?text-overflow:ellipsis/);
+    expect(densityCss).toMatch(/\.fp-invoice-page \.sd-identity \.sd-support\{[\s\S]*?text-overflow:ellipsis/);
+  });
 });

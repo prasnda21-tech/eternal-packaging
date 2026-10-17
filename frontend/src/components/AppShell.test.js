@@ -153,6 +153,28 @@ describe("sidebar flyout interaction", () => {
     expect(shell).not.toMatch(/useCashBankWorkspaceTabs/);
   });
 
+  test("global menu search uses sidebarLeaves catalog and navigate(to)", () => {
+    expect(shell).toMatch(/menuSearchItemsFromRails\(sidebar\)/);
+    expect(shell).toMatch(/<GlobalMenuSearch/);
+    expect(shell).toMatch(/global-menu-search-trigger/);
+    expect(shell).toMatch(/Cari menu/);
+    expect(shell).toMatch(/isMenuSearchOpenShortcut/);
+    expect(shell).toMatch(/navigate\(item\.to\)/);
+    expect(shell).not.toMatch(/fuse\.js|fuse-js|fuzzy/);
+  });
+
+  test("topbar aligns search, chat, and notification without duplicating chat unread fetch", () => {
+    expect(shell).toMatch(/topbar-actions/);
+    expect(shell).toMatch(/topbar-chat-button/);
+    expect(shell).toMatch(/to="\/chat"/);
+    expect(shell).toMatch(/FloatingNotificationBell placement="topbar"/);
+    expect(shell).toMatch(/chatUnread > 0 \? `Chat, \$\{chatUnread\} belum dibaca`/);
+    expect(shell).toMatch(/entry\.id === "chat" && chatUnread/);
+    expect(presentation).toMatch(/testid: "top-nav-chat"/);
+    expect((shell.match(/api\.chatUnreadSummary/g) || []).length).toBe(1);
+    expect((shell.match(/<FloatingNotificationBell/g) || []).length).toBe(1);
+  });
+
   test("SPK and Chat stay direct rail links while Dashboard opens a submenu", () => {
     expect(shell).toMatch(/to=\{entry\.id === "spk" \? "\/spk" : entry\.id === "chat" \? "\/chat" : entry\.to\}/);
     expect(shell).not.toMatch(/sidebar-flyout-spk/);
@@ -214,6 +236,6 @@ describe("sidebar flyout interaction", () => {
 
   test("authenticated shell mounts web floating notification bell once", () => {
     expect(shell).toMatch(/import FloatingNotificationBell from "\.\/FloatingNotificationBell"/);
-    expect(shell).toMatch(/<FloatingNotificationBell \/>/);
+    expect(shell).toMatch(/<FloatingNotificationBell placement="topbar" \/>/);
   });
 });

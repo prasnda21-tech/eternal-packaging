@@ -450,4 +450,26 @@ describe("FloatingNotificationBell", () => {
     expect(row.textContent).toContain("SJ SJ-001");
     expect(row.textContent).toContain("PO-SJ-1");
   });
+
+  test("topbar placement opens panel on click without a second notification poller", async () => {
+    api.listNotifications.mockResolvedValue({
+      notifications: [notif({ id: "t1", title: "Topbar notice" })],
+    });
+    await act(async () => {
+      root.render(<FloatingNotificationBell placement="topbar" />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.listNotifications).toHaveBeenCalledTimes(1);
+    const rootEl = container.querySelector('[data-testid="web-floating-notification-bell"]');
+    expect(rootEl.getAttribute("data-placement")).toBe("topbar");
+    const bell = container.querySelector('[data-testid="web-notif-bell-button"]');
+    expect(bell.getAttribute("aria-label")).toMatch(/Notifikasi/);
+    await act(async () => {
+      bell.click();
+    });
+    expect(container.querySelector('[data-testid="web-notif-panel"]')).toBeTruthy();
+    expect(api.listNotifications).toHaveBeenCalledTimes(1);
+  });
 });

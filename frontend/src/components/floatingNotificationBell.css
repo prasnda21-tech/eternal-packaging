@@ -8,6 +8,55 @@
   pointer-events: none;
 }
 
+/* Topbar-anchored bell — same component/state; no floating drag. */
+.ep-web-notif-root.is-topbar {
+  position: relative;
+  z-index: 40;
+  width: auto;
+  height: auto;
+  pointer-events: auto;
+  flex-shrink: 0;
+}
+
+.ep-web-notif-root.is-topbar .ep-web-notif-bell {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--line, #e2e8f0);
+  background: var(--surface, #fff);
+  color: var(--ink, #0f172a);
+  box-shadow: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.ep-web-notif-root.is-topbar .ep-web-notif-bell:hover {
+  background: var(--muted, #f1f5f9);
+  filter: none;
+}
+
+.ep-web-notif-root.is-topbar .ep-web-notif-bell:focus-visible {
+  outline: 2px solid var(--ep-primary, #0f766e);
+  outline-offset: 2px;
+}
+
+.ep-web-notif-root.is-topbar .ep-web-notif-badge {
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font: 700 10px/12px "IBM Plex Sans", sans-serif;
+  border-width: 1.5px;
+}
+
+.ep-web-notif-root.is-topbar .ep-web-notif-panel {
+  left: auto;
+  right: 0;
+  top: calc(100% + 8px);
+}
+
 .ep-web-notif-bell {
   pointer-events: auto;
   position: absolute;
