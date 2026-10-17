@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { LIVE_SEARCH_DEBOUNCE_MS } from "../hooks/useDebouncedLiveSearch";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import api from "../lib/api";
-import PengirimanPesanan, { DELIVERY_LIST_API_CAP } from "./PengirimanPesanan";
+import PengirimanPesanan, { DELIVERY_DEFAULT_PAGE_SIZE } from "./PengirimanPesanan";
 
 const mockRouter = {
   params: new URLSearchParams(),
@@ -244,8 +244,15 @@ describe("Pengiriman Pesanan list UX unification", () => {
       status: "all",
       period: "all",
       createdBy: "",
+      page: 1,
+      pageSize: DELIVERY_DEFAULT_PAGE_SIZE,
     });
-    salesDeliveryListCache.set(key, { deliveries: [deliveryRow("cached")], res: {} });
+    salesDeliveryListCache.set(key, {
+      deliveries: [deliveryRow("cached")],
+      res: {},
+      total: 1,
+      statusCounts: { all: 1, SEBAGIAN: 1, SELESAI: 0 },
+    });
 
     let resolveList;
     api.listSalesDeliveries.mockImplementation(() => new Promise((resolve, reject) => {
@@ -349,14 +356,21 @@ describe("Pengiriman Pesanan list UX unification", () => {
     expect(container.querySelector('[data-testid="delivery-detail-modal"]')).toBeNull();
   });
 
-  test("footer keeps loadedRangeLabel and discloses API cap at 1000 rows", async () => {
-    const rows = Array.from({ length: DELIVERY_LIST_API_CAP }, (_, i) => deliveryRow(String(i + 1)));
-    api.listSalesDeliveries.mockResolvedValue({ deliveries: rows });
+  test("footer shows authoritative server page range and omits API-cap note", async () => {
+    const rows = Array.from({ length: DELIVERY_DEFAULT_PAGE_SIZE }, (_, i) => deliveryRow(String(i + 1)));
+    api.listSalesDeliveries.mockResolvedValue({
+      deliveries: rows,
+      total: 1000,
+      page: 1,
+      page_size: DELIVERY_DEFAULT_PAGE_SIZE,
+      total_pages: 20,
+      counts: { all: 1000, SEBAGIAN: 600, SELESAI: 400 },
+    });
     await renderPage();
     const footer = container.querySelector('[data-testid="delivery-list-footer"]');
-    expect(footer.textContent).toMatch(/Menampilkan 1–1\.000 dari 1\.000 pengiriman|Menampilkan 1–1000 dari 1000 pengiriman/);
-    expect(container.querySelector('[data-testid="delivery-list-api-cap-note"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="delivery-list-api-cap-note"]').textContent).toMatch(/dibatasi API/);
-    expect(container.querySelector('[data-testid="delivery-list-api-cap-note"]').textContent).not.toMatch(/seluruh data/);
+    expect(footer.textContent).toMatch(/Menampilkan 1–50 dari 1\.000 pengiriman|Menampilkan 1–50 dari 1000 pengiriman/);
+    expect(container.querySelector('[data-testid="delivery-list-api-cap-note"]')).toBeNull();
+    expect(container.querySelector('[data-testid="delivery-page-next"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="delivery-page-size"]')).toBeTruthy();
   });
 });

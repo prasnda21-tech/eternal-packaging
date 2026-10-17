@@ -14,10 +14,14 @@ def is_print_line(li: dict) -> bool:
 
 
 def is_service_process_line(li: dict, exclude_master_ids: Optional[set] = None) -> bool:
-    """True when the line is process/jasa work, not physical inventory qty.
+    """True when the line is process/jasa work, not Eternal inventory qty.
 
     Prefer stamped line_items.item_type=SERVICE. Optional exclude_master_ids
     covers legacy lines that only have master_item_id. Never infers from name.
+
+    SERVICE may still opt into physical packing/shipping via
+    ``physical_fulfillment`` (see ``line_physical_fulfillment`` /
+    ``is_process_only_service_line``). Inventory/HPP eligibility stays SERVICE.
     """
     if not isinstance(li, dict):
         return False
@@ -27,6 +31,29 @@ def is_service_process_line(li: dict, exclude_master_ids: Optional[set] = None) 
     if mid and exclude_master_ids and mid in exclude_master_ids:
         return True
     return False
+
+
+def line_physical_fulfillment(li: dict) -> bool:
+    """Explicit opt-in: jasa with customer-owned goods that still pack/ship.
+
+    Never inferred from name. Default False — historical SERVICE stays
+    process-only until master/line sets physical_fulfillment.
+    """
+    if not isinstance(li, dict):
+        return False
+    raw = li.get("physical_fulfillment")
+    if raw is True:
+        return True
+    if isinstance(raw, (int, float)) and int(raw) == 1:
+        return True
+    return str(raw or "").strip().lower() in ("1", "true", "yes")
+
+
+def is_process_only_service_line(
+    li: dict, exclude_master_ids: Optional[set] = None,
+) -> bool:
+    """SERVICE without physical fulfillment — excluded from packing/SJ/Loading qty."""
+    return is_service_process_line(li, exclude_master_ids) and not line_physical_fulfillment(li)
 
 
 def stamp_line_item_types(
@@ -44,6 +71,234 @@ def stamp_line_item_types(
         stamped = str(types.get(mid) or "").strip().upper()
         if stamped:
             li["item_type"] = stamped
+
+
+def stamp_line_physical_fulfillment(
+    order: dict,
+    fulfillment_by_master: Optional[dict] = None,
+) -> None:
+    """Stamp physical_fulfillment from master when line key is absent (non-persist).
+
+    Explicit line True/False is never overwritten. Missing master/false → leave unset
+    (process-only default).
+    """
+    flags = fulfillment_by_master or {}
+    for li in (order.get("line_items") or []):
+        if not isinstance(li, dict):
+            continue
+        if "physical_fulfillment" in li:
+            continue
+        mid = str(li.get("master_item_id") or "").strip()
+        if mid and flags.get(mid) is True:
+            li["physical_fulfillment"] = True
+
+
+def is_synthetic_line_id(value: Optional[str]) -> bool:
+    """True for in-memory idx:N identities — never valid for PATCH/repair persist."""
+    return str(value or "").strip().startswith("idx:")
+
+
+def stable_eternal_line_id(li: Optional[dict]) -> Optional[str]:
+    """Return a non-synthetic Eternal line identity, or None if missing."""
+    if not isinstance(li, dict):
+        return None
+    for key in ("line_id", "id"):
+        raw = str(li.get(key) or "").strip()
+        if raw and not is_synthetic_line_id(raw):
+            return raw
+    return None
+
+
+def mint_eternal_line_id() -> str:
+    """Allocate a new Eternal line_id (ln-{uuid}). Never uses Accurate ids."""
+    import uuid
+
+    return f"ln-{uuid.uuid4()}"
+
+
+def apply_legacy_line_identity_repair(
+    order: dict,
+    *,
+    accurate_line_id: str,
+    master_item_id: str,
+    physical_fulfillment: bool = True,
+    mint_id=None,
+) -> tuple:
+    """Mint stable Eternal line_id + optional physical_fulfillment on one legacy line.
+
+    Resolves uniquely by accurate_line_id + master_item_id + SERVICE + print.
+    Idempotent: keeps an existing non-synthetic line_id. Never sets line_id from
+    Accurate. Mutates ``order['line_items']`` only. Returns
+    ``(before_snapshot, after_snapshot, changed)``.
+
+    Raises ValueError with an operator-facing Indonesian message on failure.
+    """
+    want_acc = str(accurate_line_id or "").strip()
+    want_master = str(master_item_id or "").strip()
+    if not want_acc:
+        raise ValueError("accurate_line_id wajib untuk resolusi line legacy.")
+    if not want_master:
+        raise ValueError("master_item_id wajib.")
+
+    lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+    hits = []
+    for i, li in enumerate(lis):
+        if not isinstance(li, dict):
+            continue
+        if str(li.get("accurate_line_id") or "").strip() != want_acc:
+            continue
+        if str(li.get("master_item_id") or "").strip() != want_master:
+            continue
+        if not is_service_process_line(li):
+            continue
+        if not is_print_line(li):
+            continue
+        hits.append(i)
+
+    if not hits:
+        raise ValueError(
+            "Line legacy tidak ditemukan (accurate_line_id + master SERVICE print)."
+        )
+    if len(hits) > 1:
+        raise ValueError(
+            f"Resolusi line legacy ambigu ({len(hits)} cocok). Koreksi ditolak."
+        )
+
+    idx = hits[0]
+    row = lis[idx]
+    existing_id = stable_eternal_line_id(row)
+    before_line_id = str(row.get("line_id") or "").strip() or None
+    before_pf = row.get("physical_fulfillment") if "physical_fulfillment" in row else None
+
+    mint = mint_id or mint_eternal_line_id
+    # Keep a prior Eternal id only when it is not the Accurate source id.
+    if existing_id and existing_id != want_acc:
+        new_line_id = existing_id
+    else:
+        minted = str(mint() or "").strip()
+        if not minted.startswith("ln-") or is_synthetic_line_id(minted):
+            raise ValueError("Gagal mint line_id Eternal (format ln-{uuid}).")
+        if minted == want_acc:
+            raise ValueError("line_id Eternal tidak boleh sama dengan accurate_line_id.")
+        new_line_id = minted
+
+    want_pf = bool(physical_fulfillment)
+    row["line_id"] = new_line_id
+    row["physical_fulfillment"] = want_pf
+
+    lis[idx] = row
+    order["line_items"] = lis
+
+    after_line_id = str(row.get("line_id") or "").strip() or None
+    changed = (before_line_id != after_line_id) or (bool(before_pf is True) != want_pf)
+
+    before = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_idx": idx,
+        "line_id": before_line_id,
+        "accurate_line_id": want_acc,
+        "master_item_id": want_master,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": before_pf,
+        "quantity": row.get("quantity"),
+    }
+    after = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_idx": idx,
+        "line_id": after_line_id,
+        "accurate_line_id": want_acc,
+        "master_item_id": want_master,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": bool(row.get("physical_fulfillment") is True),
+        "quantity": row.get("quantity"),
+    }
+    return before, after, changed
+
+
+def apply_line_physical_fulfillment_override(
+    order: dict,
+    *,
+    line_id: str,
+    master_item_id: str,
+    physical_fulfillment: bool,
+) -> tuple:
+    """Persist-style override on one PO line identified by stable line_id.
+
+    Mutates ``order['line_items']`` only. Does not touch Master, packing, qty,
+    or item_type. Returns (before_snapshot, after_snapshot).
+
+    Raises ValueError with an operator-facing Indonesian message on failure.
+    """
+    want_line = str(line_id or "").strip()
+    want_master = str(master_item_id or "").strip()
+    if not want_line:
+        raise ValueError("line_id wajib untuk identifikasi line yang stabil.")
+    if not want_master:
+        raise ValueError("master_item_id wajib.")
+    if want_line.startswith("idx:"):
+        raise ValueError(
+            "line_id sintetis idx:N tidak diizinkan. Simpan line_id stabil terlebih dahulu."
+        )
+
+    lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+    hits = []
+    for i, li in enumerate(lis):
+        if not isinstance(li, dict):
+            continue
+        lid = str(li.get("line_id") or li.get("id") or "").strip()
+        if lid == want_line:
+            hits.append(i)
+    if not hits:
+        raise ValueError(f"Line dengan line_id '{want_line}' tidak ditemukan pada PO ini.")
+    if len(hits) > 1:
+        raise ValueError(f"line_id '{want_line}' ambigu (duplikat). Koreksi ditolak.")
+
+    idx = hits[0]
+    row = lis[idx]
+    mid = str(row.get("master_item_id") or "").strip()
+    if mid != want_master:
+        raise ValueError(
+            f"master_item_id line tidak cocok (line={mid or '—'}, payload={want_master})."
+        )
+    if not is_service_process_line(row):
+        raise ValueError("physical_fulfillment line hanya untuk item_type SERVICE.")
+    if not is_print_line(row):
+        raise ValueError(
+            "physical_fulfillment line hanya untuk production_process Cetak (print)."
+        )
+
+    before = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_id": want_line,
+        "line_idx": idx,
+        "master_item_id": mid,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": (
+            row.get("physical_fulfillment") if "physical_fulfillment" in row else None
+        ),
+        "quantity": row.get("quantity"),
+    }
+    row["physical_fulfillment"] = bool(physical_fulfillment)
+    lis[idx] = row
+    order["line_items"] = lis
+    after = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_id": want_line,
+        "line_idx": idx,
+        "master_item_id": mid,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": bool(row.get("physical_fulfillment") is True),
+        "quantity": row.get("quantity"),
+    }
+    return before, after
 
 
 def requires_printing(order: dict) -> bool:
@@ -124,22 +379,26 @@ def print_qty_total(order: dict) -> int:
 
 
 def physical_print_qty_total(order: dict) -> int:
-    """Cetak qty that counts toward physical packing targets (excludes SERVICE)."""
+    """Cetak qty that counts toward physical packing targets.
+
+    Excludes process-only SERVICE. Includes INVENTORY print and SERVICE with
+    explicit physical_fulfillment (customer goods through packing/shipping).
+    """
     lis = order.get("line_items") or []
     if not lis:
         return max(0, _safe_int(order.get("total_quantity")))
     total = 0
     for li in lis:
-        if is_print_line(li) and not is_service_process_line(li):
+        if is_print_line(li) and not is_process_only_service_line(li):
             total += max(0, _safe_int(li.get("quantity")))
     return total
 
 
 def packing_required_total(order: dict) -> int:
-    """Target Packing / physical PO qty = INVENTORY lines only (print + non_print).
+    """Target Packing / physical PO qty (print + non_print).
 
-    SERVICE process Add Ons do not inflate packing, loading, or SJ physical qty.
-    They remain on the PO for production tracking and billing.
+    Process-only SERVICE Add Ons do not inflate packing, loading, or SJ physical
+    qty. SERVICE with physical_fulfillment counts by line quantity.
     """
     lis = list(order.get("line_items") or [])
     total = 0
@@ -147,7 +406,7 @@ def packing_required_total(order: dict) -> int:
     for li in lis:
         if not isinstance(li, dict):
             continue
-        if is_service_process_line(li):
+        if is_process_only_service_line(li):
             continue
         any_physical = True
         total += max(0, _safe_int(li.get("quantity")))
@@ -156,8 +415,8 @@ def packing_required_total(order: dict) -> int:
     if lis and any_physical:
         return 0
     if lis and not any_physical:
-        # All lines are SERVICE — physical target is zero (do not fall back to
-        # total_quantity which may still sum process work).
+        # All lines are process-only SERVICE — physical target is zero (do not
+        # fall back to total_quantity which may still sum process work).
         return 0
     total = max(0, _safe_int(order.get("total_quantity")))
     if total <= 0:
@@ -167,12 +426,12 @@ def packing_required_total(order: dict) -> int:
 
 
 def non_print_qty_total(order: dict) -> int:
-    """Physical non-print qty only (excludes SERVICE)."""
+    """Physical non-print qty only (excludes process-only SERVICE)."""
     total = 0
     for li in (order.get("line_items") or []):
         if not isinstance(li, dict):
             continue
-        if is_print_line(li) or is_service_process_line(li):
+        if is_print_line(li) or is_process_only_service_line(li):
             continue
         total += max(0, _safe_int(li.get("quantity")))
     if total > 0:
@@ -181,7 +440,6 @@ def non_print_qty_total(order: dict) -> int:
     if lis:
         return 0
     return max(0, packing_required_total(order) - physical_print_qty_total(order))
-
 
 def print_completed_qty(order: dict) -> int:
     """Sum qty_completed dari operator_splits (tidak boleh negatif)."""
@@ -388,7 +646,7 @@ def qty_packed(order: dict) -> int:
 
 
 def qty_packed_print(order: dict) -> int:
-    """Qty packing pada line Cetak fisik (excludes SERVICE). Legacy: packed − non_print."""
+    """Qty packing pada line Cetak fisik (excludes process-only SERVICE)."""
     lines = packing_lines_stored(order)
     lis = order.get("line_items") or []
     if lines is None:
@@ -402,7 +660,7 @@ def qty_packed_print(order: dict) -> int:
         if (
             0 <= idx < len(lis)
             and is_print_line(lis[idx])
-            and not is_service_process_line(lis[idx])
+            and not is_process_only_service_line(lis[idx])
         ):
             total += max(0, _safe_int(it.get("packed_qty")))
     return total
@@ -424,17 +682,18 @@ def qty_delivered(order: dict) -> int:
 
 
 def available_for_packing(order: dict) -> int:
-    """Barang fisik yang boleh di-packing (Cetak INVENTORY saja).
+    """Barang fisik yang boleh di-packing (Cetak fisik).
 
     Non-cetak skip Packing — tidak masuk availability Packing dan tidak
     memakai packed_qty sintetis. Loading non-cetak memakai PO qty.
-    SERVICE process Add Ons are not packable physical qty.
+    Process-only SERVICE Add Ons are not packable. SERVICE with
+    physical_fulfillment is packable like Cetak inventory.
     """
     lis = order.get("line_items") or []
     if lis and physical_print_qty_total(order) <= 0:
         return 0
     required = physical_print_qty_total(order) if lis else packing_required_total(order)
-    # Sum physical print availability per line (exclude SERVICE process).
+    # Sum physical print availability per line (exclude process-only SERVICE).
     avail = 0
     if not lis:
         avail = print_available_for_packing(order)
@@ -442,7 +701,7 @@ def available_for_packing(order: dict) -> int:
         for idx, li in enumerate(lis):
             if not isinstance(li, dict):
                 continue
-            if not is_print_line(li) or is_service_process_line(li):
+            if not is_print_line(li) or is_process_only_service_line(li):
                 continue
             avail += available_for_packing_line(order, idx)
     if required <= 0:
@@ -472,10 +731,11 @@ def _unassigned_print_completed(order: dict) -> int:
 def available_for_packing_line(order: dict, line_idx: int) -> int:
     """Availability satu line. Tidak memakai sisa availability line lain.
 
-    Cetak INVENTORY: MIN(print_completed, helper_prepared, qty_po) when the
-    per-PO parent process group is FULLY_COMPLETED (linked SERVICE Add Ons
+    Cetak fisik (INVENTORY or SERVICE+physical_fulfillment):
+    MIN(print_completed, helper_prepared, qty_po) when the per-PO parent
+    process group is FULLY_COMPLETED (linked process-only SERVICE Add Ons
     all confirmed). Sibling lines on the same PO do not block this line.
-    Non-cetak / SERVICE: 0 (SERVICE is process work, not physical packing).
+    Non-cetak / process-only SERVICE: 0.
     """
     lis = order.get("line_items") or []
     if not lis:
@@ -485,11 +745,11 @@ def available_for_packing_line(order: dict, line_idx: int) -> int:
         return 0
     li = lis[idx]
     qty = max(0, _safe_int(li.get("quantity")))
-    if not is_print_line(li) or is_service_process_line(li):
+    if not is_print_line(li) or is_process_only_service_line(li):
         return 0
     # Per-parent process group gate (does not wait on unrelated sibling items).
-    # Unlinked SERVICE Add Ons on this PO are ambiguous — require explicit induk
-    # before any inventory line may pack as "complete".
+    # Unlinked process-only SERVICE Add Ons on this PO are ambiguous — require
+    # explicit induk before any physical line may pack as "complete".
     from services.order_line_addon import (
         STATUS_FULLY_COMPLETED,
         evaluate_process_group,
@@ -505,7 +765,7 @@ def available_for_packing_line(order: dict, line_idx: int) -> int:
     completed = print_completed_for_line(order, idx)
     print_idxs = [
         i for i, row in enumerate(lis)
-        if is_print_line(row) and not is_service_process_line(row)
+        if is_print_line(row) and not is_process_only_service_line(row)
     ]
     if len(print_idxs) == 1 and print_idxs[0] == idx:
         completed += _unassigned_print_completed(order)
@@ -550,7 +810,7 @@ def packing_line_breakdown(order: dict) -> list:
 
     print_idxs = [
         i for i, li in enumerate(lis)
-        if is_print_line(li) and not is_service_process_line(li)
+        if is_print_line(li) and not is_process_only_service_line(li)
     ]
     helper_agg = helper_prepared_print_qty(order)
     rows = []
@@ -559,22 +819,24 @@ def packing_line_breakdown(order: dict) -> list:
         if not is_print_line(li):
             continue
         is_service = is_service_process_line(li)
+        process_only = is_process_only_service_line(li)
+        physical = line_physical_fulfillment(li)
         qty = max(0, _safe_int(li.get("quantity")))
         completed = print_completed_for_line(order, idx)
-        if (not is_service) and len(print_idxs) == 1 and print_idxs[0] == idx:
+        if (not process_only) and len(print_idxs) == 1 and print_idxs[0] == idx:
             completed += _unassigned_print_completed(order)
         completed = min(completed, qty)
         prepared = helper_prepared_for_line(order, idx)
         if (
-            not is_service
+            not process_only
             and prepared is None
             and helper_agg is not None
             and len(print_idxs) == 1
         ):
             prepared = helper_agg
         print_remaining = max(0, qty - completed)
-        avail = 0 if is_service else available_for_packing_line(order, idx)
-        packed = 0 if is_service else qty_packed_for_line(order, idx)
+        avail = 0 if process_only else available_for_packing_line(order, idx)
+        packed = 0 if process_only else qty_packed_for_line(order, idx)
         rows.append({
             "line_idx": idx,
             "name": li.get("name") or f"Line #{idx + 1}",
@@ -582,6 +844,7 @@ def packing_line_breakdown(order: dict) -> list:
             "production_process": "print",
             "is_print": True,
             "is_service": is_service,
+            "physical_fulfillment": bool(physical),
             "qty_po": qty,
             "helper_prepared": prepared,
             "print_completed": completed,
@@ -777,7 +1040,7 @@ def validate_packing_lines(updates: list, order: dict) -> Optional[str]:
         if qty < 0:
             return "Qty Packing tidak boleh negatif."
         name = lis[idx].get("name") or f"Line #{idx + 1}"
-        if is_service_process_line(lis[idx]):
+        if is_process_only_service_line(lis[idx]):
             return (
                 f"Line '{name}' adalah Add On SERVICE (pekerjaan proses) — "
                 "tidak dihitung sebagai qty packing fisik."
@@ -1700,13 +1963,13 @@ def surat_jalan_created(order: dict) -> bool:
 def physical_qty_for_loading_line(order: dict, line_idx: int) -> int:
     """Physical qty eligible for Loading.
 
-    Cetak INVENTORY: packed qty (wajib Packing).
-    Non-cetak INVENTORY: PO qty (skip Packing — no synthetic packed_qty).
-    SERVICE process Add On: 0 (info/work only — not physical ship qty).
+    Cetak fisik (INVENTORY or SERVICE+physical_fulfillment): packed qty.
+    Non-cetak fisik: PO qty (skip Packing — no synthetic packed_qty).
+    Process-only SERVICE: 0 (info/work only — not physical ship qty).
     """
     lis = order.get("line_items") or []
     idx = int(line_idx)
-    if 0 <= idx < len(lis) and is_service_process_line(lis[idx]):
+    if 0 <= idx < len(lis) and is_process_only_service_line(lis[idx]):
         return 0
     if 0 <= idx < len(lis) and not is_print_line(lis[idx]):
         return po_qty_for_line(order, idx)

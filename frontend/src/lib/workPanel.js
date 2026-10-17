@@ -66,10 +66,18 @@ export function schedulePoHref(orderId, hasPerm, preferredDivision) {
   return `/po/${orderId}`;
 }
 
-/** Jadwal Produksi PO click — always canonical Detail PO, never work panel / Status Pengiriman. */
-export function productionSchedulePoHref(orderId) {
+/**
+ * Jadwal Produksi PO click — canonical Detail PO, never work panel / Status Pengiriman.
+ * Pass `{ stage: "penjadwalan" }` from the schedule list so viewed stage opens Penjadwalan
+ * without changing backend actualStage. Other callers omit stage (bare /po/:id).
+ */
+export function productionSchedulePoHref(orderId, opts = {}) {
   if (!orderId) return "";
-  return `/po/${orderId}`;
+  const id = encodeURIComponent(String(orderId));
+  const base = `/po/${id}`;
+  const stage = opts && opts.stage != null ? String(opts.stage).trim() : "";
+  if (!stage) return base;
+  return `${base}?stage=${encodeURIComponent(stage)}`;
 }
 
 export const ACTION_DIVISION = {

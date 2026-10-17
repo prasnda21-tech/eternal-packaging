@@ -1,0 +1,436 @@
+/* Desktop list visual standardization for Pengiriman Pesanan only.
+   Scoped to .sd-delivery-list — must not affect Faktur or other sd-density pages. */
+
+.sd-density.sd-delivery-list{
+  --dl-green:#075344;
+  --dl-green-strong:#043d33;
+  --dl-line:#e1e9e6;
+  --dl-ink:#17232d;
+  --dl-muted:#64748b;
+  background:#f5f8f7;
+}
+
+.sd-density.sd-delivery-list.sd-list-mode{
+  padding:8px 12px 6px !important;
+  gap:4px;
+}
+
+/* Header */
+.sd-density.sd-delivery-list .sd-list-header{
+  min-height:34px;
+  margin-bottom:4px;
+  flex:0 0 auto;
+}
+.sd-density.sd-delivery-list .sd-list-header h1{
+  font-size:20px;
+  letter-spacing:-.4px;
+  color:var(--dl-ink);
+}
+.sd-density.sd-delivery-list .sd-list-summary{
+  padding:4px 8px;
+  border:1px solid #cbe6dc;
+  background:#eaf6f0;
+  border-radius:7px;
+}
+.sd-density.sd-delivery-list .sd-list-summary strong{
+  color:var(--dl-green);
+  font-size:15px;
+}
+.sd-density.sd-delivery-list .sd-list-header-actions{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  flex:0 0 auto;
+}
+.sd-density.sd-delivery-list .sd-list-refresh{
+  width:32px;
+  height:32px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:0;
+  border:1px solid #d5ddd9;
+  background:#fff;
+  color:var(--dl-ink);
+  border-radius:8px;
+  cursor:pointer;
+}
+.sd-density.sd-delivery-list .sd-list-refresh:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+.sd-density.sd-delivery-list .sd-btn-primary{
+  height:32px;
+  padding:0 14px;
+  background:var(--dl-green) !important;
+  border-color:var(--dl-green) !important;
+  box-shadow:0 2px 3px #063d331a;
+}
+.sd-density.sd-delivery-list .sd-btn-primary:hover{
+  background:var(--dl-green-strong) !important;
+}
+
+/* Chrome: tabs left, search/reset right */
+.sd-density.sd-delivery-list .sd-list-chrome{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex:0 0 auto;
+  flex-wrap:wrap;
+  min-width:0;
+  margin-bottom:0;
+}
+.sd-density.sd-delivery-list .sd-delivery-tabs{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  flex:0 1 auto;
+  flex-wrap:wrap;
+  min-width:0;
+  margin-bottom:4px;
+}
+.sd-density.sd-delivery-list .sd-delivery-tabs button[role="tab"]{
+  border:1px solid #cbd5e1;
+  background:#fff;
+  height:30px;
+  padding:0 12px;
+  margin:0;
+  border-radius:999px;
+  font:600 12px/1 "IBM Plex Sans",sans-serif;
+  color:#334155;
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  white-space:nowrap;
+}
+.sd-density.sd-delivery-list .sd-delivery-tabs button[role="tab"].is-active{
+  color:#14532d;
+  background:#e7f6ee;
+  border-color:#86efac;
+}
+.sd-density.sd-delivery-list .sd-delivery-tab-count{
+  min-width:1.1em;
+  padding:1px 6px;
+  border-radius:999px;
+  background:#f1f5f9;
+  color:#0f172a;
+  font:700 11px/1.2 "IBM Plex Sans",sans-serif;
+  font-variant-numeric:tabular-nums;
+}
+.sd-density.sd-delivery-list .sd-delivery-tabs button[role="tab"].is-active .sd-delivery-tab-count{
+  background:#dcfce7;
+  color:#14532d;
+}
+
+.sd-density.sd-delivery-list .sd-list-toolbar{
+  flex:1 1 220px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  flex-wrap:nowrap;
+  background:#fff;
+  padding:6px 10px;
+  border:1px solid var(--dl-line);
+  border-bottom:0;
+  border-radius:10px 10px 0 0;
+}
+.sd-density.sd-delivery-list .sd-list-search{
+  flex:1 1 180px;
+  max-width:500px;
+  min-width:140px;
+  height:30px;
+  border-color:#d5ddd9 !important;
+}
+.sd-density.sd-delivery-list .sd-list-search input{
+  height:28px !important;
+  font-size:13px !important;
+}
+.sd-density.sd-delivery-list .sd-list-reset{
+  height:30px;
+  min-height:30px;
+  border-color:transparent;
+  color:var(--dl-green);
+  background:transparent;
+  font:600 13px/1 "IBM Plex Sans",sans-serif;
+}
+.sd-density.sd-delivery-list .sd-list-reset:disabled{
+  opacity:.4;
+}
+
+/* Table shell + viewport */
+.sd-density.sd-delivery-list .sd-list-panel{
+  gap:0;
+}
+.sd-density.sd-delivery-list .sd-list-table-scroll{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+  overflow-x:auto;
+  background:#fff;
+  border:1px solid var(--dl-line);
+  border-radius:0;
+  box-sizing:border-box;
+}
+.sd-density.sd-delivery-list .sd-list-table{
+  width:100%;
+  min-width:980px;
+  table-layout:fixed;
+  font-size:12px;
+  border-collapse:separate;
+  border-spacing:0;
+}
+
+/* Light header like Pesanan premium */
+.sd-density.sd-delivery-list .sd-list-table thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  background:#f6f8f8 !important;
+  color:#34464e !important;
+  border-bottom:1px solid var(--dl-line) !important;
+  border-right:1px solid #f2f5f4 !important;
+  padding:4px 8px !important;
+  text-transform:none !important;
+  letter-spacing:0 !important;
+  font:700 11px/1.15 "IBM Plex Sans",sans-serif !important;
+  height:auto !important;
+  white-space:nowrap;
+}
+.sd-density.sd-delivery-list .sd-list-table thead th:last-child{
+  border-right:0 !important;
+}
+.sd-density.sd-delivery-list .sd-list-table thead .hsf-th-filter,
+.sd-density.sd-delivery-list .sd-list-table thead button{
+  color:#526b69;
+}
+.sd-density.sd-delivery-list .sd-list-table thead .hsf-th-filter:hover,
+.sd-density.sd-delivery-list .sd-list-table thead .hsf-th-filter.is-active{
+  color:#075344;
+  background:#d9eee5;
+}
+
+/* Compact rows — identity may grow slightly for Sales line */
+.sd-density.sd-delivery-list .sd-list-table tbody td{
+  height:auto;
+  min-height:36px;
+  padding:4px 8px !important;
+  font-size:12px;
+  line-height:1.2;
+  border-bottom:1px solid #eef2f1 !important;
+  border-right:1px solid #f2f5f4 !important;
+  vertical-align:middle !important;
+  background:#fff;
+  color:var(--dl-ink);
+  overflow:hidden;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody td:last-child{
+  border-right:0 !important;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody tr:nth-child(even) td{
+  background:#fcfdfd;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody tr:hover td{
+  background:#d5f5ef !important;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody tr.is-selected td,
+.sd-density.sd-delivery-list .sd-list-table tbody tr.is-selected:hover td{
+  background:#e0f3ec !important;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody tr.is-selected td:first-child{
+  box-shadow:inset 3px 0 #075344;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody tr.sd-clickable-row:focus-visible td{
+  box-shadow:inset 0 0 0 2px #0f766e;
+  background:#e8f7f3 !important;
+}
+.sd-density.sd-delivery-list .sd-list-table tbody tr.is-selected.sd-clickable-row:focus-visible td{
+  box-shadow:inset 3px 0 #075344, inset 0 0 0 2px #0f766e;
+  background:#e0f3ec !important;
+}
+
+.sd-density.sd-delivery-list td.sd-identity{
+  height:auto;
+  min-height:36px;
+  padding-top:4px !important;
+  padding-bottom:4px !important;
+}
+.sd-density.sd-delivery-list .sd-customer{
+  font-size:13px;
+  line-height:16px;
+  font-weight:700;
+  color:#0f172a;
+}
+.sd-density.sd-delivery-list .sd-doc{
+  font-size:11px;
+  line-height:14px;
+  color:#64748b;
+  font-weight:600;
+  text-decoration:none;
+}
+.sd-density.sd-delivery-list .sd-doc:not(.is-static){
+  color:var(--dl-green);
+  text-decoration:underline;
+  text-underline-offset:2px;
+}
+.sd-density.sd-delivery-list .sd-support{
+  font-size:10px;
+  line-height:13px;
+  color:var(--dl-muted);
+}
+.sd-density.sd-delivery-list .sd-sales{
+  margin-top:0;
+  font-size:10px;
+  line-height:13px;
+  color:#475569;
+}
+.sd-density.sd-delivery-list .sd-money{
+  font-variant-numeric:tabular-nums;
+  font-weight:700;
+  white-space:nowrap;
+  text-align:right;
+}
+.sd-density.sd-delivery-list .sd-qty-cell{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+  font-weight:700;
+  white-space:nowrap;
+}
+.sd-density.sd-delivery-list .sd-creator-cell{
+  font-size:11px;
+  color:#334155;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+/* PR #605 dense status badges (is-selesai / is-sebagian) */
+.sd-density.sd-delivery-list .sd-list-table .pj-status-badge.sd-delivery-status{
+  display:inline-flex;
+  align-items:center;
+  height:16px;
+  padding:0 6px;
+  border-radius:6px;
+  font:600 10px/14px "IBM Plex Sans",sans-serif;
+  white-space:nowrap;
+  border:1px solid transparent;
+}
+.sd-density.sd-delivery-list .sd-list-table .pj-status-badge.sd-delivery-status.is-selesai{
+  background:#dcfce7;
+  color:#166534;
+  border-color:#86efac;
+}
+.sd-density.sd-delivery-list .sd-list-table .pj-status-badge.sd-delivery-status.is-sebagian{
+  background:#e0f2fe;
+  color:#075985;
+  border-color:#7dd3fc;
+}
+
+/* Actions — keep hierarchy, compact */
+.sd-density.sd-delivery-list .sd-actions{
+  gap:8px;
+  min-height:28px;
+}
+.sd-density.sd-delivery-list .sd-act{
+  height:28px !important;
+  min-height:28px !important;
+  max-height:28px !important;
+  padding:0 8px !important;
+  font-size:11px !important;
+  border-radius:6px !important;
+}
+.sd-density.sd-delivery-list .sd-act-view{
+  background:#dbeafe !important;
+  color:#1e3a8a !important;
+  border:1px solid #93c5fd !important;
+}
+.sd-density.sd-delivery-list .sd-act-pdf{
+  background:#fff !important;
+  color:#223a38 !important;
+  border:1px solid #ccd9d5 !important;
+}
+.sd-density.sd-delivery-list .sd-actions > .sd-act-delete{
+  background:#fee2e2 !important;
+  color:#991b1b !important;
+  border:1px solid #f87171 !important;
+  box-shadow:inset 3px 0 0 #ef4444;
+  padding-left:10px !important;
+}
+
+.sd-density.sd-delivery-list input[type="checkbox"]{
+  accent-color:#075344;
+  width:16px;
+  height:16px;
+}
+
+/* Footer pager — match Pesanan list chrome */
+.sd-density.sd-delivery-list .sd-list-footer.sd-delivery-pager{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:nowrap;
+  gap:8px;
+  min-height:36px;
+  padding:8px 12px;
+  background:#fff;
+  border:1px solid var(--dl-line);
+  border-top:0;
+  border-radius:0 0 10px 10px;
+  font-size:12px;
+  color:#475569;
+}
+.sd-density.sd-delivery-list .sd-list-footer-note{
+  color:var(--dl-muted);
+  flex:1 1 auto;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.sd-density.sd-delivery-list .sd-delivery-page-size{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  flex:0 0 auto;
+  white-space:nowrap;
+}
+.sd-density.sd-delivery-list .sd-delivery-page-size select{
+  height:28px;
+  border:1px solid #d5ddd9;
+  border-radius:6px;
+  background:#fff;
+  color:var(--dl-ink);
+  font:13px/1 "IBM Plex Sans",sans-serif;
+  padding:0 8px;
+}
+.sd-density.sd-delivery-list .sd-delivery-pages{
+  display:flex;
+  gap:4px;
+  flex:0 0 auto;
+}
+.sd-density.sd-delivery-list .sd-delivery-pages button{
+  min-width:28px;
+  height:28px;
+  padding:0 6px;
+  border:1px solid #d5ddd9;
+  background:#fff;
+  border-radius:6px;
+  cursor:pointer;
+  font:600 13px/1 "IBM Plex Sans",sans-serif;
+  color:var(--dl-ink);
+}
+.sd-density.sd-delivery-list .sd-delivery-pages button.is-current{
+  background:var(--dl-green);
+  color:#fff;
+  border-color:var(--dl-green);
+}
+.sd-density.sd-delivery-list .sd-delivery-pages button:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+
+@media (max-width:1280px){
+  .sd-density.sd-delivery-list .sd-list-toolbar{flex-wrap:wrap}
+  .sd-density.sd-delivery-list .sd-list-search{max-width:none;flex-basis:100%}
+}

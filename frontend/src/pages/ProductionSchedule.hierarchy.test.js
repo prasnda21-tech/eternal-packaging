@@ -11,7 +11,7 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
-  useAuth: () => ({ hasPerm: () => true }),
+  useAuth: () => ({ user: { id: "u-test", email: "t@test.com" }, hasPerm: () => true }),
 }));
 
 jest.mock("../lib/useAutoRefresh", () => ({
@@ -110,6 +110,10 @@ describe("ProductionSchedule visual hierarchy", () => {
     expect(container.querySelector('[data-testid="prod-col-group-production"]').getAttribute("colspan")).toBe("11");
     expect(container.querySelector('[data-testid="prod-col-group-progress"]').getAttribute("colspan")).toBe("6");
     expect(container.querySelector('[data-testid="prod-col-group-status"]').getAttribute("colspan")).toBe("1");
+    expect(container.querySelector('[data-testid="prod-schedule-title"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-po-link-PO-1001"]').getAttribute("href")).toContain("stage=penjadwalan");
+    expect(labels.indexOf("HOLD")).toBeGreaterThan(labels.indexOf("Payment"));
+    expect(labels.indexOf("Status Akhir")).toBe(labels.length - 1);
     expect(container.querySelector("th.prod-sticky-po")).toBeTruthy();
     expect(container.querySelector("th.prod-sticky-customer")).toBeTruthy();
     expect(container.querySelector("td.prod-sticky-po")).toBeTruthy();
@@ -141,8 +145,8 @@ describe("ProductionSchedule visual hierarchy", () => {
     expect(sheetCss).toMatch(/\.prod-schedule-page \.production-sheet\s*\{[\s\S]*--prod-sticky-po-w:\s*calc\(112px \* var\(--production-sheet-zoom/);
     expect(sheetCss).toMatch(/--prod-sticky-customer-w:\s*calc\(168px \* var\(--production-sheet-zoom/);
     expect(sheetCss).toMatch(/\.prod-sticky-customer\s*\{[\s\S]*left:\s*var\(--prod-sticky-po-w\)/);
-    expect(sheetCss).toMatch(/thead \.prod-col-label-row th\s*\{[\s\S]*background:\s*var\(--production-sheet-header-bg\)/);
-    expect(sheetCss).toMatch(/thead \.prod-col-group-row th\.prod-col-group-identity\s*\{[\s\S]*background:\s*#dbeafe/);
+    expect(sheetCss).toMatch(/thead \.prod-col-label-row th\s*\{[\s\S]*background:\s*#f1f5f4/);
+    expect(sheetCss).toMatch(/thead \.prod-col-group-row th\.prod-col-group-identity\s*\{[\s\S]*background:\s*#e8f1ff/);
     expect(scheduleSrc).toMatch(/className=\{c\.sticky === "po" \? "prod-col-po"/);
     expect(scheduleSrc).not.toMatch(/c\.desktopGroup \? `prod-col-group-\$\{c\.desktopGroup\}`/);
   });

@@ -6,6 +6,7 @@ describe("Jadwal Produksi PO click", () => {
     const src = fs.readFileSync(path.join(__dirname, "ProductionSchedule.jsx"), "utf8");
     const cells = fs.readFileSync(path.join(__dirname, "../components/ProductionScheduleSheetCells.jsx"), "utf8");
     expect(src).toMatch(/productionSchedulePoHref/);
+    expect(src).toMatch(/stage:\s*["']penjadwalan["']/);
     expect(cells).toMatch(/prod-po-link/);
     expect(src).toMatch(/prod-card-/);
     expect(src).not.toMatch(/schedulePoHref/);

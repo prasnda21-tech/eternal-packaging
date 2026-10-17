@@ -3540,6 +3540,68 @@ _SALES_FIELDS = (
     "estimated_delivery", "line_items", "total_quantity", "item_count",
 )
 
+# Eternal-owned line keys preserved across Accurate resync when accurate_line_id
+# matches uniquely on both sides. Never invent or cross-copy to another Accurate line.
+_ETERNAL_LINE_PRESERVE_KEYS = (
+    "line_id",
+    "id",
+    "physical_fulfillment",
+    "parent_line_id",
+    "parent_line_idx",
+    "production_process",
+    "item_type",
+)
+
+
+def merge_eternal_line_fields_by_accurate_line_id(
+    existing_lines: Optional[List[Dict[str, Any]]],
+    incoming_lines: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Preserve Eternal line fields onto Accurate-refreshed lines.
+
+    Match key: unique ``accurate_line_id``. Ambiguous (0 or >1) on either side
+    → skip eternal merge for that key (fail-closed). Does not mutate inputs'
+    shared references beyond shallow-copied outgoing rows.
+    """
+    incoming = list(incoming_lines or [])
+    existing = list(existing_lines or [])
+    if not incoming or not existing:
+        return [dict(li) if isinstance(li, dict) else li for li in incoming]
+
+    by_acc: Dict[str, List[Dict[str, Any]]] = {}
+    for li in existing:
+        if not isinstance(li, dict):
+            continue
+        aid = str(li.get("accurate_line_id") or "").strip()
+        if not aid:
+            continue
+        by_acc.setdefault(aid, []).append(li)
+
+    unique_existing = {aid: rows[0] for aid, rows in by_acc.items() if len(rows) == 1}
+
+    incoming_counts: Dict[str, int] = {}
+    for li in incoming:
+        if not isinstance(li, dict):
+            continue
+        aid = str(li.get("accurate_line_id") or "").strip()
+        if aid:
+            incoming_counts[aid] = incoming_counts.get(aid, 0) + 1
+
+    out: List[Dict[str, Any]] = []
+    for li in incoming:
+        if not isinstance(li, dict):
+            out.append(li)
+            continue
+        row = dict(li)
+        aid = str(row.get("accurate_line_id") or "").strip()
+        if aid and incoming_counts.get(aid) == 1 and aid in unique_existing:
+            prev = unique_existing[aid]
+            for key in _ETERNAL_LINE_PRESERVE_KEYS:
+                if key in prev:
+                    row[key] = prev.get(key)
+        out.append(row)
+    return out
+
 
 async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
     """Pull Sales Orders from Accurate (or mock) and upsert into `orders` collection.
@@ -3576,6 +3638,14 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
         except MasterItemUnresolvedError:
             skipped += 1
             continue
+        if existing:
+            # Preserve Eternal line identity / fulfillment / parent / process class.
+            # Accurate refresh must not wipe ln-* or physical_fulfillment.
+            so["line_items"] = merge_eternal_line_fields_by_accurate_line_id(
+                existing.get("line_items") or [],
+                so.get("line_items") or [],
+            )
+            total_qty = sum(int(li.get("quantity", 0)) for li in so.get("line_items", []))
         sales_payload = {
             "customer": so["customer"],
             "outlet": so["outlet"],

@@ -3911,42 +3911,314 @@ html:has(.prod-schedule-page) #root{
   white-space:nowrap;
   border:0;
 }
+.prod-schedule-page{
+  --ps-green:#075344;
+  --ps-green-strong:#043d33;
+  --ps-ink:#17232d;
+  --ps-muted:#64748b;
+  --ps-line:#e1e9e6;
+  --ps-surface:#fff;
+  background:#f5f8f7;
+}
+.prod-schedule-page .prod-schedule-heading{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin:0 0 6px;
+  min-width:0;
+  min-height:32px;
+}
+.prod-schedule-page .prod-schedule-heading-main{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  flex-wrap:nowrap;
+}
+.prod-schedule-page .prod-schedule-title{
+  margin:0;
+  font:650 20px/1.15 "IBM Plex Sans",sans-serif;
+  letter-spacing:-.4px;
+  color:var(--ps-ink);
+  white-space:nowrap;
+}
+.prod-schedule-page .prod-schedule-count-pill{
+  display:inline-flex;
+  align-items:center;
+  padding:3px 8px;
+  border-radius:7px;
+  border:1px solid #cbe6dc;
+  background:#eaf6f0;
+  color:var(--ps-green);
+  font:600 12px/1.2 "IBM Plex Sans",sans-serif;
+  white-space:nowrap;
+}
+.prod-schedule-page .prod-schedule-heading-actions{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:nowrap;
+  flex:0 0 auto;
+}
+.prod-schedule-page .prod-schedule-heading-actions .ghost.sm{
+  height:30px;
+  min-height:30px;
+  padding:0 10px;
+  border:1px solid #d5ddd9;
+  background:var(--ps-surface);
+  color:var(--ps-ink);
+  border-radius:8px;
+  font:600 12px/1 "IBM Plex Sans",sans-serif;
+  box-shadow:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  white-space:nowrap;
+}
+.prod-schedule-page .prod-schedule-heading-actions .ghost.sm:hover{
+  background:#f3f7f5;
+  border-color:#c5d0cb;
+}
+.prod-schedule-page .prod-schedule-heading-actions [data-testid="prod-refresh-button"]{
+  /* Keep label + icon; match Export height/padding (no icon-only square). */
+  width:auto;
+  min-width:0;
+  padding:0 10px;
+}
+.prod-schedule-page .prod-schedule-loading,
+.prod-schedule-page .prod-schedule-refreshing{
+  margin:0 0 8px;
+  padding:8px 12px;
+  border-radius:8px;
+  font:500 12.5px/1.35 "IBM Plex Sans",sans-serif;
+}
+.prod-schedule-page .prod-schedule-loading{
+  background:#eaf6f0;
+  color:var(--ps-green-strong);
+  border:1px solid #cbe6dc;
+}
+.prod-schedule-page .prod-schedule-refreshing{
+  background:#fff;
+  color:var(--ps-muted);
+  border:1px solid var(--ps-line);
+}
+.prod-schedule-page .prod-schedule-skeleton{
+  display:grid;
+  gap:8px;
+  padding:12px 6px 18px;
+}
+.prod-schedule-page .prod-schedule-skeleton-row{
+  height:30px;
+  border-radius:6px;
+  background:linear-gradient(90deg,#eef3f1 0%,#e2ebe7 50%,#eef3f1 100%);
+  background-size:200% 100%;
+  animation:prod-skel 1.2s ease-in-out infinite;
+}
+@keyframes prod-skel{
+  0%{background-position:100% 0}
+  100%{background-position:-100% 0}
+}
+/* Desktop toolbar — single row (1280 / 1366 / 1440). Scoped; do not wrap. */
 .prod-schedule-page .prod-toolbar{
   --prod-sched-ctrl-h:28px;
-  margin:0 0 4px;
-  gap:4px 6px;
+  display:flex;
+  flex-wrap:nowrap;
   align-items:center;
+  gap:5px;
+  margin:0 0 6px;
   box-sizing:border-box;
+  padding:5px 8px;
+  border:1px solid var(--ps-line);
+  border-radius:10px;
+  background:var(--ps-surface);
+  min-width:0;
+  overflow-x:auto;
+  overflow-y:hidden;
+}
+.prod-schedule-page .prod-schedule-status-tabs{
+  display:inline-flex;
+  align-items:center;
+  gap:3px;
+  flex:0 0 auto;
+  flex-wrap:nowrap;
+  min-width:0;
+}
+.prod-schedule-page .prod-schedule-status-tab{
+  border:1px solid #cbd5e1;
+  background:#fff;
+  height:var(--prod-sched-ctrl-h);
+  padding:0 8px;
+  margin:0;
+  border-radius:999px;
+  font:600 11px/1 "IBM Plex Sans",sans-serif;
+  color:#334155;
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  white-space:nowrap;
+  flex:0 0 auto;
+}
+.prod-schedule-page .prod-schedule-status-tab:hover{
+  background:#f3f7f5;
+  border-color:#c5d0cb;
+}
+.prod-schedule-page .prod-schedule-status-tab.is-active{
+  color:#14532d;
+  background:#e7f6ee;
+  border-color:#86efac;
+}
+.prod-schedule-page .prod-schedule-status-tab.is-hold{
+  color:#9f1239;
+  border-color:#fecdd3;
+  background:#fff1f2;
+}
+.prod-schedule-page .prod-schedule-status-tab.is-hold.is-active{
+  color:#9f1239;
+  background:#ffe4e6;
+  border-color:#fda4af;
+}
+.prod-schedule-page .prod-schedule-status-tab-count{
+  min-width:1em;
+  padding:0 5px;
+  border-radius:999px;
+  background:#f1f5f9;
+  color:#0f172a;
+  font:700 10px/1.2 "IBM Plex Sans",sans-serif;
+  font-variant-numeric:tabular-nums;
+}
+.prod-schedule-page .prod-schedule-status-tab.is-active .prod-schedule-status-tab-count{
+  background:#dcfce7;
+  color:#14532d;
+}
+.prod-schedule-page .prod-schedule-status-tab.is-hold .prod-schedule-status-tab-count{
+  background:#ffe4e6;
+  color:#9f1239;
+}
+.prod-schedule-page .prod-toolbar .production-schedule-search-cluster{
+  flex:1 1 120px;
+  min-width:96px;
+  max-width:180px;
+  height:var(--prod-sched-ctrl-h);
+  gap:4px;
+}
+.prod-schedule-page .prod-toolbar .production-schedule-search-field,
+.prod-schedule-page .prod-toolbar .production-schedule-search-btn,
+.prod-schedule-page .prod-toolbar .production-schedule-ringkasan,
+.prod-schedule-page .prod-toolbar .production-schedule-ringkasan-btn{
+  height:var(--prod-sched-ctrl-h);
+  min-height:var(--prod-sched-ctrl-h);
+  max-height:var(--prod-sched-ctrl-h);
+}
+.prod-schedule-page .prod-toolbar .production-schedule-search-field{
+  border-radius:6px;
+}
+.prod-schedule-page .prod-toolbar .production-schedule-search-btn{
+  flex-basis:var(--prod-sched-ctrl-h);
+  width:var(--prod-sched-ctrl-h);
+  border-radius:0;
+}
+.prod-schedule-page .prod-toolbar .production-schedule-search-field input{
+  height:var(--prod-sched-ctrl-h);
+  max-height:var(--prod-sched-ctrl-h);
+  line-height:var(--prod-sched-ctrl-h);
+  font-size:12px;
+  padding:0 6px !important;
+}
+.prod-schedule-page .prod-toolbar .production-schedule-ringkasan-btn{
+  padding:0 8px;
+  border-radius:6px;
+  font-size:11px;
 }
 .prod-schedule-page .prod-toolbar .muted.small{
   display:inline-flex;
   align-items:center;
+  flex:0 0 auto;
   min-height:var(--prod-sched-ctrl-h);
   height:var(--prod-sched-ctrl-h);
   margin:0;
   line-height:1;
+  font-size:11px;
+  white-space:nowrap;
 }
 .prod-schedule-page .prod-mode{
   height:var(--prod-sched-ctrl-h);
   min-height:var(--prod-sched-ctrl-h);
   margin-left:auto;
   align-items:stretch;
+  flex:0 0 auto;
+  border-radius:6px;
+  overflow:hidden;
 }
-.prod-schedule-page .prod-toolbar .search-inline{min-height:var(--prod-sched-ctrl-h);height:var(--prod-sched-ctrl-h);box-sizing:border-box;overflow:hidden}
-.prod-schedule-page .prod-toolbar .search-inline input{padding:0;height:100%;min-height:0;box-sizing:border-box;line-height:var(--prod-sched-ctrl-h)}
-.prod-schedule-page .prod-check{display:inline-flex;align-items:center;gap:4px;min-height:var(--prod-sched-ctrl-h);height:var(--prod-sched-ctrl-h);font-size:12px;box-sizing:border-box;margin:0}
+.prod-schedule-page .prod-toolbar .search-inline{
+  border:1px solid #d5ddd9;
+  border-radius:6px;
+  background:#fff;
+  flex:1 1 120px;
+  min-width:96px;
+  max-width:180px;
+  min-height:var(--prod-sched-ctrl-h);
+  height:var(--prod-sched-ctrl-h);
+  box-sizing:border-box;
+  overflow:hidden;
+}
+.prod-schedule-page .prod-toolbar .search-inline input{
+  padding:0;
+  height:100%;
+  min-height:0;
+  box-sizing:border-box;
+  line-height:var(--prod-sched-ctrl-h);
+}
+.prod-schedule-page .prod-check{
+  display:inline-flex;
+  align-items:center;
+  gap:3px;
+  flex:0 0 auto;
+  min-height:var(--prod-sched-ctrl-h);
+  height:var(--prod-sched-ctrl-h);
+  font-size:11px;
+  font-weight:500;
+  color:var(--ps-ink);
+  box-sizing:border-box;
+  margin:0;
+  white-space:nowrap;
+}
 .prod-schedule-page .prod-toolbar .ghost.sm,
 .prod-schedule-page .prod-toolbar .prod-filter-reset,
+.prod-schedule-page .prod-toolbar .prod-reset-widths,
 .prod-schedule-page .prod-mode button,
 .prod-schedule-page .prod-mode .ghost.sm{
   min-height:var(--prod-sched-ctrl-h);
   height:var(--prod-sched-ctrl-h);
   padding:0 8px;
-  font-size:12px;
+  font-size:11px;
+  font-weight:600;
   box-sizing:border-box;
   display:inline-flex;
   align-items:center;
   justify-content:center;
+  gap:3px;
+  border-radius:6px;
+  border:1px solid #d5ddd9;
+  background:#fff;
+  color:var(--ps-ink);
+  flex:0 0 auto;
+  white-space:nowrap;
+}
+.prod-schedule-page .prod-mode button{
+  border-radius:0;
+  border-right-width:0;
+}
+.prod-schedule-page .prod-mode button:last-child{
+  border-right-width:1px;
+}
+.prod-schedule-page .prod-mode button.active,
+.prod-schedule-page .prod-mode button[aria-selected="true"]{
+  background:var(--ps-green);
+  border-color:var(--ps-green);
+  color:#fff;
 }
 .prod-schedule-page .error{margin:0 0 4px;flex-shrink:0}
 .prod-schedule-page .prod-table-wrap,
@@ -3957,7 +4229,7 @@ html:has(.prod-schedule-page) #root{
   max-height:none;
   overflow:auto;
   width:100%;
-  border-radius:0;
+  border-radius:10px;
   border-bottom:0;
   -webkit-overflow-scrolling:touch;
   overscroll-behavior:contain;
@@ -4899,17 +5171,77 @@ html:has(.ship-status-page) #root{
 .division-task-page .prod-table-wrap{overflow:auto}
 /* Kepala Produksi Priority Board — compact desktop (1366 / 1440) */
 .content:has(.kp-board-page){padding:8px 12px 28px}
-.kp-board-page.prod-page{padding-bottom:8px}
-.kp-board-page .page-heading{margin-bottom:4px;align-items:flex-start;gap:8px}
+.kp-board-page.prod-page{padding-bottom:8px;background:#f5f8f7}
+.kp-board-page .page-heading{margin-bottom:8px;align-items:center;gap:12px}
 .kp-board-page .page-heading .eyebrow{margin-bottom:0}
-.kp-board-page .page-heading h1{font-size:clamp(15px,1.25vw,17px);line-height:1.15;letter-spacing:-.015em;font-weight:650}
-.kp-board-page .page-heading .muted.small{margin:2px 0 0;font-size:11px;line-height:1.3}
-.kp-board-page .division-task-toolbar{gap:6px;margin:0 0 6px}
-.kp-board-page .division-task-search{min-width:min(100%,220px);padding:2px 6px}
+.kp-board-page .page-heading h1{font:650 20px/1.15 "IBM Plex Sans",sans-serif;letter-spacing:-.4px;color:#17232d}
+.kp-board-page .page-heading .muted.small{margin:2px 0 0;font-size:12px;line-height:1.35;color:#64748b}
+.kp-board-page .page-heading .ghost.sm{
+  height:32px;min-height:32px;padding:0 12px;border:1px solid #d5ddd9;background:#fff;color:#17232d;
+  border-radius:8px;font:600 12px/1 "IBM Plex Sans",sans-serif;
+}
+/* Desktop filter toolbar — single row (1366 / 1440 required; 1280 preferred). */
+.kp-board-page .division-task-toolbar{
+  display:flex;
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:6px;
+  margin:0 0 8px;
+  padding:6px 8px;
+  border:1px solid #e1e9e6;
+  border-radius:10px;
+  background:#fff;
+  min-width:0;
+  overflow-x:auto;
+  overflow-y:hidden;
+}
+.kp-board-page .division-task-search{
+  flex:0 1 150px;
+  min-width:112px;
+  max-width:168px;
+  padding:0 6px;
+  height:28px;
+  border:1px solid #d5ddd9;
+  border-radius:8px;
+  background:#fff;
+}
 .kp-board-page .division-task-search input{font-size:12px}
+.kp-board-page .division-task-filters{
+  display:inline-flex;
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:4px;
+  flex:0 1 auto;
+  min-width:0;
+}
+.kp-board-page .division-task-scope{
+  display:inline-flex;
+  flex-wrap:nowrap;
+  align-items:center;
+  gap:4px;
+  flex:0 0 auto;
+  margin-left:auto;
+}
 .kp-board-page .division-task-filters .sm,
 .kp-board-page .division-task-scope .sm,
-.kp-board-page .division-task-toolbar select.sm{padding:3px 8px;font-size:12px}
+.kp-board-page .division-task-toolbar select.sm{
+  padding:0 8px;
+  height:28px;
+  min-height:28px;
+  font-size:11px;
+  border-radius:8px;
+  white-space:nowrap;
+  flex:0 0 auto;
+}
+.kp-board-page .division-task-toolbar select.sm{
+  max-width:96px;
+  padding:0 6px;
+}
+@media (max-width:1100px){
+  /* Below usable desktop width only — allow wrap rather than crush controls. */
+  .kp-board-page .division-task-toolbar{flex-wrap:wrap;overflow-x:visible}
+  .kp-board-page .division-task-scope{margin-left:0}
+}
 /* Single row of 6 KPIs on target desktops; wrap only below usable width */
 .kp-kpi-strip{
   display:grid;
@@ -4985,9 +5317,9 @@ html:has(.ship-status-page) #root{
   overflow-x:auto;
   overflow-y:auto;
   max-height:calc(100vh - 220px);
-  border:1px solid var(--line);
-  border-radius:4px;
-  background:var(--surface,#fff);
+  border:1px solid #e1e9e6;
+  border-radius:10px;
+  background:#fff;
   /* Do not use overflow:hidden — date inputs live outside this wrap */
 }
 .kp-board-page .content,
@@ -4996,6 +5328,29 @@ html:has(.ship-status-page) #root{
 .kp-date-filter input[type="date"]{font-size:12px;padding:3px 6px;position:relative;z-index:5}
 .kp-pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:8px}
 .kp-detail-toolbar{margin-bottom:6px;flex-wrap:wrap;overflow:visible}
+.kp-queue-tabs{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;
+}
+.kp-queue-tab{
+  display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;
+  border:1px solid #cbd5e1;background:#fff;color:#334155;font:600 12px/1.2 "IBM Plex Sans",sans-serif;
+  text-decoration:none;
+}
+.kp-queue-tab.is-active{
+  background:#075344;border-color:#075344;color:#fff;
+  box-shadow:0 1px 2px #063d331a;
+}
+.kp-queue-tab:not(.is-active):hover{background:#f3f7f5;border-color:#c5d0cb}
+.kp-empty-actionable{
+  display:flex;flex-direction:column;align-items:flex-start;gap:10px;
+  padding:28px 16px;text-align:left;
+}
+.kp-empty-title{margin:0;font:650 15px/1.3 "IBM Plex Sans",sans-serif;color:#17232d}
+.kp-empty-copy{margin:0;font:400 13px/1.5 "IBM Plex Sans",sans-serif;color:#64748b;max-width:42rem}
+.kp-empty-actionable .primary.sm{
+  height:32px;padding:0 14px;border-radius:8px;background:#075344;border-color:#075344;
+  box-shadow:0 2px 3px #063d331a;
+}
 @media (max-width:1200px){
   .kp-kpi-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
   .kp-table-wrap{max-height:none}

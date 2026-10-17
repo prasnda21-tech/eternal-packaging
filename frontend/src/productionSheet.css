@@ -434,15 +434,25 @@
 
 .prod-schedule-page .prod-toolbar {
   align-items: center;
-  overflow: visible;
+  /* Allow Ringkasan popover to paint outside; row itself stays nowrap via App.css */
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .prod-schedule-page .prod-toolbar .ghost.sm,
-.prod-schedule-page .prod-toolbar .prod-filter-reset {
+.prod-schedule-page .prod-toolbar .prod-filter-reset,
+.prod-schedule-page .prod-toolbar .prod-reset-widths {
   min-height: 28px;
   height: 28px;
   box-sizing: border-box;
   padding: 0 8px;
+}
+
+.prod-schedule-page .prod-toolbar .production-schedule-search-cluster {
+  flex: 1 1 120px;
+  min-width: 96px;
+  max-width: 180px;
+  height: 28px;
 }
 
 .mop-schedule-toolbar .production-schedule-search-cluster {
@@ -493,15 +503,15 @@
   top: 0;
   z-index: 6;
   height: var(--prod-group-h);
-  padding: 2px 6px;
-  font-size: max(8.5px, calc(10px * var(--production-sheet-zoom, 1)));
+  padding: 3px 8px;
+  font-size: max(9px, calc(10.5px * var(--production-sheet-zoom, 1)));
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   color: #3c4043;
   text-align: center;
   white-space: nowrap;
-  border-bottom: 1px solid #9aa0a6;
+  border-bottom: 1px solid #c5ced6;
   line-height: 1.2;
 }
 
@@ -510,9 +520,11 @@
   top: var(--prod-group-h);
   z-index: 5;
   box-sizing: border-box;
-  background: var(--production-sheet-header-bg);
+  background: #f1f5f4;
   background-image: none;
-  color: var(--production-sheet-header-fg);
+  color: #334155;
+  font-weight: 650;
+  border-bottom: 1px solid #d5ddd9;
 }
 
 .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-identity,
@@ -526,24 +538,48 @@
 }
 
 .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-identity {
-  background: #dbeafe;
+  background: #e8f1ff;
   color: #1e3a5f;
 }
 .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-planning {
-  background: #fde68a;
+  background: #fff3c4;
   color: #78350f;
 }
 .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-production {
-  background: #bbf7d0;
+  background: #d9f5e3;
   color: #14532d;
 }
 .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-progress {
-  background: #c7d2fe;
+  background: #e4e9ff;
   color: #312e81;
 }
 .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-status {
-  background: #a5f3fc;
+  background: #d7f6fb;
   color: #164e63;
+}
+
+/* Compact operational rows — visual density only; column structure unchanged. */
+.prod-schedule-page .production-sheet-table tbody td {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  font-size: max(11.5px, calc(12px * var(--production-sheet-zoom, 1)));
+}
+.prod-schedule-page .production-sheet-table tbody tr:hover td {
+  background: #f3faf6;
+}
+.prod-schedule-page .production-sheet-table a[data-testid^="prod-po-link-"] {
+  color: #0f766e;
+  font-weight: 650;
+  text-decoration: none;
+}
+.prod-schedule-page .production-sheet-table a[data-testid^="prod-po-link-"]:hover {
+  text-decoration: underline;
+}
+.prod-schedule-page .prod-table-wrap.production-sheet-viewport {
+  border: 1px solid #e1e9e6;
+  border-radius: 10px;
+  background: #fff;
+  overflow: auto;
 }
 
 .prod-schedule-page .production-sheet-table th.prod-group-start,
@@ -648,9 +684,46 @@
 }
 
 .prod-schedule-page .production-sheet-table .prod-th-inner {
+  position: relative;
   justify-content: flex-start;
   align-items: center;
   gap: 4px;
+  /* Reserve exclusive lane for .prod-col-resize (8px). Prevents filter/label overflow into handle. */
+  padding-right: 8px;
+  min-height: 100%;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.prod-schedule-page .production-sheet-table .prod-th-inner .prod-th-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prod-schedule-page .production-sheet-table .prod-col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3; /* below filter button; only the reserved gutter is the resize target */
+  user-select: none;
+  touch-action: none;
+}
+.prod-schedule-page .production-sheet-table .prod-col-resize:hover,
+.prod-schedule-page .production-sheet-table .prod-col-resize.is-active {
+  background: linear-gradient(90deg, transparent 3px, #0f766e 3px, #0f766e 4px, transparent 4px);
+}
+body.prod-col-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.prod-col-resizing * {
+  cursor: col-resize !important;
 }
 
 .prod-schedule-page .production-sheet-table button.prod-th-filter,
@@ -662,6 +735,7 @@
   min-height: 22px;
   flex: 0 0 22px;
   margin-left: auto;
+  margin-right: 0; /* gutter reserved via .prod-th-inner padding-right */
   padding: 0;
   border: 1px solid #5f6368;
   background-color: #ffffff;
@@ -670,6 +744,8 @@
   border-radius: 3px;
   box-shadow: inset 0 0 0 1px #ffffff;
   opacity: 1;
+  position: relative;
+  z-index: 4; /* above resize handle so filter clicks are not intercepted */
   isolation: isolate;
 }
 

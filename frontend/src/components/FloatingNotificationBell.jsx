@@ -48,11 +48,16 @@ function viewportSize() {
   };
 }
 
-export default function FloatingNotificationBell() {
+/**
+ * @param {{ placement?: "floating" | "topbar" }} props
+ * placement=topbar: same fetch/poll/panel behavior, no drag, sits in AppShell topbar.
+ */
+export default function FloatingNotificationBell({ placement = "floating" } = {}) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const userId = user?.id || user?.user_id || "";
+  const isTopbar = placement === "topbar";
 
   const [pos, setPos] = useState(() => defaultBellPosition(viewportSize()));
   const [panelOpen, setPanelOpen] = useState(false);
@@ -89,15 +94,17 @@ export default function FloatingNotificationBell() {
   }, [pos]);
 
   useEffect(() => {
+    if (isTopbar) return undefined;
     const storage = typeof window !== "undefined" ? window.localStorage : null;
     setPos(readStoredBellPosition(storage, userId, viewportSize()));
-  }, [userId]);
+  }, [userId, isTopbar]);
 
   useEffect(() => {
+    if (isTopbar) return undefined;
     const onResize = () => setPos((prev) => clampBellPosition(prev, viewportSize()));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, []);
+  }, [isTopbar]);
 
   useEffect(() => {
     setPanelOpen(false);
@@ -180,9 +187,12 @@ export default function FloatingNotificationBell() {
   }, [panelOpen]);
 
   const unreadCount = countUnread(items);
-  const panel = panelPlacement(pos, { width: PANEL_WIDTH, height: PANEL_HEIGHT }, viewportSize());
+  const panel = isTopbar
+    ? null
+    : panelPlacement(pos, { width: PANEL_WIDTH, height: PANEL_HEIGHT }, viewportSize());
 
   const onPointerDown = (event) => {
+    if (isTopbar) return;
     if (event.button != null && event.button !== 0) return;
     const drag = dragRef.current;
     drag.active = true;
@@ -196,6 +206,7 @@ export default function FloatingNotificationBell() {
   };
 
   const onPointerMove = (event) => {
+    if (isTopbar) return;
     const drag = dragRef.current;
     if (!drag.active || drag.pointerId !== event.pointerId) return;
     const exceeded = movementExceededThreshold(
@@ -221,6 +232,7 @@ export default function FloatingNotificationBell() {
   };
 
   const endPointer = (event) => {
+    if (isTopbar) return;
     const drag = dragRef.current;
     if (!drag.active || drag.pointerId !== event.pointerId) return;
     const wasDrag = drag.moved;
@@ -278,31 +290,38 @@ export default function FloatingNotificationBell() {
     }
   };
 
+  const bellAriaLabel = unreadCount > 0
+    ? `Notifikasi, ${unreadCount} belum dibaca`
+    : "Notifikasi";
+
   return (
     <div
       ref={rootRef}
-      className="ep-web-notif-root"
-      style={{ left: pos.x, top: pos.y }}
+      className={"ep-web-notif-root" + (isTopbar ? " is-topbar" : "")}
+      style={isTopbar ? undefined : { left: pos.x, top: pos.y }}
       data-testid="web-floating-notification-bell"
-      data-x={pos.x}
-      data-y={pos.y}
+      data-placement={isTopbar ? "topbar" : "floating"}
+      data-x={isTopbar ? undefined : pos.x}
+      data-y={isTopbar ? undefined : pos.y}
     >
       <button
         type="button"
         className={`ep-web-notif-bell${dragging ? " is-dragging" : ""}`}
-        aria-label="Notifikasi"
+        aria-label={bellAriaLabel}
         aria-expanded={panelOpen}
+        aria-haspopup="dialog"
         data-testid="web-notif-bell-button"
-        style={{ width: BELL_SIZE_PX, height: BELL_SIZE_PX }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
+        style={isTopbar ? undefined : { width: BELL_SIZE_PX, height: BELL_SIZE_PX }}
+        onClick={isTopbar ? () => setPanelOpen((open) => !open) : undefined}
+        onPointerDown={isTopbar ? undefined : onPointerDown}
+        onPointerMove={isTopbar ? undefined : onPointerMove}
+        onPointerUp={isTopbar ? undefined : endPointer}
+        onPointerCancel={isTopbar ? undefined : endPointer}
       >
-        <Bell size={22} strokeWidth={2.25} aria-hidden />
+        <Bell size={isTopbar ? 16 : 22} strokeWidth={2.25} aria-hidden />
         {unreadCount > 0 ? (
-          <span className="ep-web-notif-badge" data-testid="web-notif-badge">
-            {unreadCount}
+          <span className="ep-web-notif-badge" data-testid="web-notif-badge" aria-hidden="true">
+            {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         ) : null}
       </button>
@@ -313,7 +332,10 @@ export default function FloatingNotificationBell() {
           role="dialog"
           aria-label="Notifikasi"
           data-testid="web-notif-panel"
-          style={{
+          style={isTopbar ? {
+            width: PANEL_WIDTH,
+            maxHeight: PANEL_HEIGHT,
+          } : {
             left: panel.left - pos.x,
             top: panel.top - pos.y,
             width: PANEL_WIDTH,

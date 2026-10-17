@@ -41,6 +41,7 @@ from services.master_items import (
     resolve_po_line_items,
     sync_master_items,
     update_master_production_process,
+    update_master_physical_fulfillment,
 )
 from services.shipment_status import (
     SHIPMENT_STATUS_PROJECTION,
@@ -2155,30 +2156,41 @@ async def _stamp_order_line_item_types(order: dict) -> None:
     """In-memory stamp of master item_type onto lines missing it (not persisted).
 
     Enables sync packing/SJ/loading helpers to exclude SERVICE process qty.
+    Also stamps physical_fulfillment when the line key is absent.
     """
-    from quantity_rules import stamp_line_item_types
+    from quantity_rules import stamp_line_item_types, stamp_line_physical_fulfillment
 
-    need: list = []
+    need_type: list = []
+    need_fulfillment: list = []
     for li in (order.get("line_items") or []):
         if not isinstance(li, dict):
             continue
-        if str(li.get("item_type") or "").strip():
-            continue
         mid = str(li.get("master_item_id") or "").strip()
-        if mid:
-            need.append(mid)
+        if not mid:
+            continue
+        if not str(li.get("item_type") or "").strip():
+            need_type.append(mid)
+        if "physical_fulfillment" not in li:
+            need_fulfillment.append(mid)
+    need = list(set(need_type + need_fulfillment))
     if not need:
         return
     rows = await db.master_items.find(
-        {"id": {"$in": list(set(need))}},
-        {"_id": 0, "id": 1, "item_type": 1},
-    ).to_list(len(set(need)))
+        {"id": {"$in": need}},
+        {"_id": 0, "id": 1, "item_type": 1, "physical_fulfillment": 1},
+    ).to_list(len(need))
     type_by_master = {
         str(r.get("id") or "").strip(): str(r.get("item_type") or "").strip().upper()
         for r in rows
         if str(r.get("id") or "").strip() and str(r.get("item_type") or "").strip()
     }
+    fulfillment_by_master = {
+        str(r.get("id") or "").strip(): True
+        for r in rows
+        if str(r.get("id") or "").strip() and r.get("physical_fulfillment") is True
+    }
     stamp_line_item_types(order, type_by_master)
+    stamp_line_physical_fulfillment(order, fulfillment_by_master)
 
 
 async def _load_order_for_mutation(order_id: str) -> dict:
@@ -3690,6 +3702,152 @@ async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload
         after={"addon_parents": after_holder["addon_parents"]},
     )
     return {"order": order}
+
+
+class LinePhysicalFulfillmentPayload(BaseModel):
+    """Persist physical_fulfillment on one PO line without touching Master."""
+
+    line_id: str
+    master_item_id: str
+    physical_fulfillment: bool = True
+
+
+@api_router.patch("/orders/{order_id}/line-items/physical-fulfillment")
+async def set_line_item_physical_fulfillment(
+    order_id: str,
+    payload: LinePhysicalFulfillmentPayload,
+    user=Depends(current_user),
+):
+    """Explicit PO-line override for SERVICE + customer goods packing.
+
+    Identifies the line by stable ``line_id`` (not line_idx). Verifies
+    SERVICE + print + master_item_id match. Does not mutate Master, qty,
+    packing/loading/SJ, item_type, stock, or HPP. Optimistic ``updated_at`` lock.
+    """
+    from quantity_rules import apply_line_physical_fulfillment_override
+
+    await _require_perm(user, "production.route.edit")
+
+    want_line = str(payload.line_id or "").strip()
+    before_holder = {"line": None}
+    after_holder = {"line": None}
+
+    def _mutate(order: dict):
+        try:
+            before, after = apply_line_physical_fulfillment_override(
+                order,
+                line_id=payload.line_id,
+                master_item_id=payload.master_item_id,
+                physical_fulfillment=bool(payload.physical_fulfillment),
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            code = 404 if "tidak ditemukan" in msg else 400
+            raise HTTPException(code, msg) from exc
+        before_holder["line"] = before
+        after_holder["line"] = after
+
+    order = await _with_quantity_lock(
+        order_id, _mutate, persist_keys=("line_items",),
+    )
+    await _audit_po(
+        order,
+        "production.line.physical_fulfillment.update",
+        user,
+        before=before_holder["line"],
+        after=after_holder["line"],
+        note=f"Override physical_fulfillment line_id={want_line}",
+    )
+    return {"order": order}
+
+
+class LegacyLineIdentityRepairPayload(BaseModel):
+    """One-PO legacy repair: mint Eternal line_id + set physical_fulfillment.
+
+    Requires explicit confirm=true. Resolve uniquely via accurate_line_id +
+    master_item_id + SERVICE + print. Not a global backfill.
+    """
+
+    accurate_line_id: str
+    master_item_id: str
+    physical_fulfillment: bool = True
+    confirm: bool = False
+
+
+@api_router.post("/orders/{order_id}/line-items/legacy-line-identity-repair")
+async def repair_legacy_line_identity(
+    order_id: str,
+    payload: LegacyLineIdentityRepairPayload,
+    user=Depends(current_user),
+):
+    """Targeted repair for Accurate-imported lines missing Eternal line_id.
+
+    Fail-closed on zero/duplicate match. Idempotent when line_id already
+    stable and physical_fulfillment already matches. Optimistic updated_at
+    lock. Does not touch Master, qty, packing/loading/SJ, stock, or HPP.
+    """
+    from quantity_rules import apply_legacy_line_identity_repair
+
+    await _require_perm(user, "production.route.edit")
+    if not bool(payload.confirm):
+        raise HTTPException(
+            400,
+            "Konfirmasi eksplisit wajib (confirm=true). Operasi ini mengubah satu PO secara terarah.",
+        )
+
+    want_acc = str(payload.accurate_line_id or "").strip()
+    before_holder = {"line": None}
+    after_holder = {"line": None}
+
+    def _mutate(order: dict):
+        try:
+            before, after, changed = apply_legacy_line_identity_repair(
+                order,
+                accurate_line_id=payload.accurate_line_id,
+                master_item_id=payload.master_item_id,
+                physical_fulfillment=bool(payload.physical_fulfillment),
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            code = 404 if "tidak ditemukan" in msg else 400
+            raise HTTPException(code, msg) from exc
+        before_holder["line"] = before
+        after_holder["line"] = after
+        if not changed:
+            raise _OrderMutationSkipped()
+
+    try:
+        order = await _with_quantity_lock(
+            order_id, _mutate, persist_keys=("line_items",),
+        )
+    except _OrderMutationSkipped:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not order:
+            raise HTTPException(404, "PO tidak ditemukan")
+        return {
+            "order": order,
+            "before": before_holder["line"],
+            "after": after_holder["line"],
+            "changed": False,
+        }
+
+    await _audit_po(
+        order,
+        "production.line.legacy_identity.repair",
+        user,
+        before=before_holder["line"],
+        after=after_holder["line"],
+        note=(
+            f"Legacy line_id repair accurate_line_id={want_acc} "
+            f"→ line_id={after_holder['line'].get('line_id') if after_holder['line'] else None}"
+        ),
+    )
+    return {
+        "order": order,
+        "before": before_holder["line"],
+        "after": after_holder["line"],
+        "changed": True,
+    }
 
 
 # ---- Batch 3: Dashboard Action Center ----
@@ -12512,22 +12670,25 @@ async def list_sales_deliveries_endpoint(
     status: Optional[str] = None,
     delivery_date_preset: Optional[str] = None,
     created_by: Optional[str] = None,
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 50,
     user=Depends(current_user),
 ):
-    """List sales deliveries (Pengiriman Pesanan) with search and status filtering."""
+    """List sales deliveries (Pengiriman Pesanan) with search, status filter, and pagination."""
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
     if po_id:
         await ensure_owned_po_id(db, user, po_id)
-    deliveries = await _list_sales_deliveries(
+    return await _list_sales_deliveries(
         db,
         q=q,
         po_id=po_id,
         status=status,
         delivery_date_preset=delivery_date_preset,
         created_by=created_by,
+        page=page,
+        page_size=page_size,
     )
-    return {"deliveries": deliveries, "count": len(deliveries)}
 
 
 @api_router.get("/sales-deliveries/filter-options")
@@ -13691,6 +13852,31 @@ async def master_items_set_production_process(
     return await update_master_production_process(
         db, item_id, payload.production_process, user=user,
     )
+
+
+class MasterItemPhysicalFulfillmentPayload(BaseModel):
+    physical_fulfillment: bool
+
+
+@api_router.patch("/master-items/{item_id}/physical-fulfillment")
+async def master_items_set_physical_fulfillment(
+    item_id: str,
+    payload: MasterItemPhysicalFulfillmentPayload,
+    user=Depends(require_perm("master_items.manage")),
+):
+    """SERVICE with customer-owned goods that still pack/ship. ERP-owned."""
+    updated, before, after = await update_master_physical_fulfillment(
+        db, item_id, payload.physical_fulfillment, user=user,
+    )
+    await _write_audit(
+        action="master_items.physical_fulfillment.update",
+        actor=user,
+        target_email=f"master:{after.get('master_item_id')}",
+        before=before,
+        after=after,
+        note="Update physical_fulfillment Master Barang/Jasa",
+    )
+    return updated
 
 
 @api_router.post("/master-items/sync")

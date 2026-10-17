@@ -89,6 +89,10 @@ describe("Division task UI", () => {
 
   test("six clickable KPI cards navigate to detail pages", () => {
     expect(page).toMatch(/kp-kpi-strip/);
+    expect(page).toMatch(/kp-queue-tabs/);
+    expect(page).toMatch(/kp-empty-actionable/);
+    expect(page).toMatch(/kp-empty-hold-link/);
+    expect(page).toMatch(/hold_readonly_count/);
     expect(page).toMatch(/kpDetailPath/);
     expect(KP_KPI_ORDER).toHaveLength(6);
     expect(kpDetailPath("terlambat")).toBe("/tasks/kepala-produksi/prioritas/terlambat");

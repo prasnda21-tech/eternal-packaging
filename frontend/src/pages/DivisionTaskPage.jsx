@@ -224,6 +224,23 @@ export default function DivisionTaskPage() {
         )}
       </div>
 
+      {isKepala && (
+        <div className="kp-queue-tabs" data-testid="kp-queue-tabs" role="tablist" aria-label="Antrian Kepala Produksi">
+          <span className="kp-queue-tab is-active" role="tab" aria-selected="true" data-testid="kp-queue-actionable">
+            Antrian Penjadwalan ({rows.length.toLocaleString("id-ID")})
+          </span>
+          <Link
+            className="kp-queue-tab"
+            role="tab"
+            aria-selected="false"
+            to={kpDetailPath("hold")}
+            data-testid="kp-queue-hold"
+          >
+            HOLD — pemantauan ({Number(data?.hold_readonly_count || kpis?.hold?.count || 0).toLocaleString("id-ID")})
+          </Link>
+        </div>
+      )}
+
       <div className={"prod-table-wrap" + (isKepala ? " kp-table-wrap" : "")}>
         <table className={"prod-table" + (isKepala ? " kp-priority-table" : "")} data-testid="division-task-table">
           <thead>
@@ -263,7 +280,36 @@ export default function DivisionTaskPage() {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={emptyCols} className="muted" data-testid="division-task-empty">Tidak ada tugas.</td>
+                <td colSpan={emptyCols} className="muted" data-testid="division-task-empty">
+                  {isKepala ? (
+                    <div className="kp-empty-actionable" data-testid="kp-empty-actionable">
+                      <p className="kp-empty-title">Tidak ada pekerjaan dalam antrian penjadwalan</p>
+                      <p className="kp-empty-copy">
+                        Antrian ini hanya menampilkan PO yang eligible untuk dijadwalkan.
+                        {(Number(data?.hold_readonly_count) > 0 || Number(kpis?.hold?.count) > 0) && (
+                          <>
+                            {" "}Ada{" "}
+                            <strong data-testid="kp-empty-hold-count">
+                              {Number(data?.hold_readonly_count || kpis?.hold?.count || 0).toLocaleString("id-ID")}
+                            </strong>
+                            {" "}PO HOLD untuk dipantau (bukan antrian jadwalkan).
+                          </>
+                        )}
+                      </p>
+                      {(Number(data?.hold_readonly_count) > 0 || Number(kpis?.hold?.count) > 0) && (
+                        <Link
+                          className="primary sm"
+                          to={kpDetailPath("hold")}
+                          data-testid="kp-empty-hold-link"
+                        >
+                          Lihat PO HOLD
+                        </Link>
+                      )}
+                    </div>
+                  ) : (
+                    "Tidak ada tugas."
+                  )}
+                </td>
               </tr>
             )}
             {rows.map((t) => (

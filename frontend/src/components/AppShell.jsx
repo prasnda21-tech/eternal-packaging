@@ -1,10 +1,15 @@
-import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PanelLeftClose, PanelLeftOpen, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, Boxes, CalendarClock, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, ClipboardPlus, Coins, Contact, CreditCard, Download, FileBarChart, FileText, FolderOpen, IdCard, Image as ImageIcon, Landmark, LayoutDashboard, LineChart, ListOrdered, LogOut, MessageCircle, Package, PanelLeft, PanelLeftClose, PanelLeftOpen, PlusCircle, Receipt, RotateCcw, Route, Scale, ScanLine, ScrollText, Search, Settings as SettingsIcon, Shield, ShoppingBag, ShoppingCart, Table as TableIcon, Tags, Target, TrendingUp, Truck, Users, Wallet, Warehouse, ArrowLeftRight } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
 import { canAccessRoutePage } from "../lib/independentRoute";
+import {
+  isMenuSearchOpenShortcut,
+  isMenuSearchShortcutBlockedTarget,
+  menuSearchItemsFromRails,
+} from "../lib/menuSearch";
 import { NAV_KEYS, TASK_NAV_ORDER, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import {
@@ -22,6 +27,7 @@ import { moduleFromPath } from "../lib/uiModule";
 import { mergeWorkspaceTabsPreview } from "../lib/workspaceTabsPreview";
 import BrandMark from "./BrandMark";
 import FloatingNotificationBell from "./FloatingNotificationBell";
+import GlobalMenuSearch from "./GlobalMenuSearch";
 import SidebarFlyoutGrid from "./SidebarFlyoutGrid";
 import WorkspaceTabs from "./WorkspaceTabs";
 import WorkspaceChunkFallback from "./WorkspaceChunkFallback";
@@ -221,6 +227,7 @@ export default function AppShell() {
   const [sidebarUserSet, setSidebarUserSet] = useState(false);
   const sidebarExpanded = sidebarMode === SIDEBAR_MODE_EXPANDED;
   const [activeSidebarMenu, setActiveSidebarMenu] = useState(null);
+  const [menuSearchOpen, setMenuSearchOpen] = useState(false);
   const [edgeTop, setEdgeTop] = useState(96);
   // Go-Live: indikator koneksi backend/MongoDB berbasis health probe. TIDAK
   // menampilkan "Terhubung" kalau probe gagal.
@@ -230,6 +237,7 @@ export default function AppShell() {
   const sidebarRef = useRef(null);
   const flyoutRef = useRef(null);
   const railRefs = useRef({});
+  const menuSearchTriggerRef = useRef(null);
   const sidebarUserSetRef = useRef(false);
 
   useEffect(() => {
@@ -352,7 +360,32 @@ export default function AppShell() {
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!activeSidebarMenu) return undefined;
+    setMenuSearchOpen(false);
+  }, [user?.id, user?.email, user?.sub]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!isMenuSearchOpenShortcut(e)) return;
+      if (menuSearchOpen) {
+        e.preventDefault();
+        setMenuSearchOpen(false);
+        const trigger = menuSearchTriggerRef.current;
+        if (trigger && typeof trigger.focus === "function") {
+          window.requestAnimationFrame(() => trigger.focus());
+        }
+        return;
+      }
+      if (isMenuSearchShortcutBlockedTarget(e.target)) return;
+      e.preventDefault();
+      setActiveSidebarMenu(null);
+      setMenuSearchOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuSearchOpen]);
+
+  useEffect(() => {
+    if (!activeSidebarMenu || menuSearchOpen) return undefined;
     const trigger = railRefs.current[activeSidebarMenu];
     const onKey = (e) => {
       if (e.key !== "Escape") return;
@@ -361,7 +394,7 @@ export default function AppShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeSidebarMenu]);
+  }, [activeSidebarMenu, menuSearchOpen]);
 
   useLayoutEffect(() => {
     if (!activeSidebarMenu) return undefined;
@@ -491,6 +524,11 @@ export default function AppShell() {
       })),
     };
   });
+
+  const menuSearchItems = useMemo(
+    () => menuSearchItemsFromRails(sidebar),
+    [sidebar],
+  );
 
   const flyoutOpen = !!activeSidebarMenu;
   const keuanganOpen = activeSidebarMenu === "keuangan";
@@ -667,8 +705,46 @@ export default function AppShell() {
             onClick={closeFlyout}
           />
         )}
-        <header className="topbar">
+        <header className="topbar" data-testid="app-topbar">
           <span className="topbar-date">{todayLabel}</span>
+          <div className="topbar-actions" data-testid="topbar-actions">
+            <button
+              ref={menuSearchTriggerRef}
+              type="button"
+              className="ep-menu-search-trigger"
+              data-testid="global-menu-search-trigger"
+              aria-label="Cari menu"
+              aria-haspopup="dialog"
+              aria-expanded={menuSearchOpen}
+              aria-keyshortcuts="Control+K Meta+K"
+              onClick={() => {
+                setActiveSidebarMenu(null);
+                setMenuSearchOpen(true);
+              }}
+            >
+              <Search size={15} strokeWidth={1.75} aria-hidden="true" />
+              <span className="ep-menu-search-trigger-label">Cari menu</span>
+              <kbd className="ep-menu-search-kbd">Ctrl+K</kbd>
+            </button>
+            {showChat ? (
+              <NavLink
+                to="/chat"
+                className={({ isActive }) => "topbar-action-btn" + (isActive ? " is-active" : "")}
+                data-testid="topbar-chat-button"
+                aria-label={chatUnread > 0 ? `Chat, ${chatUnread} belum dibaca` : "Chat"}
+                title="Chat"
+                onClick={closeFlyout}
+              >
+                <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
+                {chatUnread > 0 ? (
+                  <span className="topbar-action-badge" data-testid="topbar-chat-unread" aria-hidden="true">
+                    {chatUnread > 99 ? "99+" : chatUnread}
+                  </span>
+                ) : null}
+              </NavLink>
+            ) : null}
+            <FloatingNotificationBell placement="topbar" />
+          </div>
           <div className="sync" data-testid="sync-status" title={health.checkedAt ? `Cek terakhir: ${health.checkedAt}` : undefined}>
             <span className="live-dot" style={healthDotStyle} /> {healthLabel}
           </div>
@@ -682,6 +758,17 @@ export default function AppShell() {
             </button>
           </div>
         </header>
+        <GlobalMenuSearch
+          open={menuSearchOpen}
+          items={menuSearchItems}
+          triggerRef={menuSearchTriggerRef}
+          onClose={() => setMenuSearchOpen(false)}
+          onSelect={(item) => {
+            if (!item?.to) return;
+            setActiveSidebarMenu(null);
+            navigate(item.to);
+          }}
+        />
         <main className={"content" + (workspaceTabsVisible || cashBankActive || salesActive ? " content-workspace content-kas-bank-workspace content-penjualan-workspace" : "")}>
           {workspaceTabsVisible && (
             <WorkspaceTabs
@@ -700,7 +787,6 @@ export default function AppShell() {
           </Suspense>
         </main>
       </div>
-      <FloatingNotificationBell />
     </div>
   );
 }

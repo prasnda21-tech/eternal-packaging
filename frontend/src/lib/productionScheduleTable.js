@@ -129,12 +129,13 @@ export function productionDashboardRequestParams(filters = {}) {
   };
 }
 
-export function productionSheetColumnStyle(col) {
-  const width = Number(col?.baseWidth) || 96;
+export function productionSheetColumnStyle(col, widthOverride) {
+  const width = Number(widthOverride != null ? widthOverride : col?.baseWidth) || 96;
   const minWidth = Number(col?.minWidth) || 56;
   return {
     width: `calc(${width}px * var(--production-sheet-zoom, 1))`,
     minWidth: `calc(${minWidth}px * var(--production-sheet-zoom, 1))`,
+    maxWidth: `calc(${width}px * var(--production-sheet-zoom, 1))`,
   };
 }
 
