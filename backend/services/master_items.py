@@ -507,11 +507,13 @@ async def update_master_physical_fulfillment(
     physical_fulfillment: Any,
     *,
     user: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Set ERP flag: SERVICE with customer goods that still pack/ship.
 
     Does not mutate item_type, orders, stock, or Accurate-owned fields.
     Only meaningful for SERVICE masters; INVENTORY already packs via type.
+
+    Returns (public_item, before_audit, after_audit).
     """
     item_id = str(item_id or "").strip()
     if not item_id:
@@ -532,6 +534,12 @@ async def update_master_physical_fulfillment(
             "physical_fulfillment hanya untuk item_type SERVICE "
             "(barang inventory sudah memakai alur packing fisik).",
         )
+    mid = str(existing.get("id") or "").strip()
+    before = {
+        "master_item_id": mid,
+        "physical_fulfillment": bool(existing.get("physical_fulfillment") is True),
+        "item_type": itype or None,
+    }
     now = now_iso()
     actor = ""
     if isinstance(user, dict):
@@ -546,7 +554,14 @@ async def update_master_physical_fulfillment(
         }},
     )
     fresh = await db[COLLECTION].find_one({"id": existing["id"]}, {"_id": 0})
-    return public_master_item(fresh)
+    after = {
+        "master_item_id": mid,
+        "physical_fulfillment": bool((fresh or {}).get("physical_fulfillment") is True),
+        "item_type": str((fresh or {}).get("item_type") or "").strip().upper() or None,
+        "updated_at": (fresh or {}).get("updated_at"),
+        "updated_by": actor or None,
+    }
+    return public_master_item(fresh), before, after
 
 
 async def resolve_line_production_process(

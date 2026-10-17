@@ -6,6 +6,7 @@ stays SERVICE (no Eternal stock/HPP). Process-only SERVICE unchanged.
 from __future__ import annotations
 
 from quantity_rules import (
+    apply_line_physical_fulfillment_override,
     available_for_packing,
     available_for_packing_line,
     is_process_only_service_line,
@@ -24,20 +25,24 @@ from services.inventory_accounting import classify_inventory_item_type
 from services.order_line_addon import order_has_unlinked_process_addons
 from services.workflow_stage_status import STAGE_PACKING, resolve_stage_chip
 
+ELEMENT_OID = "16518ea4-80f9-42a6-9ace-9fef2431a9c1"
+ELEMENT_MID = "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+ELEMENT_LINE_ID = "ln-hitam"
+
 
 def _element_like(*, physical_fulfillment=True, packed=0, helper=10000, completed=10000):
     line = {
-        "line_id": "ln-hitam",
+        "line_id": ELEMENT_LINE_ID,
         "name": "Add On Warna Sablon HITAM",
         "quantity": 10000,
         "production_process": "print",
-        "master_item_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2",
+        "master_item_id": ELEMENT_MID,
         "item_type": "SERVICE",
     }
     if physical_fulfillment is not None:
         line["physical_fulfillment"] = physical_fulfillment
     order = {
-        "id": "16518ea4-80f9-42a6-9ace-9fef2431a9c1",
+        "id": ELEMENT_OID,
         "po_number": "PO/14/10/2026/000007",
         "cancelled": False,
         "current_stage": 11,
@@ -233,3 +238,147 @@ def test_timeline_done_only_after_stage_or_qty_complete():
     assert packing_status_semantic(o2) == "Sudah"
     o2["current_stage"] = 12
     assert resolve_stage_chip(STAGE_PACKING, o2)["state"] == "done"
+
+
+def test_po_override_only_one_line_and_idempotent():
+    o = _element_like(physical_fulfillment=None)
+    o["line_items"].append({
+        "line_id": "ln-cup",
+        "name": "Cup sibling",
+        "quantity": 500,
+        "production_process": "print",
+        "master_item_id": "inv-cup",
+        "item_type": "INVENTORY",
+    })
+    before, after = apply_line_physical_fulfillment_override(
+        o,
+        line_id=ELEMENT_LINE_ID,
+        master_item_id=ELEMENT_MID,
+        physical_fulfillment=True,
+    )
+    assert before["physical_fulfillment"] is None
+    assert after["physical_fulfillment"] is True
+    assert o["line_items"][0]["physical_fulfillment"] is True
+    assert "physical_fulfillment" not in o["line_items"][1]
+    assert o["line_items"][0]["item_type"] == "SERVICE"
+    assert o["line_items"][0]["quantity"] == 10000
+    # idempotent re-apply
+    b2, a2 = apply_line_physical_fulfillment_override(
+        o,
+        line_id=ELEMENT_LINE_ID,
+        master_item_id=ELEMENT_MID,
+        physical_fulfillment=True,
+    )
+    assert b2["physical_fulfillment"] is True
+    assert a2["physical_fulfillment"] is True
+    assert available_for_packing_line(o, 0) == 10000
+    assert available_for_packing_line(o, 1) == 0
+
+
+def test_po_override_rejects_wrong_master_idx_synthetic_and_inventory():
+    o = _element_like(physical_fulfillment=None)
+    try:
+        apply_line_physical_fulfillment_override(
+            o, line_id=ELEMENT_LINE_ID, master_item_id="wrong", physical_fulfillment=True,
+        )
+        assert False, "expected mismatch"
+    except ValueError as e:
+        assert "master_item_id" in str(e)
+    try:
+        apply_line_physical_fulfillment_override(
+            o, line_id="idx:0", master_item_id=ELEMENT_MID, physical_fulfillment=True,
+        )
+        assert False, "expected synthetic reject"
+    except ValueError as e:
+        assert "sintetis" in str(e)
+    inv = {
+        "id": "po-inv",
+        "line_items": [{
+            "line_id": "ln-cup",
+            "item_type": "INVENTORY",
+            "master_item_id": "inv-1",
+            "production_process": "print",
+            "quantity": 10,
+        }],
+    }
+    try:
+        apply_line_physical_fulfillment_override(
+            inv, line_id="ln-cup", master_item_id="inv-1", physical_fulfillment=True,
+        )
+        assert False, "expected SERVICE-only"
+    except ValueError as e:
+        assert "SERVICE" in str(e)
+
+
+def test_master_physical_fulfillment_returns_before_after_audit_shape():
+    """Service-layer before/after used by PATCH audit_logs (no secrets)."""
+    from tests.test_master_items import FakeDB, _await
+    from services.master_items import create_local_master_item, update_master_physical_fulfillment
+
+    db = FakeDB()
+    created = _await(create_local_master_item(db, {
+        "item_code": "SVC-PF-1",
+        "item_name": "Jasa sablon fisik",
+        "item_type": "SERVICE",
+        "unit": "PCS",
+        "is_active": True,
+        "production_process": "print",
+    }))
+    mid = created["id"]
+    public, before, after = _await(update_master_physical_fulfillment(
+        db, mid, True, user={"email": "owner@test.local"},
+    ))
+    assert before["master_item_id"] == mid
+    assert before["physical_fulfillment"] is False
+    assert after["master_item_id"] == mid
+    assert after["physical_fulfillment"] is True
+    assert after["updated_by"] == "owner@test.local"
+    assert public["physical_fulfillment"] is True
+    assert "token" not in before and "password" not in after
+    # Idempotent second call
+    _, b2, a2 = _await(update_master_physical_fulfillment(
+        db, mid, True, user={"email": "owner@test.local"},
+    ))
+    assert b2["physical_fulfillment"] is True
+    assert a2["physical_fulfillment"] is True
+    # Inventory rejected
+    inv = _await(create_local_master_item(db, {
+        "item_code": "INV-PF-1",
+        "item_name": "Cup",
+        "item_type": "INVENTORY",
+        "unit": "PCS",
+        "is_active": True,
+    }))
+    from fastapi import HTTPException
+    try:
+        _await(update_master_physical_fulfillment(db, inv["id"], True, user={"email": "x"}))
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 400
+
+
+def test_other_po_untouched_when_element_overridden():
+    element = _element_like(physical_fulfillment=None)
+    other = {
+        "id": "other-po",
+        "line_items": [{
+            "line_id": ELEMENT_LINE_ID,  # same line_id string, different PO doc
+            "name": "Add On Warna Sablon HITAM",
+            "quantity": 10000,
+            "production_process": "print",
+            "master_item_id": ELEMENT_MID,
+            "item_type": "SERVICE",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 10000}],
+        "helper_prep": {"items": [{"line_idx": 0, "qty_prepared": 10000}]},
+        "packing_info": {},
+    }
+    apply_line_physical_fulfillment_override(
+        element,
+        line_id=ELEMENT_LINE_ID,
+        master_item_id=ELEMENT_MID,
+        physical_fulfillment=True,
+    )
+    assert element["line_items"][0]["physical_fulfillment"] is True
+    assert "physical_fulfillment" not in other["line_items"][0]
+    assert available_for_packing(other) == 0

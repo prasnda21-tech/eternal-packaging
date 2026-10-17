@@ -93,6 +93,88 @@ def stamp_line_physical_fulfillment(
             li["physical_fulfillment"] = True
 
 
+def apply_line_physical_fulfillment_override(
+    order: dict,
+    *,
+    line_id: str,
+    master_item_id: str,
+    physical_fulfillment: bool,
+) -> tuple:
+    """Persist-style override on one PO line identified by stable line_id.
+
+    Mutates ``order['line_items']`` only. Does not touch Master, packing, qty,
+    or item_type. Returns (before_snapshot, after_snapshot).
+
+    Raises ValueError with an operator-facing Indonesian message on failure.
+    """
+    want_line = str(line_id or "").strip()
+    want_master = str(master_item_id or "").strip()
+    if not want_line:
+        raise ValueError("line_id wajib untuk identifikasi line yang stabil.")
+    if not want_master:
+        raise ValueError("master_item_id wajib.")
+    if want_line.startswith("idx:"):
+        raise ValueError(
+            "line_id sintetis idx:N tidak diizinkan. Simpan line_id stabil terlebih dahulu."
+        )
+
+    lis = [dict(li) if isinstance(li, dict) else {} for li in (order.get("line_items") or [])]
+    hits = []
+    for i, li in enumerate(lis):
+        if not isinstance(li, dict):
+            continue
+        lid = str(li.get("line_id") or li.get("id") or "").strip()
+        if lid == want_line:
+            hits.append(i)
+    if not hits:
+        raise ValueError(f"Line dengan line_id '{want_line}' tidak ditemukan pada PO ini.")
+    if len(hits) > 1:
+        raise ValueError(f"line_id '{want_line}' ambigu (duplikat). Koreksi ditolak.")
+
+    idx = hits[0]
+    row = lis[idx]
+    mid = str(row.get("master_item_id") or "").strip()
+    if mid != want_master:
+        raise ValueError(
+            f"master_item_id line tidak cocok (line={mid or '—'}, payload={want_master})."
+        )
+    if not is_service_process_line(row):
+        raise ValueError("physical_fulfillment line hanya untuk item_type SERVICE.")
+    if not is_print_line(row):
+        raise ValueError(
+            "physical_fulfillment line hanya untuk production_process Cetak (print)."
+        )
+
+    before = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_id": want_line,
+        "line_idx": idx,
+        "master_item_id": mid,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": (
+            row.get("physical_fulfillment") if "physical_fulfillment" in row else None
+        ),
+        "quantity": row.get("quantity"),
+    }
+    row["physical_fulfillment"] = bool(physical_fulfillment)
+    lis[idx] = row
+    order["line_items"] = lis
+    after = {
+        "order_id": order.get("id"),
+        "po_number": order.get("po_number"),
+        "line_id": want_line,
+        "line_idx": idx,
+        "master_item_id": mid,
+        "item_type": str(row.get("item_type") or "").strip().upper() or None,
+        "production_process": row.get("production_process"),
+        "physical_fulfillment": bool(row.get("physical_fulfillment") is True),
+        "quantity": row.get("quantity"),
+    }
+    return before, after
+
+
 def requires_printing(order: dict) -> bool:
     lis = order.get("line_items") or []
     if not lis:
