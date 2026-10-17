@@ -146,7 +146,11 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
     expect(shell.indexOf("<aside")).toBeLessThan(suspenseIdx);
     expect(shell.indexOf("<header className=\"topbar\"")).toBeLessThan(suspenseIdx);
     expect(shell.indexOf("<WorkspaceTabs")).toBeLessThan(suspenseIdx);
-    expect(shell.indexOf("<FloatingNotificationBell />")).toBeGreaterThan(suspenseEnd);
+    // Notification bell stays in eager topbar chrome (not inside route Suspense).
+    const bellIdx = shell.indexOf('<FloatingNotificationBell placement="topbar" />');
+    expect(bellIdx).toBeGreaterThan(-1);
+    expect(bellIdx).toBeLessThan(suspenseIdx);
+    expect(shell.indexOf("<FloatingNotificationBell />")).toBe(-1);
   });
 
   test("RouteOptimizerLayout module has no inner lazy; mobile Outlet still has Suspense", () => {

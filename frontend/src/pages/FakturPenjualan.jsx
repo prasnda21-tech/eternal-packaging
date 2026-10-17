@@ -2099,14 +2099,14 @@ export default function FakturPenjualan() {
             <table className="sd-list-table" data-testid="invoices-table">
               <colgroup>
                 {reserveCheckboxColumn && <col style={{ width: 36 }} />}
-                <col style={{ width: "24%" }} />
-                <col style={{ width: 188 }} />
+                <col className="fp-identity-col" style={{ width: 260 }} />
+                <col style={{ width: 168 }} />
                 <col style={{ width: 108 }} />
-                <col style={{ width: 128 }} />
-                <col style={{ width: 128 }} />
+                <col style={{ width: 120 }} />
+                <col style={{ width: 120 }} />
                 <col style={{ width: 132 }} />
-                <col style={{ width: 124 }} />
-                <col style={{ width: 248 }} />
+                <col style={{ width: 118 }} />
+                <col style={{ width: 220 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -2214,11 +2214,21 @@ export default function FakturPenjualan() {
                         </td>
                       )}
                       <td className="sd-identity">
-                        <div className="sd-customer">{inv.customer || "-"}</div>
-                        <span className="sd-doc is-static" data-testid={`invoice-number-${inv.id}`}>
-                          {inv.invoice_number || "-"}
-                        </span>
-                        {inv.outlet ? <span className="sd-support">{inv.outlet}</span> : null}
+                        <div className="sd-identity-stack">
+                          <div className="sd-customer" title={inv.customer || undefined}>
+                            {inv.customer || "-"}
+                          </div>
+                          <span
+                            className="sd-doc is-static"
+                            data-testid={`invoice-number-${inv.id}`}
+                            title={inv.invoice_number || undefined}
+                          >
+                            {inv.invoice_number || "-"}
+                          </span>
+                          {inv.outlet ? (
+                            <span className="sd-support" title={inv.outlet}>{inv.outlet}</span>
+                          ) : null}
+                        </div>
                       </td>
                       <td className="fp-po-cell" data-no-row-nav onClick={(e) => e.stopPropagation()}>
                         <Link to={`/po/${inv.po_id}`} className="sd-doc" title={inv.po_number || "Buka PO"}>

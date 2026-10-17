@@ -1806,11 +1806,14 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
   padding:0 0 8px;
 }
 .fp-invoice-page .sd-list-table{
-  min-width:0;
+  min-width:1280px;
   width:100%;
 }
 .fp-invoice-page .sd-list-table-scroll{
   overflow-x:auto;
+}
+.fp-invoice-page .sd-list-table col.fp-identity-col{
+  width:260px;
 }
 .fp-invoice-page .sd-list-table thead th{
   text-transform:none !important;
@@ -2033,14 +2036,65 @@ body .sd-density.penjualan-page .fp-detail textarea:not(:disabled):not([readonly
 .sd-density .fp-pager span{font-variant-numeric:tabular-nums}
 
 /* UX 9.0 Phase 2A — Faktur / sd-list identity hierarchy */
-.fp-invoice-page .sd-identity{
-  display:flex;flex-direction:column;gap:2px;min-width:0;
+/* List rows: override shared 38px td height so 2–3 line cells (identity/status) are not clipped. */
+.fp-invoice-page .sd-list-table tbody td{
+  height:auto;
+  min-height:48px;
+  padding-top:6px !important;
+  padding-bottom:6px !important;
+  vertical-align:middle !important;
+}
+/* Keep td as table-cell so colgroup width (24%) applies; flex only on inner stack. */
+.fp-invoice-page .sd-list-table td.sd-identity{
+  height:auto !important;
+  min-height:56px;
+  min-width:200px;
+  overflow:hidden;
+  vertical-align:middle !important;
+}
+.fp-invoice-page .sd-identity-stack{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  gap:2px;
+  min-width:0;
+  max-width:100%;
+  width:100%;
 }
 .fp-invoice-page .sd-customer{
-  font-size:13.5px;font-weight:700;letter-spacing:-0.01em;color:#0F172A;
+  display:block;
+  font-size:13px;
+  font-weight:700;
+  line-height:16px;
+  letter-spacing:-0.01em;
+  color:#0F172A;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:100%;
 }
 .fp-invoice-page .sd-doc.is-static{
-  font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:#0F766E;
+  display:block;
+  margin:0;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11.5px;
+  font-weight:600;
+  line-height:14px;
+  color:#0F766E;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:100%;
+}
+.fp-invoice-page .sd-identity .sd-support{
+  display:block;
+  font-size:11px;
+  line-height:13px;
+  color:#64748B;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:100%;
 }
 .fp-invoice-page .sd-list-toolbar{
   gap:8px;align-items:center;
