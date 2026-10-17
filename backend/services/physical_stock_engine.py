@@ -971,10 +971,14 @@ async def handle_purchase_order_created(
     po_num = str(po.get("po_number") or "").strip()
     supplier = str(po.get("supplier") or "SUPPLIER").strip()
 
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     movements = []
     for line in po.get("lines") or []:
         mid = line.get("master_item_id")
         if not mid:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         line_id = line.get("line_id") or str(line.get("line_idx", 0))
         event_id = f"stock_in:purchase_order:{po_id}:{line_id}"
@@ -1024,10 +1028,14 @@ async def handle_goods_receipt_created(
     po_num = str(receipt.get("po_number") or (po or {}).get("po_number") or "").strip()
     supplier = str(receipt.get("supplier") or (po or {}).get("supplier") or "SUPPLIER").strip()
 
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     movements = []
     for line in receipt.get("lines") or []:
         mid = line.get("master_item_id")
         if not mid:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         line_id = line.get("line_id") or str(line.get("line_idx", 0))
         event_id = f"stock_in:goods_receipt:{rc_id}:{line_id}"
@@ -1084,10 +1092,14 @@ async def handle_manual_receipt_created(
     rc_num = str(receipt.get("receipt_number") or "").strip()
     supplier = str(receipt.get("supplier") or "SUPPLIER").strip() or "SUPPLIER"
 
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     movements: List[Dict[str, Any]] = []
     for line in receipt.get("lines") or []:
         mid = line.get("master_item_id")
         if not mid:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         line_id = line.get("line_id") or line.get("accurate_line_id") or str(line.get("line_idx", 0))
         event_id = f"stock_in:goods_receipt:{rc_id}:{line_id}"
@@ -1122,6 +1134,8 @@ async def precheck_manual_receipt_lines(
     lines: List[Dict[str, Any]],
 ) -> None:
     """Fail-fast before persisting MANUAL receipt when Stock V2 goods_receipt is live."""
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     settings = await get_physical_stock_settings(db)
     if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
         return
@@ -1129,7 +1143,7 @@ async def precheck_manual_receipt_lines(
         return
     for line in lines or []:
         mid = line.get("master_item_id")
-        if mid:
+        if mid and await receipt_line_posts_physical_stock(db, line):
             await require_product_stock_initialized(db, mid)
 
 
@@ -1521,12 +1535,14 @@ async def precheck_goods_receipt_lines(
     po_snapshot: Optional[Dict[str, Any]],
 ) -> None:
     """Pre-checks that all master items in Receipt lines are initialized if physical stock is enabled with goods_receipt trigger."""
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     snap = po_snapshot or {}
     if not snap.get("enabled") or snap.get("stock_in_trigger") != "goods_receipt":
         return
     for line in lines:
         mid = line.get("master_item_id")
-        if mid:
+        if mid and await receipt_line_posts_physical_stock(db, line):
             await require_product_stock_initialized(db, mid)
 
 

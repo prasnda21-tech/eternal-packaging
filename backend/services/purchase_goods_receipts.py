@@ -18,6 +18,7 @@ from services.purchase_common import (
     cancellation_fields,
     derive_child_number,
     get_named_lock,
+    insert_with_unique_number,
     is_cancelled,
     now_iso,
     parse_qty,
@@ -30,6 +31,8 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from services.physical_stock_engine import (
     execute_durable_stock_event,
+    handle_goods_receipt_created,
+    precheck_goods_receipt_lines,
 )
 from services.stock_ledger import (
     MOVEMENT_KOREKSI,
@@ -659,6 +662,53 @@ async def _commit_r2_goods_receipt(
     raise HTTPException(409, f"Gagal menyimpan penerimaan. {last_error}")
 
 
+async def _commit_legacy_pss_goods_receipt(
+    db,
+    doc: dict,
+    *,
+    user: dict,
+    po_number: str,
+    existing_count: int,
+) -> dict:
+    """Mode A (R2 OFF + standalone OFF): exclusive company PSS stock-in.
+
+    Historical pre-R2 contract: persist the GR document, then post BARANG
+    PENERIMAAN via handle_goods_receipt_created when the PO snapshot enables
+    physical stock. No warehouse ledger / R2 dual-write. SERVICE lines are
+    skipped inside the PSS handler. Brand-new masters still require an
+    initialized product_stock_state (legacy gate) — first-receipt without
+    Saldo Awal remains a Mode B/C warehouse-engine capability.
+    """
+    from services.physical_stock_engine import legacy_pss_company_stock_writes_enabled
+
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        raise HTTPException(
+            409,
+            "Jalur legacy PSS tidak aktif karena otoritas stok gudang sudah diaktifkan.",
+        )
+
+    doc["r2_physical"] = False
+    doc["warehouse_standalone"] = False
+    doc["legacy_pss"] = True
+    for line in doc["lines"]:
+        line["received_qty"] = _whole_received_qty(line["received_qty"])
+
+    po_snapshot = doc.get("physical_stock_snapshot")
+    await precheck_goods_receipt_lines(db, doc["lines"], po_snapshot)
+
+    async def _alloc():
+        idx = existing_count + 1
+        candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, idx)
+        while await db[COLLECTION].find_one({"receipt_number": candidate}, {"_id": 1}):
+            idx += 1
+            candidate = derive_child_number(po_number, PREFIX_GOODS_RECEIPT, idx)
+        return candidate
+
+    saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
+    await handle_goods_receipt_created(db, saved, user)
+    return saved
+
+
 async def _commit_standalone_goods_receipt(
     db,
     doc: dict,
@@ -972,8 +1022,13 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                             )
                             or existing
                         )
-                from services.hpp_cutover import recognize_posted_goods_receipt
-                await recognize_posted_goods_receipt(db, existing, user)
+                elif not r2_on:
+                    # Mode A retry: finish durable PSS PENERIMAAN if interrupted.
+                    await handle_goods_receipt_created(db, existing, user)
+                # Warehouse HPP cutover only applies when a warehouse engine owns stock.
+                if r2_on or standalone_on or existing.get("r2_physical") or existing.get("warehouse_standalone"):
+                    from services.hpp_cutover import recognize_posted_goods_receipt
+                    await recognize_posted_goods_receipt(db, existing, user)
                 out = await enrich_goods_receipt(db, existing)
                 from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
                 await attach_goods_receipt_accounting_fields(db, [out])
@@ -1067,7 +1122,7 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                 existing_count=existing_count,
                 warehouse_id=requested_warehouse_id,
             )
-        else:
+        elif r2_on:
             saved = await _commit_r2_goods_receipt(
                 db,
                 doc,
@@ -1076,9 +1131,22 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                 existing_count=existing_count,
                 warehouse_id=requested_warehouse_id,
             )
-        from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
-        await register_baseline_participants(db, saved)
-        await recognize_posted_goods_receipt(db, saved, user)
+        else:
+            # Mode A: exclusive legacy PSS — never call R2 (avoids HTTP 409).
+            saved = await _commit_legacy_pss_goods_receipt(
+                db,
+                doc,
+                user=user,
+                po_number=preview["po_number"],
+                existing_count=existing_count,
+            )
+        # Mode A posts company PSS only. Warehouse HPP cutover / inventory layers
+        # are owned by R2 or standalone — do not auto-bootstrap them here (avoids
+        # inventing warehouse openings from company PSS qty).
+        if saved.get("r2_physical") or saved.get("warehouse_standalone"):
+            from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
+            await register_baseline_participants(db, saved)
+            await recognize_posted_goods_receipt(db, saved, user)
         out = await enrich_goods_receipt(db, saved)
         from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
 

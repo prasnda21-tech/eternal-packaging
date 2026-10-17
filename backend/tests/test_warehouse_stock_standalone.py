@@ -1165,6 +1165,170 @@ async def test_standalone_off_keeps_legacy_pss_gates(db):
     assert await should_claim_delivery_confirmed_stock(db, order_d) is True
 
 
+async def test_mode_a_po_receipt_posts_pss_without_r2_409(db):
+    """Mode A: R2 OFF + standalone OFF → GR posts company PSS, no warehouse dual-write."""
+    from fastapi import HTTPException
+    from services.physical_stock_settings import update_physical_stock_settings
+    from services.product_stock_state import get_product_stock_state, initialize_opening_balance
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, branch, wh_a, _ = await _seed(db, code="MA")
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    await update_physical_stock_settings(
+        db,
+        {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        user={"email": "t@test"},
+    )
+    await initialize_opening_balance(
+        db,
+        item["id"],
+        {"unprinted_qty": 20.0, "printed_qty": 0.0, "base_uom": "PCS"},
+        user={"email": "t@test"},
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier Mode A",
+        "idempotency_key": f"po-ma-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": item["id"],
+            "item_code": "MA",
+            "item_name": "Barang MA",
+            "unit": "PCS",
+            "ordered_qty": 10,
+            "unit_price": 1000,
+        }],
+    }, user)
+    assert (po.get("physical_stock_snapshot") or {}).get("enabled") is True
+
+    receipt = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "idempotency_key": f"gr-ma-{uuid.uuid4().hex[:8]}",
+        "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 4}],
+    }, user)
+    assert receipt.get("legacy_pss") is True
+    assert receipt.get("r2_physical") is not True
+    assert receipt.get("warehouse_standalone") is not True
+
+    state = await get_product_stock_state(db, item["id"])
+    assert float(state["total_qty"]) == 24.0
+    assert float(state["unprinted_qty"]) == 24.0
+    assert await db.stock_movements.count_documents({
+        "reference_type": "goods_receipt",
+        "reference_id": receipt["id"],
+        "movement_type": "PENERIMAAN",
+    }) == 1
+    # No warehouse dual-write in Mode A.
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+    assert await db[BALANCE_COLLECTION].count_documents({}) == 0
+
+    # Idempotent retry resumes PSS durable event without duplicating qty.
+    again = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "idempotency_key": receipt["idempotency_key"],
+        "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 4}],
+    }, user)
+    assert again["id"] == receipt["id"]
+    state2 = await get_product_stock_state(db, item["id"])
+    assert float(state2["total_qty"]) == 24.0
+
+    # Brand-new uninitialized BARANG: Mode A keeps legacy 400 (not R2 409).
+    fresh = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "NEW-MA",
+        "item_name": "Barang Baru",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(fresh)
+    po2 = await create_purchase_order(db, {
+        "supplier": "Supplier Mode A",
+        "idempotency_key": f"po-ma-new-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": fresh["id"],
+            "item_code": "NEW-MA",
+            "item_name": "Barang Baru",
+            "unit": "PCS",
+            "ordered_qty": 5,
+            "unit_price": 500,
+        }],
+    }, user)
+    with pytest.raises(HTTPException) as excinfo:
+        await create_purchase_goods_receipt(db, {
+            "purchase_order_id": po2["id"],
+            "idempotency_key": f"gr-ma-new-{uuid.uuid4().hex[:8]}",
+            "lines": [{"purchase_order_line_id": po2["lines"][0]["line_id"], "received_qty": 5}],
+        }, user)
+    assert excinfo.value.status_code == 400
+    assert "Saldo awal" in str(excinfo.value.detail)
+
+
+async def test_mode_a_service_line_skips_pss(db):
+    """Mode A: explicit SERVICE must not create company PSS PENERIMAAN."""
+    from services.physical_stock_settings import update_physical_stock_settings
+    from services.product_stock_state import get_product_stock_state, initialize_opening_balance
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, _, _, _ = await _seed(db, code="MAS")
+    service = {
+        "id": f"svc-{uuid.uuid4().hex[:8]}",
+        "item_code": "ADDON-MA",
+        "item_name": "Biaya Sablon",
+        "unit": "PCS",
+        "item_type": "SERVICE",
+        "is_active": True,
+    }
+    await db[MASTER_ITEMS_COLLECTION].insert_one(service)
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    await update_physical_stock_settings(
+        db,
+        {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        user={"email": "t@test"},
+    )
+    await initialize_opening_balance(
+        db,
+        item["id"],
+        {"unprinted_qty": 5.0, "printed_qty": 0.0, "base_uom": "PCS"},
+        user={"email": "t@test"},
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier",
+        "idempotency_key": f"po-mas-{uuid.uuid4().hex[:8]}",
+        "lines": [
+            {"master_item_id": item["id"], "item_code": "MAS", "item_name": "Barang",
+             "unit": "PCS", "ordered_qty": 3, "unit_price": 1000},
+            {"master_item_id": service["id"], "item_code": "ADDON-MA", "item_name": "Biaya Sablon",
+             "unit": "PCS", "ordered_qty": 3, "unit_price": 200},
+        ],
+    }, user)
+    receipt = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "idempotency_key": f"gr-mas-{uuid.uuid4().hex[:8]}",
+        "lines": [
+            {"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 3},
+            {"purchase_order_line_id": po["lines"][1]["line_id"], "received_qty": 3},
+        ],
+    }, user)
+    assert len(receipt["lines"]) == 2
+    state = await get_product_stock_state(db, item["id"])
+    assert float(state["total_qty"]) == 8.0
+    assert await db.stock_movements.count_documents({"master_item_id": service["id"]}) == 0
+    assert await get_product_stock_state(db, service["id"]) is None
+
+
 async def test_create_gr_idempotency_resumes_partial_standalone(db):
     """create_purchase_goods_receipt early-return must finish PARTIAL movements."""
     from services.purchase_goods_receipts import create_purchase_goods_receipt
