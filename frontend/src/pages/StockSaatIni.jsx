@@ -882,6 +882,7 @@ export default function StockSaatIni() {
           canSubmit={canOpening}
           branches={branches}
           warehouses={warehouses}
+          catalogItems={items}
           onClose={() => setOpeningOpen(false)}
           onSaved={load}
         />
@@ -1088,8 +1089,29 @@ function importMessage(ex, fallback) {
   return fallback;
 }
 
-function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
-  const [items, setItems] = useState([]);
+function catalogToPickerItems(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows || []) {
+    const id = String(row?.master_item_id || row?.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      item_code: row.item_code || "",
+      item_name: row.item_name || row.name || "",
+      unit: row.base_unit || row.unit || "PCS",
+    });
+  }
+  return out;
+}
+
+function SaldoAwalModal({ canSubmit, branches, warehouses, catalogItems = [], onClose, onSaved }) {
+  const [tab, setTab] = useState("manual"); // manual | import
+  const [items, setItems] = useState(() => catalogToPickerItems(catalogItems));
+  const [itemsLoading, setItemsLoading] = useState(true);
+  const [itemsError, setItemsError] = useState("");
+  const [itemsDenied, setItemsDenied] = useState(false);
   const [itemId, setItemId] = useState("");
   const [branchId, setBranchId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
@@ -1111,11 +1133,45 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
 
   useEffect(() => {
     let cancelled = false;
+    setItemsLoading(true);
+    setItemsError("");
+    setItemsDenied(false);
+    // Prefer the same catalog the Stock Saat Ini table shows, then enrich via master list.
+    const fromCatalog = catalogToPickerItems(catalogItems);
+    if (fromCatalog.length) setItems(fromCatalog);
     api.masterItems({ page_size: 200 })
-      .then((res) => { if (!cancelled) setItems(res.items || []); })
-      .catch(() => { if (!cancelled) setError("Gagal memuat barang"); });
+      .then((res) => {
+        if (cancelled) return;
+        const fromApi = (res.items || []).map((row) => ({
+          id: row.id,
+          item_code: row.item_code || "",
+          item_name: row.item_name || row.name || "",
+          unit: row.unit || "PCS",
+        }));
+        // Union by id — catalog first so visible stock rows stay selectable even if
+        // master list is filtered/paged differently.
+        const byId = new Map();
+        for (const row of [...fromCatalog, ...fromApi]) {
+          if (row?.id && !byId.has(row.id)) byId.set(row.id, row);
+        }
+        setItems([...byId.values()]);
+      })
+      .catch((ex) => {
+        if (cancelled) return;
+        const statusCode = ex?.response?.status;
+        if (statusCode === 401 || statusCode === 403) {
+          setItemsDenied(true);
+          setItemsError("Tidak ada izin membaca Barang/Jasa (master_items.view).");
+        } else {
+          setItemsError(typeof ex?.response?.data?.detail === "string"
+            ? ex.response.data.detail
+            : "Gagal memuat daftar Barang/Jasa.");
+        }
+        if (!fromCatalog.length) setItems([]);
+      })
+      .finally(() => { if (!cancelled) setItemsLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [catalogItems]);
 
   useEffect(() => {
     if (warehouseId && !options.some((row) => row.id === warehouseId)) setWarehouseId("");
@@ -1233,6 +1289,16 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
     }
   };
 
+  const itemsStateMessage = (() => {
+    if (itemsLoading && items.length === 0) return { testId: "saldo-awal-items-loading", text: "Memuat daftar Barang/Jasa…" };
+    if (itemsDenied) return { testId: "saldo-awal-items-denied", text: itemsError || "Tidak ada izin membaca Barang/Jasa." };
+    if (itemsError && items.length === 0) return { testId: "saldo-awal-items-error", text: itemsError };
+    if (!itemsLoading && items.length === 0) {
+      return { testId: "saldo-awal-empty-items", text: "Belum ada Barang/Jasa pada environment preview." };
+    }
+    return null;
+  })();
+
   return (
     <div className="mutation-drawer-overlay" data-testid="saldo-awal-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div data-testid="saldo-awal-panel" style={{ width: "min(960px, 100%)", maxHeight: "90vh", overflow: "auto", background: "#fff", borderRadius: 12, padding: 20, display: "grid", gap: 12 }}>
@@ -1240,124 +1306,170 @@ function SaldoAwalModal({ canSubmit, branches, warehouses, onClose, onSaved }) {
           <h2 style={{ margin: 0 }} data-testid="saldo-awal-title">Saldo Awal Stock Fisik</h2>
           <button type="button" className="ghost sm" onClick={onClose} aria-label="Tutup">Tutup</button>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
-          <label>
-            Gudang
-            <select value={templateWarehouseId} onChange={(e) => setTemplateWarehouseId(e.target.value)} data-testid="opening-import-warehouse">
-              <option value="">Pilih gudang</option>
-              {templateWarehouses.map((row) => (
-                <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
-              ))}
-            </select>
-          </label>
-          <button type="button" className="ghost" onClick={downloadTemplate} disabled={!templateWarehouseId} data-testid="opening-import-template">Download Template</button>
-          <label className="ghost" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
+
+        <div className="stock-heading-actions" role="tablist" aria-label="Alur saldo awal" data-testid="saldo-awal-tabs">
+          <button
+            type="button"
+            className={tab === "manual" ? "primary" : "ghost"}
+            role="tab"
+            aria-selected={tab === "manual"}
+            data-testid="saldo-awal-tab-manual"
+            onClick={() => setTab("manual")}
+          >
+            Input Manual
+          </button>
+          <button
+            type="button"
+            className={tab === "import" ? "primary" : "ghost"}
+            role="tab"
+            aria-selected={tab === "import"}
+            data-testid="saldo-awal-tab-import"
+            onClick={() => setTab("import")}
+          >
             Import Excel
-            <input type="file" accept=".xlsx,.csv,text/csv" onChange={onImportFile} data-testid="opening-import-file" style={{ display: "none" }} />
-          </label>
+          </button>
         </div>
-        {importError && <div className="signal-strip" role="alert" data-testid="opening-import-error"><div><AlertCircle size={16} /><span>{importError}</span></div></div>}
-        {preview && (
-          <div style={{ overflowX: "auto" }}>
-            <table className="prod-table" data-testid="opening-import-preview">
-              <thead>
-                <tr>
-                  <th>Kode</th>
-                  <th>Nama Barang</th>
-                  <th>Satuan</th>
-                  <th>Gudang</th>
-                  <th>Stock Fisik Excel</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(preview.rows || []).map((row) => (
-                  <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
-                    <td>{row.item_code || "—"}</td>
-                    <td>{row.item_name || "—"}</td>
-                    <td>{row.unit || "—"}</td>
-                    <td>{row.warehouse_name || "—"}</td>
-                    <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
-                    <td data-testid={`opening-import-status-${row.row_number}`}>
-                      {row.status}{row.reason ? ` — ${row.reason}` : ""}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <button
-          type="button"
-          className="primary"
-          disabled={!preview?.can_confirm || importing}
-          onClick={confirmImport}
-          data-testid="opening-import-confirm"
-        >
-          {importing ? "Menyimpan…" : "Konfirmasi Saldo Awal"}
-        </button>
-        <form onSubmit={submit} data-testid="saldo-awal-form" style={{ display: "grid", gap: 12 }}>
-        {items.length === 0 && (
-          <p data-testid="saldo-awal-empty-items">Belum ada Barang/Jasa pada environment preview.</p>
-        )}
-        {error && <div className="signal-strip" role="alert"><div><AlertCircle size={16} /><span>{error}</span></div></div>}
-        <label>
-          Barang
-          <select value={itemId} onChange={(e) => setItemId(e.target.value)} data-testid="saldo-awal-item" disabled={established}>
-            <option value="">Pilih barang</option>
-            {items.map((row) => (
-              <option key={row.id} value={row.id}>{row.item_code || "—"} — {row.item_name || row.name || row.id}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Cabang
-          <select value={branchId} onChange={(e) => setBranchId(e.target.value)} data-testid="saldo-awal-branch" disabled={established}>
-            <option value="">Pilih cabang</option>
-            {branches.map((row) => (
-              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Gudang
-          <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="saldo-awal-warehouse" disabled={established}>
-            <option value="">Pilih gudang</option>
-            {options.map((row) => (
-              <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
-            ))}
-          </select>
-        </label>
-        {established ? (
-          <div data-testid="saldo-awal-established">
-            <strong>SALDO AWAL SUDAH DITETAPKAN</strong>
-            <p>Barang: {selected?.item_name || selected?.item_code || itemId}</p>
-            <p>Cabang: {branch?.name || branch?.code || branchId}</p>
-            <p>Gudang: {warehouse?.name || warehouse?.code || warehouseId}</p>
-            <p>Saldo Awal: {fmtQty(status.opening_qty)} {baseUnit}</p>
-            <p>Satuan: {baseUnit}</p>
-            <p>Waktu Penetapan: {status.occurred_at ? formatDate(status.occurred_at) : "—"}</p>
-          </div>
-        ) : (
-          <>
-            <label>
-              Qty Stok Fisik
-              <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" data-testid="saldo-awal-qty" />
-            </label>
-            <label>
-              Satuan Dasar
-              <input value={baseUnit} readOnly data-testid="saldo-awal-unit" />
-            </label>
-            <label>
-              Catatan
-              <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="saldo-awal-reason" />
-            </label>
-            <button type="submit" className="primary" disabled={!ready || saving} data-testid="saldo-awal-submit">
-              {saving ? "Menyimpan…" : "Tetapkan Saldo Awal"}
+
+        {tab === "import" && (
+          <div data-testid="saldo-awal-import-panel" style={{ display: "grid", gap: 12 }}>
+            <p className="muted small">
+              Unduh template per gudang, isi qty fisik, lalu impor. Hanya baris berstatus Siap yang dapat dikonfirmasi.
+              Saldo yang sudah ditetapkan tidak diinisialisasi ulang.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
+              <label>
+                Gudang
+                <select value={templateWarehouseId} onChange={(e) => setTemplateWarehouseId(e.target.value)} data-testid="opening-import-warehouse">
+                  <option value="">Pilih gudang</option>
+                  {templateWarehouses.map((row) => (
+                    <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className="ghost" onClick={downloadTemplate} disabled={!templateWarehouseId} data-testid="opening-import-template">Download Template</button>
+              <label className="ghost" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
+                Pilih File Excel
+                <input type="file" accept=".xlsx,.csv,text/csv" onChange={onImportFile} data-testid="opening-import-file" style={{ display: "none" }} />
+              </label>
+            </div>
+            {importError && <div className="signal-strip" role="alert" data-testid="opening-import-error"><div><AlertCircle size={16} /><span>{importError}</span></div></div>}
+            {preview && (
+              <div style={{ overflowX: "auto" }}>
+                <table className="prod-table" data-testid="opening-import-preview">
+                  <thead>
+                    <tr>
+                      <th>Kode</th>
+                      <th>Nama Barang</th>
+                      <th>Satuan</th>
+                      <th>Gudang</th>
+                      <th>Stock Fisik Excel</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(preview.rows || []).map((row) => (
+                      <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
+                        <td>{row.item_code || "—"}</td>
+                        <td>{row.item_name || "—"}</td>
+                        <td>{row.unit || "—"}</td>
+                        <td>{row.warehouse_name || "—"}</td>
+                        <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
+                        <td data-testid={`opening-import-status-${row.row_number}`}>
+                          {row.status}{row.reason ? ` — ${row.reason}` : ""}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <button
+              type="button"
+              className="primary"
+              disabled={!preview?.can_confirm || importing}
+              onClick={confirmImport}
+              data-testid="opening-import-confirm"
+            >
+              {importing ? "Menyimpan…" : "Konfirmasi Saldo Awal"}
             </button>
-          </>
+          </div>
         )}
-        </form>
+
+        {tab === "manual" && (
+          <form onSubmit={submit} data-testid="saldo-awal-form" style={{ display: "grid", gap: 12 }}>
+            <p className="muted small">
+              Tetapkan saldo awal per barang pada cabang dan gudang yang dipilih. Tidak ada double posting;
+              kombinasi yang sudah established tidak dapat diinisialisasi ulang.
+            </p>
+            {itemsStateMessage && (
+              <p data-testid={itemsStateMessage.testId} className={itemsDenied || itemsError ? "signal-strip" : "muted"}>
+                {itemsStateMessage.text}
+              </p>
+            )}
+            {itemsError && items.length > 0 && (
+              <div className="signal-strip" role="status" data-testid="saldo-awal-items-partial">
+                <div><AlertCircle size={16} /><span>{itemsError} Menampilkan daftar dari katalog Stock Saat Ini.</span></div>
+              </div>
+            )}
+            {error && <div className="signal-strip" role="alert"><div><AlertCircle size={16} /><span>{error}</span></div></div>}
+            <label>
+              Barang
+              <select value={itemId} onChange={(e) => setItemId(e.target.value)} data-testid="saldo-awal-item" disabled={established || (itemsLoading && items.length === 0)}>
+                <option value="">{itemsLoading && items.length === 0 ? "Memuat…" : "Pilih barang"}</option>
+                {items.map((row) => (
+                  <option key={row.id} value={row.id}>{row.item_code || "—"} — {row.item_name || row.name || row.id}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Cabang
+              <select value={branchId} onChange={(e) => setBranchId(e.target.value)} data-testid="saldo-awal-branch" disabled={established}>
+                <option value="">Pilih cabang</option>
+                {branches.map((row) => (
+                  <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Gudang
+              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="saldo-awal-warehouse" disabled={established}>
+                <option value="">Pilih gudang</option>
+                {options.map((row) => (
+                  <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
+                ))}
+              </select>
+            </label>
+            {established ? (
+              <div data-testid="saldo-awal-established">
+                <strong>SALDO AWAL SUDAH DITETAPKAN</strong>
+                <p>Barang: {selected?.item_name || selected?.item_code || itemId}</p>
+                <p>Cabang: {branch?.name || branch?.code || branchId}</p>
+                <p>Gudang: {warehouse?.name || warehouse?.code || warehouseId}</p>
+                <p>Saldo Awal: {fmtQty(status.opening_qty)} {baseUnit}</p>
+                <p>Satuan: {baseUnit}</p>
+                <p>Waktu Penetapan: {status.occurred_at ? formatDate(status.occurred_at) : "—"}</p>
+              </div>
+            ) : (
+              <>
+                <label>
+                  Qty Stok Fisik
+                  <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" data-testid="saldo-awal-qty" />
+                </label>
+                <label>
+                  Satuan Dasar
+                  <input value={baseUnit} readOnly data-testid="saldo-awal-unit" />
+                </label>
+                <label>
+                  Catatan
+                  <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="saldo-awal-reason" />
+                </label>
+                <button type="submit" className="primary" disabled={!ready || saving} data-testid="saldo-awal-submit">
+                  {saving ? "Menyimpan…" : "Tetapkan Saldo Awal"}
+                </button>
+              </>
+            )}
+          </form>
+        )}
       </div>
     </div>
   );

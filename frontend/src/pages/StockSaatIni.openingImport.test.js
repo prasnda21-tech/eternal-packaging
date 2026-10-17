@@ -88,12 +88,19 @@ describe("Stock Saat Ini physical opening import", () => {
     document.body.innerHTML = "";
   });
 
-  test("opens saldo awal import and keeps preview from changing stock", async () => {
-    const view = await renderStock();
-    const loads = api.physicalStockCatalog.mock.calls.length;
+  async function openImportTab(view) {
     await act(async () => {
       view.container.querySelector('[data-testid="saldo-awal-button"]').click();
     });
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-tab-import"]').click();
+    });
+  }
+
+  test("opens saldo awal import and keeps preview from changing stock", async () => {
+    const view = await renderStock();
+    const loads = api.physicalStockCatalog.mock.calls.length;
+    await openImportTab(view);
     expect(view.container.querySelector('[data-testid="saldo-awal-title"]').textContent).toBe("Saldo Awal Stock Fisik");
     expect(view.container.querySelector('[data-testid="opening-import-template"]')).not.toBeNull();
     expect(view.container.querySelector('[data-testid="opening-import-file"]')).not.toBeNull();
@@ -124,9 +131,7 @@ describe("Stock Saat Ini physical opening import", () => {
 
   test("confirm calls the bulk endpoint and refreshes stock", async () => {
     const view = await renderStock();
-    await act(async () => {
-      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
-    });
+    await openImportTab(view);
     api.physicalOpeningImportPreview.mockResolvedValue({
       can_confirm: true,
       rows: [
@@ -168,9 +173,7 @@ describe("Stock Saat Ini physical opening import", () => {
     URL.createObjectURL = jest.fn(() => "blob:template");
     URL.revokeObjectURL = jest.fn();
     api.physicalOpeningImportTemplate.mockResolvedValue(new Blob(["xlsx"]));
-    await act(async () => {
-      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
-    });
+    await openImportTab(view);
     const button = view.container.querySelector('[data-testid="opening-import-template"]');
     const select = view.container.querySelector('[data-testid="opening-import-warehouse"]');
     expect(button.disabled).toBe(true);
@@ -197,11 +200,26 @@ describe("Stock Saat Ini physical opening import", () => {
     view.cleanup();
   });
 
-  test("import errors stay human readable", async () => {
+  test("manual tab prefers catalog items when master list is empty", async () => {
     const view = await renderStock();
     await act(async () => {
       view.container.querySelector('[data-testid="saldo-awal-button"]').click();
     });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(view.container.querySelector('[data-testid="saldo-awal-tab-manual"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-empty-items"]')).toBeNull();
+    const select = view.container.querySelector('[data-testid="saldo-awal-item"]');
+    expect(select.textContent).toMatch(/OB-UAT-001/);
+    expect(select.textContent).toMatch(/Opening/);
+    view.cleanup();
+  });
+
+  test("import errors stay human readable", async () => {
+    const view = await renderStock();
+    await openImportTab(view);
     api.physicalOpeningImportPreview.mockRejectedValue({
       response: { data: { detail: { message: "Impor ditolak. Tidak ada stok yang diubah.", rows: [{ status: "Duplikat" }] } } },
     });

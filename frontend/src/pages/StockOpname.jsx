@@ -344,23 +344,65 @@ export default function StockOpname() {
               ))}
             </select>
           </label>
-          <label>
-            Mode sesi
-            <select
-              value={createMode}
-              onChange={(event) => setCreateMode(event.target.value === "operational" ? "operational" : "freeze")}
-              data-testid="opname-create-mode"
-            >
-              <option value="freeze">Freeze — pergerakan stok gudang diblok selama hitung</option>
-              <option value="operational">Operational — pergerakan tetap berjalan, diperhitungkan saat konfirmasi</option>
-            </select>
-          </label>
-          <p className="muted small" data-testid="opname-mode-hint">
-            Default freeze sesuai backend. Mode sesi berjalan tidak diganti diam-diam dari layar ini.
-          </p>
-          <button type="button" className="primary" onClick={start} disabled={busy || !warehouseId} data-testid="opname-start">
-            Mulai Stock Opname
-          </button>
+          {(() => {
+            const activeForWarehouse = sessions.find((row) => (
+              row.warehouse_id === warehouseId && ["DRAFT", "COUNTING", "REVIEW"].includes(row.status)
+            ));
+            if (activeForWarehouse) {
+              return (
+                <div data-testid="opname-existing-active" style={{ display: "grid", gap: 6 }}>
+                  <p className="muted small" data-testid="opname-mode-hint">
+                    Sesi aktif ditemukan: {activeForWarehouse.opname_number || activeForWarehouse.id}
+                    {" — "}Mode {modeLabel(sessionMode(activeForWarehouse))} (terkunci).
+                    Dropdown mode di bawah hanya untuk sesi baru; sesi existing tidak diubah.
+                  </p>
+                  <button type="button" className="primary" onClick={() => openSession(activeForWarehouse.id)} disabled={busy} data-testid="opname-open-existing">
+                    Buka Sesi Existing
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <>
+                <label>
+                  Mode sesi baru
+                  <select
+                    value={createMode}
+                    onChange={(event) => setCreateMode(event.target.value === "operational" ? "operational" : "freeze")}
+                    data-testid="opname-create-mode"
+                  >
+                    <option value="freeze">Freeze — pergerakan stok gudang diblok selama hitung</option>
+                    <option value="operational">Operational — pergerakan tetap berjalan, diperhitungkan saat konfirmasi</option>
+                  </select>
+                </label>
+                <p className="muted small" data-testid="opname-mode-hint">
+                  Default freeze untuk sesi baru. Mode sesi yang sudah berjalan tidak diganti dari layar ini.
+                </p>
+                <button type="button" className="primary" onClick={start} disabled={busy || !warehouseId} data-testid="opname-start">
+                  Mulai Stock Opname
+                </button>
+              </>
+            );
+          })()}
+          {sessions.length > 0 && (
+            <div data-testid="opname-session-list" style={{ display: "grid", gap: 4, width: "100%" }}>
+              <p className="muted small">Sesi tersimpan</p>
+              {sessions.map((row) => (
+                <button
+                  key={row.id}
+                  type="button"
+                  className="ghost"
+                  data-testid={`opname-session-${row.opname_number || row.id}`}
+                  onClick={() => openSession(row.id)}
+                  disabled={busy}
+                  style={{ justifyContent: "flex-start", textAlign: "left" }}
+                >
+                  {row.opname_number || row.id} — {statusLabel(row.status)} — {modeLabel(sessionMode(row))}
+                  {" — "}{row.warehouse_code || row.warehouse_id}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
