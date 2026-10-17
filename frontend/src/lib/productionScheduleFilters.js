@@ -27,6 +27,8 @@ export const FILTER_DEFAULTS = {
   workDateFilter: "all",
   workDateFrom: "",
   workDateTo: "",
+  /** Desktop status tabs: all | unscheduled | scheduled | hold (E1). */
+  scheduleStatusTab: "all",
   sortBy: "deadline",
   includeCancelled: false,
   includeCompleted: true,
@@ -34,6 +36,45 @@ export const FILTER_DEFAULTS = {
 
 /** Desktop /produksi default. Newest work_date first. Mobile queue does not use this. */
 export const DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT = "work_date";
+
+/** Primary status tabs for desktop Jadwal Produksi (E1 exclusive presentation). */
+export const PRODUCTION_SCHEDULE_STATUS_TABS = Object.freeze([
+  { id: "all", label: "Semua" },
+  { id: "unscheduled", label: "Belum Dijadwalkan" },
+  { id: "scheduled", label: "Dijadwalkan" },
+  { id: "hold", label: "HOLD" },
+]);
+
+/** E1 row class for status tabs. HOLD is presentation-only carve-out. */
+export function productionScheduleStatusTabOfRow(row) {
+  if (row?.hold) return "hold";
+  if (workDateKeys(row).length > 0) return "scheduled";
+  return "unscheduled";
+}
+
+export function rowMatchesProductionScheduleStatusTab(row, tab = "all") {
+  if (!tab || tab === "all") return true;
+  return productionScheduleStatusTabOfRow(row) === tab;
+}
+
+/**
+ * C2 counts from a filter-context list that already excludes the status tab.
+ * Additive: all === unscheduled + scheduled + hold.
+ */
+export function computeProductionScheduleStatusTabCounts(rows) {
+  let all = 0;
+  let unscheduled = 0;
+  let scheduled = 0;
+  let hold = 0;
+  for (const row of rows || []) {
+    all += 1;
+    const bucket = productionScheduleStatusTabOfRow(row);
+    if (bucket === "hold") hold += 1;
+    else if (bucket === "scheduled") scheduled += 1;
+    else unscheduled += 1;
+  }
+  return { all, unscheduled, scheduled, hold };
+}
 
 export function statusOfRow(r) {
   if (r.cancelled) return "cancelled";
@@ -398,6 +439,7 @@ export function applyProductionFilters(rows, filters = {}) {
     if (f.statusFilter !== "all" && statusOfRow(r) !== f.statusFilter) return false;
     if (f.urgentOnly && !r.urgent) return false;
     if (f.holdOnly && !r.hold) return false;
+    if (!rowMatchesProductionScheduleStatusTab(r, f.scheduleStatusTab)) return false;
     if (f.customerFilter !== "all" && r.customer !== f.customerFilter) return false;
     if (f.poFilter) {
       const needle = String(f.poFilter).trim().toLowerCase();
@@ -505,6 +547,7 @@ export function productionFiltersAreActive(filters = {}) {
     || f.customerFilter !== FILTER_DEFAULTS.customerFilter
     || f.urgentOnly
     || f.holdOnly
+    || (f.scheduleStatusTab || "all") !== FILTER_DEFAULTS.scheduleStatusTab
     || f.screenerFilter !== FILTER_DEFAULTS.screenerFilter
     || f.helperFilter !== FILTER_DEFAULTS.helperFilter
     || f.packingFilter !== FILTER_DEFAULTS.packingFilter
