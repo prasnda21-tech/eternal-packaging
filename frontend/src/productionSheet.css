@@ -169,11 +169,19 @@
 .production-sheet-table .pill.sm,
 .production-sheet-table .urgent-badge,
 .production-sheet-table .standard-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: calc(9px * var(--production-sheet-zoom, 1));
-  line-height: 1.15;
-  padding: calc(1px * var(--production-sheet-zoom, 1)) calc(4px * var(--production-sheet-zoom, 1));
+  /* Keep status text in the readable 11–12px band across sheet zoom. */
+  font-size: clamp(11px, calc(11.5px * var(--production-sheet-zoom, 1)), 12px);
+  line-height: 1.2;
+  padding: 2px 7px;
+  min-height: 20px;
+  max-height: 24px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-radius: calc(2px * var(--production-sheet-zoom, 1));
   vertical-align: middle;
   white-space: nowrap;
@@ -193,8 +201,9 @@
 .production-sheet-table .pill svg,
 .production-sheet-table .urgent-badge svg,
 .production-sheet-table .standard-badge svg {
-  width: calc(9px * var(--production-sheet-zoom, 1));
-  height: calc(9px * var(--production-sheet-zoom, 1));
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
 }
 
 .production-sheet-table .prod-qty-over {
@@ -806,6 +815,15 @@ body.prod-col-resizing * {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* Desktop status chips keep the shared compact band (Sumber/Design/Packing/Status/HOLD). */
+.prod-schedule-page .production-sheet-table .pill.sm,
+.prod-schedule-page .production-sheet-table .prod-status-akhir,
+.prod-schedule-page .production-sheet-table .urgent-badge,
+.prod-schedule-page .production-sheet-table .standard-badge {
+  font-weight: 650;
+  gap: 3px;
 }
 
 .prod-schedule-page .production-sheet-table .prod-status-akhir {

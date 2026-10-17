@@ -150,4 +150,13 @@ describe("ProductionSchedule visual hierarchy", () => {
     expect(scheduleSrc).toMatch(/className=\{c\.sticky === "po" \? "prod-col-po"/);
     expect(scheduleSrc).not.toMatch(/c\.desktopGroup \? `prod-col-group-\$\{c\.desktopGroup\}`/);
   });
+
+  test("column resize uses zoom-corrected delta and rAF batching", () => {
+    const scheduleSrc = fs.readFileSync(path.join(__dirname, "ProductionSchedule.jsx"), "utf8");
+    const sheetCss = fs.readFileSync(path.join(__dirname, "../productionSheet.css"), "utf8");
+    expect(scheduleSrc).toMatch(/productionScheduleResizeNextWidth/);
+    expect(scheduleSrc).toMatch(/requestAnimationFrame\(flushWidth\)/);
+    expect(sheetCss).toMatch(/font-size:\s*clamp\(11px,\s*calc\(11\.5px \* var\(--production-sheet-zoom/);
+    expect(sheetCss).toMatch(/min-height:\s*20px/);
+  });
 });
