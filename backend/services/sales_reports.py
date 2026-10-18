@@ -368,16 +368,16 @@ def _selected_columns(report_id: str, layout: Optional[dict]) -> List[dict]:
         "rincian-penjualan-per-barang": DETAIL_COLUMNS,
         "daftar-faktur-penjualan": INVOICE_COLUMNS,
     }[report_id]
+    # Preserve user-selected column ordering without changing totals or amounts.
     requested = None
     if isinstance(layout, dict) and isinstance(layout.get("columns"), list) and layout.get("columns"):
-        requested = {_text(key) for key in layout["columns"]}
+        requested = list(dict.fromkeys(_text(key) for key in layout["columns"]))
     chosen = []
-    for col in source:
-        if requested is None:
-            if col["default"]:
-                chosen.append(dict(col))
-        elif col["key"] in requested:
-            chosen.append(dict(col))
+    if requested is None:
+        chosen = [dict(col) for col in source if col["default"]]
+    else:
+        by_key = {col["key"]: col for col in source}
+        chosen = [dict(by_key[key]) for key in requested if key in by_key]
     if not chosen:
         chosen = [dict(col) for col in source if col["default"]]
     analysis = _text((layout or {}).get("analysis_row"))
