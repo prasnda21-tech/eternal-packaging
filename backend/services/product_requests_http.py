@@ -21,13 +21,16 @@ def register_product_request_routes(
     Depends,
 ):
     from services.product_requests import (
+        add_feedback,
         create_draft,
         ensure_indexes,
         get_form_context,
         get_request,
+        list_activities,
         list_requests,
         submit_draft,
         update_draft,
+        update_status,
     )
     from services.sales_customers import (
         customer_is_active,
@@ -47,12 +50,7 @@ def register_product_request_routes(
 
     @api_router.get("/product-requests/context")
     async def product_request_context(user=Depends(current_user)):
-        await require_any_perm(
-            user,
-            "product_request.create",
-            "product_request.read_own_draft",
-            "product_request.read_all",
-        )
+        # Any authenticated user may open list/detail context.
         return {"context": await get_form_context(get_db(), user)}
 
     @api_router.get("/product-requests")
@@ -60,12 +58,6 @@ def register_product_request_routes(
         view: Optional[str] = Query(None),
         user=Depends(current_user),
     ):
-        await require_any_perm(
-            user,
-            "product_request.create",
-            "product_request.read_own_draft",
-            "product_request.read_all",
-        )
         perms = await _perms(user)
         return {"requests": await list_requests(get_db(), user, perms, view=view)}
 
@@ -81,14 +73,13 @@ def register_product_request_routes(
 
     @api_router.get("/product-requests/{request_id}")
     async def get_product_request_endpoint(request_id: str, user=Depends(current_user)):
-        await require_any_perm(
-            user,
-            "product_request.create",
-            "product_request.read_own_draft",
-            "product_request.read_all",
-        )
         perms = await _perms(user)
         return {"request": await get_request(get_db(), request_id, user, perms)}
+
+    @api_router.get("/product-requests/{request_id}/activities")
+    async def list_product_request_activities_endpoint(request_id: str, user=Depends(current_user)):
+        perms = await _perms(user)
+        return {"activities": await list_activities(get_db(), request_id, user, perms)}
 
     @api_router.patch("/product-requests/{request_id}")
     async def update_product_request_endpoint(
@@ -109,3 +100,25 @@ def register_product_request_routes(
         await require_any_perm(user, "product_request.create")
         data: dict[str, Any] = payload.model_dump() if payload else {}
         return {"receipt": await submit_draft(get_db(), request_id, data, user)}
+
+    @api_router.post("/product-requests/{request_id}/feedback")
+    async def add_product_request_feedback_endpoint(
+        request_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "product_request.feedback")
+        perms = await _perms(user)
+        data: dict[str, Any] = payload.model_dump() if payload else {}
+        return await add_feedback(get_db(), request_id, data, user, perms)
+
+    @api_router.post("/product-requests/{request_id}/status")
+    async def update_product_request_status_endpoint(
+        request_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "product_request.update_status")
+        perms = await _perms(user)
+        data: dict[str, Any] = payload.model_dump() if payload else {}
+        return await update_status(get_db(), request_id, data, user, perms)

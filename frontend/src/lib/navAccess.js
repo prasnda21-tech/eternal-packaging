@@ -236,7 +236,16 @@ export function dashboardMenuItems(hasPerm, user) {
 export function salesNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
   const salesCustomers = parent && (canSeeNav(hasPerm, NAV_KEYS.salesCustomers) || canSeeNav(hasPerm, "sales.customer.view") || canSeeNav(hasPerm, "sales.customer.manage") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
-  const productRequests = parent && (canSeeNav(hasPerm, NAV_KEYS.productRequests) || canSeeNav(hasPerm, "product_request.create") || canSeeNav(hasPerm, "product_request.read_own_draft") || canSeeNav(hasPerm, "product_request.read_all"));
+  // Permintaan Produk is the open-read exception: child nav (or capability) is
+  // enough. Do not require parent nav.sales — that would force granting the
+  // whole Penjualan parent to every role just to surface this one tile.
+  // Submitted list/detail remain open via route + API for any authenticated user.
+  const productRequests = (
+    canSeeNav(hasPerm, NAV_KEYS.productRequests)
+    || canSeeNav(hasPerm, "product_request.create")
+    || canSeeNav(hasPerm, "product_request.read_own_draft")
+    || canSeeNav(hasPerm, "product_request.read_all")
+  );
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
@@ -277,6 +286,14 @@ export function canReadAllProductRequests(hasPerm) {
 
 export function canReadOwnProductRequestDraft(hasPerm) {
   return canCreateProductRequest(hasPerm) || canSeeNav(hasPerm, "product_request.read_own_draft");
+}
+
+export function canFeedbackProductRequest(hasPerm) {
+  return canSeeNav(hasPerm, "product_request.feedback");
+}
+
+export function canUpdateProductRequestStatus(hasPerm) {
+  return canSeeNav(hasPerm, "product_request.update_status");
 }
 
 export function productRequestEntryPath(hasPerm) {

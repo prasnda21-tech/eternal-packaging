@@ -116,10 +116,14 @@ export function decisionLabel(decision) {
   return decision || "";
 }
 
-/** Desktop path for SPK notices. PO notices stay on the existing /po/:id helper. */
+/** Desktop path for SPK / product-request notices. PO notices stay on /po/:id helper. */
 export function desktopNotificationPath(item) {
   const eventType = String(item?.event_type || "");
   const link = String(item?.deep_link || "");
+  if (link.startsWith("/penjualan/permintaan-produk")) return link;
+  if (eventType.startsWith("product_request_") && item?.order_id) {
+    return `/penjualan/permintaan-produk/${encodeURIComponent(item.order_id)}`;
+  }
   if (link.startsWith("/spk/") || link === "/spk") return link;
   if (eventType.startsWith("spk_") && item?.order_id) return `/spk/${item.order_id}`;
   return "";

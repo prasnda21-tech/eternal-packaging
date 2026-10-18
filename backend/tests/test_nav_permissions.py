@@ -163,6 +163,32 @@ def test_sales_receipt_nav_is_registered_like_other_sales_menus():
     assert "not.a.real.permission" not in ALL_PERMISSIONS
 
 
+
+def test_product_request_nav_visible_for_configured_custom_roles():
+    """Custom roles with stamped nav.* still get Permintaan Produk menu key only."""
+    configured = {
+        "nav.configured",
+        "nav.dashboard",
+        "nav.sales",
+        "nav.sales.sales_order",
+        "po.view",
+    }
+    derived = with_nav_defaults(configured)
+    assert "nav.sales.product_requests" in derived
+    assert "product_request.create" not in derived
+    assert "product_request.feedback" not in derived
+    assert "product_request.update_status" not in derived
+    # Does not auto-grant unrelated sales children
+    assert "nav.sales.sales_receipt" not in derived
+
+    # Without parent nav.sales, child key is still forced; parent is not invented.
+    no_sales_parent = {"nav.configured", "nav.dashboard", "po.view"}
+    derived_no_parent = with_nav_defaults(no_sales_parent)
+    assert "nav.sales.product_requests" in derived_no_parent
+    assert "nav.sales" not in derived_no_parent
+    assert "nav.sales.sales_order" not in derived_no_parent
+
+
 def test_non_admin_roles_do_not_auto_gain_sales_receipt_nav():
     for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
         defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
@@ -362,6 +388,10 @@ def test_explicit_nav_config_is_not_rederived():
     assert "nav.dashboard" in derived
     assert "nav.sales" not in derived  # missing nav keys are deny once configured
     assert "nav.production_schedule" not in derived
+    # Open-read exception: only the Permintaan Produk child menu key is forced.
+    assert "nav.sales.product_requests" in derived
+    assert "nav.sales.sales_receipt" not in derived
+    assert "product_request.create" not in derived
 
 
 def test_sentinel_allows_deny_all_nav():
@@ -369,6 +399,12 @@ def test_sentinel_allows_deny_all_nav():
     derived = with_nav_defaults(stored)
     assert "nav.sales" not in derived
     assert "nav.production_schedule" not in derived
+    assert "nav.dashboard" not in derived
+    # Sentinel still denies parent/other nav; child Permintaan Produk stays findable.
+    assert "nav.sales.product_requests" in derived
+    assert "product_request.create" not in derived
+    assert "product_request.feedback" not in derived
+    assert "product_request.update_status" not in derived
 
 
 def test_user_override_can_deny_derived_nav():
