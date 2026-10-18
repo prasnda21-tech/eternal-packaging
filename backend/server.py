@@ -190,6 +190,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
+from services.crm_daily_reports_http import register_crm_daily_report_routes
 from services.spk_http import register_spk_routes
 from services.customer_pricing_http import register_customer_pricing_routes
 from services.public_catalog_http import register_public_catalog_routes
@@ -15889,6 +15890,14 @@ register_stock_opname_routes(
     Depends=Depends,
 )
 register_product_request_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_crm_daily_report_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,

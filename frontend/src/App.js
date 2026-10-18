@@ -24,6 +24,8 @@ const PenerimaanPenjualan = lazy(() => import("./pages/PenerimaanPenjualan"));
 const DataPelanggan = lazy(() => import("./pages/DataPelanggan"));
 const ProductRequestForm = lazy(() => import("./pages/ProductRequestForm"));
 const ProductRequestList = lazy(() => import("./pages/ProductRequestList"));
+const CrmDailyReportList = lazy(() => import("./pages/CrmDailyReportList"));
+const CrmDailyReportForm = lazy(() => import("./pages/CrmDailyReportForm"));
 const ImportPO = lazy(() => import("./pages/ImportPO"));
 const AkunPerkiraan = lazy(() => import("./pages/AkunPerkiraan"));
 const JurnalUmum = lazy(() => import("./pages/JurnalUmum"));
@@ -369,6 +371,9 @@ export default function App() {
             <Route path="/penjualan/penerimaan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesReceipt, NAV_KEYS.sales, "sales.receipt.view", "sales.receipt.create", "sales.invoice.view", "sales_order.view", "po.view"]}><PenerimaanPenjualan /></PermGate>} />
             <Route path="/penjualan/aktivitas-sales/outlet/:id" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create"]}><SalesActivityOutletDetail /></PermGate>} />
             <Route path="/penjualan/aktivitas-sales" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create", "sales.outlet.create"]}><SalesActivityPage /></PermGate>} />
+            <Route path="/penjualan/laporan-harian-crm/baru" element={<PermGate anyOf={["crm.daily_report.create"]}><CrmDailyReportForm /></PermGate>} />
+            <Route path="/penjualan/laporan-harian-crm/:id" element={<PermGate anyOf={["crm.daily_report.view_own", "crm.daily_report.view_all", "crm.daily_report.create", "crm.daily_report.edit_own", NAV_KEYS.crmDailyReport]}><CrmDailyReportForm /></PermGate>} />
+            <Route path="/penjualan/laporan-harian-crm" element={<PermGate anyOf={["crm.daily_report.view_own", "crm.daily_report.view_all", "crm.daily_report.create", "crm.daily_report.edit_own", NAV_KEYS.crmDailyReport]}><CrmDailyReportList /></PermGate>} />
             <Route path="/penjualan" element={<Navigate to="/penjualan/pesanan-penjualan" replace />} />
             <Route path="/pembelian/permintaan" element={<PermGate anyOf={["purchase_requests.view", "purchase_requests.create"]}><PermintaanPembelian /></PermGate>} />
             <Route path="/pembelian/pesanan-pembelian" element={<PermGate anyOf={["purchase_orders.view", "purchase_orders.create"]}><PesananPembelian /></PermGate>} />

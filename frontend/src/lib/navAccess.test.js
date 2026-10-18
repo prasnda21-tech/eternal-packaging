@@ -192,9 +192,21 @@ describe("salesMenuItems", () => {
       "Penerimaan Penjualan",
       "Import PO",
       "Aktivitas Sales",
+      "Laporan Harian CRM",
       "Status PO",
       "Prediksi Order",
     ]);
+  });
+
+  test("builds Laporan Harian CRM tile when granted", () => {
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.crmDailyReport));
+    expect(items.some((i) => i.key === NAV_KEYS.crmDailyReport && i.to === "/penjualan/laporan-harian-crm")).toBe(true);
+  });
+
+  test("shows Laporan Harian CRM from capability without explicit nav key", () => {
+    const vis = salesNavVisible(has("crm.daily_report.create"));
+    expect(vis.crmDailyReport).toBe(true);
+    expect(vis.parent).toBe(true);
   });
 
   test("Penerimaan Penjualan sidebar key stays nav.sales.sales_receipt", () => {
