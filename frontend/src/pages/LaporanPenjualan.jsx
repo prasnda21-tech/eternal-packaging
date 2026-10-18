@@ -19,6 +19,9 @@ const month = () => {
   return { from: y + "-" + m + "-01", to: y + "-" + m + "-" + String(new Date(y, now.getMonth()+1, 0).getDate()).padStart(2, "0"), branch: "semua" };
 };
 const errorText = (e) => e?.response?.data?.detail || e?.message || "Laporan belum bisa ditampilkan.";
+const prefsKey = (user, id) => "eternal-report-layout-v1:" + String(user?.id || user?.email || "guest") + ":" + id;
+const readPrefs = (key) => { try { return JSON.parse(window.localStorage.getItem(key) || "null"); } catch { return null; } };
+const writePrefs = (key, value) => { try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ } };
 
 function ReportTable({ report, layout, onResize, className = "" }) {
   const cols = report?.columns || [];
@@ -64,7 +67,7 @@ function ReportTable({ report, layout, onResize, className = "" }) {
 }
 
 export default function LaporanPenjualan() {
-  const { hasPerm } = useAuth();
+  const { hasPerm, user } = useAuth();
   const [catalog,setCatalog] = useState(null);
   const [selectedId,setSelectedId] = useState("");
   const [filters,setFilters] = useState(month);
@@ -80,10 +83,12 @@ export default function LaporanPenjualan() {
   const [savedName,setSavedName] = useState("");
   const resizeClean = useRef(null);
   const presetPending = useRef(null);
+  const [readyPrefsKey,setReadyPrefsKey] = useState("");
   const selected = useMemo(() => catalog?.reports?.find(r => r.id === selectedId),[catalog,selectedId]);
   const definitions = useMemo(() => selected?.columns || [],[selected]);
   const saved = catalog?.memorized || [];
   const canExport = hasPerm("reports.sales.export"); // Backend independently enforces export permission.
+  const activePrefsKey = selectedId ? prefsKey(user,selectedId) : "";
 
   useEffect(() => {
     let active=true;
@@ -98,21 +103,29 @@ export default function LaporanPenjualan() {
     return ()=>{active=false};
   }, []);
   useEffect(() => {
+    setReadyPrefsKey("");
     const pending=presetPending.current;
     presetPending.current=null;
+    const local=activePrefsKey ? readPrefs(activePrefsKey) : null;
     if(pending?.reportId === selectedId) {
       setLayout(normalizeReportColumns(definitions,{
         order: pending.layout?.columns || [],
-        hidden: definitions.map(c=>c.key).filter(k=>!pending.layout?.columns?.includes(k))
+        hidden: definitions.map(c=>c.key).filter(k=>!pending.layout?.columns?.includes(k)),
+        widths:pending.layout?.widths || {}
       }));
       setAnalysisRow(pending.layout?.analysis_row || "nama_barang");
       setGroupCurrency(!!pending.layout?.group_currency);
     } else {
-      setLayout(normalizeReportColumns(definitions));
-      setAnalysisRow("nama_barang");setGroupCurrency(false);
+      setLayout(normalizeReportColumns(definitions,local || {}));
+      setAnalysisRow(local?.analysis_row || "nama_barang");setGroupCurrency(!!local?.group_currency);
     }
     setResult(null);setPrintResult(null);setPage(1);
-  },[selectedId,definitions]);
+    setReadyPrefsKey(activePrefsKey);
+  },[selectedId,definitions,activePrefsKey]);
+  useEffect(() => {
+    if (!activePrefsKey || readyPrefsKey !== activePrefsKey || !definitions.length) return;
+    writePrefs(activePrefsKey,{...layout, analysis_row:analysisRow, group_currency:groupCurrency});
+  },[layout,analysisRow,groupCurrency,definitions,activePrefsKey,readyPrefsKey]);
   useEffect(() => ()=>{resizeClean.current?.()},[]);
 
   const currentPayload = useCallback((targetPage=1,includeAll=false) => {
@@ -120,7 +133,8 @@ export default function LaporanPenjualan() {
     return {report_id:selectedId,date_from:filters.from,date_to:filters.to,
       branch:filters.branch,layout:{columns:keys,
         ...(selectedId==="penjualan-per-barang" ? {analysis_row:analysisRow}:{}),
-        ...(selectedId==="rincian-penjualan-per-barang" ? {group_currency:groupCurrency}:{})},
+        ...(selectedId==="rincian-penjualan-per-barang" ? {group_currency:groupCurrency}:{}),
+        widths:layout.widths},
       page:targetPage,page_size:pageSize,include_all:includeAll};
   },[layout,filters,selectedId,pageSize,analysisRow,groupCurrency]);
 
@@ -159,7 +173,8 @@ export default function LaporanPenjualan() {
       return;
     }
     setLayout(normalizeReportColumns(spec.columns || [],{
-      order:p.layout?.columns || [],hidden:(spec.columns||[]).map(c=>c.key).filter(k=>!p.layout?.columns?.includes(k))
+      order:p.layout?.columns || [],hidden:(spec.columns||[]).map(c=>c.key).filter(k=>!p.layout?.columns?.includes(k)),
+      widths:p.layout?.widths || {}
     }));
     setAnalysisRow(p.layout?.analysis_row || "nama_barang");
     setGroupCurrency(!!p.layout?.group_currency);
