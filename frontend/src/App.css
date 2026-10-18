@@ -4276,9 +4276,9 @@ html:has(.prod-schedule-page) #root{
 .prod-schedule-page .prod-op-line{margin-bottom:2px;gap:8px;line-height:1.25}
 .prod-schedule-page .prod-date-line{padding:0}
 .prod-schedule-page .prod-line-qty-name{font-size:12px;max-width:11rem}
-.prod-schedule-page .pill.sm{padding:2px 6px;font-size:12px}
+.prod-schedule-page .pill.sm{padding:2px 7px;font-size:clamp(11px,11.5px,12px);min-height:20px;line-height:1.2}
 .prod-schedule-page .urgent-badge,
-.prod-schedule-page .standard-badge{font-size:12px;padding:3px 7px}
+.prod-schedule-page .standard-badge{font-size:clamp(11px,11.5px,12px);padding:2px 7px;min-height:20px;line-height:1.2}
 .prod-schedule-page .prod-qty-over{color:var(--red);font-weight:650}
 @media (max-width:640px){
   .app-shell:has(.prod-schedule-page){

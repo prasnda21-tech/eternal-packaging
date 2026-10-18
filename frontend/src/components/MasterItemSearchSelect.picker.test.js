@@ -11,6 +11,7 @@ const fullPage = fs.readFileSync(path.join(__dirname, "../pages/MasterBarangJasa
 describe("MasterItemSearchSelect picker wiring", () => {
   test("uses lightweight picker API with picker=true", () => {
     expect(src).toMatch(/api\.masterItemsPicker/);
+    expect(src).toMatch(/typeof fetchItems === "function"/);
     expect(src).toMatch(/page_size: MASTER_ITEM_SEARCH_PAGE_SIZE/);
     expect(api).toMatch(/masterItemsPicker:/);
     expect(api).toMatch(/picker:\s*true/);
@@ -22,11 +23,13 @@ describe("MasterItemSearchSelect picker wiring", () => {
     expect(fullPage).not.toMatch(/picker:\s*true/);
   });
 
-  test("Ubah Item PO modal does not change save or qty wiring", () => {
+  test("Ubah Item PO modal uses sales catalog picker and keeps save wiring", () => {
     expect(modal).toMatch(/api\.replaceSalesOrderLineProduct/);
     expect(modal).toMatch(/MasterItemSearchSelect/);
+    expect(modal).toMatch(/api\.salesCatalogProducts/);
     expect(modal).not.toMatch(/masterItemsPicker/);
     expect(modal).not.toMatch(/replaceSalesOrderLineProduct.*masterItems/);
+    expect(api).toMatch(/salesCatalogProducts:/);
   });
 
   test("in-modal suggestion portal stacks above the modal and still selects", () => {

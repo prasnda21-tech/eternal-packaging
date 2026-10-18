@@ -158,6 +158,21 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(aksiIdx).toBeGreaterThan(invoiceIdx);
   });
 
+  test("list identity cell stacks customer/PO/outlet without fixed row clip", () => {
+    const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
+    const premium = fs.readFileSync(path.join(__dirname, "pesananPenjualanPremium.css"), "utf8");
+    expect(src).toMatch(/className="so-list-identity"/);
+    expect(src).toMatch(/className="so-list-identity-stack"/);
+    expect(src).toMatch(/className="so-list-customer"[\s\S]{0,80}title=\{o\.customer/);
+    expect(src).toMatch(/className="so-list-po"[\s\S]{0,240}title=\{o\.po_number/);
+    expect(src).toMatch(/so-list-outlet" title=\{o\.outlet\}/);
+    expect(css).toMatch(/\.so-list-workspace \.so-list-table td\s*\{[\s\S]*?height:\s*auto/);
+    expect(css).toMatch(/\.so-list-workspace \.so-list-table td\.so-list-identity\s*\{[\s\S]*?min-height:\s*56px/);
+    expect(css).toMatch(/\.so-list-workspace \.so-list-identity-stack\s*\{[\s\S]*?display:\s*flex/);
+    expect(premium).toMatch(/\.so-list-workspace \.so-list-table td\.so-list-identity\s*\{[\s\S]*?min-height:\s*56px/);
+    expect(premium).not.toMatch(/tbody td \{ height: 36px/);
+  });
+
   test("list columns are independently resizable with persisted widths and reset", () => {
     expect(src).toMatch(/so-resize-\$/);
     expect(src).toMatch(/onColResizePointerDown/);

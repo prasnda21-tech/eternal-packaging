@@ -46,10 +46,23 @@ export const PACKAGE_PERMISSIONS = Object.freeze([
 export const PACKAGE_PERMISSION_SET = new Set(PACKAGE_PERMISSIONS);
 
 export const DIRECTOR_FULL_ACCESS_ROLE = "direktur_utama";
+export const HOLDING_TEAM_ROLE = "holding_team";
 
 export function isDirectorFullAccessRole(role) {
   return String(role || "").trim().toLowerCase() === DIRECTOR_FULL_ACCESS_ROLE;
 }
+
+export function isHoldingTeamRole(role) {
+  return String(role || "").trim().toLowerCase() === HOLDING_TEAM_ROLE;
+}
+
+/** Roles that may hold Pembelian/Persediaan/HPP effectively (non-local production). */
+export function roleMayReceivePackageAccess(role) {
+  return isHoldingTeamRole(role) || isDirectorFullAccessRole(role);
+}
+
+export const PACKAGE_PRODUCTION_LOCK_HINT =
+  "Pembelian / Persediaan / HPP di production hanya untuk Holding dan Direktur. Centang tersimpan tidak menjadi akses efektif untuk role lain.";
 
 export function isPackagePermissionKey(key) {
   return PACKAGE_PERMISSION_SET.has(String(key || ""));

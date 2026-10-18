@@ -2339,22 +2339,26 @@ export default function PesananPenjualan() {
                         </td>
                       )}
                       <td className="so-list-identity">
-                        <div className="so-list-customer" title={o.customer || ""}>{o.customer || "—"}</div>
-                        <div className="so-list-reference">
-                        <Link
-                          to={`/po/${o.id}`}
-                          state={poListNavState({ po_number: o.po_number, customer: o.customer })}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenPo(o.id);
-                          }}
-                          className="so-list-po"
-                          data-testid={`po-link-${o.po_number}`}
-                          title={o.po_number || ""}
-                        >
-                          {o.po_number}
-                        </Link>
-                        {o.outlet ? <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span> : null}
+                        <div className="so-list-identity-stack">
+                          <div className="so-list-customer" title={o.customer || undefined}>
+                            {o.customer || "—"}
+                          </div>
+                          <Link
+                            to={`/po/${o.id}`}
+                            state={poListNavState({ po_number: o.po_number, customer: o.customer })}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenPo(o.id);
+                            }}
+                            className="so-list-po"
+                            data-testid={`po-link-${o.po_number}`}
+                            title={o.po_number || undefined}
+                          >
+                            {o.po_number || "—"}
+                          </Link>
+                          {o.outlet ? (
+                            <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span>
+                          ) : null}
                         </div>
                       </td>
                       <td>{formatDisplayDate(o.order_date) || "—"}</td>
@@ -2789,6 +2793,7 @@ export default function PesananPenjualan() {
                                         }
                                         onChange={(master) => handleSelectMasterItem(originalIndex, master)}
                                         placeholder="Cari nama / kode barang…"
+                                        fetchItems={(params) => api.salesCatalogProducts(params)}
                                       />
                                     ) : (
                                       <input

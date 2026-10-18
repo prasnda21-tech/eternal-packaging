@@ -11,7 +11,8 @@ import {
   PRODUCT_REQUEST_LIST_PATH,
   PRODUCT_REQUEST_NEW_PATH,
   canCreateProductRequest,
-  canReadAllProductRequests,
+  canFeedbackProductRequest,
+  canUpdateProductRequestStatus,
 } from "../lib/navAccess";
 import {
   CUSTOMER_MASTER,
@@ -25,12 +26,14 @@ import {
   customerSourceLabel,
   formFromRequest,
   formatError,
+  isPostSubmitStatus,
   productRequestFormsEqual,
   productSourceLabel,
   progressSteps,
   requiredComplete,
   selectMasterCustomer,
   selectMasterProduct,
+  statusLabel,
   toPayload,
 } from "../lib/productRequest";
 import ProductRequestDetail from "../components/ProductRequestDetail";
@@ -41,12 +44,15 @@ export default function ProductRequestForm() {
   const navigate = useNavigate();
   const { user, hasPerm } = useAuth();
   const canCreate = canCreateProductRequest(hasPerm);
-  const canReadAll = canReadAllProductRequests(hasPerm);
+  const canFeedback = canFeedbackProductRequest(hasPerm);
+  const canUpdateStatus = canUpdateProductRequestStatus(hasPerm);
   const [form, setForm] = useState(EMPTY_FORM);
   const [context, setContext] = useState(null);
   const [requestId, setRequestId] = useState(id || null);
   const [receipt, setReceipt] = useState(null);
   const [readonly, setReadonly] = useState(null);
+  const [activities, setActivities] = useState([]);
+  const [workflowBusy, setWorkflowBusy] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState({ type: "", text: "" });
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -81,26 +87,33 @@ export default function ProductRequestForm() {
       setRequestId(null);
       setReceipt(null);
       setReadonly(null);
+      setActivities([]);
       adoptForm(EMPTY_FORM);
       return undefined;
     }
     let cancelled = false;
     setBusy("load");
-    api.getProductRequest(id)
-      .then((data) => {
+    Promise.all([
+      api.getProductRequest(id),
+      api.listProductRequestActivities(id).catch(() => ({ activities: [] })),
+    ])
+      .then(([data, activityRes]) => {
         if (cancelled) return;
         const request = data.request;
         if (request?.receipt_only) {
           setReceipt(request);
           setReadonly(null);
+          setActivities([]);
           return;
         }
-        if (request?.status === "submitted") {
+        if (isPostSubmitStatus(request?.status)) {
           setReadonly(request);
+          setActivities(activityRes.activities || []);
           setReceipt(null);
           return;
         }
         setRequestId(request.id);
+        setActivities([]);
         adoptForm(formFromRequest(request));
       })
       .catch((err) => setMessage({ type: "error", text: formatError(err) }))
@@ -302,27 +315,77 @@ export default function ProductRequestForm() {
     );
   }
 
+  const refreshReadonly = async (requestIdValue) => {
+    const [detailRes, activityRes] = await Promise.all([
+      api.getProductRequest(requestIdValue),
+      api.listProductRequestActivities(requestIdValue),
+    ]);
+    setReadonly(detailRes.request);
+    setActivities(activityRes.activities || []);
+  };
+
+  const onSubmitFeedback = async (payload) => {
+    if (!readonly?.id) return false;
+    setWorkflowBusy("feedback");
+    setMessage(null);
+    try {
+      await api.addProductRequestFeedback(readonly.id, payload);
+      await refreshReadonly(readonly.id);
+      return true;
+    } catch (err) {
+      setMessage({ type: "error", text: formatError(err) });
+      return false;
+    } finally {
+      setWorkflowBusy("");
+    }
+  };
+
+  const onSubmitStatus = async (payload) => {
+    if (!readonly?.id) return false;
+    setWorkflowBusy("status");
+    setMessage(null);
+    try {
+      await api.updateProductRequestStatus(readonly.id, payload);
+      await refreshReadonly(readonly.id);
+      return true;
+    } catch (err) {
+      setMessage({ type: "error", text: formatError(err) });
+      return false;
+    } finally {
+      setWorkflowBusy("");
+    }
+  };
+
   if (readonly) {
     return (
       <div className="prq-page prq-detail-page" data-testid="prq-readonly-page">
         <div className="prq-head">
           <div>
             <h1>Detail Permintaan Produk</h1>
-            <p>Snapshot saat permintaan dikirim · {readonly.submitted_at}</p>
+            <p>
+              {(readonly.status_label || statusLabel(readonly.status))}
+              {readonly.submitted_at ? ` · ${readonly.submitted_at}` : ""}
+            </p>
           </div>
+          <button type="button" className="prq-btn prq-btn-ghost" onClick={() => navigate(PRODUCT_REQUEST_LIST_PATH)}>
+            Kembali ke Daftar
+          </button>
         </div>
+        {message?.text && (
+          <div className={"prq-msg" + (message.type === "error" ? " is-error" : "")}>{message.text}</div>
+        )}
         <section className="prq-card prq-detail-card">
           <h2>{readonly.request_number}</h2>
-          <ProductRequestDetail request={readonly} />
+          <ProductRequestDetail
+            request={readonly}
+            activities={activities}
+            canFeedback={canFeedback}
+            canUpdateStatus={canUpdateStatus}
+            workflowBusy={workflowBusy}
+            onSubmitFeedback={onSubmitFeedback}
+            onSubmitStatus={onSubmitStatus}
+          />
         </section>
-        {canReadAll && (
-          <div className="prq-actions">
-            <span />
-            <button type="button" className="prq-btn prq-btn-ghost" onClick={() => navigate(PRODUCT_REQUEST_LIST_PATH)}>
-              Kembali ke Daftar
-            </button>
-          </div>
-        )}
       </div>
     );
   }
@@ -459,6 +522,7 @@ export default function ProductRequestForm() {
               <MasterItemSearchSelect
                 value={form.product_id ? { id: form.product_id, item_code: form.product_code, item_name: form.product_name } : null}
                 onChange={(item) => setForm((prev) => (item ? selectMasterProduct(prev, item) : clearProductMode(prev, PRODUCT_MASTER)))}
+                fetchItems={(params) => api.productRequestProducts(params)}
                 testId="prq-product-search"
               />
             )}

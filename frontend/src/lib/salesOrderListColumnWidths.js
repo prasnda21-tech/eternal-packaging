@@ -18,7 +18,7 @@ export const SALES_ORDER_RESIZABLE_KEYS = [
 /** Compact defaults aligned with approved desktop preview. */
 export const SALES_ORDER_DEFAULT_COL_WIDTHS = {
   check: 36,
-  customer: 200,
+  customer: 240,
   orderDate: 92,
   shipDate: 92,
   qty: 86,

@@ -68,7 +68,8 @@ def test_confirm_helpers_do_not_auto_activate_on_shrink():
     assert "purchase_orders.view" not in confirmed
 
 
-def test_filter_requires_exact_confirmed_keys():
+def test_filter_strips_package_even_with_confirmed_keys():
+    """Owner policy: confirm stamps never grant package access to non-Holding."""
     perms = PACKAGE_PERMISSIONS | {"po.view"}
     filtered = filter_package_permissions(
         perms,
@@ -79,8 +80,8 @@ def test_filter_requires_exact_confirmed_keys():
         user_confirmed_keys=["current_stock.view"],
     )
     assert "po.view" in filtered
-    assert "purchase_hpp.view" in filtered
-    assert "current_stock.view" not in filtered  # user stamp alone without override True
+    assert "purchase_hpp.view" not in filtered
+    assert not filtered.intersection(PACKAGE_PERMISSIONS)
     filtered_user = filter_package_permissions(
         perms | {"current_stock.view"},
         {"role": "crm", "permissions_override": {"current_stock.view": True}},
@@ -89,8 +90,9 @@ def test_filter_requires_exact_confirmed_keys():
         role_confirmed_keys=["purchase_hpp.view"],
         user_confirmed_keys=["current_stock.view"],
     )
-    assert "current_stock.view" in filtered_user
-    assert "purchase_orders.view" not in filtered_user
+    assert "current_stock.view" not in filtered_user
+    assert "po.view" in filtered_user
+    assert not filtered_user.intersection(PACKAGE_PERMISSIONS)
 
 
 @pytest.mark.anyio

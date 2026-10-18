@@ -16,7 +16,12 @@ const catalog = {
       { key: "sales_order.view", label: "Lihat Pesanan Penjualan" },
       { key: "sales.invoice.delete", label: "Hapus Faktur Penjualan" },
     ],
-    "Akses Menu": [{ key: "nav.dashboard", label: "Menu Dashboard" }],
+    Pembelian: [{ key: "purchase_hpp.view", label: "Lihat HPP Pembelian" }],
+    Persediaan: [{ key: "master_items.view", label: "Lihat Barang/Jasa" }],
+    "Akses Menu": [
+      { key: "nav.dashboard", label: "Menu Dashboard" },
+      { key: "nav.purchasing", label: "Menu Pembelian" },
+    ],
     Pengaturan: [
       { key: "settings.hpp.view", label: "Lihat Pengaturan HPP" },
       { key: "settings.hpp.manage", label: "Ubah Pengaturan HPP" },
@@ -97,7 +102,7 @@ describe("RolePermissionWorkspace", () => {
     expect(container.querySelector('[data-testid="role-perm-crm-po.view"]').classList.contains("is-on")).toBe(true);
     expect(container.querySelector('[data-testid="role-perm-crm-po.edit"]').classList.contains("is-on")).toBe(false);
     expect(container.querySelector('[data-testid="role-cat-count-po"]').textContent).toMatch(/1 \/ 4 aktif/);
-    expect(container.querySelector('[data-testid="role-perm-count"]').textContent).toMatch(/1 \/ 8 aktif/);
+    expect(container.querySelector('[data-testid="role-perm-count"]').textContent).toMatch(/1 \/ 10 aktif/);
     expect(container.querySelector(".role-perm-grid")).toBeTruthy();
     unmount();
   });
@@ -255,25 +260,65 @@ describe("RolePermissionWorkspace", () => {
     unmount();
   });
 
-  test("package confirm panel lists exact activation keys", () => {
+  test("CRM shows package lock banner; confirm panel only for Holding", () => {
     const onConfirmPackageOptInChange = jest.fn();
     const onConfirmReviewKeysChange = jest.fn();
+    const crmMount = mount({
+      permsDraft: new Set(["po.view", "purchase_hpp.view"]),
+      initialPerms: new Set(["po.view", "purchase_hpp.view"]),
+      confirmedPackageKeys: [],
+      confirmPackageOptIn: false,
+      onConfirmPackageOptInChange,
+      confirmReviewKeys: [],
+      onConfirmReviewKeysChange,
+      // Expand matching categories so package lock badges are in the DOM.
+      permQuery: "HPP",
+    });
+    expect(crmMount.container.querySelector('[data-testid="role-package-lock-banner"]')).toBeTruthy();
+    expect(crmMount.container.querySelector('[data-testid="role-package-stored-ineffective"]')).toBeTruthy();
+    expect(crmMount.container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeNull();
+    expect(crmMount.container.querySelector('[data-testid="role-perm-package-ineffective-purchase_hpp.view"]')).toBeTruthy();
+    crmMount.unmount();
+
+    const blockedMount = mount({
+      permsDraft: new Set(["po.view"]),
+      initialPerms: new Set(["po.view"]),
+      permQuery: "Barang",
+    });
+    expect(blockedMount.container.querySelector('[data-testid="role-perm-package-blocked-master_items.view"]')).toBeTruthy();
+    const blockedInput = blockedMount.container.querySelector(
+      '[data-testid="role-perm-crm-master_items.view"] input',
+    );
+    expect(blockedInput).toBeTruthy();
+    expect(blockedInput.disabled).toBe(true);
+    blockedMount.unmount();
+
+    const holdingRole = {
+      role: "holding_team",
+      label: "Holding",
+      status: "active",
+      is_builtin: true,
+      user_count: 1,
+    };
     const { container, rerender, unmount } = mount({
-      permsDraft: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
-      initialPerms: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
+      currentRole: holdingRole,
+      selected: "holding_team",
+      labelDraft: "Holding",
+      permsDraft: new Set(["po.view", "purchase_hpp.view"]),
+      initialPerms: new Set(["po.view", "purchase_hpp.view"]),
       confirmedPackageKeys: [],
       confirmPackageOptIn: false,
       onConfirmPackageOptInChange,
       confirmReviewKeys: [],
       onConfirmReviewKeysChange,
     });
+    expect(container.querySelector('[data-testid="role-package-lock-banner"]')).toBeNull();
     expect(container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="role-package-unconfirmed-hint"]')).toBeTruthy();
     rerender({
       confirmPackageOptIn: true,
       confirmReviewKeys: ["purchase_hpp.view"],
-      permsDraft: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
-      initialPerms: new Set(["po.view", "purchase_hpp.view", "nav.purchasing"]),
+      permsDraft: new Set(["po.view", "purchase_hpp.view"]),
+      initialPerms: new Set(["po.view", "purchase_hpp.view"]),
       confirmedPackageKeys: [],
       onConfirmPackageOptInChange,
       onConfirmReviewKeysChange,

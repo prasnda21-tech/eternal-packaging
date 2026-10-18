@@ -3,6 +3,59 @@ export const CUSTOMER_NEW = "new_prospect";
 export const PRODUCT_MASTER = "product_master";
 export const PRODUCT_REQUESTED = "requested_product";
 export const NOTE_MAX_LEN = 2000;
+export const FEEDBACK_MAX_LEN = 2000;
+
+export const STATUS_DRAFT = "draft";
+export const STATUS_SUBMITTED = "submitted";
+export const STATUS_REVIEWED = "reviewed";
+export const STATUS_PENDING = "pending";
+export const STATUS_PURCHASED = "purchased";
+export const STATUS_REJECTED = "rejected";
+export const STATUS_COMPLETED = "completed";
+
+export const STATUS_OPTIONS = [
+  { value: STATUS_SUBMITTED, label: "Terkirim" },
+  { value: STATUS_REVIEWED, label: "Ditinjau" },
+  { value: STATUS_PENDING, label: "Pending" },
+  { value: STATUS_PURCHASED, label: "Terbeli" },
+  { value: STATUS_REJECTED, label: "Ditolak" },
+  { value: STATUS_COMPLETED, label: "Selesai" },
+];
+
+export const NOTE_REQUIRED_STATUSES = new Set([STATUS_PENDING, STATUS_REJECTED]);
+
+export function statusLabel(status) {
+  const found = STATUS_OPTIONS.find((row) => row.value === status);
+  if (found) return found.label;
+  if (status === STATUS_DRAFT) return "Draft";
+  return status || "—";
+}
+
+export function statusBadgeClass(status) {
+  switch (status) {
+    case STATUS_DRAFT:
+      return "prq-status-draft";
+    case STATUS_SUBMITTED:
+      return "prq-status-submitted";
+    case STATUS_REVIEWED:
+      return "prq-status-reviewed";
+    case STATUS_PENDING:
+      return "prq-status-pending";
+    case STATUS_PURCHASED:
+      return "prq-status-purchased";
+    case STATUS_REJECTED:
+      return "prq-status-rejected";
+    case STATUS_COMPLETED:
+      return "prq-status-completed";
+    default:
+      return "prq-status-draft";
+  }
+}
+
+/** True when the request is past draft and should render as read-only detail. */
+export function isPostSubmitStatus(status) {
+  return Boolean(status) && status !== STATUS_DRAFT;
+}
 
 export const EMPTY_FORM = {
   customer_source: "",

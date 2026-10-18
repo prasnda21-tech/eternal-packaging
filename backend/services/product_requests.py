@@ -1,14 +1,16 @@
-"""Customer product requests — CRM draft/submit, Holding/Direktur read-all.
+"""Customer product requests — CRM draft/submit, shared submitted read, Holding/Direktur feedback/status.
 
 Does not create sales_customers or master_items. Does not call Accurate.
+Terbeli does not create PO, stock movements, or journal entries.
 Actor, branch, and timestamps always come from the authenticated user / UTC.
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from fastapi import HTTPException
 from pymongo import ReturnDocument
@@ -21,22 +23,70 @@ from services.purchase_common import (
 )
 from services.sales_activity.util import normalize_whatsapp
 from services.sales_customers import get_sales_customer
-from services.master_items import public_master_item
+from services.master_items import list_master_items_picker, public_master_item
 
 COLLECTION = "product_requests"
+# Fields safe for CRM product-request picker — never HPP / cost / stock / supplier.
+PRODUCT_PICKER_SAFE_FIELDS = (
+    "id",
+    "accurate_item_id",
+    "item_code",
+    "item_name",
+    "unit",
+    "is_active",
+    # Needed by Pesanan Penjualan master picker; never stock/HPP/cost.
+    "production_process",
+)
+ACTIVITY_COLLECTION = "product_request_activities"
 PREFIX_REQUEST = "PPR"
 NOTE_MAX_LEN = 2000
+FEEDBACK_MAX_LEN = 2000
 FREQUENCY_MAX_LEN = 80
 CHANNEL_MAX_LEN = 80
 TEXT_MAX_LEN = 160
 
 STATUS_DRAFT = "draft"
 STATUS_SUBMITTED = "submitted"
+STATUS_REVIEWED = "reviewed"
+STATUS_PENDING = "pending"
+STATUS_PURCHASED = "purchased"
+STATUS_REJECTED = "rejected"
+STATUS_COMPLETED = "completed"
+
+STATUS_LABELS = {
+    STATUS_DRAFT: "Draft",
+    STATUS_SUBMITTED: "Terkirim",
+    STATUS_REVIEWED: "Ditinjau",
+    STATUS_PENDING: "Pending",
+    STATUS_PURCHASED: "Terbeli",
+    STATUS_REJECTED: "Ditolak",
+    STATUS_COMPLETED: "Selesai",
+}
+
+# Follow-up statuses selectable after submit (no forced sequence).
+POST_SUBMIT_STATUSES = frozenset({
+    STATUS_SUBMITTED,
+    STATUS_REVIEWED,
+    STATUS_PENDING,
+    STATUS_PURCHASED,
+    STATUS_REJECTED,
+    STATUS_COMPLETED,
+})
+NOTE_REQUIRED_STATUSES = frozenset({STATUS_PENDING, STATUS_REJECTED})
+
+ACTIVITY_FEEDBACK = "feedback"
+ACTIVITY_STATUS = "status_change"
+ACTIVITY_SUBMITTED = "submitted"
+
 CUSTOMER_MASTER = "master_crm"
 CUSTOMER_NEW = "new_prospect"
 PRODUCT_MASTER = "product_master"
 PRODUCT_REQUESTED = "requested_product"
 VERSION_FIELD = "doc_version"
+
+EVENT_SUBMITTED = "product_request_submitted"
+EVENT_FEEDBACK = "product_request_feedback"
+EVENT_STATUS = "product_request_status"
 
 # Tests assign an awaitable to synchronize concurrent draft writes. Production stays None.
 after_draft_load = None
@@ -57,6 +107,8 @@ PROTECTED_PAYLOAD_KEYS = frozenset({
     "submitted_at",
     "customer_snapshot",
     "product_snapshot",
+    "purchase_actual_qty",
+    "purchase_actual_price",
 })
 
 OVERLAY_KEYS = frozenset({
@@ -186,6 +238,23 @@ async def _resolve_master_item(db, product_id: str) -> Optional[dict]:
         {"_id": 0},
     )
     return public_master_item(doc) if doc else None
+
+
+async def search_master_products_for_request(
+    db,
+    *,
+    q: str = "",
+    status: str = "active",
+    page_size: int = 40,
+) -> Dict[str, Any]:
+    """Autocomplete for product-request form. Requires create perm at HTTP layer only."""
+    raw = await list_master_items_picker(db, q=q or "", status=status or "", page_size=page_size)
+    items: List[Dict[str, Any]] = []
+    for row in raw.get("items") or []:
+        if not row:
+            continue
+        items.append({key: row.get(key) for key in PRODUCT_PICKER_SAFE_FIELDS})
+    return {"items": items}
 
 
 def _customer_snapshot_from_master(master: dict) -> dict:
@@ -395,7 +464,7 @@ def _reject_client_precondition(doc: dict, expected) -> None:
     if expected is _VERSION_OMITTED:
         return
     if _authoritative_version(doc) != expected:
-        raise HTTPException(409, "Draft berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
+        raise HTTPException(409, "Permintaan berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
 
 
 def _predicate_version(doc: dict, expected):
@@ -493,7 +562,7 @@ async def _apply_draft_write(
             409,
             "Permintaan ini sudah dikirim." if submitted else "Permintaan yang sudah dikirim tidak dapat diubah.",
         )
-    raise HTTPException(409, "Draft berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
+    raise HTTPException(409, "Permintaan berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
 
 
 def _build_potential(payload: dict, *, require_complete: bool) -> Dict[str, Any]:
@@ -543,11 +612,21 @@ def receipt_view(doc: dict) -> dict:
     }
 
 
+def status_label(status: Any) -> str:
+    key = str(status or "").strip()
+    return STATUS_LABELS.get(key, key or "—")
+
+
+def is_post_submit_status(status: Any) -> bool:
+    return str(status or "").strip() in POST_SUBMIT_STATUSES
+
+
 def public_view(doc: dict) -> dict:
     return {
         "id": doc.get("id"),
         "request_number": doc.get("request_number"),
         "status": doc.get("status"),
+        "status_label": status_label(doc.get("status")),
         "customer_source": doc.get("customer_source"),
         "customer_id": doc.get("customer_id"),
         "customer_snapshot": dict(doc.get("customer_snapshot") or {}),
@@ -560,6 +639,8 @@ def public_view(doc: dict) -> dict:
         "needed_date": doc.get("needed_date"),
         "request_note": doc.get("request_note") or "",
         "request_channel": doc.get("request_channel") or "",
+        "purchase_actual_qty": doc.get("purchase_actual_qty"),
+        "purchase_actual_price": doc.get("purchase_actual_price"),
         "created_by_id": doc.get("created_by_id"),
         "created_by_snapshot": dict(doc.get("created_by_snapshot") or {}),
         "branch_id": doc.get("branch_id"),
@@ -580,6 +661,7 @@ def list_row(doc: dict) -> dict:
         "id": doc.get("id"),
         "request_number": doc.get("request_number"),
         "status": doc.get("status"),
+        "status_label": status_label(doc.get("status")),
         "submitted_at": doc.get("submitted_at"),
         "created_at": doc.get("created_at"),
         "customer_source": doc.get("customer_source"),
@@ -676,6 +758,8 @@ async def ensure_indexes(db) -> None:
     await db[COLLECTION].create_index("created_by_id")
     await db[COLLECTION].create_index("status")
     await db[COLLECTION].create_index("created_at")
+    await db[ACTIVITY_COLLECTION].create_index("id", unique=True)
+    await db[ACTIVITY_COLLECTION].create_index([("request_id", 1), ("created_at", 1)])
 
 
 def _owned_by(doc: dict, user: dict) -> bool:
@@ -766,6 +850,16 @@ async def submit_draft(db, request_id: str, payload: Optional[Dict[str, Any]], u
         submitted=True,
         expected=expected,
     )
+    await _append_activity(
+        db,
+        request_id=saved["id"],
+        activity_type=ACTIVITY_SUBMITTED,
+        user=user,
+        note="",
+        from_status=STATUS_DRAFT,
+        to_status=STATUS_SUBMITTED,
+    )
+    await _emit_submitted_notifications(db, saved, user)
     return receipt_view(saved)
 
 
@@ -781,6 +875,14 @@ def can_read_own_draft(perms: set) -> bool:
     return "product_request.read_own_draft" in perms or "product_request.create" in perms
 
 
+def can_feedback(perms: set) -> bool:
+    return "product_request.feedback" in perms
+
+
+def can_update_status(perms: set) -> bool:
+    return "product_request.update_status" in perms
+
+
 async def get_request(db, request_id: str, user: dict, perms: set) -> dict:
     doc = await db[COLLECTION].find_one({"id": str(request_id)}, {"_id": 0})
     if not doc:
@@ -793,12 +895,9 @@ async def get_request(db, request_id: str, user: dict, perms: set) -> dict:
         if owned and can_read_own_draft(perms):
             return public_view(doc)
         raise HTTPException(403, "Anda tidak dapat membaca draft ini.")
-    if status == STATUS_SUBMITTED:
-        if can_read_all(perms):
-            return public_view(doc)
-        if owned and can_create(perms):
-            return receipt_view(doc)
-        raise HTTPException(403, "Detail permintaan terkirim hanya untuk Holding dan Direktur.")
+    if is_post_submit_status(status):
+        # Any authenticated caller may read submitted/follow-up requests.
+        return public_view(doc)
     raise HTTPException(403, "Akses ditolak.")
 
 
@@ -808,9 +907,9 @@ VIEW_OWN_DRAFTS = "own_drafts"
 
 async def _submitted_rows(db) -> List[dict]:
     rows = await db[COLLECTION].find(
-        {"status": STATUS_SUBMITTED},
+        {"status": {"$in": list(POST_SUBMIT_STATUSES)}},
         {"_id": 0},
-    ).sort("submitted_at", -1).to_list(500)
+    ).sort([("submitted_at", -1), ("updated_at", -1)]).to_list(500)
     return [list_row(r) for r in rows]
 
 
@@ -823,16 +922,13 @@ async def _own_draft_rows(db, user: dict) -> List[dict]:
 
 
 async def list_requests(db, user: dict, perms: set, view: Optional[str] = None) -> List[dict]:
-    """read_all sees submitted requests only.
+    """Submitted/follow-up list is open to any authenticated user.
 
-    Own drafts are a separate scope filtered by created_by_id + status=draft.
-    A user who has both permissions must ask for view=own_drafts to see their
-    drafts. read_all never includes another user's draft.
+    Own drafts remain a separate scope (created_by_id + status=draft).
+    Drafts of other users are never included.
     """
     scope = (view or "").strip() or None
     if scope == VIEW_SUBMITTED:
-        if not can_read_all(perms):
-            raise HTTPException(403, "Daftar terkirim memerlukan product_request.read_all.")
         return await _submitted_rows(db)
     if scope == VIEW_OWN_DRAFTS:
         if not (can_create(perms) or can_read_own_draft(perms)):
@@ -840,18 +936,401 @@ async def list_requests(db, user: dict, perms: set, view: Optional[str] = None) 
         return await _own_draft_rows(db, user)
     if scope is not None:
         raise HTTPException(400, "Parameter view tidak dikenal.")
-    if can_read_all(perms):
-        return await _submitted_rows(db)
-    if can_create(perms) or can_read_own_draft(perms):
-        rows = await db[COLLECTION].find(
-            {"created_by_id": actor_user_id(user)},
-            {"_id": 0},
-        ).sort("updated_at", -1).to_list(200)
-        out = []
-        for row in rows:
-            if row.get("status") == STATUS_SUBMITTED:
-                out.append(receipt_view(row))
-            else:
-                out.append(public_view(row))
-        return out
-    raise HTTPException(403, "Permission product_request diperlukan")
+    # Default: submitted/follow-up for everyone; creators still use view=own_drafts for drafts.
+    return await _submitted_rows(db)
+
+
+def public_activity(doc: dict) -> dict:
+    return {
+        "id": doc.get("id"),
+        "request_id": doc.get("request_id"),
+        "type": doc.get("type"),
+        "note": doc.get("note") or "",
+        "from_status": doc.get("from_status"),
+        "to_status": doc.get("to_status"),
+        "from_status_label": status_label(doc.get("from_status")) if doc.get("from_status") else None,
+        "to_status_label": status_label(doc.get("to_status")) if doc.get("to_status") else None,
+        "actual_qty": doc.get("actual_qty"),
+        "actual_price": doc.get("actual_price"),
+        "actor_id": doc.get("actor_id"),
+        "actor_snapshot": dict(doc.get("actor_snapshot") or {}),
+        "created_at": doc.get("created_at"),
+    }
+
+
+async def _append_activity(
+    db,
+    *,
+    request_id: str,
+    activity_type: str,
+    user: dict,
+    note: str = "",
+    from_status: Optional[str] = None,
+    to_status: Optional[str] = None,
+    actual_qty: Any = None,
+    actual_price: Any = None,
+) -> dict:
+    actor = actor_snapshot(user)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "request_id": str(request_id),
+        "type": activity_type,
+        "note": str(note or "")[:FEEDBACK_MAX_LEN],
+        "from_status": from_status,
+        "to_status": to_status,
+        "actual_qty": actual_qty,
+        "actual_price": actual_price,
+        "actor_id": actor.get("id") or "",
+        "actor_snapshot": actor,
+        "created_at": now_iso(),
+    }
+    await db[ACTIVITY_COLLECTION].insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+def deep_link_for_request(request_id: str) -> str:
+    # Detail route shares Status & Feedback with the list drawer.
+    return f"/penjualan/permintaan-produk/{request_id}"
+
+
+async def _load_role_permission_map(db) -> Dict[str, List[str]]:
+    rows = await db.role_permissions.find({}, {"_id": 0, "role": 1, "permissions": 1}).to_list(200)
+    out: Dict[str, List[str]] = {}
+    for row in rows:
+        role = str((row or {}).get("role") or "").strip()
+        if not role:
+            continue
+        perms = (row or {}).get("permissions")
+        if isinstance(perms, list):
+            out[role] = [str(p) for p in perms if p]
+    return out
+
+
+async def resolve_read_all_recipient_user_ids(db, *, exclude_user_id: str = "") -> List[str]:
+    """Active users whose effective permissions include product_request.read_all."""
+    from permissions import effective_permissions
+
+    role_map = await _load_role_permission_map(db)
+    role_defaults_override = role_map or None
+    cursor = db.users.find(
+        {"status": {"$ne": "inactive"}},
+        {"_id": 0, "id": 1, "role": 1, "permissions_override": 1},
+    )
+    users = await cursor.to_list(500)
+    skip = str(exclude_user_id or "").strip()
+    seen = set()
+    out: List[str] = []
+    for row in users:
+        uid = str((row or {}).get("id") or "").strip()
+        if not uid or uid == skip or uid in seen:
+            continue
+        role = str((row or {}).get("role") or "").strip()
+        override = (row or {}).get("permissions_override") or {}
+        if not isinstance(override, dict):
+            override = {}
+        perms = effective_permissions(role, override, role_defaults_override)
+        if "product_request.read_all" not in perms:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+async def _notify_users(
+    db,
+    *,
+    user_ids: Sequence[str],
+    event_type: str,
+    dedupe_id: str,
+    request: dict,
+    title: str,
+    body: str,
+    decision: str,
+) -> None:
+    from services.notifications import create_notification
+
+    link = deep_link_for_request(str(request.get("id") or ""))
+    order_id = str(request.get("id") or "")
+    po_number = str(request.get("request_number") or "") or None
+    seen = set()
+    for uid in user_ids:
+        key = str(uid or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            await create_notification(
+                db,
+                user_id=key,
+                event_type=event_type,
+                approval_id=dedupe_id,
+                order_id=order_id,
+                po_number=po_number,
+                decision=decision,
+                title=title,
+                body=body,
+                deep_link=link,
+            )
+        except Exception:
+            logging.getLogger("product_requests").exception(
+                "product_request_notify_failed event=%s user=%s", event_type, key
+            )
+
+
+async def _emit_submitted_notifications(db, request: dict, user: dict) -> None:
+    try:
+        recipients = await resolve_read_all_recipient_user_ids(
+            db, exclude_user_id=actor_user_id(user)
+        )
+        if not recipients:
+            return
+        number = request.get("request_number") or request.get("id")
+        customer = (request.get("customer_snapshot") or {}).get("name") or ""
+        title = "Permintaan produk baru"
+        body = f"{number} dikirim"
+        if customer:
+            body = f"{number} — {customer} dikirim"
+        await _notify_users(
+            db,
+            user_ids=recipients,
+            event_type=EVENT_SUBMITTED,
+            dedupe_id=f"submit:{request.get('id')}",
+            request=request,
+            title=title,
+            body=body,
+            decision=STATUS_SUBMITTED,
+        )
+    except Exception:
+        logging.getLogger("product_requests").exception(
+            "product_request_submit_notify_failed id=%s", (request or {}).get("id")
+        )
+
+
+async def _emit_creator_notification(
+    db,
+    request: dict,
+    *,
+    event_type: str,
+    dedupe_id: str,
+    title: str,
+    body: str,
+    decision: str,
+    actor_id: str,
+) -> None:
+    try:
+        creator = str(request.get("created_by_id") or "").strip()
+        if not creator or creator == actor_id:
+            return
+        await _notify_users(
+            db,
+            user_ids=[creator],
+            event_type=event_type,
+            dedupe_id=dedupe_id,
+            request=request,
+            title=title,
+            body=body,
+            decision=decision,
+        )
+    except Exception:
+        logging.getLogger("product_requests").exception(
+            "product_request_creator_notify_failed id=%s", (request or {}).get("id")
+        )
+
+
+def _post_submit_write_filter(doc: dict, expected) -> Dict[str, Any]:
+    filt: Dict[str, Any] = {
+        "id": doc["id"],
+        "status": {"$in": list(POST_SUBMIT_STATUSES)},
+    }
+    version = _predicate_version(doc, expected)
+    if version is None:
+        filt["$or"] = [
+            {VERSION_FIELD: {"$exists": False}},
+            {VERSION_FIELD: None},
+        ]
+    else:
+        filt[VERSION_FIELD] = version
+    return filt
+
+
+async def _load_post_submit(db, request_id: str) -> dict:
+    doc = await db[COLLECTION].find_one({"id": str(request_id)}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Permintaan produk tidak ditemukan.")
+    if doc.get("status") == STATUS_DRAFT:
+        raise HTTPException(409, "Draft harus dikirim sebelum feedback atau perubahan status.")
+    if not is_post_submit_status(doc.get("status")):
+        raise HTTPException(409, "Status permintaan tidak memungkinkan perubahan ini.")
+    await _sync_after_draft_load()
+    return doc
+
+
+async def _apply_post_submit_write(
+    db,
+    doc: dict,
+    update_fields: Dict[str, Any],
+    expected,
+) -> dict:
+    ts = now_iso()
+    set_fields = {
+        **update_fields,
+        VERSION_FIELD: _next_version(doc, expected),
+        "updated_at": ts,
+    }
+    saved = await db[COLLECTION].find_one_and_update(
+        _post_submit_write_filter(doc, expected),
+        {"$set": set_fields},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+    if saved:
+        return saved
+    current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+    if not current:
+        raise HTTPException(404, "Permintaan produk tidak ditemukan.")
+    if current.get("status") == STATUS_DRAFT:
+        raise HTTPException(409, "Draft harus dikirim sebelum feedback atau perubahan status.")
+    raise HTTPException(409, "Permintaan berubah karena pembaruan bersamaan. Muat ulang lalu coba lagi.")
+
+
+async def list_activities(db, request_id: str, user: dict, perms: set) -> List[dict]:
+    # Reuse get_request access rules (draft owner-only; submitted open).
+    await get_request(db, request_id, user, perms)
+    rows = await db[ACTIVITY_COLLECTION].find(
+        {"request_id": str(request_id)},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    return [public_activity(r) for r in rows]
+
+
+async def add_feedback(
+    db,
+    request_id: str,
+    payload: Optional[Dict[str, Any]],
+    user: dict,
+    perms: set,
+) -> dict:
+    if not can_feedback(perms):
+        raise HTTPException(403, "Permission product_request.feedback diperlukan")
+    doc = await _load_post_submit(db, request_id)
+    expected = _expected_version(payload)
+    _reject_client_precondition(doc, expected)
+    note = str((payload or {}).get("note") or (payload or {}).get("feedback") or "").strip()
+    if not note:
+        raise HTTPException(400, "Feedback wajib diisi.")
+    if len(note) > FEEDBACK_MAX_LEN:
+        raise HTTPException(400, f"Feedback maksimal {FEEDBACK_MAX_LEN} karakter.")
+    # Feedback must not change status — only bump version / updated_at.
+    saved = await _apply_post_submit_write(db, doc, {}, expected)
+    activity = await _append_activity(
+        db,
+        request_id=saved["id"],
+        activity_type=ACTIVITY_FEEDBACK,
+        user=user,
+        note=note,
+        from_status=saved.get("status"),
+        to_status=saved.get("status"),
+    )
+    number = saved.get("request_number") or saved.get("id")
+    await _emit_creator_notification(
+        db,
+        saved,
+        event_type=EVENT_FEEDBACK,
+        dedupe_id=f"feedback:{activity['id']}",
+        title="Feedback permintaan produk",
+        body=f"{number}: {note[:160]}",
+        decision=ACTIVITY_FEEDBACK,
+        actor_id=actor_user_id(user),
+    )
+    return {
+        "request": public_view(saved),
+        "activity": public_activity(activity),
+    }
+
+
+def _optional_non_negative_int(raw: Any, field_name: str) -> Optional[int]:
+    if raw is None or raw == "":
+        return None
+    return _parse_non_negative_int(raw, field_name)
+
+
+async def update_status(
+    db,
+    request_id: str,
+    payload: Optional[Dict[str, Any]],
+    user: dict,
+    perms: set,
+) -> dict:
+    if not can_update_status(perms):
+        raise HTTPException(403, "Permission product_request.update_status diperlukan")
+    doc = await _load_post_submit(db, request_id)
+    expected = _expected_version(payload)
+    _reject_client_precondition(doc, expected)
+    data = payload or {}
+    new_status = str(data.get("status") or "").strip()
+    if new_status not in POST_SUBMIT_STATUSES:
+        raise HTTPException(400, "Status tidak valid.")
+    if new_status == STATUS_DRAFT:
+        raise HTTPException(400, "Tidak dapat mengembalikan ke draft.")
+    note = str(data.get("note") or data.get("status_note") or "").strip()
+    if new_status in NOTE_REQUIRED_STATUSES and not note:
+        raise HTTPException(400, "Catatan wajib untuk status Pending atau Ditolak.")
+    if len(note) > FEEDBACK_MAX_LEN:
+        raise HTTPException(400, f"Catatan maksimal {FEEDBACK_MAX_LEN} karakter.")
+
+    update_fields: Dict[str, Any] = {"status": new_status}
+    actual_qty = None
+    actual_price = None
+    if new_status == STATUS_PURCHASED:
+        if "actual_qty" in data or "purchase_actual_qty" in data:
+            actual_qty = _optional_non_negative_int(
+                data.get("actual_qty", data.get("purchase_actual_qty")),
+                "Jumlah aktual",
+            )
+            update_fields["purchase_actual_qty"] = actual_qty
+        if "actual_price" in data or "purchase_actual_price" in data:
+            actual_price = _optional_non_negative_int(
+                data.get("actual_price", data.get("purchase_actual_price")),
+                "Harga pembelian",
+            )
+            update_fields["purchase_actual_price"] = actual_price
+
+    from_status = doc.get("status")
+    saved = await _apply_post_submit_write(db, doc, update_fields, expected)
+    # Guard: potential snapshot fields must remain intact.
+    if saved.get("potential_qty") != doc.get("potential_qty"):
+        raise HTTPException(500, "Integritas potential_qty gagal dijaga.")
+    if saved.get("target_price") != doc.get("target_price"):
+        raise HTTPException(500, "Integritas target_price gagal dijaga.")
+
+    activity = await _append_activity(
+        db,
+        request_id=saved["id"],
+        activity_type=ACTIVITY_STATUS,
+        user=user,
+        note=note,
+        from_status=from_status,
+        to_status=new_status,
+        actual_qty=actual_qty,
+        actual_price=actual_price,
+    )
+    number = saved.get("request_number") or saved.get("id")
+    label = status_label(new_status)
+    body = f"{number} status menjadi {label}"
+    if note:
+        body = f"{body}. {note[:120]}"
+    await _emit_creator_notification(
+        db,
+        saved,
+        event_type=EVENT_STATUS,
+        dedupe_id=f"status:{activity['id']}",
+        title="Status permintaan produk diperbarui",
+        body=body,
+        decision=new_status,
+        actor_id=actor_user_id(user),
+    )
+    return {
+        "request": public_view(saved),
+        "activity": public_activity(activity),
+    }

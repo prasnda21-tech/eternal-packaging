@@ -22,7 +22,9 @@ import {
   isPackagePermissionKey,
   packageKeysFromOverride,
   packageKeysToActivate,
+  PACKAGE_PRODUCTION_LOCK_HINT,
   pruneConfirmReviewKeys,
+  roleMayReceivePackageAccess,
   rolePermissionsPutBody,
   unconfirmedPackageKeys,
   userOverridePutBody,
@@ -145,7 +147,13 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
     setUserPkgReviewKeys((prev) => pruneConfirmReviewKeys(prev, userOverridePackageKeys));
   }, [userOverridePackageKeys.join("|")]);
 
+  const employeePackageAccessAllowed = roleMayReceivePackageAccess(form.role);
+
   const togglePerm = (key, value) => {
+    if (isPackagePermissionKey(key) && value === "grant" && !employeePackageAccessAllowed) {
+      // Non-Holding/Direktur cannot gain effective package access via override.
+      return;
+    }
     setForm((f) => {
       const next = { ...f.permissions_override };
       if (value === "inherit") delete next[key];
@@ -317,12 +325,22 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
           status="neutral"
         >
           <div className="emp-perms">
-          {userOverridePackageKeys.length > 0 && (
+          {!employeePackageAccessAllowed && (
+            <div className="settings-info" data-testid="emp-package-lock-banner" style={{ marginBottom: 12 }}>
+              <strong>Package Pembelian / Persediaan / HPP</strong>
+              <p className="hint" style={{ margin: "4px 0 0" }}>{PACKAGE_PRODUCTION_LOCK_HINT}</p>
+              <p className="muted small" style={{ marginTop: 6 }}>
+                Tombol Grant untuk izin package dinonaktifkan pada role ini. Kolom Efektif mengikuti backend
+                (sama dengan /auth/me).
+              </p>
+            </div>
+          )}
+          {employeePackageAccessAllowed && userOverridePackageKeys.length > 0 && (
             <div className="settings-info" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
-              <strong>Package override (production)</strong>
+              <strong>Package override (Holding/Direktur)</strong>
               <p className="hint">
-                Override Grant pada izin package tidak aktif di production sampai dikonfirmasi eksplisit.
-                Role stamp dan user stamp saling independen.
+                Stamp konfirmasi opsional untuk audit override package. Akses efektif Holding/Direktur
+                tetap mengikuti kebijakan package runtime.
               </p>
               <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 8 }}>
                 <input
@@ -332,7 +350,6 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                     const on = e.target.checked;
                     setUserPkgConfirmOptIn(on);
                     if (on && !userPkgReviewKeys.length) {
-                      // Seed with already-active confirms still granted; new grants stay unchecked.
                       setUserPkgReviewKeys(
                         packageKeysToActivate(userOverridePackageKeys, userConfirmedPackageKeys),
                       );
@@ -340,7 +357,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                   }}
                   data-testid="emp-package-confirm-optin"
                 />
-                <span>Konfirmasi aktivasi package override untuk daftar yang ditinjau</span>
+                <span>Catat stamp konfirmasi package override untuk daftar yang ditinjau</span>
               </label>
               {userPkgConfirmOptIn && (
                 <ul data-testid="emp-package-confirm-list" style={{ marginTop: 8, paddingLeft: 18 }}>
@@ -378,7 +395,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
           <div className="emp-perms-head">
             <div>
               <h4>Hak akses khusus (override)</h4>
-              <p className="hint">Default = ikut role. Grant menambah, Deny menghilangkan untuk user ini saja. Kolom <strong>Efektif</strong> menunjukkan hasil akhir.</p>
+              <p className="hint">Default = ikut role. Grant menambah, Deny menghilangkan untuk user ini saja. Kolom <strong>Efektif</strong> menunjukkan hasil akhir (termasuk filter package production).</p>
             </div>
             <div className="perm-search">
               <Search size={14}/>
@@ -440,7 +457,20 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                         </div>
                         <div className="perm-seg">
                           <button type="button" className={state === "inherit" ? "on" : ""} onClick={() => togglePerm(p.key, "inherit")} data-testid={`perm-inherit-${p.key}`}>Ikut role</button>
-                          <button type="button" className={state === "grant" ? "on" : ""} onClick={() => togglePerm(p.key, "grant")} data-testid={`perm-grant-${p.key}`}>Grant</button>
+                          <button
+                            type="button"
+                            className={state === "grant" ? "on" : ""}
+                            onClick={() => togglePerm(p.key, "grant")}
+                            data-testid={`perm-grant-${p.key}`}
+                            disabled={isPackagePermissionKey(p.key) && !employeePackageAccessAllowed}
+                            title={
+                              isPackagePermissionKey(p.key) && !employeePackageAccessAllowed
+                                ? PACKAGE_PRODUCTION_LOCK_HINT
+                                : undefined
+                            }
+                          >
+                            Grant
+                          </button>
                           <button type="button" className={state === "deny" ? "on" : ""} onClick={() => togglePerm(p.key, "deny")} data-testid={`perm-deny-${p.key}`}>Deny</button>
                         </div>
                       </div>
@@ -1120,9 +1150,15 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
       }
       setInitial(new Set(permsDraft));
       setMetaInitial({ label: labelDraft, description: descDraft });
-      notify("Perubahan role disimpan");
       // Refresh own session so sidebar/API.me reflect the new effective set immediately.
-      if (selected === user?.role) await refresh();
+      if (selected === user?.role) {
+        await refresh();
+        notify("Perubahan role disimpan. Sesi Anda sudah disegarkan.");
+      } else {
+        notify(
+          "Perubahan role disimpan. Pengguna dengan role ini perlu refresh halaman atau login ulang agar hak akses baru berlaku.",
+        );
+      }
       await load(true);
     } catch (e) {
       // Keep draft + confirm UI; do not notify success or reload-away the draft.

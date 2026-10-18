@@ -157,6 +157,19 @@ describe("salesMenuItems", () => {
     ]);
   });
 
+  test("product request child nav alone surfaces Penjualan parent without other sales tiles", () => {
+    const visible = salesNavVisible(has(NAV_KEYS.productRequests));
+    expect(visible.parent).toBe(true);
+    expect(visible.productRequests).toBe(true);
+    expect(visible.salesOrder).toBe(false);
+    expect(visible.salesInvoice).toBe(false);
+    expect(visible.salesReceipt).toBe(false);
+    const items = salesMenuItems(has(NAV_KEYS.productRequests));
+    expect(items).toEqual([
+      { key: NAV_KEYS.productRequests, label: "Permintaan Produk", to: "/penjualan/permintaan-produk", tone: "green", testid: "top-nav-product-requests" },
+    ]);
+  });
+
   test("Holding read_all opens the product request list", () => {
     const items = salesMenuItems(has(NAV_KEYS.sales, "product_request.read_all"));
     expect(items).toEqual([

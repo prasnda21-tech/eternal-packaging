@@ -39,8 +39,8 @@
 .so-list-workspace .so-list-table thead th { background: #f6f8f8 !important; color: #34464e !important; border-bottom: 1px solid var(--so-line) !important; padding: 8px 10px; text-transform: none; letter-spacing: 0; font-size: 12px; }
 .so-list-workspace .so-list-table thead .so-th-filter { color: #526b69; width: 24px; height: 24px; }
 .so-list-workspace .so-list-table thead .so-th-filter:is(:hover,.is-active) { color: #075344; background: #d9eee5; }
-.so-list-workspace .so-list-table td { height: 55px; padding: 4px 10px; border-right: 1px solid #f2f5f4; }
-.so-list-workspace .so-list-row { height: 55px; }
+.so-list-workspace .so-list-table td { height: auto; min-height: 40px; padding: 6px 10px; border-right: 1px solid #f2f5f4; }
+.so-list-workspace .so-list-row { height: auto; }
 .so-list-workspace .so-list-row:nth-child(even) td { background: #fcfdfd; }
 .so-list-workspace .so-list-row.is-selected td,
 .so-list-workspace .so-list-row.is-selected:hover td { background: #e0f3ec !important; }
@@ -168,13 +168,49 @@
 .so-list-workspace .so-list-toolbar { padding: 6px 10px; gap: 8px; }
 .so-list-workspace .so-list-toolbar :is(input,select,button) { height: 30px; min-height: 30px; }
 .so-list-workspace .so-list-table thead th { padding: 4px 8px; font-size: 11px; }
-.so-list-workspace .so-list-row,
-.so-list-workspace .so-list-table tbody td { height: 36px; padding: 2px 8px; font-size: 12px; }
-.so-list-workspace .so-list-customer { display: block; font-size: 13px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.so-list-workspace .so-list-reference { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.so-list-workspace .so-list-po { flex: 0 1 auto; font-size: 10px; line-height: 13px; }
-.so-list-workspace .so-list-outlet { min-width: 0; font-size: 10px; line-height: 13px; }
-.so-list-workspace .so-list-outlet::before { content: "· "; }
+.so-list-workspace .so-list-row { height: auto; }
+.so-list-workspace .so-list-table tbody td { height: auto; min-height: 40px; padding: 5px 8px; font-size: 12px; }
+.so-list-workspace .so-list-table td.so-list-identity { height: auto !important; min-height: 56px; }
+.so-list-workspace .so-list-identity-stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+}
+.so-list-workspace .so-list-customer {
+  display: block;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.so-list-workspace .so-list-po {
+  display: block;
+  flex: none;
+  font-size: 11px;
+  line-height: 14px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.so-list-workspace .so-list-outlet {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 10px;
+  line-height: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.so-list-workspace .so-list-outlet::before { content: none; }
 .so-list-workspace .so-list-badge { min-height: 16px; height: 16px; padding: 0 5px; font-size: 10px; line-height: 14px; }
 .so-list-workspace .so-list-sales { font-size: 11px; line-height: 14px; }
 .so-list-workspace .so-progress-track { height: 4px; }

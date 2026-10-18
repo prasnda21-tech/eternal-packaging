@@ -50,6 +50,27 @@ export function clampProductionScheduleColWidth(key, width) {
   return Math.max(min, Math.min(max, Math.round(n)));
 }
 
+/**
+ * Convert a screen-space pointer delta into logical column width (pre-zoom).
+ * Column styles use `calc(Npx * var(--production-sheet-zoom))`, so clientX
+ * deltas must be divided by the active sheet zoom to keep the divider under the pointer.
+ */
+export function productionScheduleResizeLogicalDelta(startClientX, clientX, zoom = 1) {
+  const z = Number(zoom);
+  const safeZoom = Number.isFinite(z) && z > 0 ? z : 1;
+  const start = Number(startClientX);
+  const current = Number(clientX);
+  if (!Number.isFinite(start) || !Number.isFinite(current)) return 0;
+  return (current - start) / safeZoom;
+}
+
+export function productionScheduleResizeNextWidth(key, startWidth, startClientX, clientX, zoom = 1) {
+  return clampProductionScheduleColWidth(
+    key,
+    Number(startWidth) + productionScheduleResizeLogicalDelta(startClientX, clientX, zoom),
+  );
+}
+
 export function normalizeProductionScheduleColWidths(raw) {
   const next = { ...PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS };
   if (!raw || typeof raw !== "object") return next;

@@ -314,6 +314,7 @@ export default function LineProductReplaceControl({
                   placeholder="Cari nama atau kode barang…"
                   emptyLabel="Produk tidak ditemukan"
                   testId={`ganti-barang-picker-${lineIdx}`}
+                  fetchItems={(params) => api.salesCatalogProducts(params)}
                 />
               </div>
 

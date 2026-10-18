@@ -12,8 +12,8 @@ import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetC
 import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
 import {
   PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS,
-  clampProductionScheduleColWidth,
   clearProductionScheduleColWidths,
+  productionScheduleResizeNextWidth,
   productionScheduleStickyCssVars,
   readProductionScheduleColWidths,
   writeProductionScheduleColWidths,
@@ -551,6 +551,9 @@ export default function ProductionSchedule() {
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startW = colWidths[key] ?? PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS[key];
+    const zoom = Number(sheetZoom.zoom) > 0 ? Number(sheetZoom.zoom) : 1;
+    let rafId = 0;
+    let pendingW = startW;
     try {
       handleEl.setPointerCapture(pointerId);
     } catch {
@@ -559,19 +562,29 @@ export default function ProductionSchedule() {
     document.body.classList.add("prod-col-resizing");
     handleEl.classList.add("is-active");
 
-    const onMove = (moveEvent) => {
-      if (moveEvent.pointerId !== pointerId) return;
-      const nextW = clampProductionScheduleColWidth(key, startW + (moveEvent.clientX - startX));
+    const flushWidth = () => {
+      rafId = 0;
+      const nextW = pendingW;
       setColWidths((prev) => {
         if (prev[key] === nextW) return prev;
         return { ...prev, [key]: nextW };
       });
+    };
+
+    const onMove = (moveEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      pendingW = productionScheduleResizeNextWidth(key, startW, startX, moveEvent.clientX, zoom);
+      if (!rafId) rafId = window.requestAnimationFrame(flushWidth);
     };
     const onUp = (upEvent) => {
       if (upEvent.pointerId !== pointerId) return;
       handleEl.removeEventListener("pointermove", onMove);
       handleEl.removeEventListener("pointerup", onUp);
       handleEl.removeEventListener("pointercancel", onUp);
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
       try {
         handleEl.releasePointerCapture(pointerId);
       } catch {
@@ -579,18 +592,24 @@ export default function ProductionSchedule() {
       }
       handleEl.classList.remove("is-active");
       document.body.classList.remove("prod-col-resizing");
+      const endX = Number.isFinite(upEvent.clientX) ? upEvent.clientX : startX;
+      const finalW = productionScheduleResizeNextWidth(key, startW, startX, endX, zoom);
       setColWidths((prev) => {
-        writeProductionScheduleColWidths(prev, listUserId);
-        return prev;
+        const next = { ...prev, [key]: finalW };
+        writeProductionScheduleColWidths(next, listUserId);
+        return next;
       });
       if (colResizeRef.current?.pointerId === pointerId) colResizeRef.current = null;
     };
 
-    colResizeRef.current = { pointerId, handleEl, onMove, onUp };
+    colResizeRef.current = { pointerId, handleEl, onMove, onUp, cancelRaf: () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+      rafId = 0;
+    } };
     handleEl.addEventListener("pointermove", onMove);
     handleEl.addEventListener("pointerup", onUp);
     handleEl.addEventListener("pointercancel", onUp);
-  }, [colWidths, listUserId]);
+  }, [colWidths, listUserId, sheetZoom.zoom]);
 
   useEffect(() => () => {
     const active = colResizeRef.current;
@@ -598,6 +617,7 @@ export default function ProductionSchedule() {
     active.handleEl.removeEventListener("pointermove", active.onMove);
     active.handleEl.removeEventListener("pointerup", active.onUp);
     active.handleEl.removeEventListener("pointercancel", active.onUp);
+    active.cancelRaf?.();
     document.body.classList.remove("prod-col-resizing");
     colResizeRef.current = null;
   }, []);

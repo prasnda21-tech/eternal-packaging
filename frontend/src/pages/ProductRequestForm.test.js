@@ -37,6 +37,9 @@ jest.mock("../lib/api", () => ({
     updateProductRequest: jest.fn(),
     submitProductRequest: jest.fn(),
     getProductRequest: jest.fn(),
+    listProductRequestActivities: jest.fn(),
+    addProductRequestFeedback: jest.fn(),
+    updateProductRequestStatus: jest.fn(),
   },
 }));
 
@@ -87,12 +90,16 @@ const flush = async () => {
 };
 
 describe("ProductRequestForm contracts", () => {
-  test("uses existing customer repository search and master item picker", () => {
+  test("uses existing customer repository search and PRQ product picker", () => {
     expect(searchSrc).toMatch(/api\.productRequestCustomers/);
     expect(src).toMatch(/MasterItemSearchSelect/);
+    expect(src).toMatch(/fetchItems=\{\(params\) => api\.productRequestProducts\(params\)\}/);
+    expect(src).not.toMatch(/masterItemsPicker/);
     expect(apiSrc).toMatch(/createProductRequest/);
     expect(apiSrc).toMatch(/submitProductRequest/);
     expect(apiSrc).toMatch(/productRequestCustomers/);
+    expect(apiSrc).toMatch(/productRequestProducts/);
+    expect(apiSrc).toMatch(/\/product-requests\/products/);
     expect(app).toMatch(/\/penjualan\/permintaan-produk\/baru/);
   });
 
@@ -136,6 +143,9 @@ describe("ProductRequestForm interactions", () => {
     mockApi.getProductRequest.mockResolvedValue({
       request: { id: "r1", status: "draft", customer_source: "master_crm", customer_id: "C1", customer_snapshot: { name: "Renee" } },
     });
+    mockApi.listProductRequestActivities.mockResolvedValue({ activities: [] });
+    mockApi.addProductRequestFeedback.mockResolvedValue({ request: COMPLETE_SUBMITTED_DETAIL, activity: {} });
+    mockApi.updateProductRequestStatus.mockResolvedValue({ request: COMPLETE_SUBMITTED_DETAIL, activity: {} });
   });
 
   afterEach(() => {

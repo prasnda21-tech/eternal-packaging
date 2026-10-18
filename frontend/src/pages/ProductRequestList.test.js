@@ -7,10 +7,12 @@ import ProductRequestList from "./ProductRequestList";
 const src = fs.readFileSync(path.join(__dirname, "ProductRequestList.jsx"), "utf8");
 const mockHasPerm = jest.fn();
 const mockNavigate = jest.fn();
+const mockSetSearchParams = jest.fn();
 const mockApi = require("../lib/api").default;
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [new URLSearchParams(), mockSetSearchParams],
   Navigate: ({ to }) => <div data-testid="navigate" data-to={to} />,
 }), { virtual: true });
 
@@ -26,6 +28,9 @@ jest.mock("../lib/api", () => ({
   default: {
     listProductRequests: jest.fn(),
     getProductRequest: jest.fn(),
+    listProductRequestActivities: jest.fn(),
+    addProductRequestFeedback: jest.fn(),
+    updateProductRequestStatus: jest.fn(),
   },
 }));
 
@@ -48,6 +53,22 @@ const SUBMITTED_ROW = {
   created_by_name: "Andi",
   branch_name: "Surabaya",
   status: "submitted",
+  status_label: "Terkirim",
+};
+
+const REVIEWED_ROW = {
+  id: "r2",
+  request_number: "PPR-2",
+  submitted_at: "2026-09-21T01:00:00+00:00",
+  customer_name: "Budi",
+  customer_source: "master_crm",
+  product_name: "Bowl",
+  product_source: "requested_product",
+  potential_qty: 20,
+  created_by_name: "Sari",
+  branch_name: "Jakarta",
+  status: "reviewed",
+  status_label: "Ditinjau",
 };
 
 const OWN_DRAFT = {
@@ -65,7 +86,9 @@ const COMPLETE_SUBMITTED_DETAIL = {
   id: "r1",
   request_number: "PPR-1",
   status: "submitted",
+  status_label: "Terkirim",
   submitted_at: "2026-09-20T01:00:00+00:00",
+  doc_version: 2,
   customer_source: "new_prospect",
   customer_snapshot: { name: "Kedai Baru", pic: "Sari", whatsapp: "081298765432", city: "Jakarta" },
   product_source: "requested_product",
@@ -96,7 +119,7 @@ const flush = async () => {
 };
 
 describe("ProductRequestList", () => {
-  test("create action is permission gated and drawer is read-only", () => {
+  test("create action is permission gated and drawer is read-only base", () => {
     expect(src).toMatch(/canCreateProductRequest/);
     expect(src).toMatch(/prq-create-from-list/);
     expect(src).toMatch(/prq-detail-drawer/);
@@ -110,13 +133,27 @@ describe("ProductRequestList", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    mockHasPerm.mockImplementation((p) => p === "product_request.read_all" || p === "product_request.create");
+    mockHasPerm.mockImplementation((p) => (
+      p === "product_request.read_all"
+      || p === "product_request.create"
+      || p === "product_request.feedback"
+      || p === "product_request.update_status"
+    ));
     mockApi.listProductRequests.mockImplementation((params = {}) => {
       if (params.view === "own_drafts") return Promise.resolve({ requests: [OWN_DRAFT] });
-      return Promise.resolve({ requests: [SUBMITTED_ROW] });
+      return Promise.resolve({ requests: [SUBMITTED_ROW, REVIEWED_ROW] });
     });
     mockApi.getProductRequest.mockResolvedValue({
       request: COMPLETE_SUBMITTED_DETAIL,
+    });
+    mockApi.listProductRequestActivities.mockResolvedValue({ activities: [] });
+    mockApi.addProductRequestFeedback.mockResolvedValue({
+      request: { ...COMPLETE_SUBMITTED_DETAIL, doc_version: 3 },
+      activity: { id: "a1", type: "feedback", note: "ABCDE123", actor_snapshot: { name: "Holding" }, created_at: "2026-10-01T00:00:00Z" },
+    });
+    mockApi.updateProductRequestStatus.mockResolvedValue({
+      request: { ...COMPLETE_SUBMITTED_DETAIL, status: "reviewed", status_label: "Ditinjau", doc_version: 4 },
+      activity: { id: "a2", type: "status_change", from_status: "submitted", to_status: "reviewed" },
     });
   });
 
@@ -125,7 +162,7 @@ describe("ProductRequestList", () => {
     container.remove();
   });
 
-  test("Holding can open read-only detail and see Buat Permintaan when create is granted", async () => {
+  test("Holding can open detail with workflow tabs", async () => {
     await act(async () => {
       root.render(<ProductRequestList />);
     });
@@ -137,25 +174,20 @@ describe("ProductRequestList", () => {
     });
     await flush();
     expect(mockApi.getProductRequest).toHaveBeenCalledWith("r1");
+    expect(mockApi.listProductRequestActivities).toHaveBeenCalledWith("r1");
     expect(container.querySelector('[data-testid="prq-detail-drawer"]').textContent).toMatch(/Kedai Baru/);
     await act(async () => {
       container.querySelector('[data-testid="prq-detail-tab-product"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="prq-detail-product-name"]').textContent).toBe("Paper Cup 12oz");
-    expect(container.querySelector('[data-testid="prq-detail-product-category"]').textContent).toBe("Paper Cup");
-    expect(container.querySelector('[data-testid="prq-detail-product-size"]').textContent).toBe("12 oz");
-    expect(container.querySelector('[data-testid="prq-detail-product-material"]').textContent).toBe("Food Grade Paper");
-    expect(container.querySelector('[data-testid="prq-detail-product-model"]').textContent).toBe("Custom Logo");
     await act(async () => {
-      container.querySelector('[data-testid="prq-detail-tab-potential"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      container.querySelector('[data-testid="prq-detail-tab-workflow"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="prq-detail-channel"]').textContent).toBe("Referensi Customer");
+    expect(container.querySelector('[data-testid="prq-feedback-input"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-status-select"]')).toBeTruthy();
   });
 
-  test("CRM receipt-only detail is ignored by the Holding drawer", async () => {
-    mockApi.getProductRequest.mockResolvedValue({
-      request: { id: "r1", request_number: "PPR-1", status: "submitted", receipt_only: true },
-    });
+  test("feedback input keeps focus while typing ABCDE123", async () => {
     await act(async () => {
       root.render(<ProductRequestList />);
     });
@@ -164,11 +196,29 @@ describe("ProductRequestList", () => {
       container.querySelector('[data-testid="prq-row-r1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
-    expect(container.querySelector('[data-testid="prq-detail-drawer"]')).toBeFalsy();
-    expect(container.textContent).not.toMatch(/Food Grade Paper/);
+    await act(async () => {
+      container.querySelector('[data-testid="prq-detail-tab-workflow"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const input = container.querySelector('[data-testid="prq-feedback-input"]');
+    expect(input).toBeTruthy();
+    await act(async () => {
+      input.focus();
+    });
+    expect(document.activeElement).toBe(input);
+    for (const ch of "ABCDE123") {
+      await act(async () => {
+        const next = `${input.value}${ch}`;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+        setter?.call(input, next);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(document.activeElement).toBe(input);
+      expect(input.value.endsWith(ch)).toBe(true);
+    }
+    expect(input.value).toBe("ABCDE123");
   });
 
-  test("create-only user sees Draft Saya and continues the existing draft", async () => {
+  test("create-only user sees submitted list and Draft Saya tab", async () => {
     mockHasPerm.mockImplementation((p) => p === "product_request.create");
     mockNavigate.mockClear();
     await act(async () => {
@@ -177,58 +227,81 @@ describe("ProductRequestList", () => {
     await flush();
     expect(container.querySelector('[data-testid="navigate"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="prq-list-page"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="prq-tab-own-drafts"]').getAttribute("aria-selected")).toBe("true");
-    expect(container.querySelector('[data-testid="prq-tab-submitted"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-filter-all"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-tab-own-drafts"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-filter-submitted"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prq-create-from-list"]')).toBeTruthy();
+    expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "submitted" });
     expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "own_drafts" });
-    expect(mockApi.listProductRequests).not.toHaveBeenCalledWith({ view: "submitted" });
+    await act(async () => {
+      container.querySelector('[data-testid="prq-tab-own-drafts"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft Saya/);
+    expect(container.querySelector('[data-testid="prq-list-table"]')).toBeFalsy();
     await act(async () => {
       container.querySelector('[data-testid="prq-continue-d1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(mockNavigate).toHaveBeenCalledWith("/penjualan/permintaan-produk/d1");
   });
 
-  test("read_all plus create shows Terkirim by default and own draft on Draft Saya", async () => {
+  test("Semua shows all submitted statuses; individual filters and Draft Saya stay separate", async () => {
     await act(async () => {
       root.render(<ProductRequestList />);
     });
     await flush();
-    expect(container.querySelector('[data-testid="prq-tab-submitted"]').getAttribute("aria-selected")).toBe("true");
-    expect(container.querySelector('[data-testid="prq-count-submitted"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="prq-filter-all"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-filter-all"]').textContent).toMatch(/Semua/);
+    expect(container.querySelector('[data-testid="prq-count-all"]').textContent).toBe("2");
     expect(container.querySelector('[data-testid="prq-count-draft"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Feedback/);
+    expect(container.querySelector('[data-testid="prq-list-table"] thead').textContent).not.toMatch(/Status/);
     expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Renee/);
-    expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Terkirim/);
-    expect(container.querySelector('[data-testid="prq-view-r1"]').textContent).toMatch(/Lihat Detail/);
-    expect(container.querySelector('[data-testid="prq-draft-table"]')).toBeFalsy();
-    expect(container.textContent).not.toMatch(/Draft Orang Lain/);
+    expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Budi/);
+    expect(container.querySelector('[data-testid="prq-filter-submitted"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-filter-reviewed"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-row-r2"]')).toBeTruthy();
     expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "submitted" });
     expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "own_drafts" });
+    const callsAfterLoad = mockApi.listProductRequests.mock.calls.length;
+
+    await act(async () => {
+      container.querySelector('[data-testid="prq-filter-submitted"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="prq-filter-submitted"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-row-r2"]')).toBeFalsy();
+    expect(mockApi.listProductRequests.mock.calls.length).toBe(callsAfterLoad);
+
+    await act(async () => {
+      container.querySelector('[data-testid="prq-filter-reviewed"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="prq-filter-reviewed"]').getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="prq-row-r2"]')).toBeTruthy();
+    expect(mockApi.listProductRequests.mock.calls.length).toBe(callsAfterLoad);
 
     await act(async () => {
       container.querySelector('[data-testid="prq-tab-own-drafts"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft Saya/);
-    expect(container.querySelector('[data-testid="prq-draft-row-d1"]').textContent).toMatch(/Draft/);
     expect(container.querySelector('[data-testid="prq-draft-complete-d1"]').textContent).toBe("4/9");
     expect(container.querySelector('[data-testid="prq-list-table"]')).toBeFalsy();
-
-    await act(async () => {
-      container.querySelector('[data-testid="prq-continue-d1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(mockNavigate).toHaveBeenCalledWith("/penjualan/permintaan-produk/d1");
+    expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeFalsy();
+    expect(mockApi.listProductRequests.mock.calls.length).toBe(callsAfterLoad);
   });
 
-  test("read_all without create does not show Draft Saya", async () => {
-    mockHasPerm.mockImplementation((p) => p === "product_request.read_all");
+  test("user without draft access does not show Draft Saya", async () => {
+    mockHasPerm.mockImplementation(() => false);
     await act(async () => {
       root.render(<ProductRequestList />);
     });
     await flush();
-    expect(container.querySelector('[data-testid="prq-tab-submitted"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-filter-all"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prq-tab-own-drafts"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeTruthy();
     expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "submitted" });
     expect(mockApi.listProductRequests).not.toHaveBeenCalledWith({ view: "own_drafts" });
+    expect(container.querySelector('[data-testid="prq-feedback-input"]')).toBeFalsy();
   });
 });

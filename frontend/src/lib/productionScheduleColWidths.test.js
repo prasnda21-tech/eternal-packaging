@@ -4,6 +4,8 @@ import {
   clearProductionScheduleColWidths,
   normalizeProductionScheduleColWidths,
   productionScheduleColWidthsStorageKey,
+  productionScheduleResizeLogicalDelta,
+  productionScheduleResizeNextWidth,
   productionScheduleStickyCssVars,
   readProductionScheduleColWidths,
   writeProductionScheduleColWidths,
@@ -47,5 +49,20 @@ describe("productionScheduleColWidths", () => {
     const vars = productionScheduleStickyCssVars({ po: 130, customer: 200 });
     expect(vars["--prod-sticky-po-w"]).toContain("130px");
     expect(vars["--prod-sticky-customer-w"]).toContain("200px");
+  });
+
+  test("resize delta converts screen pixels through sheet zoom", () => {
+    expect(productionScheduleResizeLogicalDelta(100, 140, 1)).toBe(40);
+    expect(productionScheduleResizeLogicalDelta(100, 140, 1.25)).toBeCloseTo(32, 5);
+    expect(productionScheduleResizeLogicalDelta(100, 140, 0.8)).toBeCloseTo(50, 5);
+    expect(productionScheduleResizeLogicalDelta(100, 140, 0)).toBe(40);
+  });
+
+  test("resize next width keeps pointer-aligned logical width under zoom", () => {
+    const base = PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS.customer;
+    expect(productionScheduleResizeNextWidth("customer", base, 0, 40, 1)).toBe(base + 40);
+    expect(productionScheduleResizeNextWidth("customer", base, 0, 40, 1.25)).toBe(
+      clampProductionScheduleColWidth("customer", base + 32),
+    );
   });
 });

@@ -105,6 +105,8 @@ export default function MasterItemSearchSelect({
   emptyLabel = "Produk tidak ditemukan",
   testId = "master-item-search",
   className = "",
+  /** Optional async ({ q, status, page_size }) => { items }. Defaults to inventory picker API. */
+  fetchItems = null,
 }) {
   const listId = useId();
   const rootRef = useRef(null);
@@ -133,11 +135,14 @@ export default function MasterItemSearchSelect({
     setLoading(true);
     setError("");
     try {
-      const response = await api.masterItemsPicker({
+      const params = {
         q: needle,
         status,
         page_size: MASTER_ITEM_SEARCH_PAGE_SIZE,
-      });
+      };
+      const response = typeof fetchItems === "function"
+        ? await fetchItems(params)
+        : await api.masterItemsPicker(params);
       if (!shouldApplySearchResult(requestId, reqSeq.current)) return;
       setItems(response.items || []);
       setHighlight(0);
@@ -150,7 +155,7 @@ export default function MasterItemSearchSelect({
     } finally {
       if (shouldApplySearchResult(requestId, reqSeq.current)) setLoading(false);
     }
-  }, [status]);
+  }, [status, fetchItems]);
 
   useEffect(() => {
     if (!open || disabled || readOnly) return undefined;
