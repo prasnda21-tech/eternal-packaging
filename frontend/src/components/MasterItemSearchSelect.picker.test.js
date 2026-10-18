@@ -23,11 +23,13 @@ describe("MasterItemSearchSelect picker wiring", () => {
     expect(fullPage).not.toMatch(/picker:\s*true/);
   });
 
-  test("Ubah Item PO modal does not change save or qty wiring", () => {
+  test("Ubah Item PO modal uses sales catalog picker and keeps save wiring", () => {
     expect(modal).toMatch(/api\.replaceSalesOrderLineProduct/);
     expect(modal).toMatch(/MasterItemSearchSelect/);
+    expect(modal).toMatch(/api\.salesCatalogProducts/);
     expect(modal).not.toMatch(/masterItemsPicker/);
     expect(modal).not.toMatch(/replaceSalesOrderLineProduct.*masterItems/);
+    expect(api).toMatch(/salesCatalogProducts:/);
   });
 
   test("in-modal suggestion portal stacks above the modal and still selects", () => {

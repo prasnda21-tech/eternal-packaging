@@ -1,14 +1,17 @@
 import {
   DIRECTOR_FULL_ACCESS_ROLE,
+  HOLDING_TEAM_ROLE,
   PACKAGE_PERMISSIONS,
   confirmPackageKeysForSave,
   isDirectorFullAccessRole,
+  isHoldingTeamRole,
   isPackagePermissionKey,
   normalizePackageConfirmedKeys,
   packageKeysFromOverride,
   packageKeysInGrant,
   packageKeysToActivate,
   pruneConfirmReviewKeys,
+  roleMayReceivePackageAccess,
   rolePermissionsPutBody,
   unconfirmedPackageKeys,
   userOverridePutBody,
@@ -20,6 +23,14 @@ describe("packagePermissions", () => {
     expect(isDirectorFullAccessRole("Direktur_Utama")).toBe(true);
     expect(isDirectorFullAccessRole("admin")).toBe(false);
     expect(isDirectorFullAccessRole("holding_team")).toBe(false);
+  });
+
+  test("package access roles are Holding and Direktur only", () => {
+    expect(isHoldingTeamRole(HOLDING_TEAM_ROLE)).toBe(true);
+    expect(roleMayReceivePackageAccess("holding_team")).toBe(true);
+    expect(roleMayReceivePackageAccess("direktur_utama")).toBe(true);
+    expect(roleMayReceivePackageAccess("crm")).toBe(false);
+    expect(roleMayReceivePackageAccess("admin")).toBe(false);
   });
 
   test("catalog covers purchasing/inventory package keys", () => {

@@ -34,6 +34,8 @@ PRODUCT_PICKER_SAFE_FIELDS = (
     "item_name",
     "unit",
     "is_active",
+    # Needed by Pesanan Penjualan master picker; never stock/HPP/cost.
+    "production_process",
 )
 ACTIVITY_COLLECTION = "product_request_activities"
 PREFIX_REQUEST = "PPR"

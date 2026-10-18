@@ -7315,23 +7315,47 @@ class DeliveryRescheduleSetDatePayload(BaseModel):
 
 
 async def _require_any_perm(user: dict, *perms: str):
+    """Pass when the caller has any listed permission.
+
+    Mixed package + non-package any-of lists must not hard-gate solely because
+    one alternative is a package key. Non-package alternatives that the user
+    actually holds win first. Package-only satisfaction still requires the
+    Holding/Direktur (or local) package gate, then an effective package key.
+    """
     from services.purchasing_inventory_access import (
         require_purchasing_inventory_package_access,
-        touches_package_permissions,
+        split_package_permission_args,
     )
 
     reject_sales_pwa_bypass(user)
-    if touches_package_permissions(perms):
+    non_pkg, pkg = split_package_permission_args(perms)
+
+    if user.get("role") == "admin":
+        # Admin bypass applies to non-package alternatives. Package-only any-of
+        # still needs the production package gate (Holding/Direktur/local).
+        if non_pkg:
+            return
+        if pkg:
+            require_purchasing_inventory_package_access(
+                user,
+                os.environ.get("APP_ENV"),
+                os.environ.get("MONGO_URL"),
+            )
+            return
+        return
+
+    eff = await user_permissions(user)
+    if any(p in eff for p in non_pkg):
+        return
+    if pkg:
         require_purchasing_inventory_package_access(
             user,
             os.environ.get("APP_ENV"),
             os.environ.get("MONGO_URL"),
         )
-    if user.get("role") == "admin":
-        return
-    eff = await user_permissions(user)
-    if not any(p in eff for p in perms):
-        raise HTTPException(403, f"Permission {' / '.join(perms)} diperlukan")
+        if any(p in eff for p in pkg):
+            return
+    raise HTTPException(403, f"Permission {' / '.join(perms)} diperlukan")
 
 
 @api_router.post("/orders/{order_id}/delivery-reschedule")
@@ -9646,16 +9670,20 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
 
     - `default_from_role`: permissions inherited from the user's role (after
       any admin edits to role defaults via /admin/roles/{r}/permissions).
+      May still list stored package keys that are not effective in production.
     - `override`: user's per-permission override dict ({key: True|False});
       missing keys mean "inherit from role".
-    - `effective`: final set actually enforced (role_default ∪ override(true) − override(false));
-      Super Admin returns ALL_PERMISSIONS.
+    - `effective`: same filtered set as ``GET /auth/me`` (package policy applied).
+    - `package_access`: whether this role may hold Pembelian/Persediaan/HPP
+      effectively in the current runtime (Holding/Direktur or local).
     """
     from permissions import (
-        OPT_IN_ONLY_PERMISSIONS,
         director_full_permission_set,
         is_director_full_access_role,
-        strip_opt_in_permissions,
+    )
+    from services.purchasing_inventory_access import (
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+        can_access_purchasing_inventory_package,
     )
 
     existing = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
@@ -9675,19 +9703,21 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     else:
         default_from_role = list(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(role, []))))
     override = dict(existing.get("permissions_override") or {})
-    # Direktur full-access (incl. OPT_IN) before Super Admin OPT_IN strip.
-    if is_director_full_access_role(role) and role not in inactive:
-        effective = sorted(director_full_permission_set())
-    elif existing.get("is_super_admin"):
-        base = strip_opt_in_permissions(ALL_PERMISSIONS)
-        for perm, allowed in override.items():
-            if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
-                base.add(perm)
-            elif allowed is False:
-                base.discard(perm)
-        effective = sorted(base)
-    else:
-        effective = sorted(effective_permissions(role, override, role_override))
+    me_user = {
+        "role": role,
+        "email": existing.get("email"),
+        "permissions_override": override,
+        "_package_confirmed_keys": list(existing.get(PACKAGE_CONFIRMED_KEYS_FIELD) or []),
+        "user_id": existing.get("id"),
+        "is_super_admin": bool(existing.get("is_super_admin")),
+    }
+    # Same source of truth as /auth/me — includes production package stripping.
+    effective = sorted(await user_permissions(me_user))
+    package_access = can_access_purchasing_inventory_package(
+        me_user,
+        os.environ.get("APP_ENV"),
+        os.environ.get("MONGO_URL"),
+    )
     return {
         "user_id": user_id,
         "email": existing.get("email"),
@@ -9696,6 +9726,7 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
         "default_from_role": sorted(default_from_role),
         "override": override,
         "effective": effective,
+        "package_access": package_access,
     }
 
 
@@ -13692,16 +13723,49 @@ async def master_items_get(
     """List Master Barang/Jasa with server-side search, filter, and pagination.
 
     picker=true is the autocomplete path: one limited find, no catalog summary.
-    product_request.create may use picker only — not the full inventory catalog.
+    Sales/CRM may use picker via po.edit / sales_order.create / product_request.create
+    and receive the safe field subset (no stock/HPP). Full inventory catalog still
+    requires master_items.view (package-gated in production).
     """
     if picker:
-        await _require_any_perm(user, "master_items.view", "product_request.create")
-        return await list_master_items_picker(
+        await _require_any_perm(
+            user,
+            "master_items.view",
+            "product_request.create",
+            "po.edit",
+            "sales_order.create",
+        )
+        eff = await user_permissions(user)
+        if "master_items.view" in eff:
+            return await list_master_items_picker(
+                db, q=q, status=status, page_size=page_size,
+            )
+        from services.product_requests import search_master_products_for_request
+        return await search_master_products_for_request(
             db, q=q, status=status, page_size=page_size,
         )
     await _require_any_perm(user, "master_items.view")
     return await list_master_items(
         db, q=q, item_type=item_type, status=status, page=page, page_size=page_size,
+    )
+
+
+@api_router.get("/sales/catalog/products")
+async def sales_catalog_products(
+    q: str = "",
+    status: str = "active",
+    page_size: int = 40,
+    user=Depends(current_user),
+):
+    """Read-only sales catalog picker (no stock/HPP/CRUD).
+
+    Allowed with po.edit (Ubah Item PO), sales_order.create (buat SO), or
+    product_request.create. Does not grant Persediaan/Pembelian/HPP access.
+    """
+    await _require_any_perm(user, "po.edit", "sales_order.create", "product_request.create")
+    from services.product_requests import search_master_products_for_request
+    return await search_master_products_for_request(
+        db, q=q or "", status=status or "", page_size=int(page_size or 40),
     )
 
 

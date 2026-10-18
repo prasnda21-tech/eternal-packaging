@@ -30,7 +30,7 @@ jest.mock("../lib/api", () => ({
     salesOrderOptions: jest.fn(),
     createSalesOrder: jest.fn(),
     salesOrderRepeatSource: jest.fn(),
-    masterItemsPicker: jest.fn(),
+    salesCatalogProducts: jest.fn(),
     salesOrderItemImages: jest.fn(),
     salesOrderPriceQuote: jest.fn().mockResolvedValue({ status: "missing", unit_price: null }),
   },
@@ -91,8 +91,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     api.createSalesOrder.mockReset();
     api.createSalesOrder.mockResolvedValue({ message: "Pesanan Penjualan berhasil dibuat!", order: { id: "po-1" } });
     api.salesOrderRepeatSource.mockReset();
-    api.masterItemsPicker.mockReset();
-    api.masterItemsPicker.mockResolvedValue({ items: [] });
+    api.salesCatalogProducts.mockReset();
+    api.salesCatalogProducts.mockResolvedValue({ items: [] });
     api.salesOrderItemImages.mockReset();
     api.salesOrderItemImages.mockResolvedValue({ images: {} });
     api.salesOrderPriceQuote.mockReset();
@@ -125,7 +125,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
   }
 
   async function chooseMaster(index, name) {
-    api.masterItemsPicker.mockResolvedValue({ items: [{ id: `m${index}`, accurate_item_id: `a${index}`, item_name: name, item_code: `SKU-${index}`, unit: "pcs" }] });
+    api.salesCatalogProducts.mockResolvedValue({ items: [{ id: `m${index}`, accurate_item_id: `a${index}`, item_name: name, item_code: `SKU-${index}`, unit: "pcs" }] });
     await act(async () => {
       const input = container.querySelector(`[data-testid="line-item-search-${index}-input"]`);
       input.focus();
@@ -646,7 +646,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
   });
 
   test("item autocomplete portals to the document and closes on Escape and outside click", async () => {
-    api.masterItemsPicker.mockResolvedValue({
+    api.salesCatalogProducts.mockResolvedValue({
       items: [{ id: "m1", accurate_item_id: "a1", item_name: "Box Karton", item_code: "BX-01", unit: "pcs" }],
     });
     await openCreate();
@@ -698,7 +698,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
   }
 
   test("selecting an item loads the selling price and the saved payload keeps it", async () => {
-    api.masterItemsPicker.mockResolvedValue({
+    api.salesCatalogProducts.mockResolvedValue({
       items: [{ id: "m-cup", accurate_item_id: "a1", item_name: "Cup PET", item_code: "BRG-CP001", unit: "pcs" }],
     });
     api.salesOrderPriceQuote.mockResolvedValue({
@@ -744,7 +744,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
   });
 
   test("a failed or missing quote stays blank and explains that manual input is required", async () => {
-    api.masterItemsPicker.mockResolvedValue({
+    api.salesCatalogProducts.mockResolvedValue({
       items: [{ id: "m-cup", accurate_item_id: "a1", item_name: "Cup PET", item_code: "BRG-CP001", unit: "pcs" }],
     });
     api.salesOrderPriceQuote.mockRejectedValue(new Error("quote down"));

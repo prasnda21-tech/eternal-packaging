@@ -2793,6 +2793,7 @@ export default function PesananPenjualan() {
                                         }
                                         onChange={(master) => handleSelectMasterItem(originalIndex, master)}
                                         placeholder="Cari nama / kode barang…"
+                                        fetchItems={(params) => api.salesCatalogProducts(params)}
                                       />
                                     ) : (
                                       <input
