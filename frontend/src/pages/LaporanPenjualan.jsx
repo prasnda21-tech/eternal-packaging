@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import ReportWorkspaceShell from "../components/reportWorkspace/ReportWorkspaceShell";
 import { normalizeReportColumns, moveReportColumn } from "../components/reportWorkspace/ReportColumnSettings";
 import "./LaporanPenjualan.css";
@@ -63,6 +64,7 @@ function ReportTable({ report, layout, onResize, className = "" }) {
 }
 
 export default function LaporanPenjualan() {
+  const { hasPerm } = useAuth();
   const [catalog,setCatalog] = useState(null);
   const [selectedId,setSelectedId] = useState("");
   const [filters,setFilters] = useState(month);
@@ -77,10 +79,11 @@ export default function LaporanPenjualan() {
   const [error,setError] = useState("");
   const [savedName,setSavedName] = useState("");
   const resizeClean = useRef(null);
+  const presetPending = useRef(null);
   const selected = useMemo(() => catalog?.reports?.find(r => r.id === selectedId),[catalog,selectedId]);
   const definitions = useMemo(() => selected?.columns || [],[selected]);
   const saved = catalog?.memorized || [];
-  const canExport = true; // Backend enforces reports.sales.export independently.
+  const canExport = hasPerm("reports.sales.export"); // Backend independently enforces export permission.
 
   useEffect(() => {
     let active=true;
@@ -95,8 +98,19 @@ export default function LaporanPenjualan() {
     return ()=>{active=false};
   }, []);
   useEffect(() => {
-    setLayout(normalizeReportColumns(definitions));
-    setAnalysisRow("nama_barang");setGroupCurrency(false);
+    const pending=presetPending.current;
+    presetPending.current=null;
+    if(pending?.reportId === selectedId) {
+      setLayout(normalizeReportColumns(definitions,{
+        order: pending.layout?.columns || [],
+        hidden: definitions.map(c=>c.key).filter(k=>!pending.layout?.columns?.includes(k))
+      }));
+      setAnalysisRow(pending.layout?.analysis_row || "nama_barang");
+      setGroupCurrency(!!pending.layout?.group_currency);
+    } else {
+      setLayout(normalizeReportColumns(definitions));
+      setAnalysisRow("nama_barang");setGroupCurrency(false);
+    }
     setResult(null);setPrintResult(null);setPage(1);
   },[selectedId,definitions]);
   useEffect(() => ()=>{resizeClean.current?.()},[]);
@@ -139,12 +153,17 @@ export default function LaporanPenjualan() {
   function loadPreset(p) {
     if(!p?.report_id)return;
     const spec=catalog?.reports?.find(r=>r.id===p.report_id);if(!spec)return;
-    setSelectedId(p.report_id);
+    if(p.report_id !== selectedId) {
+      presetPending.current={reportId:p.report_id,layout:p.layout};
+      setSelectedId(p.report_id);
+      return;
+    }
     setLayout(normalizeReportColumns(spec.columns || [],{
       order:p.layout?.columns || [],hidden:(spec.columns||[]).map(c=>c.key).filter(k=>!p.layout?.columns?.includes(k))
     }));
     setAnalysisRow(p.layout?.analysis_row || "nama_barang");
-    setGroupCurrency(!!p.layout?.group_currency);setResult(null);setPage(1);
+    setGroupCurrency(!!p.layout?.group_currency);
+    setResult(null);setPage(1);
   }
   const startResize=useCallback((event,key,startWidth)=>{
     event.preventDefault();resizeClean.current?.();
@@ -193,7 +212,7 @@ export default function LaporanPenjualan() {
   return <div className="erw-report-page">
     <ReportWorkspaceShell title="Laporan Penjualan" reports={catalog?.reports?.filter(r=>r.implemented!==false)||[]}
       selectedId={selectedId} onSelect={setSelectedId} filters={{...filters,branchOptions:catalog?.branches||[]}}
-      onFiltersChange={next=>setFilters(({...old})=>({...old,from:next.from,to:next.to,branch:next.branch}))}
+      onFiltersChange={next=>setFilters(old=>({...old,from:next.from,to:next.to,branch:next.branch}))}
       loading={busy} onRun={()=>show(1)} settings={settings} actions={actions} error={error}>
       {result ? <>
         {!!result.gap&&<p className="erw-report-warning" role="status">{result.gap}</p>}
