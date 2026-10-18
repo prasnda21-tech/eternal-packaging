@@ -32,6 +32,7 @@ export const NAV_KEYS = {
   salesReceipt: "nav.sales.sales_receipt",
   importPo: "nav.sales.import_po",
   salesActivity: "nav.sales.sales_activity",
+  crmDailyReport: "nav.sales.crm_daily_report",
   purchasing: "nav.purchasing",
   purchaseRequests: "nav.purchasing.requests",
   purchaseOrders: "nav.purchasing.orders",
@@ -120,6 +121,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.importPo, label: "Import PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesActivity, label: "Aktivitas Sales", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.crmDailyReport, label: "Laporan Harian CRM", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.statusPo, label: "Status PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.orderPrediction, label: "Prediksi Order", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.purchasing, label: "Pembelian", parent: null },
@@ -252,13 +254,20 @@ export function salesNavVisible(hasPerm) {
   const salesReceipt = parent && (canSeeNav(hasPerm, NAV_KEYS.salesReceipt) || canSeeNav(hasPerm, "sales.receipt.view") || canSeeNav(hasPerm, "sales.receipt.create") || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
   const salesActivity = parent && (canSeeNav(hasPerm, NAV_KEYS.salesActivity) || canSeeNav(hasPerm, "sales.activity.view") || canSeeNav(hasPerm, "sales.activity.create") || canSeeNav(hasPerm, "sales.outlet.create"));
+  const crmDailyReport = (
+    canSeeNav(hasPerm, NAV_KEYS.crmDailyReport)
+    || canSeeNav(hasPerm, "crm.daily_report.create")
+    || canSeeNav(hasPerm, "crm.daily_report.view_own")
+    || canSeeNav(hasPerm, "crm.daily_report.edit_own")
+    || canSeeNav(hasPerm, "crm.daily_report.view_all")
+  );
   // Status PO and Prediksi Order remain authorized by their existing reports keys.
   // Only their navigation grouping moves to Penjualan.
   const reportsParent = canSeeNav(hasPerm, NAV_KEYS.reports);
   const statusPo = reportsParent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const orderPrediction = reportsParent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
   return {
-    parent: Boolean(salesCustomers || productRequests || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || statusPo || orderPrediction),
+    parent: Boolean(salesCustomers || productRequests || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || crmDailyReport || statusPo || orderPrediction),
     salesCustomers: Boolean(salesCustomers),
     productRequests: Boolean(productRequests),
     salesOrder: Boolean(salesOrder),
@@ -267,6 +276,7 @@ export function salesNavVisible(hasPerm) {
     salesReceipt: Boolean(salesReceipt),
     importPo: Boolean(importPo),
     salesActivity: Boolean(salesActivity),
+    crmDailyReport: Boolean(crmDailyReport),
     statusPo: Boolean(statusPo),
     orderPrediction: Boolean(orderPrediction),
   };
@@ -311,6 +321,7 @@ export const SALES_NAV_ROUTES = {
   [NAV_KEYS.salesReceipt]: "/penjualan/penerimaan-penjualan",
   [NAV_KEYS.importPo]: "/admin/import",
   [NAV_KEYS.salesActivity]: "/penjualan/aktivitas-sales",
+  [NAV_KEYS.crmDailyReport]: "/penjualan/laporan-harian-crm",
   // Keep legacy report URLs stable for bookmarks and direct links.
   [NAV_KEYS.statusPo]: "/laporan/status-po",
   [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
@@ -325,6 +336,7 @@ const SALES_VIS_FIELD = {
   [NAV_KEYS.salesReceipt]: "salesReceipt",
   [NAV_KEYS.importPo]: "importPo",
   [NAV_KEYS.salesActivity]: "salesActivity",
+  [NAV_KEYS.crmDailyReport]: "crmDailyReport",
   [NAV_KEYS.statusPo]: "statusPo",
   [NAV_KEYS.orderPrediction]: "orderPrediction",
 };
@@ -339,6 +351,7 @@ export const SALES_TILE_TONES = {
   [NAV_KEYS.salesReceipt]: "emerald",
   [NAV_KEYS.importPo]: "green",
   [NAV_KEYS.salesActivity]: "blue",
+  [NAV_KEYS.crmDailyReport]: "teal",
   [NAV_KEYS.statusPo]: "blue",
   [NAV_KEYS.orderPrediction]: "green",
 };
@@ -352,6 +365,7 @@ export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.salesReceipt]: "top-nav-sales-receipt",
   [NAV_KEYS.importPo]: "top-nav-import",
   [NAV_KEYS.salesActivity]: "top-nav-sales-activity",
+  [NAV_KEYS.crmDailyReport]: "top-nav-crm-daily-report",
   [NAV_KEYS.statusPo]: "top-nav-status-po",
   [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
 };

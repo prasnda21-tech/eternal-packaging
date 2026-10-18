@@ -23,6 +23,10 @@ PERMISSION_CATALOG = [
     ("Penjualan", "product_request.read_all", "Baca semua Permintaan Produk terkirim"),
     ("Penjualan", "product_request.feedback", "Beri feedback Permintaan Produk"),
     ("Penjualan", "product_request.update_status", "Ubah status Permintaan Produk"),
+    ("Penjualan", "crm.daily_report.create", "Buat Laporan Harian CRM"),
+    ("Penjualan", "crm.daily_report.view_own", "Lihat Laporan Harian CRM sendiri"),
+    ("Penjualan", "crm.daily_report.edit_own", "Edit Laporan Harian CRM sendiri (same-day)"),
+    ("Penjualan", "crm.daily_report.view_all", "Lihat semua Laporan Harian CRM"),
     ("Penjualan", "sales.customer.view", "Lihat Data Pelanggan"),
     ("Penjualan", "sales.customer.manage", "Kelola Data Pelanggan"),
     ("Penjualan", "sales.customer.edit", "Edit Pelanggan"),
@@ -298,6 +302,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.sales.sales_receipt", "Menu Penerimaan Penjualan"),
     ("Akses Menu", "nav.sales.import_po", "Menu Import PO"),
     ("Akses Menu", "nav.sales.sales_activity", "Menu Aktivitas Sales"),
+    ("Akses Menu", "nav.sales.crm_daily_report", "Menu Laporan Harian CRM"),
     ("Akses Menu", "nav.purchasing", "Menu Pembelian"),
     ("Akses Menu", "nav.purchasing.requests", "Menu Permintaan"),
     ("Akses Menu", "nav.purchasing.orders", "Menu Pesanan Pembelian"),
@@ -467,6 +472,7 @@ NAV_MENU_ITEMS = (
     ("nav.sales.sales_receipt", "Penerimaan Penjualan", "nav.sales"),
     ("nav.sales.import_po", "Import PO", "nav.sales"),
     ("nav.sales.sales_activity", "Aktivitas Sales", "nav.sales"),
+    ("nav.sales.crm_daily_report", "Laporan Harian CRM", "nav.sales"),
     ("nav.purchasing", "Pembelian", None),
     ("nav.purchasing.requests", "Permintaan", "nav.purchasing"),
     ("nav.purchasing.orders", "Pesanan Pembelian", "nav.purchasing"),
@@ -675,6 +681,14 @@ def derived_nav_permissions(existing: set) -> set:
     ):
         nav.add("nav.sales")
         nav.add("nav.sales.sales_activity")
+    if (
+        "crm.daily_report.create" in existing
+        or "crm.daily_report.view_own" in existing
+        or "crm.daily_report.edit_own" in existing
+        or "crm.daily_report.view_all" in existing
+    ):
+        nav.add("nav.sales")
+        nav.add("nav.sales.crm_daily_report")
     if "ledger.accounts.view" in existing or "ledger.accounts.manage" in existing:
         nav.add("nav.ledger")
         nav.add("nav.ledger.accounts")
@@ -867,11 +881,13 @@ ROLE_DEFAULT_PERMISSIONS = {
         "buffer_stock.manage",
         "reports.order_prediction.view", "reports.order_prediction.import",
         "product_request.create", "product_request.read_own_draft",
+        "crm.daily_report.create", "crm.daily_report.view_own", "crm.daily_report.edit_own",
     ],
     "holding_team": [
         "product_request.read_all",
         "product_request.feedback",
         "product_request.update_status",
+        "crm.daily_report.view_all",
         "dashboard.owner.view",
         # Recovered Purchasing + Inventory + HPP package (production-only role).
         # Local admin still uses ALL_PERMISSIONS; production non-holding roles
