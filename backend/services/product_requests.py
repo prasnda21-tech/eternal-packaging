@@ -23,9 +23,18 @@ from services.purchase_common import (
 )
 from services.sales_activity.util import normalize_whatsapp
 from services.sales_customers import get_sales_customer
-from services.master_items import public_master_item
+from services.master_items import list_master_items_picker, public_master_item
 
 COLLECTION = "product_requests"
+# Fields safe for CRM product-request picker — never HPP / cost / stock / supplier.
+PRODUCT_PICKER_SAFE_FIELDS = (
+    "id",
+    "accurate_item_id",
+    "item_code",
+    "item_name",
+    "unit",
+    "is_active",
+)
 ACTIVITY_COLLECTION = "product_request_activities"
 PREFIX_REQUEST = "PPR"
 NOTE_MAX_LEN = 2000
@@ -227,6 +236,23 @@ async def _resolve_master_item(db, product_id: str) -> Optional[dict]:
         {"_id": 0},
     )
     return public_master_item(doc) if doc else None
+
+
+async def search_master_products_for_request(
+    db,
+    *,
+    q: str = "",
+    status: str = "active",
+    page_size: int = 40,
+) -> Dict[str, Any]:
+    """Autocomplete for product-request form. Requires create perm at HTTP layer only."""
+    raw = await list_master_items_picker(db, q=q or "", status=status or "", page_size=page_size)
+    items: List[Dict[str, Any]] = []
+    for row in raw.get("items") or []:
+        if not row:
+            continue
+        items.append({key: row.get(key) for key in PRODUCT_PICKER_SAFE_FIELDS})
+    return {"items": items}
 
 
 def _customer_snapshot_from_master(master: dict) -> dict:

@@ -258,7 +258,7 @@ export default function ProductRequestList() {
               <th>Qty Potensi</th>
               <th>CRM</th>
               <th>Cabang</th>
-              <th>Status</th>
+              <th>Feedback</th>
               <th>Aksi</th>
             </tr>
           </thead>

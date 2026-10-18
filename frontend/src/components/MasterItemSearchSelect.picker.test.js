@@ -11,6 +11,7 @@ const fullPage = fs.readFileSync(path.join(__dirname, "../pages/MasterBarangJasa
 describe("MasterItemSearchSelect picker wiring", () => {
   test("uses lightweight picker API with picker=true", () => {
     expect(src).toMatch(/api\.masterItemsPicker/);
+    expect(src).toMatch(/typeof fetchItems === "function"/);
     expect(src).toMatch(/page_size: MASTER_ITEM_SEARCH_PAGE_SIZE/);
     expect(api).toMatch(/masterItemsPicker:/);
     expect(api).toMatch(/picker:\s*true/);

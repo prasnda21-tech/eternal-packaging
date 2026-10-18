@@ -522,6 +522,7 @@ export default function ProductRequestForm() {
               <MasterItemSearchSelect
                 value={form.product_id ? { id: form.product_id, item_code: form.product_code, item_name: form.product_name } : null}
                 onChange={(item) => setForm((prev) => (item ? selectMasterProduct(prev, item) : clearProductMode(prev, PRODUCT_MASTER)))}
+                fetchItems={(params) => api.productRequestProducts(params)}
                 testId="prq-product-search"
               />
             )}

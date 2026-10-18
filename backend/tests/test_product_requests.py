@@ -426,12 +426,90 @@ async def test_crm_can_search_existing_customer_and_product_apis():
             assert (await client.get("/api/sales-customers")).status_code == 403
             assert (await client.post("/api/sales-customers", json={"name": "X", "phone": "0812", "address": "A"})).status_code == 403
 
+            prq_items = await client.get(
+                "/api/product-requests/products",
+                params={"q": product["item_name"][:8]},
+            )
+            assert prq_items.status_code == 200, prq_items.text
+            assert any(i["id"] == product["id"] for i in prq_items.json()["items"])
+
+            # Local/test runtime still allows inventory picker; full catalog stays create-denied.
             items = await client.get("/api/master-items", params={"q": product["item_name"][:8], "picker": "true"})
             assert items.status_code == 200, items.text
             assert any(i["id"] == product["id"] for i in items.json()["items"])
 
             full_catalog = await client.get("/api/master-items")
             assert full_catalog.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_crm_product_picker_works_in_production_without_package_access(monkeypatch):
+    """CRM create may search via /product-requests/products; inventory APIs stay package-gated."""
+    import server
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MONGO_URL", "mongodb://atlas.example:27017")
+    crm = _user(
+        "crm",
+        name="CRM Prod Picker",
+        override={"product_request.create": True, "product_request.read_own_draft": True},
+    )
+    other = _user("helper", name="No Create", override={})
+    await _prepare(server.db, [crm, other])
+    customer, product = await _seed_masters(server.db)
+    payload = {
+        **COMPLETE_NEW,
+        "customer_source": "master_crm",
+        "customer_id": customer["id"],
+        "product_source": "product_master",
+        "product_id": product["id"],
+        "product_name": "",
+        "category": "",
+        "size": "",
+        "material": "",
+        "model": "",
+    }
+    forbidden_keys = {
+        "hpp", "cost", "unit_cost", "average_cost", "supplier", "supplier_id",
+        "stock", "qty_on_hand", "physical_stock", "purchase_price", "last_purchase_price",
+    }
+    try:
+        async with _client_for(crm) as client:
+            ok = await client.get(
+                "/api/product-requests/products",
+                params={"q": product["item_name"][:8], "status": "active", "page_size": 20},
+            )
+            assert ok.status_code == 200, ok.text
+            rows = ok.json()["items"]
+            assert any(i["id"] == product["id"] for i in rows)
+            for row in rows:
+                assert set(row.keys()) <= {
+                    "id", "accurate_item_id", "item_code", "item_name", "unit", "is_active",
+                }
+                assert not forbidden_keys.intersection(row.keys())
+
+            assert (await client.get(
+                "/api/master-items",
+                params={"q": product["item_name"][:8], "picker": "true"},
+            )).status_code == 403
+            assert (await client.get("/api/master-items")).status_code == 403
+
+            customers = await client.get("/api/product-requests/customers", params={"q": customer["name"][:8]})
+            assert customers.status_code == 200, customers.text
+
+            created = await client.post("/api/product-requests", json=payload)
+            assert created.status_code == 200, created.text
+            rid = created.json()["request"]["id"]
+            submitted = await client.post(
+                f"/api/product-requests/{rid}/submit",
+                json=_at(payload, created.json()["request"]["doc_version"]),
+            )
+            assert submitted.status_code == 200, submitted.text
+
+        async with _client_for(other) as client:
+            denied = await client.get("/api/product-requests/products", params={"q": "x"})
+            assert denied.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
 
