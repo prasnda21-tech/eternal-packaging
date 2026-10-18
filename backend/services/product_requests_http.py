@@ -28,6 +28,7 @@ def register_product_request_routes(
         get_request,
         list_activities,
         list_requests,
+        search_master_products_for_request,
         submit_draft,
         update_draft,
         update_status,
@@ -47,6 +48,22 @@ def register_product_request_routes(
         for row in customers:
             row["is_active"] = customer_is_active(row)
         return {"customers": customers}
+
+    @api_router.get("/product-requests/products")
+    async def search_product_request_products(
+        q: Optional[str] = None,
+        status: Optional[str] = Query("active"),
+        page_size: Optional[int] = Query(40),
+        user=Depends(current_user),
+    ):
+        """CRM-safe master product picker. Does not use Purchasing/Inventory package gate."""
+        await require_any_perm(user, "product_request.create")
+        return await search_master_products_for_request(
+            get_db(),
+            q=q or "",
+            status=status or "",
+            page_size=int(page_size or 40),
+        )
 
     @api_router.get("/product-requests/context")
     async def product_request_context(user=Depends(current_user)):

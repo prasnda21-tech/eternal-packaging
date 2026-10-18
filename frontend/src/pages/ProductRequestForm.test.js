@@ -90,12 +90,16 @@ const flush = async () => {
 };
 
 describe("ProductRequestForm contracts", () => {
-  test("uses existing customer repository search and master item picker", () => {
+  test("uses existing customer repository search and PRQ product picker", () => {
     expect(searchSrc).toMatch(/api\.productRequestCustomers/);
     expect(src).toMatch(/MasterItemSearchSelect/);
+    expect(src).toMatch(/fetchItems=\{\(params\) => api\.productRequestProducts\(params\)\}/);
+    expect(src).not.toMatch(/masterItemsPicker/);
     expect(apiSrc).toMatch(/createProductRequest/);
     expect(apiSrc).toMatch(/submitProductRequest/);
     expect(apiSrc).toMatch(/productRequestCustomers/);
+    expect(apiSrc).toMatch(/productRequestProducts/);
+    expect(apiSrc).toMatch(/\/product-requests\/products/);
     expect(app).toMatch(/\/penjualan\/permintaan-produk\/baru/);
   });
 

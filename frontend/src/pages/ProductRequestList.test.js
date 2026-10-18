@@ -253,8 +253,12 @@ describe("ProductRequestList", () => {
     expect(container.querySelector('[data-testid="prq-filter-all"]').textContent).toMatch(/Semua/);
     expect(container.querySelector('[data-testid="prq-count-all"]').textContent).toBe("2");
     expect(container.querySelector('[data-testid="prq-count-draft"]').textContent).toBe("1");
+    expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Feedback/);
+    expect(container.querySelector('[data-testid="prq-list-table"] thead').textContent).not.toMatch(/Status/);
     expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Renee/);
     expect(container.querySelector('[data-testid="prq-list-table"]').textContent).toMatch(/Budi/);
+    expect(container.querySelector('[data-testid="prq-filter-submitted"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prq-filter-reviewed"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prq-row-r1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prq-row-r2"]')).toBeTruthy();
     expect(mockApi.listProductRequests).toHaveBeenCalledWith({ view: "submitted" });
