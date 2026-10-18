@@ -21,6 +21,8 @@ PERMISSION_CATALOG = [
     ("Penjualan", "product_request.create", "Buat Permintaan Produk"),
     ("Penjualan", "product_request.read_own_draft", "Baca draft Permintaan Produk sendiri"),
     ("Penjualan", "product_request.read_all", "Baca semua Permintaan Produk terkirim"),
+    ("Penjualan", "product_request.feedback", "Beri feedback Permintaan Produk"),
+    ("Penjualan", "product_request.update_status", "Ubah status Permintaan Produk"),
     ("Penjualan", "sales.customer.view", "Lihat Data Pelanggan"),
     ("Penjualan", "sales.customer.manage", "Kelola Data Pelanggan"),
     ("Penjualan", "sales.customer.edit", "Edit Pelanggan"),
@@ -423,6 +425,7 @@ LOADING_DEFAULTS_FROM_UPDATE = (
 # defaults for roles that have not stored any nav.* keys yet.
 NAV_ALWAYS_VISIBLE = (
     "nav.sales",
+    "nav.sales.product_requests",
     "nav.sales.sales_order",
     "nav.sales.delivery_order",
     "nav.sales.sales_invoice",
@@ -742,11 +745,18 @@ def nav_is_configured(perms: set) -> bool:
 
 
 def with_nav_defaults(perms: set) -> set:
-    """If a role has never stored nav.* keys, fill them from existing access."""
+    """If a role has never stored nav.* keys, fill them from existing access.
+
+    Permintaan Produk list/detail is open to every authenticated user, so the
+    menu key stays visible even for custom roles that already stamped nav.*.
+    This does not grant create / feedback / update_status.
+    """
     base = set(perms or [])
-    if nav_is_configured(base):
-        return base
-    return base | derived_nav_permissions(base)
+    if not nav_is_configured(base):
+        base |= derived_nav_permissions(base)
+    base.add("nav.sales")
+    base.add("nav.sales.product_requests")
+    return base
 
 # Default permission set per role. Admin gets everything except OPT_IN_ONLY.
 ROLE_DEFAULT_PERMISSIONS = {
@@ -860,6 +870,8 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "holding_team": [
         "product_request.read_all",
+        "product_request.feedback",
+        "product_request.update_status",
         "dashboard.owner.view",
         # Recovered Purchasing + Inventory + HPP package (production-only role).
         # Local admin still uses ALL_PERMISSIONS; production non-holding roles
@@ -894,6 +906,8 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "direktur_utama": [
         "product_request.read_all",
+        "product_request.feedback",
+        "product_request.update_status",
         "dashboard.owner.view",
         "reports.gaji_operator.view",
         "reports.gaji_operator.repair_work_date",

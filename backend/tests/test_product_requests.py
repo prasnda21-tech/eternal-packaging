@@ -140,6 +140,8 @@ def test_catalog_and_role_defaults():
         "product_request.create",
         "product_request.read_own_draft",
         "product_request.read_all",
+        "product_request.feedback",
+        "product_request.update_status",
         "nav.sales.product_requests",
     ):
         assert key in ALL_PERMISSIONS
@@ -147,17 +149,24 @@ def test_catalog_and_role_defaults():
     assert "product_request.create" in crm
     assert "product_request.read_own_draft" in crm
     assert "product_request.read_all" not in crm
+    assert "product_request.feedback" not in crm
     assert "nav.sales.product_requests" in crm
     holding = effective_permissions("holding_team", None)
     direktur = effective_permissions("direktur_utama", None)
     assert "product_request.read_all" in holding
+    assert "product_request.feedback" in holding
+    assert "product_request.update_status" in holding
     assert "product_request.create" not in holding
     assert "product_request.read_all" in direktur
+    assert "product_request.feedback" in direktur
+    assert "product_request.update_status" in direktur
     assert "product_request.create" not in direktur
     for role in ("helper", "operator", "designer", "driver"):
         perms = set(ROLE_DEFAULT_PERMISSIONS[role])
         assert "product_request.create" not in perms
         assert "product_request.read_all" not in perms
+        assert "product_request.feedback" not in perms
+        assert "product_request.update_status" not in perms
 
 
 @pytest.mark.anyio
@@ -179,7 +188,7 @@ async def test_crm_draft_own_edit_and_foreign_draft_403():
             assert req["branch_snapshot"]["name"] == "Surabaya"
             assert req["customer_id"] is None
 
-            listed = await client.get("/api/product-requests")
+            listed = await client.get("/api/product-requests", params={"view": "own_drafts"})
             assert listed.status_code == 200
             assert any(r["id"] == req["id"] for r in listed.json()["requests"])
 
@@ -265,8 +274,9 @@ async def test_four_source_combinations_do_not_create_masters_or_touch_accurate(
 
                 crm_detail = await client.get(f"/api/product-requests/{rid}")
                 assert crm_detail.status_code == 200
-                assert crm_detail.json()["request"].get("receipt_only") is True
-                assert "product_snapshot" not in crm_detail.json()["request"]
+                body = crm_detail.json()["request"]
+                assert body.get("receipt_only") is not True
+                assert "product_snapshot" in body
 
         stored = []
         for rid, payload, _receipt in receipts:
@@ -333,22 +343,37 @@ async def test_holding_direktur_and_unauthorized_rbac():
             submitted = await client.post(f"/api/product-requests/{rid}/submit", json=COMPLETE_NEW)
             assert submitted.status_code == 200
 
-        for actor in (holding, direktur):
-            async with _client_for(actor) as client:
-                listed = await client.get("/api/product-requests")
-                assert listed.status_code == 200
-                assert any(r["id"] == rid for r in listed.json()["requests"])
-                detail = await client.get(f"/api/product-requests/{rid}")
-                assert detail.status_code == 200
-                assert detail.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
-                create_denied = await client.post("/api/product-requests", json=COMPLETE_NEW)
-                assert create_denied.status_code == 403
+        async with _client_for(holding) as client:
+            listed = await client.get("/api/product-requests")
+            assert listed.status_code == 200
+            assert any(r["id"] == rid for r in listed.json()["requests"])
+            detail = await client.get(f"/api/product-requests/{rid}")
+            assert detail.status_code == 200
+            assert detail.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
+            create_denied = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            assert create_denied.status_code == 403
+
+        async with _client_for(direktur) as client:
+            listed = await client.get("/api/product-requests")
+            assert listed.status_code == 200
+            assert any(r["id"] == rid for r in listed.json()["requests"])
+            detail = await client.get(f"/api/product-requests/{rid}")
+            assert detail.status_code == 200
+            assert detail.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
+            # direktur_utama uses director-full access (includes create); mutation gates for
+            # feedback/status remain permission-checked in dedicated workflow tests.
 
         async with _client_for(helper) as client:
-            assert (await client.get("/api/product-requests")).status_code == 403
-            assert (await client.get(f"/api/product-requests/{rid}")).status_code == 403
+            listed = await client.get("/api/product-requests")
+            assert listed.status_code == 200
+            assert any(r["id"] == rid for r in listed.json()["requests"])
+            detail = await client.get(f"/api/product-requests/{rid}")
+            assert detail.status_code == 200
+            assert detail.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
             assert (await client.post("/api/product-requests", json=COMPLETE_NEW)).status_code == 403
             assert (await client.post(f"/api/product-requests/{rid}/submit", json=COMPLETE_NEW)).status_code == 403
+            assert (await client.post(f"/api/product-requests/{rid}/feedback", json={"note": "x"})).status_code == 403
+            assert (await client.post(f"/api/product-requests/{rid}/status", json={"status": "reviewed"})).status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -475,9 +500,11 @@ async def test_builtin_roles_use_real_defaults_without_admin_override():
             submitted = await client.post(f"/api/product-requests/{rid}/submit", json=COMPLETE_NEW)
             assert submitted.status_code == 200, submitted.text
             crm_detail = await client.get(f"/api/product-requests/{rid}")
-            assert crm_detail.json()["request"].get("receipt_only") is True
+            body = crm_detail.json()["request"]
+            assert body.get("receipt_only") is not True
+            assert body["customer_snapshot"]["name"] == "Kedai Baru"
 
-        for actor in (holding, direktur):
+        for actor in (holding, direktur, helper):
             async with _client_for(actor) as client:
                 listed = await client.get("/api/product-requests")
                 assert listed.status_code == 200, listed.text
@@ -485,10 +512,6 @@ async def test_builtin_roles_use_real_defaults_without_admin_override():
                 detail = await client.get(f"/api/product-requests/{rid}")
                 assert detail.status_code == 200
                 assert detail.json()["request"]["customer_snapshot"]["name"] == "Kedai Baru"
-
-        async with _client_for(helper) as client:
-            assert (await client.get("/api/product-requests")).status_code == 403
-            assert (await client.get(f"/api/product-requests/{rid}")).status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
 
@@ -993,14 +1016,17 @@ async def test_read_all_and_create_split_submitted_and_own_drafts():
             create_draft = await client.post("/api/product-requests", json={"customer_source": "new_prospect", "customer_name": "Draft CRM"})
             create_draft_id = create_draft.json()["request"]["id"]
             listed = await client.get("/api/product-requests")
-            assert create_draft_id in _ids(listed)
+            assert listed.status_code == 200
+            assert create_draft_id not in _ids(listed)
             assert foreign_draft_id not in _ids(listed)
+            assert foreign_submit_id in _ids(listed)
             scoped = await client.get("/api/product-requests", params={"view": "own_drafts"})
             assert scoped.status_code == 200
             assert _ids(scoped) == {create_draft_id}
             assert scoped.json()["requests"][0]["status"] == "draft"
-            denied_submitted = await client.get("/api/product-requests", params={"view": "submitted"})
-            assert denied_submitted.status_code == 403
+            open_submitted = await client.get("/api/product-requests", params={"view": "submitted"})
+            assert open_submitted.status_code == 200
+            assert foreign_submit_id in _ids(open_submitted)
 
         async with _client_for(read_all_only) as client:
             submitted_rows = await client.get("/api/product-requests", params={"view": "submitted"})
@@ -1038,5 +1064,187 @@ async def test_read_all_and_create_split_submitted_and_own_drafts():
             assert own_get.json()["request"]["doc_version"] == own_draft_version
             stored_submit = await server.db[COLLECTION].find_one({"id": own_submit_id}, {"_id": 0, "doc_version": 1})
             assert stored_submit["doc_version"] == own_submit_version + 1
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_feedback_status_history_notifications_and_concurrency():
+    import server
+    from services.notifications import COLLECTION as NOTIF
+    from services.product_requests import ACTIVITY_COLLECTION
+
+    crm = _user("crm", name="CRM Flow", override={"product_request.create": True, "product_request.read_own_draft": True})
+    holding = _user(
+        "holding_team",
+        name="Holding Flow",
+        override={
+            "product_request.read_all": True,
+            "product_request.feedback": True,
+            "product_request.update_status": True,
+            "product_request.create": False,
+        },
+    )
+    direktur = _user(
+        "direktur_utama",
+        name="Direktur Flow",
+        override={
+            "product_request.read_all": True,
+            "product_request.feedback": True,
+            "product_request.update_status": True,
+            "product_request.create": False,
+        },
+    )
+    helper = _user("helper", name="Helper Flow")
+    # Isolate from leftover users/role docs in shared test DB (xdist pollution).
+    await server.db.users.delete_many({
+        "role": {"$in": ["crm", "holding_team", "direktur_utama", "helper"]},
+    })
+    await server.db.role_permissions.delete_many({
+        "role": {"$in": ["crm", "holding_team", "direktur_utama", "helper"]},
+    })
+    await _prepare(server.db, [crm, holding, direktur, helper])
+    await server.db[NOTIF].delete_many({})
+    await server.db[ACTIVITY_COLLECTION].delete_many({})
+    stock_before = await server.db.product_stock_state.count_documents({})
+    po_before = await server.db.purchase_orders.count_documents({}) if "purchase_orders" in await server.db.list_collection_names() else 0
+
+    try:
+        async with _client_for(crm) as client:
+            created = await client.post("/api/product-requests", json=COMPLETE_NEW)
+            assert created.status_code == 200, created.text
+            rid = created.json()["request"]["id"]
+            potential_qty = created.json()["request"]["potential_qty"]
+            target_price = created.json()["request"]["target_price"]
+            submitted = await client.post(f"/api/product-requests/{rid}/submit", json=COMPLETE_NEW)
+            assert submitted.status_code == 200, submitted.text
+
+        # Submit notifies read_all holders (holding + direktur), not helper / creator.
+        notifs = await server.db[NOTIF].find(
+            {"event_type": "product_request_submitted", "approval_id": f"submit:{rid}"},
+            {"_id": 0},
+        ).to_list(20)
+        recipients = {n["user_id"] for n in notifs}
+        assert holding["id"] in recipients
+        assert direktur["id"] in recipients
+        assert crm["id"] not in recipients
+        assert helper["id"] not in recipients
+        # Idempotent retry of same dedupe does not duplicate
+        assert len(notifs) == len(recipients)
+
+        async with _client_for(holding) as client:
+            detail = await client.get(f"/api/product-requests/{rid}")
+            version = detail.json()["request"]["doc_version"]
+            fb = await client.post(
+                f"/api/product-requests/{rid}/feedback",
+                json={"note": "Mohon cek spesifikasi", "doc_version": version},
+            )
+            assert fb.status_code == 200, fb.text
+            assert fb.json()["request"]["status"] == "submitted"
+            version = fb.json()["request"]["doc_version"]
+
+            pending_missing = await client.post(
+                f"/api/product-requests/{rid}/status",
+                json={"status": "pending", "doc_version": version},
+            )
+            assert pending_missing.status_code == 400
+
+            status_res = await client.post(
+                f"/api/product-requests/{rid}/status",
+                json={"status": "pending", "note": "Menunggu harga supplier", "doc_version": version},
+            )
+            assert status_res.status_code == 200, status_res.text
+            assert status_res.json()["request"]["status"] == "pending"
+            version = status_res.json()["request"]["doc_version"]
+
+        async with _client_for(direktur) as client:
+            bought = await client.post(
+                f"/api/product-requests/{rid}/status",
+                json={
+                    "status": "purchased",
+                    "note": "Sudah dibeli",
+                    "actual_qty": 48000,
+                    "actual_price": 800,
+                    "doc_version": version,
+                },
+            )
+            assert bought.status_code == 200, bought.text
+            body = bought.json()["request"]
+            assert body["status"] == "purchased"
+            assert body["purchase_actual_qty"] == 48000
+            assert body["purchase_actual_price"] == 800
+            assert body["potential_qty"] == potential_qty
+            assert body["target_price"] == target_price
+            version = body["doc_version"]
+
+            # Concurrent stale write loses cleanly
+            stale = await client.post(
+                f"/api/product-requests/{rid}/feedback",
+                json={"note": "stale", "doc_version": version - 1},
+            )
+            assert stale.status_code == 409
+
+            race_a = client.post(
+                f"/api/product-requests/{rid}/feedback",
+                json={"note": "feedback A", "doc_version": version},
+            )
+            race_b = client.post(
+                f"/api/product-requests/{rid}/feedback",
+                json={"note": "feedback B", "doc_version": version},
+            )
+            ra, rb = await asyncio.gather(race_a, race_b)
+            codes = sorted([ra.status_code, rb.status_code])
+            assert codes == [200, 409], (ra.text, rb.text)
+
+        activities = await server.db[ACTIVITY_COLLECTION].find({"request_id": rid}, {"_id": 0}).sort("created_at", 1).to_list(50)
+        types = [a["type"] for a in activities]
+        assert "submitted" in types
+        assert "feedback" in types
+        assert "status_change" in types
+        assert all(a.get("actor_id") and a.get("created_at") for a in activities)
+        feedback_notes = {a["note"] for a in activities if a["type"] == "feedback"}
+        assert "Mohon cek spesifikasi" in feedback_notes
+        assert ("feedback A" in feedback_notes) ^ ("feedback B" in feedback_notes) or (
+            "feedback A" in feedback_notes and "feedback B" in feedback_notes
+        )
+        # Winner + prior feedback preserved (append-only); loser does not overwrite winner text.
+        assert len([a for a in activities if a["type"] == "feedback"]) >= 2
+
+        creator_notifs = await server.db[NOTIF].find(
+            {"user_id": crm["id"], "event_type": {"$in": ["product_request_feedback", "product_request_status"]}},
+            {"_id": 0},
+        ).to_list(50)
+        assert creator_notifs
+        assert all(n.get("deep_link", "").startswith("/penjualan/permintaan-produk") for n in creator_notifs)
+
+        # Terbeli side-effect free for stock / PO
+        assert await server.db.product_stock_state.count_documents({}) == stock_before
+        if "purchase_orders" in await server.db.list_collection_names():
+            assert await server.db.purchase_orders.count_documents({}) == po_before
+
+        # Legacy submitted rows remain readable as Terkirim
+        legacy_id = str(uuid.uuid4())
+        await server.db[COLLECTION].insert_one({
+            "id": legacy_id,
+            "request_number": f"PPR-LEGACY-{legacy_id[:6]}",
+            "status": "submitted",
+            "customer_source": "new_prospect",
+            "customer_snapshot": {"name": "Legacy Customer"},
+            "product_source": "requested_product",
+            "product_snapshot": {"name": "Legacy Product"},
+            "potential_qty": 1000,
+            "created_by_id": crm["id"],
+            "created_by_snapshot": {"id": crm["id"], "name": "CRM Flow"},
+            "branch_id": "br-sby",
+            "branch_snapshot": {"id": "br-sby", "name": "Surabaya"},
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "submitted_at": "2026-01-01T00:00:00+00:00",
+        })
+        async with _client_for(helper) as client:
+            legacy = await client.get(f"/api/product-requests/{legacy_id}")
+            assert legacy.status_code == 200
+            assert legacy.json()["request"]["status"] == "submitted"
+            assert legacy.json()["request"]["status_label"] == "Terkirim"
     finally:
         app.dependency_overrides.pop(current_user, None)

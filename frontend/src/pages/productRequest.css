@@ -413,16 +413,17 @@
 .content:has(.prq-list-page){
   display:grid;
   grid-template-columns:minmax(0,1fr);
-  grid-template-rows:36px auto minmax(0,1fr);
+  grid-template-rows:auto 36px minmax(0,1fr);
   padding:6px 10px 6px !important;
-  row-gap:6px;
+  row-gap:4px;
   min-width:0;
+  background:#f5f8f7;
 }
 .content.content-workspace.content-penjualan-workspace:has(.prq-list-page) > .kb-workspace-tabs,
 .content.content-workspace:has(.prq-list-page) > .kb-workspace-tabs,
 .content:has(.prq-list-page) > .kb-workspace-tabs,
 .content:has(.prq-list-page) > [data-testid="workspace-tabs"]{
-  grid-row:2;
+  grid-row:1;
   position:static;
   top:auto;
   z-index:auto;
@@ -434,12 +435,12 @@
   display:contents;
 }
 .prq-list-page > .prq-list-head{
-  grid-row:1;
+  grid-row:2;
   min-height:32px;
   height:36px;
   max-height:36px;
   margin:0;
-  padding:0 56px 0 0;
+  padding:0;
   align-items:center;
   justify-content:space-between;
   min-width:0;
@@ -453,14 +454,19 @@
 }
 .prq-list-page > .prq-list-head h1{
   margin:0;
-  font:650 17px/1.2 "IBM Plex Sans",sans-serif;
+  font:700 18px/1.15 "IBM Plex Sans",sans-serif;
+  letter-spacing:-.3px;
+  color:#17232d;
   white-space:nowrap;
 }
 .prq-list-page > .prq-list-head p{
   margin:0;
   font-size:11px;
   line-height:1.2;
+  color:#64748b;
   white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
 }
 .prq-list-page > .prq-list-head .prq-btn{
   height:32px;
@@ -473,7 +479,7 @@
   min-width:0;
   display:flex;
   flex-direction:column;
-  gap:6px;
+  gap:4px;
   padding-top:0;
 }
 .prq-list-page{min-height:0;min-width:0}
@@ -483,7 +489,7 @@
   min-width:0;
   overflow-x:auto;
   overflow-y:auto;
-  border:1px solid var(--line);
+  border:1px solid #e1e9e6;
   border-radius:10px;
   background:#fff;
 }
@@ -494,50 +500,76 @@
   table-layout:fixed;
   border-collapse:collapse;
   font-size:12px;
+  line-height:1.25;
 }
-.prq-list-page .prq-col-number{width:14%}
+.prq-list-page .prq-col-number{width:12%}
 .prq-list-page .prq-col-date{width:8%}
-.prq-list-page .prq-col-customer{width:17%}
+.prq-list-page .prq-col-customer{width:16%}
 .prq-list-page .prq-col-csource{width:9%}
-.prq-list-page .prq-col-product{width:17%}
+.prq-list-page .prq-col-product{width:16%}
 .prq-list-page .prq-col-psource{width:9%}
 .prq-list-page .prq-col-qty{width:7%}
 .prq-list-page .prq-col-crm{width:8%}
-.prq-list-page .prq-col-branch{width:6%}
-.prq-list-page .prq-col-status{width:7%}
-.prq-list-page .prq-col-action{width:11%}
+.prq-list-page .prq-col-branch{width:7%}
+.prq-list-page .prq-col-status{width:8%}
+.prq-list-page .prq-col-action{width:10%}
 .prq-list-page .prq-col-progress{width:8%}
-.prq-list-tabs{
+.prq-list-chrome{
   display:flex;
   align-items:center;
-  gap:6px;
-  height:28px;
-  min-height:28px;
-  max-height:28px;
-  flex-shrink:0;
+  gap:8px;
+  flex:0 0 auto;
+  flex-wrap:wrap;
+  min-width:0;
+}
+.prq-list-tabs{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  flex:0 1 auto;
+  flex-wrap:wrap;
+  min-width:0;
+  min-height:30px;
+  max-height:none;
+  height:auto;
 }
 .prq-tab{
   display:inline-flex;
   align-items:center;
   gap:6px;
-  height:26px;
-  min-height:26px;
-  padding:0 8px;
-  border:1px solid var(--line);
-  border-radius:7px;
+  height:30px;
+  min-height:30px;
+  padding:0 12px;
+  margin:0;
+  border:1px solid #cbd5e1;
+  border-radius:999px;
   background:#fff;
-  color:var(--ink);
+  color:#334155;
   font:600 12px/1 "IBM Plex Sans",sans-serif;
   cursor:pointer;
+  white-space:nowrap;
 }
-.prq-tab.is-active{border-color:#B7C9C0;background:#F4F8F6}
+.prq-tab.is-active{
+  color:#14532d;
+  background:#e7f6ee;
+  border-color:#86efac;
+}
 .prq-count{
   display:inline-flex;
   align-items:center;
-  height:16px;
-  padding:0 5px;
+  justify-content:center;
+  min-width:1.1em;
+  height:auto;
+  padding:1px 6px;
   border-radius:999px;
-  font:650 10px/1 "IBM Plex Sans",sans-serif;
+  background:#f1f5f9;
+  color:#0f172a;
+  font:700 11px/1.2 "IBM Plex Sans",sans-serif;
+  font-variant-numeric:tabular-nums;
+}
+.prq-tab.is-active .prq-count{
+  background:#dcfce7;
+  color:#14532d;
 }
 .prq-count-submitted{background:#E7F6EE;color:#0F7A45}
 .prq-count-draft{background:#EEF2F7;color:#3E5570}
@@ -552,6 +584,38 @@
 }
 .prq-status-submitted{background:#E7F6EE;color:#0F7A45}
 .prq-status-draft{background:#EEF2F7;color:#3E5570}
+.prq-status-reviewed{background:#E8F1FB;color:#1D4F91}
+.prq-status-pending{background:#FFF4E5;color:#9A5B00}
+.prq-status-purchased{background:#EAF7F0;color:#0B6B3A}
+.prq-status-rejected{background:#FDECEC;color:#A32020}
+.prq-status-completed{background:#EEF2F7;color:#334155}
+.prq-workflow-form{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin:0 0 12px;
+  padding:0 0 12px;
+  border-bottom:1px solid var(--line);
+}
+.prq-workflow-form .prq-field{display:flex;flex-direction:column;gap:4px}
+.prq-workflow-form .prq-field > span{font:650 11px/1.2 "IBM Plex Sans",sans-serif;color:var(--soft)}
+.prq-workflow-form textarea,
+.prq-workflow-form select,
+.prq-workflow-form input{
+  width:100%;
+  box-sizing:border-box;
+  border:1px solid var(--line);
+  border-radius:7px;
+  padding:6px 8px;
+  font:400 12px/1.35 "IBM Plex Sans",sans-serif;
+  background:#fff;
+}
+.prq-actual-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.prq-activity h3{margin:0 0 6px;font:650 12px/1.2 "IBM Plex Sans",sans-serif}
+.prq-activity ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.prq-activity li{padding:8px;border:1px solid var(--line);border-radius:8px;background:#FAFBFC}
+.prq-activity li p{margin:4px 0 0;font:400 12px/1.35 "IBM Plex Sans",sans-serif}
+.prq-activity-meta{display:block;margin-top:2px;font:400 11px/1.3 "IBM Plex Sans",sans-serif;color:var(--soft)}
 .prq-list-page .prq-btn-view,
 .prq-list-page .prq-btn-continue{
   display:inline-flex;
@@ -566,20 +630,24 @@
 .prq-btn-continue{background:#1D4ED8;color:#fff}
 .prq-list-page .prq-table th,
 .prq-list-page .prq-table td{
-  padding:5px 7px;
-  border-bottom:1px solid var(--line);
+  padding:6px 8px;
+  border-bottom:1px solid #e8eeeb;
   text-align:left;
   white-space:normal;
   overflow-wrap:anywhere;
-  vertical-align:top;
+  vertical-align:middle;
 }
 .prq-list-page .prq-table thead th{
   position:sticky;
   top:0;
-  background:#fff;
+  z-index:1;
+  background:#f8faf9;
   font-weight:650;
+  color:#334155;
+  border-bottom:1px solid #d7e2dd;
 }
-.prq-list-page .prq-table td.prq-qty{text-align:right}
+.prq-list-page .prq-table td.prq-qty{text-align:right;font-variant-numeric:tabular-nums}
+.prq-list-page .prq-table tbody tr{height:36px}
 .prq-table tbody tr{cursor:pointer}
 .prq-table tbody tr:hover{background:#F4F8F6}
 .prq-list-page > .prq-drawer-root{

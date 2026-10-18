@@ -163,6 +163,25 @@ def test_sales_receipt_nav_is_registered_like_other_sales_menus():
     assert "not.a.real.permission" not in ALL_PERMISSIONS
 
 
+
+def test_product_request_nav_visible_for_configured_custom_roles():
+    """Custom roles with stamped nav.* still get Permintaan Produk menu key only."""
+    configured = {
+        "nav.configured",
+        "nav.dashboard",
+        "nav.sales",
+        "nav.sales.sales_order",
+        "po.view",
+    }
+    derived = with_nav_defaults(configured)
+    assert "nav.sales.product_requests" in derived
+    assert "product_request.create" not in derived
+    assert "product_request.feedback" not in derived
+    assert "product_request.update_status" not in derived
+    # Does not auto-grant unrelated sales children
+    assert "nav.sales.sales_receipt" not in derived
+
+
 def test_non_admin_roles_do_not_auto_gain_sales_receipt_nav():
     for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
         defaults = set(ROLE_DEFAULT_PERMISSIONS[role])

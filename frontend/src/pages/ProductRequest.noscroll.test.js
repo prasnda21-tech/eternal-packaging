@@ -55,13 +55,13 @@ describe("product request no-scroll contract", () => {
     expect(form).toMatch(/prq-new-customer-city/);
   });
 
-  test("list page header sits above workspace tabs without overlap hacks", () => {
+  test("list page workspace tabs sit above header without overlap hacks", () => {
     expect(css).toMatch(/\.content:has\(\.prq-list-page\)/);
     expect(css).toMatch(/\.content:has\(\.prq-list-page\) > \.prq-list-page\{[^}]*display:contents/);
     expect(css).toMatch(/\.content:has\(\.prq-list-page\) > \.kb-workspace-tabs/);
-    expect(css).toMatch(/\.prq-list-page > \.prq-list-head\{[^}]*grid-row:1/);
-    expect(css).toMatch(/\.content:has\(\.prq-list-page\) > \.kb-workspace-tabs,[\s\S]*?grid-row:2/);
-    expect(css).toMatch(/grid-template-rows:36px auto minmax\(0,1fr\)/);
+    expect(css).toMatch(/\.content:has\(\.prq-list-page\) > \.kb-workspace-tabs,[\s\S]*?grid-row:1/);
+    expect(css).toMatch(/\.prq-list-page > \.prq-list-head\{[^}]*grid-row:2/);
+    expect(css).toMatch(/grid-template-rows:auto 36px minmax\(0,1fr\)/);
     expect(css).toMatch(/\.prq-list-page \.prq-table\{[^}]*table-layout:fixed/);
     expect(css).toMatch(/\.prq-list-page \.prq-table th,[\s\S]*?white-space:normal/);
     expect(css).toMatch(/\.prq-list-page > \.prq-list-body\{[^}]*min-width:0/);

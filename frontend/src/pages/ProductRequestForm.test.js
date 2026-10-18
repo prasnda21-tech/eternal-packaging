@@ -37,6 +37,9 @@ jest.mock("../lib/api", () => ({
     updateProductRequest: jest.fn(),
     submitProductRequest: jest.fn(),
     getProductRequest: jest.fn(),
+    listProductRequestActivities: jest.fn(),
+    addProductRequestFeedback: jest.fn(),
+    updateProductRequestStatus: jest.fn(),
   },
 }));
 
@@ -136,6 +139,9 @@ describe("ProductRequestForm interactions", () => {
     mockApi.getProductRequest.mockResolvedValue({
       request: { id: "r1", status: "draft", customer_source: "master_crm", customer_id: "C1", customer_snapshot: { name: "Renee" } },
     });
+    mockApi.listProductRequestActivities.mockResolvedValue({ activities: [] });
+    mockApi.addProductRequestFeedback.mockResolvedValue({ request: COMPLETE_SUBMITTED_DETAIL, activity: {} });
+    mockApi.updateProductRequestStatus.mockResolvedValue({ request: COMPLETE_SUBMITTED_DETAIL, activity: {} });
   });
 
   afterEach(() => {
