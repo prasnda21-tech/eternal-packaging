@@ -748,13 +748,13 @@ def with_nav_defaults(perms: set) -> set:
     """If a role has never stored nav.* keys, fill them from existing access.
 
     Permintaan Produk list/detail is open to every authenticated user, so the
-    menu key stays visible even for custom roles that already stamped nav.*.
-    This does not grant create / feedback / update_status.
+    child menu key stays visible even for custom roles that already stamped
+    nav.*. This must not grant parent ``nav.sales`` (or other sales children),
+    nor create / feedback / update_status.
     """
     base = set(perms or [])
     if not nav_is_configured(base):
         base |= derived_nav_permissions(base)
-    base.add("nav.sales")
     base.add("nav.sales.product_requests")
     return base
 

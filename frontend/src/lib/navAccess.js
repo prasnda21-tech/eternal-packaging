@@ -236,9 +236,11 @@ export function dashboardMenuItems(hasPerm, user) {
 export function salesNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
   const salesCustomers = parent && (canSeeNav(hasPerm, NAV_KEYS.salesCustomers) || canSeeNav(hasPerm, "sales.customer.view") || canSeeNav(hasPerm, "sales.customer.manage") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
-  // Menu tile: nav key (incl. NAV_ALWAYS_VISIBLE defaults) or product_request.* capability.
+  // Permintaan Produk is the open-read exception: child nav (or capability) is
+  // enough. Do not require parent nav.sales — that would force granting the
+  // whole Penjualan parent to every role just to surface this one tile.
   // Submitted list/detail remain open via route + API for any authenticated user.
-  const productRequests = parent && (
+  const productRequests = (
     canSeeNav(hasPerm, NAV_KEYS.productRequests)
     || canSeeNav(hasPerm, "product_request.create")
     || canSeeNav(hasPerm, "product_request.read_own_draft")
