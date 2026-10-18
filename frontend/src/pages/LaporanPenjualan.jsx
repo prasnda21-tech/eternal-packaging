@@ -24,6 +24,8 @@ const readPrefs = (key) => { try { return JSON.parse(window.localStorage.getItem
 const writePrefs = (key, value) => { try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ } };
 
 function ReportTable({ report, layout, onResize, className = "" }) {
+  const [collapsed,setCollapsed] = useState({});
+  useEffect(() => setCollapsed({}), [report]);
   const cols = report?.columns || [];
   const labelIndex = Math.max(0, cols.findIndex((c) => c.align !== "right"));
   return <article className={"erw-paper " + className}>
@@ -42,9 +44,24 @@ function ReportTable({ report, layout, onResize, className = "" }) {
         </th>)}</tr></thead>
         <tbody>
           {!report?.rows?.length && <tr><td className="erw-table-empty" colSpan={cols.length || 1}>Tidak ada hasil untuk periode dan cabang ini.</td></tr>}
-          {(report?.rows || []).map((row,i) => {
-            if (row.kind === "group") return <tr className="erw-server-group" key={"group"+i}><th colSpan={cols.length || 1}>{row.label}</th></tr>;
-            return <tr key={"row"+i} className={row.kind === "subtotal" ? "erw-server-subtotal" : ""}>
+          {(() => {
+            let hiddenBelowLevel = null;
+            return (report?.rows || []).map((row,i) => {
+              if (row.kind === "group") {
+                const level = Number(row.level) || 0;
+                if (hiddenBelowLevel !== null && level > hiddenBelowLevel) return null;
+                if (hiddenBelowLevel !== null && level <= hiddenBelowLevel) hiddenBelowLevel = null;
+                const folded = !!collapsed[i];
+                if (folded) hiddenBelowLevel = level;
+                return <tr className="erw-server-group" key={"group"+i}><th colSpan={cols.length || 1}>
+                  {onResize ? <button type="button" onClick={() => setCollapsed(old => ({...old,[i]:!old[i]}))}
+                    aria-expanded={!folded} aria-label={(folded ? "Buka " : "Tutup ") + row.label}>
+                    <span aria-hidden="true">{folded ? "▸" : "▾"}</span> {row.label}
+                  </button> : row.label}
+                </th></tr>;
+              }
+              if (hiddenBelowLevel !== null) return null;
+              return <tr key={"row"+i} className={row.kind === "subtotal" ? "erw-server-subtotal" : ""}>
               {cols.map((c) => {
                 const value = row.values?.[c.key];
                 const shown = c.align === "right" ? format(value) : value ?? "—";
@@ -53,7 +70,8 @@ function ReportTable({ report, layout, onResize, className = "" }) {
                 </td>;
               })}
             </tr>;
-          })}
+            });
+          })()}
         </tbody>
         {!!report?.rows?.length && <tfoot><tr>{cols.map((c,i) => {
           const raw = report.totals?.[c.key];

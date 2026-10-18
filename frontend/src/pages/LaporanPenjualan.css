@@ -15,3 +15,6 @@
 .erw-report-pager button,.erw-report-pager select{border:1px solid #d1d5db;border-radius:6px;background:white;padding:7px;cursor:pointer}
 .erw-method{padding:10px;color:#64748b;font-size:12px}.erw-print-only{display:none}
 @media print{body,.app-shell,.content,.app-main{background:#fff!important}.erw-report-page>.erw{display:none!important}.erw-print-only{display:block!important}.erw-print-only .erw-paper{border:0;overflow:visible}.erw-print-only .erw-report-scroller{overflow:visible}.erw-print-only .erw-report-resize{display:none}.erw-print-only table{width:100%;font-size:9px}.erw-print-only th,.erw-print-only td{white-space:normal;overflow:visible;min-width:0;word-break:break-word}.erw-print-only tr{break-inside:avoid}}
+
+.erw-server-group button{border:0;background:transparent;cursor:pointer;padding:0;color:#166534;font-weight:700;text-align:left;font:inherit}
+.erw-server-group button:focus-visible{outline:2px solid #16a34a;outline-offset:2px}
