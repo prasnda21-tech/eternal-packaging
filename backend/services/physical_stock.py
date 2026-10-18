@@ -3054,6 +3054,65 @@ async def operational_physical_qty_by_item(
     return totals
 
 
+def _warehouse_engine_catalog_envelope(
+    *,
+    items: List[dict],
+    total: int,
+    page: int,
+    limit: int,
+    page_count: int,
+    master_item_count: int,
+    warehouse_count: int,
+    catalog_mode: str,
+    r2_on: bool,
+    standalone_on: bool,
+    selected_warehouse: Optional[dict],
+) -> dict:
+    """Shared Stock Saat Ini envelope for warehouse-engine reads (R2 or standalone).
+
+    Empty catalogs (no BARANG masters / no search hits) MUST still carry mode
+    flags so the UI does not fall back to compatibility chrome.
+    """
+    from services.warehouse_stock_standalone import MODE_WAREHOUSE_STANDALONE
+
+    selected = selected_warehouse or None
+    if selected_warehouse:
+        note = (
+            "Saldo buku gudang terpilih (boleh negatif)."
+            if catalog_mode == MODE_WAREHOUSE_STANDALONE
+            else "Saldo buku R2 gudang terpilih (boleh negatif)."
+        )
+    else:
+        note = (
+            "Saldo buku agregat cabang; rincian per gudang ada di warehouse_balances."
+            if catalog_mode == MODE_WAREHOUSE_STANDALONE
+            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
+        )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "page_count": page_count,
+        "master_item_count": master_item_count,
+        "warehouse_count": warehouse_count,
+        "stock_read_mode": catalog_mode,
+        "r2_authority_active": bool(r2_on),
+        "warehouse_stock_standalone": bool(standalone_on),
+        "physical_qty_scope": "WAREHOUSE" if selected else "BRANCH",
+        "branch_filter_affects_physical_qty": True,
+        "warehouse_filter_affects_physical_qty": bool(selected),
+        "effective_warehouse_id": (
+            str(selected.get("id") or "") if selected else None
+        ),
+        "effective_warehouse_code": (
+            (selected.get("code") or None) if selected else None
+        ),
+        "demand_scope": "BRANCH",
+        "physical_qty_note": note,
+    }
+
+
 async def list_physical_stock_catalog(
     db,
     *,
@@ -3134,16 +3193,30 @@ async def list_physical_stock_catalog(
         if str(row.get("id") or "").strip() not in service_master_ids
     ]
     safe_page, safe_limit = _catalog_page(page, limit)
+    selected_warehouse_id = str(warehouse_id or "").strip()
+    selected_warehouse = next(
+        (
+            row for row in warehouses
+            if str(row.get("id") or "") == selected_warehouse_id
+        ),
+        None,
+    ) if selected_warehouse_id else None
     if not masters:
-        return {
-            "items": [],
-            "total": 0,
-            "page": safe_page,
-            "limit": safe_limit,
-            "page_count": 0,
-            "master_item_count": 0,
-            "warehouse_count": len(warehouses),
-        }
+        # Keep mode metadata identical to a non-empty catalog so the FE does not
+        # collapse warehouse chrome to compatibility when search/SERVICE yields 0.
+        return _warehouse_engine_catalog_envelope(
+            items=[],
+            total=0,
+            page=safe_page,
+            limit=safe_limit,
+            page_count=0,
+            master_item_count=0,
+            warehouse_count=len(warehouses),
+            catalog_mode=catalog_mode,
+            r2_on=r2_on,
+            standalone_on=standalone_on,
+            selected_warehouse=selected_warehouse,
+        )
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
     # Demand is branch-scoped. Unattributed legacy orders are excluded — never
@@ -3171,11 +3244,6 @@ async def list_physical_stock_catalog(
     # catalog would invent cross-branch delivery — fail-closed: omit.
     baseline_by_item: Dict[str, float] = {}
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
-    warehouse_by_id = {
-        str(row.get("id")): row for row in warehouses if row.get("id")
-    }
-    selected_warehouse_id = str(warehouse_id or "").strip()
-    selected_warehouse = warehouse_by_id.get(selected_warehouse_id) if selected_warehouse_id else None
     balance_docs = []
     if warehouse_ids and master_ids:
         balance_docs = await db[BALANCE_COLLECTION].find(
@@ -3356,41 +3424,19 @@ async def list_physical_stock_catalog(
     page_items = rows[start:start + safe_limit]
     # Batch enrich only the current page — avoid N+1 on the full catalog.
     await _attach_last_stock_actors(db, page_items)
-    return {
-        "items": page_items,
-        "total": total,
-        "page": safe_page,
-        "limit": safe_limit,
-        "page_count": page_count,
-        "master_item_count": len(masters),
-        "warehouse_count": len(warehouses),
-        "stock_read_mode": catalog_mode,
-        "r2_authority_active": bool(r2_on),
-        "warehouse_stock_standalone": bool(standalone_on),
-        "physical_qty_scope": "WAREHOUSE" if selected_warehouse else "BRANCH",
-        "branch_filter_affects_physical_qty": True,
-        "warehouse_filter_affects_physical_qty": bool(selected_warehouse),
-        "effective_warehouse_id": (
-            str(selected_warehouse.get("id") or "") if selected_warehouse else None
-        ),
-        "effective_warehouse_code": (
-            (selected_warehouse.get("code") or None) if selected_warehouse else None
-        ),
-        "demand_scope": "BRANCH",
-        "physical_qty_note": (
-            (
-                "Saldo buku gudang terpilih (boleh negatif)."
-                if catalog_mode == MODE_WAREHOUSE_STANDALONE
-                else "Saldo buku R2 gudang terpilih (boleh negatif)."
-            )
-            if selected_warehouse
-            else (
-                "Saldo buku agregat cabang; rincian per gudang ada di warehouse_balances."
-                if catalog_mode == MODE_WAREHOUSE_STANDALONE
-                else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
-            )
-        ),
-    }
+    return _warehouse_engine_catalog_envelope(
+        items=page_items,
+        total=total,
+        page=safe_page,
+        limit=safe_limit,
+        page_count=page_count,
+        master_item_count=len(masters),
+        warehouse_count=len(warehouses),
+        catalog_mode=catalog_mode,
+        r2_on=r2_on,
+        standalone_on=standalone_on,
+        selected_warehouse=selected_warehouse,
+    )
 
 
 def _movement_sort_key(movement: dict) -> Tuple[str, str]:
