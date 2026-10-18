@@ -39,9 +39,75 @@ RECEIPT_SOURCE_MANUAL = "manual"
 MANUAL_RECEIPT_ID_PREFIX = "manual:"
 DEFAULT_RECEIPT_CANCEL_REASON = "Pembatalan penerimaan"
 
+# Frozen at create time — retries must not follow live authority flags.
+STOCK_AUTHORITY_NONE = "none"
+STOCK_AUTHORITY_LEGACY_PSS = "legacy_pss"
+STOCK_AUTHORITY_STANDALONE = "warehouse_standalone"
+STOCK_AUTHORITY_R2 = "r2"
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def resolve_document_stock_authority(doc: Optional[dict]) -> str:
+    """Return the stock engine identity frozen on the receipt document.
+
+    Never consults live r2/standalone flags. Unknown unmarked docs are inferred
+    from persisted flags / posting / prior movements only.
+    """
+    row = doc or {}
+    stamped = str(row.get("stock_authority") or "").strip().lower()
+    if stamped in {
+        STOCK_AUTHORITY_NONE,
+        STOCK_AUTHORITY_LEGACY_PSS,
+        STOCK_AUTHORITY_STANDALONE,
+        STOCK_AUTHORITY_R2,
+    }:
+        return stamped
+    if row.get("warehouse_standalone") is True:
+        return STOCK_AUTHORITY_STANDALONE
+    if row.get("r2_physical") is True:
+        return STOCK_AUTHORITY_R2
+    if row.get("legacy_pss") is True:
+        return STOCK_AUTHORITY_LEGACY_PSS
+    posting = row.get("stock_posting") if isinstance(row.get("stock_posting"), dict) else {}
+    engine = str(posting.get("engine") or "").strip().lower()
+    if engine in {STOCK_AUTHORITY_STANDALONE, "standalone"}:
+        return STOCK_AUTHORITY_STANDALONE
+    if engine == STOCK_AUTHORITY_R2:
+        return STOCK_AUTHORITY_R2
+    if engine in {STOCK_AUTHORITY_LEGACY_PSS, "pss"}:
+        return STOCK_AUTHORITY_LEGACY_PSS
+    if str(posting.get("status") or "").upper() == "SKIPPED":
+        return STOCK_AUTHORITY_NONE
+    # Unmarked document-only / unknown → never retroactively adopt a live engine.
+    return STOCK_AUTHORITY_NONE
+
+
+async def _infer_authority_from_prior_movements(db, doc: dict) -> str:
+    """Best-effort recovery for unmarked docs that already posted stock."""
+    rid = str(doc.get("id") or "").strip()
+    arid = str(doc.get("accurate_receipt_id") or "").strip()
+    if rid:
+        from services.physical_stock import LEDGER_COLLECTION, MOVEMENT_PURCHASE_RECEIPT
+
+        n = await db[LEDGER_COLLECTION].count_documents({
+            "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+            "metadata.receipt_id": rid,
+        })
+        if n:
+            if doc.get("r2_physical") is True:
+                return STOCK_AUTHORITY_R2
+            return STOCK_AUTHORITY_STANDALONE
+    if arid:
+        n = await db.stock_movements.count_documents({
+            "reference_type": "goods_receipt",
+            "reference_id": arid,
+        })
+        if n:
+            return STOCK_AUTHORITY_LEGACY_PSS
+    return STOCK_AUTHORITY_NONE
 
 
 def is_accurate_receipt_source(doc: Optional[dict]) -> bool:
@@ -454,8 +520,13 @@ async def _post_manual_direct_warehouse_stock(
     *,
     user: dict,
     warehouse_id: Optional[str],
+    force_authority: Optional[str] = None,
 ) -> dict:
-    """Post BARANG lines for no-PO Langsung via exactly one warehouse engine."""
+    """Post BARANG lines for no-PO Langsung via exactly one warehouse engine.
+
+    force_authority locks the engine for resume-after-transition; create path
+    selects from live flags once and stamps stock_authority on the document.
+    """
     from services.branch_access import authorize_stock_location, find_branch_by_code, require_branch_access
     from services.physical_stock import (
         apply_purchase_receipt_lines,
@@ -481,9 +552,16 @@ async def _post_manual_direct_warehouse_stock(
         if ygy and ygy.get("id"):
             await require_branch_access(db, user, ygy["id"])
 
-    r2_on = await is_r2_authority_active(db)
-    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
-    if not r2_on and not standalone_on:
+    forced = str(force_authority or "").strip().lower() or None
+    if forced == STOCK_AUTHORITY_STANDALONE:
+        use_standalone, use_r2 = True, False
+    elif forced == STOCK_AUTHORITY_R2:
+        use_standalone, use_r2 = False, True
+    else:
+        r2_on = await is_r2_authority_active(db)
+        standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+        use_standalone, use_r2 = standalone_on, r2_on
+    if not use_standalone and not use_r2:
         raise HTTPException(409, "Otoritas stok gudang tidak aktif untuk penerimaan langsung.")
 
     stock_doc = {
@@ -499,7 +577,7 @@ async def _post_manual_direct_warehouse_stock(
         if isinstance(qty, float) and qty.is_integer():
             line["received_qty"] = int(qty)
 
-    if standalone_on:
+    if use_standalone:
         await require_warehouse_stock_standalone(db)
         branch_id, resolved_wh = await resolve_purchase_receipt_warehouse(
             db, None, warehouse_id=requested_wh,
@@ -517,7 +595,7 @@ async def _post_manual_direct_warehouse_stock(
             "posted_count": outcome.get("posted_count"),
             "failed_count": outcome.get("failed_count"),
             "skipped_non_inventory": outcome.get("skipped_non_inventory"),
-            "engine": "warehouse_standalone",
+            "engine": STOCK_AUTHORITY_STANDALONE,
             "updated_at": now_iso(),
         }
         patch = {
@@ -525,6 +603,8 @@ async def _post_manual_direct_warehouse_stock(
             "warehouse_id": resolved_wh,
             "warehouse_standalone": True,
             "r2_physical": False,
+            "legacy_pss": False,
+            "stock_authority": STOCK_AUTHORITY_STANDALONE,
             "stock_posting": posting,
         }
         await db[COLLECTION].update_one(
@@ -561,9 +641,11 @@ async def _post_manual_direct_warehouse_stock(
         "warehouse_id": stock_doc["warehouse_id"],
         "r2_physical": True,
         "warehouse_standalone": False,
+        "legacy_pss": False,
+        "stock_authority": STOCK_AUTHORITY_R2,
         "stock_posting": {
             "status": "COMPLETE",
-            "engine": "r2",
+            "engine": STOCK_AUTHORITY_R2,
             "updated_at": now_iso(),
         },
     }
@@ -576,23 +658,35 @@ async def _post_manual_direct_warehouse_stock(
 
 
 async def _resume_manual_direct_stock(db, existing: dict, user: dict) -> dict:
-    """Idempotent resume for no-PO Langsung stock posting."""
+    """Idempotent resume for no-PO Langsung — bound to document stock_authority only.
+
+    Live r2/standalone flags must never rewrite a receipt onto another engine.
+    """
     from services.physical_stock_engine import handle_manual_receipt_created
-    from services.r2_go_live import is_r2_authority_active
-    from services.warehouse_stock_standalone import (
-        apply_purchase_receipt_lines_standalone,
-        is_warehouse_stock_standalone_active,
-    )
+    from services.warehouse_stock_standalone import apply_purchase_receipt_lines_standalone
 
     if existing.get("goods_receipt_id") or is_cancelled(existing):
         return existing
 
-    r2_on = await is_r2_authority_active(db)
-    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
-    if existing.get("warehouse_standalone") or (standalone_on and not existing.get("r2_physical")):
-        posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
-        if str(posting.get("status") or "").upper() == "COMPLETE":
-            return existing
+    authority = resolve_document_stock_authority(existing)
+    if authority == STOCK_AUTHORITY_NONE and not existing.get("stock_authority"):
+        # Unmarked historical doc: recover from prior movements, else stay none.
+        authority = await _infer_authority_from_prior_movements(db, existing)
+        if authority != STOCK_AUTHORITY_NONE:
+            await db[COLLECTION].update_one(
+                {"accurate_receipt_id": existing["accurate_receipt_id"]},
+                {"$set": {"stock_authority": authority}},
+            )
+            existing["stock_authority"] = authority
+
+    if authority == STOCK_AUTHORITY_NONE:
+        return existing
+
+    posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
+    if str(posting.get("status") or "").upper() == "COMPLETE":
+        return existing
+
+    if authority == STOCK_AUTHORITY_STANDALONE:
         actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
         stock_doc = {
             "id": str(existing.get("id") or ""),
@@ -603,9 +697,18 @@ async def _resume_manual_direct_stock(db, existing: dict, user: dict) -> dict:
             "lines": list(existing.get("lines") or []),
         }
         if not stock_doc["branch_id"] or not stock_doc["warehouse_id"]:
-            return await _post_manual_direct_warehouse_stock(
-                db, existing, user=user, warehouse_id=existing.get("warehouse_id"),
+            # Incomplete create — resume only the stamped standalone engine.
+            from services.warehouse_stock_standalone import require_warehouse_stock_standalone
+            from services.physical_stock import resolve_purchase_receipt_warehouse
+
+            await require_warehouse_stock_standalone(db)
+            branch_id, resolved_wh = await resolve_purchase_receipt_warehouse(
+                db, None, warehouse_id=existing.get("warehouse_id"),
             )
+            stock_doc["branch_id"] = branch_id
+            stock_doc["warehouse_id"] = resolved_wh
+            existing["branch_id"] = branch_id
+            existing["warehouse_id"] = resolved_wh
         try:
             outcome = await apply_purchase_receipt_lines_standalone(
                 db, stock_doc, actor_id=actor_id,
@@ -617,26 +720,55 @@ async def _resume_manual_direct_stock(db, existing: dict, user: dict) -> dict:
             "posted_count": outcome.get("posted_count"),
             "failed_count": outcome.get("failed_count"),
             "skipped_non_inventory": outcome.get("skipped_non_inventory"),
-            "engine": "warehouse_standalone",
+            "engine": STOCK_AUTHORITY_STANDALONE,
             "updated_at": now_iso(),
+        }
+        patch = {
+            "stock_posting": posting,
+            "stock_authority": STOCK_AUTHORITY_STANDALONE,
+            "warehouse_standalone": True,
+            "r2_physical": False,
+            "branch_id": stock_doc["branch_id"],
+            "warehouse_id": stock_doc["warehouse_id"],
         }
         await db[COLLECTION].update_one(
             {"accurate_receipt_id": existing["accurate_receipt_id"]},
-            {"$set": {"stock_posting": posting, "warehouse_standalone": True, "r2_physical": False}},
+            {"$set": patch},
         )
-        existing["stock_posting"] = posting
-        existing["warehouse_standalone"] = True
+        existing.update(patch)
         return existing
 
-    if existing.get("r2_physical") or r2_on:
-        posting = existing.get("stock_posting") if isinstance(existing.get("stock_posting"), dict) else {}
-        if str(posting.get("status") or "").upper() == "COMPLETE":
+    if authority == STOCK_AUTHORITY_R2:
+        posting_status = str(posting.get("status") or "").upper()
+        if posting_status == "COMPLETE":
             return existing
+        # Resume only the stamped R2 engine — never switch to standalone via live flags.
         return await _post_manual_direct_warehouse_stock(
-            db, existing, user=user, warehouse_id=existing.get("warehouse_id"),
+            db,
+            existing,
+            user=user,
+            warehouse_id=existing.get("warehouse_id"),
+            force_authority=STOCK_AUTHORITY_R2,
         )
 
-    await handle_manual_receipt_created(db, existing, user)
+    if authority == STOCK_AUTHORITY_LEGACY_PSS:
+        await handle_manual_receipt_created(db, existing, user)
+        patch = {
+            "stock_authority": STOCK_AUTHORITY_LEGACY_PSS,
+            "legacy_pss": True,
+            "stock_posting": {
+                "status": "COMPLETE",
+                "engine": STOCK_AUTHORITY_LEGACY_PSS,
+                "updated_at": now_iso(),
+            },
+        }
+        await db[COLLECTION].update_one(
+            {"accurate_receipt_id": existing["accurate_receipt_id"]},
+            {"$set": patch},
+        )
+        existing.update(patch)
+        return existing
+
     return existing
 
 
@@ -739,6 +871,18 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
                 doc["warehouse_standalone"] = True
             if goods_receipt.get("r2_physical"):
                 doc["r2_physical"] = True
+            if goods_receipt.get("legacy_pss"):
+                doc["legacy_pss"] = True
+            if goods_receipt.get("stock_authority"):
+                doc["stock_authority"] = goods_receipt.get("stock_authority")
+            elif goods_receipt.get("warehouse_standalone"):
+                doc["stock_authority"] = STOCK_AUTHORITY_STANDALONE
+            elif goods_receipt.get("r2_physical"):
+                doc["stock_authority"] = STOCK_AUTHORITY_R2
+            elif goods_receipt.get("legacy_pss"):
+                doc["stock_authority"] = STOCK_AUTHORITY_LEGACY_PSS
+            if isinstance(goods_receipt.get("stock_posting"), dict):
+                doc["stock_posting"] = goods_receipt.get("stock_posting")
 
         if not doc["receipt_number"]:
             doc["receipt_number"] = await next_dated_seq(db, COLLECTION, "receipt_number", PREFIX_GOODS_RECEIPT)
@@ -753,7 +897,44 @@ async def create_manual_purchase_receipt(db, payload: Dict[str, Any], user: dict
                     db, doc, user=user, warehouse_id=requested_warehouse_id,
                 )
             else:
-                await handle_manual_receipt_created(db, doc, user)
+                from services.physical_stock_settings import get_physical_stock_settings
+
+                settings = await get_physical_stock_settings(db)
+                stock_on = bool(settings.get("enabled")) and (
+                    str(settings.get("stock_in_trigger") or "") == "goods_receipt"
+                )
+                if stock_on:
+                    await handle_manual_receipt_created(db, doc, user)
+                    patch = {
+                        "stock_authority": STOCK_AUTHORITY_LEGACY_PSS,
+                        "legacy_pss": True,
+                        "warehouse_standalone": False,
+                        "r2_physical": False,
+                        "stock_posting": {
+                            "status": "COMPLETE",
+                            "engine": STOCK_AUTHORITY_LEGACY_PSS,
+                            "updated_at": now_iso(),
+                        },
+                    }
+                else:
+                    # Document-only at create time — retries must not retroactively stock-in.
+                    patch = {
+                        "stock_authority": STOCK_AUTHORITY_NONE,
+                        "legacy_pss": False,
+                        "warehouse_standalone": False,
+                        "r2_physical": False,
+                        "stock_posting": {
+                            "status": "SKIPPED",
+                            "engine": STOCK_AUTHORITY_NONE,
+                            "reason": "physical_stock_disabled",
+                            "updated_at": now_iso(),
+                        },
+                    }
+                await db[COLLECTION].update_one(
+                    {"accurate_receipt_id": doc["accurate_receipt_id"]},
+                    {"$set": patch},
+                )
+                doc.update(patch)
         return doc
 
 
@@ -800,7 +981,7 @@ async def cancel_manual_purchase_receipt(
             reversal_ids = list(linked_gr.get("reversal_movement_ids") or [])
             if linked_gr.get("reversal_movement_id") and not reversal_ids:
                 reversal_ids = [linked_gr["reversal_movement_id"]]
-        elif doc.get("warehouse_standalone"):
+        elif resolve_document_stock_authority(doc) == STOCK_AUTHORITY_STANDALONE:
             from services.warehouse_stock_standalone import cancel_purchase_receipt_standalone
 
             actor_id = str((user or {}).get("id") or (user or {}).get("email") or "user")
@@ -818,7 +999,7 @@ async def cancel_manual_purchase_receipt(
             except Exception as exc:
                 _r2_http_from_stock(exc)
             reversal_ids = list(cancelled.get("reversals") or [])
-        elif doc.get("r2_physical"):
+        elif resolve_document_stock_authority(doc) == STOCK_AUTHORITY_R2:
             from services.physical_stock import (
                 LEDGER_COLLECTION,
                 MOVEMENT_PURCHASE_RECEIPT,

@@ -1282,13 +1282,42 @@ async def assess_first_receipt_eligibility(db, master_item_id: str) -> Dict[str,
     if gr_n:
         blockers.append("purchase_goods_receipts")
 
-    ar_n = await db["accurate_purchase_receipts"].count_documents({
+    ar_filter: Dict[str, Any] = {
         "cancelled": {"$ne": True},
         "valid": {"$ne": False},
         "lines.master_item_id": mid,
-    })
+    }
+    ar_n = await db["accurate_purchase_receipts"].count_documents(ar_filter)
     if ar_n:
         blockers.append("accurate_purchase_receipts")
+
+    # Accurate-linked masters often have receipt lines keyed by accurate_item_id
+    # without master_item_id — must not miss that history when classifying "new".
+    aid = str((master or {}).get("accurate_item_id") or "").strip()
+    if aid and "accurate_purchase_receipts" not in blockers:
+        aid_variants: list = [aid]
+        try:
+            if aid.isdigit():
+                aid_variants.append(int(aid))
+        except (TypeError, ValueError):
+            pass
+        ar_aid_n = await db["accurate_purchase_receipts"].count_documents({
+            "cancelled": {"$ne": True},
+            "valid": {"$ne": False},
+            "lines.accurate_item_id": {"$in": aid_variants},
+        })
+        if ar_aid_n:
+            blockers.append("accurate_purchase_receipts_by_accurate_item_id")
+
+    if aid:
+        gr_aid_n = await db["purchase_goods_receipts"].count_documents({
+            "cancelled": {"$ne": True},
+            "lines.accurate_item_id": {"$in": [aid] + (
+                [int(aid)] if aid.isdigit() else []
+            )},
+        })
+        if gr_aid_n and "purchase_goods_receipts" not in blockers:
+            blockers.append("purchase_goods_receipts_by_accurate_item_id")
 
     return {
         "eligible": len(blockers) == 0,

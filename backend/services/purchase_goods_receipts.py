@@ -601,6 +601,9 @@ async def _commit_r2_goods_receipt(
                     doc["branch_id"] = branch_id
                     doc["warehouse_id"] = resolved_warehouse
                     doc["r2_physical"] = True
+                    doc["warehouse_standalone"] = False
+                    doc["legacy_pss"] = False
+                    doc["stock_authority"] = "r2"
                     for line in doc["lines"]:
                         line["branch_id"] = branch_id
                         line["warehouse_id"] = resolved_warehouse
@@ -689,12 +692,32 @@ async def _commit_legacy_pss_goods_receipt(
 
     doc["r2_physical"] = False
     doc["warehouse_standalone"] = False
-    doc["legacy_pss"] = True
     for line in doc["lines"]:
         line["received_qty"] = _whole_received_qty(line["received_qty"])
 
-    po_snapshot = doc.get("physical_stock_snapshot")
-    await precheck_goods_receipt_lines(db, doc["lines"], po_snapshot, user=user)
+    po_snapshot = doc.get("physical_stock_snapshot") or {}
+    stock_on = bool(po_snapshot.get("enabled")) and (
+        str(po_snapshot.get("stock_in_trigger") or "") == "goods_receipt"
+    )
+    if stock_on:
+        await precheck_goods_receipt_lines(db, doc["lines"], po_snapshot, user=user)
+        doc["legacy_pss"] = True
+        doc["stock_authority"] = "legacy_pss"
+        doc["stock_posting"] = {
+            "status": "PENDING",
+            "engine": "legacy_pss",
+            "updated_at": now_iso(),
+        }
+    else:
+        # Snapshot/config OFF at create — freeze as document-only.
+        doc["legacy_pss"] = False
+        doc["stock_authority"] = "none"
+        doc["stock_posting"] = {
+            "status": "SKIPPED",
+            "engine": "none",
+            "reason": "physical_stock_snapshot_disabled",
+            "updated_at": now_iso(),
+        }
 
     async def _alloc():
         idx = existing_count + 1
@@ -705,7 +728,18 @@ async def _commit_legacy_pss_goods_receipt(
         return candidate
 
     saved = await insert_with_unique_number(db, COLLECTION, "receipt_number", doc, _alloc)
-    await handle_goods_receipt_created(db, saved, user)
+    if stock_on:
+        await handle_goods_receipt_created(db, saved, user)
+        posting = {
+            "status": "COMPLETE",
+            "engine": "legacy_pss",
+            "updated_at": now_iso(),
+        }
+        await db[COLLECTION].update_one(
+            {"id": saved["id"]},
+            {"$set": {"stock_posting": posting}},
+        )
+        saved["stock_posting"] = posting
     return saved
 
 
@@ -737,6 +771,8 @@ async def _commit_standalone_goods_receipt(
     doc["warehouse_id"] = resolved_warehouse
     doc["r2_physical"] = False
     doc["warehouse_standalone"] = True
+    doc["legacy_pss"] = False
+    doc["stock_authority"] = "warehouse_standalone"
     for line in doc["lines"]:
         line["branch_id"] = branch_id
         line["warehouse_id"] = resolved_warehouse
@@ -996,9 +1032,17 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                     is_warehouse_stock_standalone_active,
                 )
 
-                r2_on = await is_r2_authority_active(db)
-                standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
-                if standalone_on:
+                # Resume only the engine frozen on the document — never live flags.
+                from services.purchase_receipts import (
+                    STOCK_AUTHORITY_LEGACY_PSS,
+                    STOCK_AUTHORITY_NONE,
+                    STOCK_AUTHORITY_R2,
+                    STOCK_AUTHORITY_STANDALONE,
+                    resolve_document_stock_authority,
+                )
+
+                authority = resolve_document_stock_authority(existing)
+                if authority == STOCK_AUTHORITY_STANDALONE or existing.get("warehouse_standalone"):
                     posting = (
                         existing.get("stock_posting")
                         if isinstance(existing.get("stock_posting"), dict)
@@ -1022,11 +1066,22 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                             )
                             or existing
                         )
-                elif not r2_on:
-                    # Mode A retry: finish durable PSS PENERIMAAN if interrupted.
-                    await handle_goods_receipt_created(db, existing, user)
-                # Warehouse HPP cutover only applies when a warehouse engine owns stock.
-                if r2_on or standalone_on or existing.get("r2_physical") or existing.get("warehouse_standalone"):
+                elif authority == STOCK_AUTHORITY_LEGACY_PSS or existing.get("legacy_pss"):
+                    posting = (
+                        existing.get("stock_posting")
+                        if isinstance(existing.get("stock_posting"), dict)
+                        else {}
+                    )
+                    if str(posting.get("status") or "").upper() != "COMPLETE":
+                        await handle_goods_receipt_created(db, existing, user)
+                elif authority == STOCK_AUTHORITY_NONE:
+                    pass  # document-only at create — no retroactive stock-in
+                # R2 receipts are transactional; incomplete is rare. Do not switch engines.
+                if (
+                    existing.get("r2_physical")
+                    or existing.get("warehouse_standalone")
+                    or authority in {STOCK_AUTHORITY_R2, STOCK_AUTHORITY_STANDALONE}
+                ):
                     from services.hpp_cutover import recognize_posted_goods_receipt
                     await recognize_posted_goods_receipt(db, existing, user)
                 out = await enrich_goods_receipt(db, existing)
