@@ -379,15 +379,21 @@ def test_explicit_nav_config_is_not_rederived():
     stored = {"po.view", "schedule.view", "nav.dashboard"}
     derived = with_nav_defaults(stored)
     assert "nav.dashboard" in derived
-    assert "nav.sales" not in derived  # missing nav keys are deny once configured
+    # Permintaan Produk stays visible even when nav.* is already stamped;
+    # other missing nav keys remain deny-by-default.
+    assert "nav.sales" in derived
+    assert "nav.sales.product_requests" in derived
     assert "nav.production_schedule" not in derived
+    assert "nav.sales.sales_receipt" not in derived
 
 
 def test_sentinel_allows_deny_all_nav():
     stored = {"po.view", "schedule.view", NAV_CONFIGURED}
     derived = with_nav_defaults(stored)
-    assert "nav.sales" not in derived
+    assert "nav.sales" in derived
+    assert "nav.sales.product_requests" in derived
     assert "nav.production_schedule" not in derived
+    assert "nav.dashboard" not in derived
 
 
 def test_user_override_can_deny_derived_nav():
