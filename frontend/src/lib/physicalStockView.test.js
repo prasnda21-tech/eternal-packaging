@@ -1,5 +1,6 @@
 import {
   bookPhysicalDisplay,
+  stockPhysicalPrimaryDisplay,
   goodsReceiptWarehouseChoice,
   isOperationalWarehouse,
   movementLabel,
@@ -197,5 +198,75 @@ describe("physical stock view helpers", () => {
       }],
     }, { warehouseId: "wh-a" });
     expect(book20).toEqual({ present: true, qty: 20, text: null });
+  });
+
+  test("stockPhysicalPrimaryDisplay is a single status — never Belum tersedia + Belum lengkap", () => {
+    const partial = {
+      physical_qty: 200,
+      baseline_status: "unreconciled",
+      baseline_label: "Saldo awal belum direkonsiliasi",
+      warehouse_balances: [
+        { warehouse_id: "wh-a", balance_present: false, baseline_status: "unreconciled" },
+        { warehouse_id: "wh-b", balance_present: true, physical_qty: 200 },
+      ],
+    };
+    const aggregate = stockPhysicalPrimaryDisplay(partial, { branchAggregate: true });
+    expect(aggregate.text).toBe("Belum lengkap");
+    expect(aggregate.flag).toBeNull();
+    expect(aggregate.present).toBe(false);
+    expect(aggregate.qty).toBeNull();
+
+    const allMissing = stockPhysicalPrimaryDisplay({
+      physical_qty: 0,
+      baseline_status: "unreconciled",
+      warehouse_balances: [
+        { warehouse_id: "wh-a", balance_present: false, baseline_status: "unreconciled" },
+        { warehouse_id: "wh-b", balance_present: false, baseline_status: "unreconciled" },
+      ],
+    }, { branchAggregate: true });
+    expect(allMissing.text).toBe("Belum lengkap");
+    expect(allMissing.flag).toBeNull();
+    expect(`${allMissing.text || ""}${allMissing.flag || ""}`).not.toMatch(/tersedia.*lengkap|lengkap.*tersedia/i);
+
+    const selectedMissing = stockPhysicalPrimaryDisplay(partial, { warehouseId: "wh-a" });
+    expect(selectedMissing.text).toBe("Belum tersedia");
+    expect(selectedMissing.flag).toBeNull();
+
+    const valid = stockPhysicalPrimaryDisplay({
+      physical_qty: 1500,
+      baseline_status: "reconciled",
+      warehouse_balances: [
+        { warehouse_id: "wh-a", balance_present: true, physical_qty: 1000 },
+        { warehouse_id: "wh-b", balance_present: true, physical_qty: 500 },
+      ],
+    }, { branchAggregate: true });
+    expect(valid.present).toBe(true);
+    expect(valid.qty).toBe(1500);
+    expect(valid.text).toBeNull();
+    expect(valid.flag).toBeNull();
+
+    const deficit = stockPhysicalPrimaryDisplay({
+      physical_qty: 75,
+      saldo_buku_negatif: false,
+      baseline_status: "reconciled",
+      warehouse_balances: [
+        { warehouse_id: "wh-a", balance_present: true, physical_qty: -25, saldo_buku_negatif: true },
+        { warehouse_id: "wh-b", balance_present: true, physical_qty: 100 },
+      ],
+    }, { branchAggregate: true });
+    expect(deficit.present).toBe(true);
+    expect(deficit.qty).toBe(75);
+    expect(deficit.flag).toBe("Defisit");
+
+    const selectedNeg = stockPhysicalPrimaryDisplay({
+      physical_qty: -25,
+      saldo_buku_negatif: true,
+      warehouse_balances: [
+        { warehouse_id: "wh-a", balance_present: true, physical_qty: -25, saldo_buku_negatif: true },
+      ],
+    }, { warehouseId: "wh-a" });
+    expect(selectedNeg.qty).toBe(-25);
+    expect(selectedNeg.flag).toBe("Defisit");
+    expect(selectedNeg.negative).toBe(true);
   });
 });

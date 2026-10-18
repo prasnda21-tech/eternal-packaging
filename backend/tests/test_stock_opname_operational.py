@@ -576,6 +576,7 @@ async def test_demand_without_location_remains_unallocated(db):
     await db.orders.insert_one({
         "id": "order-unalloc",
         "status": "open",
+        "branch_id": branch_id,
         "line_items": [{
             "line_id": "l1",
             "master_item_id": item,

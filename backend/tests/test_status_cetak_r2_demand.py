@@ -110,6 +110,7 @@ async def _seed(db, *, physical=1000, ordered=300):
         "id": f"so-{uuid.uuid4().hex[:8]}",
         "po_number": "PO-CETAK-1",
         "cancelled": False,
+        "branch_id": branch["id"],
         "physical_stock_snapshot": {
             "enabled": True,
             "stock_in_trigger": "goods_receipt",

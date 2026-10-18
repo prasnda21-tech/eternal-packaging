@@ -179,11 +179,12 @@ async def test_ab_sequential_opname_receipt_delivery_keeps_b(
     assert await _qty(db, item, ba, wa) == 1000
     assert await _qty(db, item, bb, wb) == 500
 
-    # Unallocated demand visible on opname book; does not move physical qty.
+    # Branch-scoped demand (no warehouse allocation); does not move physical qty.
     await db.orders.insert_one({
         "id": "order-ab-seq-unalloc",
         "status": "open",
         "cancelled": False,
+        "branch_id": ba,
         "line_items": [{
             "line_id": "l1",
             "master_item_id": item,
@@ -238,8 +239,7 @@ async def test_ab_sequential_opname_receipt_delivery_keeps_b(
     cat_a = await _catalog_row(db, item, branch_id=ba, warehouse_id=wa)
     assert cat_a is not None
     assert float(cat_a["physical_qty"]) == 950
-    # Stock Saat Ini (R2): physical follows warehouse A; unallocated demand still
-    # reduces tersedia (company-visible buckets) — not a warehouse stock charge on B.
+    # Branch A demand reduces tersedia on A; never invents demand onto branch B.
     demand_a = float(cat_a.get("qty_pesanan") or 0) + float(cat_a.get("qty_belum_terkirim") or 0)
     assert demand_a >= 120
     assert float(cat_a["qty_tersedia"]) == (
@@ -252,7 +252,7 @@ async def test_ab_sequential_opname_receipt_delivery_keeps_b(
     assert cat_b is not None
     assert float(cat_b["physical_qty"]) == 500
     demand_b = float(cat_b.get("qty_pesanan") or 0) + float(cat_b.get("qty_belum_terkirim") or 0)
-    assert demand_b >= 120
+    assert demand_b == 0
 
     # Operational purchase goods receipt on A only
     po = await create_purchase_order(db, {
@@ -307,6 +307,7 @@ async def test_ab_sequential_opname_receipt_delivery_keeps_b(
         "id": "order-ab-seq-deliver",
         "status": "open",
         "cancelled": False,
+        "branch_id": ba,
         "line_items": [{
             "line_id": "ld1",
             "master_item_id": item,
@@ -392,6 +393,7 @@ async def test_ab_receipt_delivery_only_without_opname_is_1015(db):
         "id": "order-ab-only-deliver",
         "status": "open",
         "cancelled": False,
+        "branch_id": ba,
         "line_items": [{
             "line_id": "ld1",
             "master_item_id": item,
@@ -415,10 +417,12 @@ async def test_ab_receipt_delivery_only_without_opname_is_1015(db):
 
 
 async def test_ab_demand_without_location_unallocated_and_not_assigned_to_b(db):
+    """YGY demand must not appear on SMG opname; order still has no warehouse assign."""
     fx = await _fixture(db)
     await db.orders.insert_one({
         "id": "order-ab-unalloc",
         "status": "open",
+        "branch_id": fx["branch_a"],
         "line_items": [{
             "line_id": "l1",
             "master_item_id": fx["item"],
@@ -426,15 +430,26 @@ async def test_ab_demand_without_location_unallocated_and_not_assigned_to_b(db):
             "production_process": "non_print",
         }],
     })
-    created = await create_stock_opname_session(db, {
+    # Branch B (SMG) must not see branch A demand.
+    created_b = await create_stock_opname_session(db, {
         "branch_id": fx["branch_b"],
         "warehouse_id": fx["wh_b"],
         "mode": MODE_OPERATIONAL,
     }, ADMIN)
-    counting = await start_stock_opname_cutoff(db, created["id"], ADMIN)
-    line = _line(counting, fx["item"])
-    assert line["demand_allocation"] == "unallocated"
-    assert line["qty_belum_terkirim"] == 120
+    counting_b = await start_stock_opname_cutoff(db, created_b["id"], ADMIN)
+    line_b = _line(counting_b, fx["item"])
+    assert line_b["demand_allocation"] == "unallocated"
+    assert float(line_b.get("qty_belum_terkirim") or 0) == 0
+    assert float(line_b.get("qty_pesanan") or 0) == 0
+    # Branch A (YGY) sees its own demand (no warehouse assignment invented).
+    created_a = await create_stock_opname_session(db, {
+        "branch_id": fx["branch_a"],
+        "warehouse_id": fx["wh_a"],
+        "mode": MODE_OPERATIONAL,
+    }, ADMIN)
+    counting_a = await start_stock_opname_cutoff(db, created_a["id"], ADMIN)
+    line_a = _line(counting_a, fx["item"])
+    assert float(line_a.get("qty_belum_terkirim") or 0) == 120
     order = await db.orders.find_one({"id": "order-ab-unalloc"}, {"_id": 0})
     assert order.get("warehouse_id") in (None, "")
     assert "warehouse_id" not in (order.get("line_items") or [{}])[0]

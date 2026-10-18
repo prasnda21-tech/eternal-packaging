@@ -542,14 +542,36 @@ async def test_08_stock_in_goods_receipt_disabled_no_mutation(mock_db):
 
 @pytest.mark.anyio
 async def test_09_stock_in_goods_receipt_uninitialized_blocked(mock_db):
-    """9. Goods receipt for uninitialized product raises HTTP 400."""
+    """9. Uninitialized master with historical stock signal fails closed (not assumed zero)."""
     await seed_master_product(mock_db, "uninit-prod")
+    await mock_db.stock_movements.insert_one({
+        "id": "hist-1",
+        "master_item_id": "uninit-prod",
+        "movement_type": "PENERIMAAN",
+        "delta": 1,
+    })
     lines = [{"master_item_id": "uninit-prod", "received_qty": 100.0}]
     po_snap = {"enabled": True, "stock_in_trigger": "goods_receipt"}
     with pytest.raises(HTTPException) as exc:
         await precheck_goods_receipt_lines(mock_db, lines, po_snap)
     assert exc.value.status_code == 400
-    assert "Saldo awal stok fisik produk belum ditetapkan" in exc.value.detail
+    assert "historis" in exc.value.detail.lower() or "jejak" in exc.value.detail.lower()
+
+
+@pytest.mark.anyio
+async def test_09b_stock_in_goods_receipt_first_receipt_bootstrap(mock_db):
+    """9b. Proven brand-new master bootstraps without SALDO_AWAL for first GR precheck."""
+    from services.product_stock_state import get_product_stock_state
+
+    await seed_master_product(mock_db, "brand-new-prod")
+    lines = [{"master_item_id": "brand-new-prod", "received_qty": 100.0}]
+    po_snap = {"enabled": True, "stock_in_trigger": "goods_receipt"}
+    await precheck_goods_receipt_lines(mock_db, lines, po_snap, user={"email": "t@test"})
+    state = await get_product_stock_state(mock_db, "brand-new-prod")
+    assert state["initialized"] is True
+    assert state["bootstrap_source"] == "FIRST_RECEIPT_AUTO"
+    assert float(state["total_qty"]) == 0.0
+    assert await mock_db.stock_movements.count_documents({"master_item_id": "brand-new-prod"}) == 0
 
 
 @pytest.mark.anyio
@@ -2769,9 +2791,9 @@ def test_confirm_delivered_stock_claim_uses_selected_sj_rows():
 
     server = Path(__file__).resolve().parents[1].joinpath("server.py").read_text()
     start = server.index("async def confirm_delivered")
-    # confirm_delivered grew past the old 4500-char window; keep the structural
-    # order check without requiring the whole function body.
-    window = server[start:start + 9000]
+    # confirm_delivered grew past the old 4500/9000-char windows (standalone
+    # delivery path); keep the structural order check without the whole body.
+    window = server[start:start + 14000]
     assert "claim_selected_delivery_stock(" in window
     assert 'claim_delivery_confirmed_stock(' not in window
     # R2 readiness / warnings use SJ plan ready_lines (not a full-PO claim).

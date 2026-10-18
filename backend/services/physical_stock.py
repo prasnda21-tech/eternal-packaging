@@ -30,6 +30,8 @@ WAREHOUSES_COLLECTION = "warehouses"
 BASELINE_RECONCILED = "reconciled"
 BASELINE_UNRECONCILED = "unreconciled"
 BASELINE_UNRECONCILED_LABEL = "Saldo awal belum direkonsiliasi"
+# Honest fallback when a posted movement has no resolvable user identity.
+LAST_STOCK_ACTOR_UNKNOWN = "Tidak tercatat"
 
 MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
 MOVEMENT_PURCHASE_RECEIPT = "PURCHASE_RECEIPT"
@@ -1129,6 +1131,23 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
     }
 
 
+async def receipt_line_posts_physical_stock(db, line: dict) -> bool:
+    """True when a GR line should mutate warehouse physical stock / HPP layers.
+
+    Explicit SERVICE (process Add On) never posts physical qty. Legacy masters
+    with missing/blank item_type still post (inventory default). Document lines
+    may still exist on the GR either way.
+    """
+    from services.inventory_accounting import ITEM_TYPE_SERVICE
+
+    mid = str((line or {}).get("master_item_id") or "").strip()
+    if not mid:
+        return False
+    master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0, "item_type": 1})
+    raw = str((master or {}).get("item_type") or "").strip().upper()
+    return raw != ITEM_TYPE_SERVICE
+
+
 async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: str) -> List[dict]:
     """Post every PURCHASE_RECEIPT line inside the caller's transaction."""
     lines = receipt.get("lines") if isinstance(receipt.get("lines"), list) else []
@@ -1136,6 +1155,8 @@ async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: 
         raise PhysicalStockValidationError("Minimal satu baris penerimaan")
     movements = []
     for line in lines:
+        if not await receipt_line_posts_physical_stock(db, line):
+            continue
         movements.append(await _apply_movement_in_session(
             db,
             _purchase_receipt_request(receipt, line, actor_id=actor_id),
@@ -2907,21 +2928,55 @@ async def _unique_accurate_owners(db) -> Dict[str, str]:
     return {accurate_id: master_id for accurate_id, master_id in owner.items() if counts[accurate_id] == 1}
 
 
-async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, float]:
+def _order_branch_id(order: Optional[dict]) -> str:
+    """Proven branch on an order. Empty when legacy attribution is missing."""
+    if not isinstance(order, dict):
+        return ""
+    return str(order.get("branch_id") or order.get("cabang_id") or "").strip()
+
+
+def _orders_for_branch(orders: Iterable[dict], branch_id: Optional[str]) -> List[dict]:
+    """Keep only orders proven for this branch — never invent YGY/SMG allocation.
+
+    Orders without branch_id/cabang_id are excluded (fail-closed). Callers must
+    not treat omission as zero demand when auditing legacy data separately.
+    """
+    wanted = str(branch_id or "").strip()
+    if not wanted:
+        return []
+    return [
+        order for order in orders
+        if _order_branch_id(order) == wanted
+    ]
+
+
+async def _r2_confirmed_delivery_qty(
+    db,
+    master_ids: List[str],
+    *,
+    branch_id: Optional[str] = None,
+) -> Dict[str, float]:
     """Delivered qty that already left R2 physical stock (net of reversals).
 
     The SALES_DELIVERY ledger movement is the proof. A legacy sales_deliveries
     row, surat jalan, or loading record does not reduce Qty Belum Terkirim.
     Reversed SALES_DELIVERY rows are excluded.
+
+    When branch_id is set, only ledger rows for that branch count — never mix
+    Yogyakarta deliveries into Semarang Belum Terkirim (or the reverse).
     """
     if not master_ids:
         return {}
+    query: Dict[str, Any] = {
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "master_item_id": {"$in": master_ids},
+    }
+    wanted_branch = str(branch_id or "").strip()
+    if wanted_branch:
+        query["branch_id"] = wanted_branch
     movements = await db[LEDGER_COLLECTION].find(
-        {
-            "movement_type": MOVEMENT_SALES_DELIVERY,
-            "master_item_id": {"$in": master_ids},
-        },
-        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1},
+        query,
+        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1, "branch_id": 1},
     ).to_list(20000)
     movement_ids = [str(row.get("id") or "") for row in movements if row.get("id")]
     reversed_ids = set()
@@ -2999,6 +3054,65 @@ async def operational_physical_qty_by_item(
     return totals
 
 
+def _warehouse_engine_catalog_envelope(
+    *,
+    items: List[dict],
+    total: int,
+    page: int,
+    limit: int,
+    page_count: int,
+    master_item_count: int,
+    warehouse_count: int,
+    catalog_mode: str,
+    r2_on: bool,
+    standalone_on: bool,
+    selected_warehouse: Optional[dict],
+) -> dict:
+    """Shared Stock Saat Ini envelope for warehouse-engine reads (R2 or standalone).
+
+    Empty catalogs (no BARANG masters / no search hits) MUST still carry mode
+    flags so the UI does not fall back to compatibility chrome.
+    """
+    from services.warehouse_stock_standalone import MODE_WAREHOUSE_STANDALONE
+
+    selected = selected_warehouse or None
+    if selected_warehouse:
+        note = (
+            "Saldo buku gudang terpilih (boleh negatif)."
+            if catalog_mode == MODE_WAREHOUSE_STANDALONE
+            else "Saldo buku R2 gudang terpilih (boleh negatif)."
+        )
+    else:
+        note = (
+            "Saldo buku agregat cabang; rincian per gudang ada di warehouse_balances."
+            if catalog_mode == MODE_WAREHOUSE_STANDALONE
+            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
+        )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "page_count": page_count,
+        "master_item_count": master_item_count,
+        "warehouse_count": warehouse_count,
+        "stock_read_mode": catalog_mode,
+        "r2_authority_active": bool(r2_on),
+        "warehouse_stock_standalone": bool(standalone_on),
+        "physical_qty_scope": "WAREHOUSE" if selected else "BRANCH",
+        "branch_filter_affects_physical_qty": True,
+        "warehouse_filter_affects_physical_qty": bool(selected),
+        "effective_warehouse_id": (
+            str(selected.get("id") or "") if selected else None
+        ),
+        "effective_warehouse_code": (
+            (selected.get("code") or None) if selected else None
+        ),
+        "demand_scope": "BRANCH",
+        "physical_qty_note": note,
+    }
+
+
 async def list_physical_stock_catalog(
     db,
     *,
@@ -3010,18 +3124,29 @@ async def list_physical_stock_catalog(
 ) -> dict:
     """Operational Stock Saat Ini.
 
-    When r2_authority_active is FALSE: read-only compatibility adapter
-    (legacy physical state + orders + sales deliveries). No R2 writes.
+    When r2_authority_active is FALSE and warehouse_stock_standalone is OFF:
+    read-only compatibility adapter (legacy company physical + orders).
 
-    When r2_authority_active is TRUE: Stock fisik is the sum of R2 balances on
+    When r2_authority_active is TRUE, OR warehouse_stock_standalone is ON
+    (R2 still OFF): Stock fisik is the sum of physical_stock_balances on
     operational warehouses for ONE branch (default YGY). Never aggregates all
     branches. Optional warehouse_id further narrows within that branch.
+
+    Standalone mode reuses the same balance documents as R2 reads but never
+    activates R2 authority or multi-document transactions.
     """
     from services.r2_go_live import is_r2_authority_active
     from services.stock_compatibility_read import list_compatibility_stock_catalog
+    from services.warehouse_stock_standalone import (
+        MODE_WAREHOUSE_STANDALONE,
+        is_warehouse_stock_standalone_active,
+    )
 
-    if not await is_r2_authority_active(db):
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = False if r2_on else await is_warehouse_stock_standalone_active(db)
+    if not r2_on and not standalone_on:
         return await list_compatibility_stock_catalog(db, q=q, page=page, limit=limit)
+    catalog_mode = "r2" if r2_on else MODE_WAREHOUSE_STANDALONE
 
     all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
     requested = str(branch_id or "").strip()
@@ -3068,34 +3193,57 @@ async def list_physical_stock_catalog(
         if str(row.get("id") or "").strip() not in service_master_ids
     ]
     safe_page, safe_limit = _catalog_page(page, limit)
+    selected_warehouse_id = str(warehouse_id or "").strip()
+    selected_warehouse = next(
+        (
+            row for row in warehouses
+            if str(row.get("id") or "") == selected_warehouse_id
+        ),
+        None,
+    ) if selected_warehouse_id else None
     if not masters:
-        return {
-            "items": [],
-            "total": 0,
-            "page": safe_page,
-            "limit": safe_limit,
-            "page_count": 0,
-            "master_item_count": 0,
-            "warehouse_count": len(warehouses),
-        }
+        # Keep mode metadata identical to a non-empty catalog so the FE does not
+        # collapse warehouse chrome to compatibility when search/SERVICE yields 0.
+        return _warehouse_engine_catalog_envelope(
+            items=[],
+            total=0,
+            page=safe_page,
+            limit=safe_limit,
+            page_count=0,
+            master_item_count=0,
+            warehouse_count=len(warehouses),
+            catalog_mode=catalog_mode,
+            r2_on=r2_on,
+            standalone_on=standalone_on,
+            selected_warehouse=selected_warehouse,
+        )
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
-    orders = await db.orders.find({}, {"_id": 0}).to_list(20000)
+    # Demand is branch-scoped. Unattributed legacy orders are excluded — never
+    # invent Yogyakarta↔Semarang allocation of qty pesanan / belum terkirim.
+    order_query: Dict[str, Any] = {}
+    if operational_id:
+        order_query["$or"] = [
+            {"branch_id": operational_id},
+            {"cabang_id": operational_id},
+        ]
+    else:
+        # No resolvable branch → no inventable demand.
+        order_query = {"_id": {"$exists": False}}
+    orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
+    # Defense in depth: filter again in Python (cabang_id / stray docs).
+    orders = _orders_for_branch(orders, operational_id)
     progress = aggregate_operational_orders(
         orders, owners, exclude_master_ids=service_master_ids,
     )
     master_ids = [master["id"] for master in masters if master.get("id")]
-    delivered = await _r2_confirmed_delivery_qty(db, master_ids)
-    from services.r2_go_live import get_delivery_cutover_baseline
-
-    cutover = await get_delivery_cutover_baseline(db)
-    baseline_by_item = cutover.get("baseline_by_master_item_id") or {} if cutover.get("initialized") else {}
+    delivered = await _r2_confirmed_delivery_qty(
+        db, master_ids, branch_id=operational_id,
+    )
+    # Company-wide cutover baseline has no branch keys. Applying it to a branch
+    # catalog would invent cross-branch delivery — fail-closed: omit.
+    baseline_by_item: Dict[str, float] = {}
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
-    warehouse_by_id = {
-        str(row.get("id")): row for row in warehouses if row.get("id")
-    }
-    selected_warehouse_id = str(warehouse_id or "").strip()
-    selected_warehouse = warehouse_by_id.get(selected_warehouse_id) if selected_warehouse_id else None
     balance_docs = []
     if warehouse_ids and master_ids:
         balance_docs = await db[BALANCE_COLLECTION].find(
@@ -3148,6 +3296,7 @@ async def list_physical_stock_catalog(
         # independently of the branch aggregate. Missing balance ≠ verified zero.
         warehouse_balances = []
         scope_baselines: List[str] = []
+        candidate_movement_ids: List[str] = []
         for wh in warehouses:
             wid = str(wh.get("id") or "")
             if not wid:
@@ -3157,6 +3306,8 @@ async def list_physical_stock_catalog(
                 wh_qty = None
                 wh_baseline = BASELINE_UNRECONCILED
                 wh_label = BASELINE_UNRECONCILED_LABEL
+                wh_movement_id = None
+                wh_updated_at = None
             else:
                 wh_qty = _qty_num(doc.get("physical_qty"))
                 wh_baseline = (
@@ -3168,6 +3319,10 @@ async def list_physical_stock_catalog(
                     if wh_baseline == BASELINE_UNRECONCILED
                     else None
                 )
+                wh_movement_id = str(doc.get("last_movement_id") or "").strip() or None
+                wh_updated_at = doc.get("updated_at")
+                if wh_movement_id:
+                    candidate_movement_ids.append(wh_movement_id)
             scope_baselines.append(wh_baseline)
             warehouse_balances.append({
                 "warehouse_id": wid,
@@ -3179,6 +3334,9 @@ async def list_physical_stock_catalog(
                 "saldo_buku_negatif": bool(wh_qty is not None and wh_qty < 0),
                 "balance_present": doc is not None,
                 "physical_qty_is_book": True,
+                "updated_at": wh_updated_at,
+                "updated_by_name": None,
+                "_last_movement_id": wh_movement_id,
             })
         # Branch summary valid only when EVERY operational warehouse in scope has
         # a RECONCILED balance. Selected-warehouse view uses that gudang alone
@@ -3216,11 +3374,15 @@ async def list_physical_stock_catalog(
                     else None
                 )
             ),
+            # Provisional from balance stamps; replaced by the same final movement
+            # used for updated_by_name during page enrich (never master_items.updated_by).
             "updated_at": max(updated) if updated else None,
+            "updated_by_name": None,
+            "_candidate_movement_ids": candidate_movement_ids,
             "belum_terkirim_status": (
                 "BELUM_TERVERIFIKASI" if belum_unverified else "READY"
             ),
-            "stock_read_mode": "r2",
+            "stock_read_mode": catalog_mode,
             "baseline_status": baseline_status,
             "baseline_label": (
                 BASELINE_UNRECONCILED_LABEL if baseline_status == BASELINE_UNRECONCILED else None
@@ -3259,32 +3421,144 @@ async def list_physical_stock_catalog(
     total = len(rows)
     start = (safe_page - 1) * safe_limit
     page_count = (total + safe_limit - 1) // safe_limit if total else 0
-    return {
-        "items": rows[start:start + safe_limit],
-        "total": total,
-        "page": safe_page,
-        "limit": safe_limit,
-        "page_count": page_count,
-        "master_item_count": len(masters),
-        "warehouse_count": len(warehouses),
-        "stock_read_mode": "r2",
-        "r2_authority_active": True,
-        "physical_qty_scope": "WAREHOUSE" if selected_warehouse else "BRANCH",
-        "branch_filter_affects_physical_qty": True,
-        "warehouse_filter_affects_physical_qty": bool(selected_warehouse),
-        "effective_warehouse_id": (
-            str(selected_warehouse.get("id") or "") if selected_warehouse else None
-        ),
-        "effective_warehouse_code": (
-            (selected_warehouse.get("code") or None) if selected_warehouse else None
-        ),
-        "demand_scope": "BRANCH",
-        "physical_qty_note": (
-            "Saldo buku R2 gudang terpilih (boleh negatif)."
-            if selected_warehouse
-            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
-        ),
-    }
+    page_items = rows[start:start + safe_limit]
+    # Batch enrich only the current page — avoid N+1 on the full catalog.
+    await _attach_last_stock_actors(db, page_items)
+    return _warehouse_engine_catalog_envelope(
+        items=page_items,
+        total=total,
+        page=safe_page,
+        limit=safe_limit,
+        page_count=page_count,
+        master_item_count=len(masters),
+        warehouse_count=len(warehouses),
+        catalog_mode=catalog_mode,
+        r2_on=r2_on,
+        standalone_on=standalone_on,
+        selected_warehouse=selected_warehouse,
+    )
+
+
+def _movement_sort_key(movement: dict) -> Tuple[str, str]:
+    """Newest posted movement wins; occurred_at then created_at, then id."""
+    return (
+        str(movement.get("occurred_at") or ""),
+        str(movement.get("created_at") or ""),
+        str(movement.get("id") or ""),
+    )
+
+
+def _actor_display_name(user: Optional[dict]) -> Optional[str]:
+    """Public display only — never password, token, or other private fields."""
+    if not user:
+        return None
+    name = str(user.get("name") or "").strip()
+    if name:
+        return name
+    email = str(user.get("email") or "").strip()
+    return email or None
+
+
+async def _attach_last_stock_actors(db, page_items: List[dict]) -> None:
+    """Attach updated_at + updated_by_name from the same final posted movement.
+
+    Uses balance.last_movement_id → ledger.actor_id → users display name.
+    Pending claims are never consulted. Unknown / missing identity → Tidak tercatat.
+    Mutates page_items in place and strips internal enrichment keys.
+    """
+    movement_ids: List[str] = []
+    for row in page_items:
+        for mid in row.get("_candidate_movement_ids") or []:
+            text = str(mid or "").strip()
+            if text:
+                movement_ids.append(text)
+        for wb in row.get("warehouse_balances") or []:
+            text = str(wb.get("_last_movement_id") or "").strip()
+            if text:
+                movement_ids.append(text)
+    unique_ids = list(dict.fromkeys(movement_ids))
+    movements_by_id: Dict[str, dict] = {}
+    if unique_ids:
+        found = await db[LEDGER_COLLECTION].find(
+            {"id": {"$in": unique_ids}},
+            {
+                "_id": 0,
+                "id": 1,
+                "actor_id": 1,
+                "occurred_at": 1,
+                "created_at": 1,
+                "warehouse_id": 1,
+                "master_item_id": 1,
+            },
+        ).to_list(len(unique_ids))
+        movements_by_id = {
+            str(doc.get("id")): doc for doc in found if doc.get("id")
+        }
+
+    actor_keys: List[str] = []
+    for doc in movements_by_id.values():
+        actor = str(doc.get("actor_id") or "").strip()
+        if actor:
+            actor_keys.append(actor)
+    unique_actors = list(dict.fromkeys(actor_keys))
+    users_by_key: Dict[str, dict] = {}
+    if unique_actors:
+        user_rows = await db.users.find(
+            {"$or": [
+                {"id": {"$in": unique_actors}},
+                {"email": {"$in": unique_actors}},
+            ]},
+            {"_id": 0, "id": 1, "name": 1, "email": 1},
+        ).to_list(max(len(unique_actors) * 2, 1))
+        for user in user_rows:
+            uid = str(user.get("id") or "").strip()
+            email = str(user.get("email") or "").strip()
+            if uid:
+                users_by_key[uid] = user
+            if email:
+                users_by_key[email] = user
+
+    for row in page_items:
+        candidate_ids = [
+            str(mid).strip()
+            for mid in (row.get("_candidate_movement_ids") or [])
+            if str(mid or "").strip()
+        ]
+        candidates = [
+            movements_by_id[mid] for mid in candidate_ids if mid in movements_by_id
+        ]
+        if candidates:
+            best = max(candidates, key=_movement_sort_key)
+            row["updated_at"] = (
+                best.get("occurred_at") or best.get("created_at") or row.get("updated_at")
+            )
+            actor_id = str(best.get("actor_id") or "").strip()
+            display = _actor_display_name(users_by_key.get(actor_id)) if actor_id else None
+            row["updated_by_name"] = display or LAST_STOCK_ACTOR_UNKNOWN
+        elif row.get("updated_at"):
+            # Legacy balance stamp without a provable posted movement actor.
+            row["updated_by_name"] = LAST_STOCK_ACTOR_UNKNOWN
+        else:
+            row["updated_by_name"] = None
+
+        for wb in row.get("warehouse_balances") or []:
+            wh_mid = str(wb.pop("_last_movement_id", None) or "").strip()
+            movement = movements_by_id.get(wh_mid) if wh_mid else None
+            if movement:
+                wb["updated_at"] = (
+                    movement.get("occurred_at")
+                    or movement.get("created_at")
+                    or wb.get("updated_at")
+                )
+                actor_id = str(movement.get("actor_id") or "").strip()
+                display = _actor_display_name(users_by_key.get(actor_id)) if actor_id else None
+                wb["updated_by_name"] = display or LAST_STOCK_ACTOR_UNKNOWN
+            elif wb.get("updated_at"):
+                wb["updated_by_name"] = LAST_STOCK_ACTOR_UNKNOWN
+            else:
+                wb["updated_by_name"] = None
+
+        row.pop("_candidate_movement_ids", None)
 
 
 async def _catalog_units(db, masters) -> dict:

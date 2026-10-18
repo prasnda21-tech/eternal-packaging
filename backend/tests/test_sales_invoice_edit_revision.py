@@ -122,9 +122,10 @@ async def _seed(db, *, invoice_date="2026-10-09", qty=2, po_qty=10, sales_user_i
         "notes": "",
         "created_at": "2026-10-01T00:00:00+00:00",
     })
-    rec = await create_account(db, {"code": f"11{uuid.uuid4().hex[:4]}", "name": "Piutang", "account_type": "AREC"}, user=ADMIN)
-    rev = await create_account(db, {"code": f"41{uuid.uuid4().hex[:4]}", "name": "Pendapatan", "account_type": "REVE"}, user=ADMIN)
-    tax = await create_account(db, {"code": f"21{uuid.uuid4().hex[:4]}", "name": "PPN", "account_type": "OCLY"}, user=ADMIN)
+    # 8 hex chars — 4-hex codes collide across suite runs that keep CoA rows.
+    rec = await create_account(db, {"code": f"11{uuid.uuid4().hex[:8]}", "name": "Piutang", "account_type": "AREC"}, user=ADMIN)
+    rev = await create_account(db, {"code": f"41{uuid.uuid4().hex[:8]}", "name": "Pendapatan", "account_type": "REVE"}, user=ADMIN)
+    tax = await create_account(db, {"code": f"21{uuid.uuid4().hex[:8]}", "name": "PPN", "account_type": "OCLY"}, user=ADMIN)
     await db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {
@@ -493,7 +494,7 @@ async def test_fence_survives_ttl_and_blocks_financial_ops(indexes):
     await db.sales_receipts.delete_many({"invoice_id": invoice_id})
 
     deposit = await create_account(
-        db, {"code": f"21{uuid.uuid4().hex[:4]}", "name": "Titipan", "account_type": "OCLY"}, user=ADMIN,
+        db, {"code": f"21{uuid.uuid4().hex[:8]}", "name": "Titipan", "account_type": "OCLY"}, user=ADMIN,
     )
     await db.app_settings.update_one({"key": SETTINGS_KEY}, {"$set": {"customer_deposit_account_id": deposit["id"]}})
     await db.orders.update_one({"id": po_id}, {"$set": {"customer_id": "cust-fence"}})
@@ -1040,10 +1041,10 @@ async def test_p2_other_charge_mismatch_blocks_completion(indexes):
     await _enable(db)
     invoice_id, _po = await _seed(db, invoice_date="2026-01-09", qty=2)
     charge = await create_account(
-        db, {"code": f"51{uuid.uuid4().hex[:4]}", "name": "Ongkir", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"51{uuid.uuid4().hex[:8]}", "name": "Ongkir", "account_type": "OINC"}, user=ADMIN,
     )
     other = await create_account(
-        db, {"code": f"52{uuid.uuid4().hex[:4]}", "name": "Noise", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"52{uuid.uuid4().hex[:8]}", "name": "Noise", "account_type": "OINC"}, user=ADMIN,
     )
     payload = {
         **_payload(qty=2, invoice_date="2026-01-19", key="p2-charge"),
@@ -1182,7 +1183,7 @@ async def test_p2_missing_or_extra_journal_line_blocks_completion(indexes):
     active = await _active_journal(db, invoice_id)
     settings = await db.app_settings.find_one({"key": SETTINGS_KEY})
     noise = await create_account(
-        db, {"code": f"53{uuid.uuid4().hex[:4]}", "name": "Noise", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"53{uuid.uuid4().hex[:8]}", "name": "Noise", "account_type": "OINC"}, user=ADMIN,
     )
     # Balanced extra lines on an unexpected account keep AR/revenue intact.
     await db.journal_lines.insert_many([
@@ -1249,7 +1250,7 @@ async def test_other_charges_missing_ids_same_key_retry_preserves_fingerprint(in
     await _enable(db)
     invoice_id, _po = await _seed(db, invoice_date="2026-03-01", qty=2)
     charge = await create_account(
-        db, {"code": f"54{uuid.uuid4().hex[:4]}", "name": "Ongkir", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"54{uuid.uuid4().hex[:8]}", "name": "Ongkir", "account_type": "OINC"}, user=ADMIN,
     )
     payload = {
         **_payload(qty=2, invoice_date="2026-03-11", key="charge-idem"),
@@ -1282,10 +1283,10 @@ async def test_multiple_other_charges_retry_after_crash_keeps_identities(indexes
     await _enable(db)
     invoice_id, _po = await _seed(db, invoice_date="2026-03-02", qty=1)
     a = await create_account(
-        db, {"code": f"55{uuid.uuid4().hex[:4]}", "name": "A", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"55{uuid.uuid4().hex[:8]}", "name": "A", "account_type": "OINC"}, user=ADMIN,
     )
     b = await create_account(
-        db, {"code": f"56{uuid.uuid4().hex[:4]}", "name": "B", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"56{uuid.uuid4().hex[:8]}", "name": "B", "account_type": "OINC"}, user=ADMIN,
     )
     payload = {
         **_payload(qty=1, invoice_date="2026-03-12", key="multi-charge"),
@@ -1320,7 +1321,7 @@ async def test_other_charges_different_amount_same_key_rejected(indexes):
     await _enable(db)
     invoice_id, _po = await _seed(db, invoice_date="2026-03-03", qty=1)
     charge = await create_account(
-        db, {"code": f"57{uuid.uuid4().hex[:4]}", "name": "Fee", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"57{uuid.uuid4().hex[:8]}", "name": "Fee", "account_type": "OINC"}, user=ADMIN,
     )
     first = {
         **_payload(qty=1, invoice_date="2026-03-13", key="charge-change"),
@@ -1349,7 +1350,7 @@ async def test_other_charges_retry_after_financial_mismatch_keeps_proposal(index
     await _enable(db)
     invoice_id, _po = await _seed(db, invoice_date="2026-03-04", qty=2)
     charge = await create_account(
-        db, {"code": f"58{uuid.uuid4().hex[:4]}", "name": "Ship", "account_type": "OINC"}, user=ADMIN,
+        db, {"code": f"58{uuid.uuid4().hex[:8]}", "name": "Ship", "account_type": "OINC"}, user=ADMIN,
     )
     payload = {
         **_payload(qty=2, invoice_date="2026-03-14", key="charge-mismatch"),

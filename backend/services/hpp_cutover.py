@@ -37,6 +37,7 @@ from services.hpp_valuation import (
 )
 from services.inventory_accounting import (
     CANONICAL_GR,
+    REASON_NON_INVENTORY_ITEM,
     InvalidUnitConversionError,
     financial_inventory_item_key,
     financial_uom_snapshot,
@@ -927,6 +928,22 @@ async def _canonical_receipt_line(
             "financial_ineligibility_reason": STATUS_NEEDS_UOM,
             "financial_ineligibility_reasons": [STATUS_NEEDS_UOM],
         }
+    # Physical/HPP layers: skip explicit SERVICE only. Blank/legacy item_type
+    # still recognizes (same inventory default as receipt_line_posts_physical_stock).
+    from services.inventory_accounting import ITEM_TYPE_SERVICE
+    if str(master.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE:
+        reason = REASON_NON_INVENTORY_ITEM
+        return {
+            **common,
+            "status": reason,
+            "reason": reason,
+            "qty": None,
+            "unit_cost": None,
+            "total_cost": None,
+            "financial_inventory_eligible": False,
+            "financial_ineligibility_reason": reason,
+            "financial_ineligibility_reasons": [reason],
+        }
     factor, tx_uom, base_uom, conversion_error = resolve_conversion_from_setting(
         master=master,
         setting=setting,
@@ -992,12 +1009,16 @@ async def register_baseline_participants(db, receipt: dict) -> None:
     if not receipt_id:
         return
     stamp = now_iso()
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     for line in (receipt or {}).get("lines") or []:
         if not isinstance(line, dict):
             continue
         mid = str(line.get("master_item_id") or "").strip()
         line_id = str(line.get("line_id") or line.get("purchase_order_line_id") or "").strip()
         if not mid or not line_id:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         await db[PARTICIPANTS].update_one(
             {"master_item_id": mid, "receipt_id": receipt_id, "line_id": line_id},

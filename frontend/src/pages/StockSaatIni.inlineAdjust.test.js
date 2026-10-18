@@ -299,8 +299,12 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toBe(
       "/persediaan/stock-opname?warehouse_id=wh-a",
     );
-    expect(container.querySelector('[data-testid="stock-baseline-item-1"]')?.textContent).toMatch(/Belum direkonsiliasi/i);
+    expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-baseline-label"))
+      .toMatch(/Belum direkonsiliasi/i);
     expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-balance-present")).toBe("true");
+    expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-baseline-status")).toBe("unreconciled");
+    expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.textContent)
+      .not.toMatch(/Belum direkonsiliasi/i);
     await act(async () => {
       container.querySelector('[data-testid="stock-adjust-item-1"]').click();
     });
@@ -356,8 +360,9 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(physical?.getAttribute("data-balance-present")).toBe("false");
     expect(physical?.textContent).toMatch(/Belum tersedia/i);
     expect(physical?.textContent).not.toMatch(/^0|[^0-9]0[^0-9]/);
+    expect(physical?.textContent).not.toMatch(/belum direkonsiliasi/i);
     expect(container.querySelector('[data-testid="stock-available-invalid-item-1"]')?.textContent).toMatch(/Belum valid/i);
-    expect(container.querySelector('[data-testid="stock-baseline-item-1"]')?.textContent).toMatch(/belum direkonsiliasi/i);
+    expect(physical?.getAttribute("data-baseline-label")).toMatch(/belum direkonsiliasi/i);
     act(() => root.unmount());
     container.remove();
   });

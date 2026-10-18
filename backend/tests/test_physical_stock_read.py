@@ -19,6 +19,8 @@ from services.physical_stock import (  # noqa: E402
     BRANCHES_COLLECTION,
     LEDGER_COLLECTION,
     MASTER_ITEMS_COLLECTION,
+    MOVEMENT_REVERSAL,
+    MOVEMENT_SALES_DELIVERY,
     WAREHOUSES_COLLECTION,
     PhysicalStockNotFoundError,
     PhysicalStockValidationError,
@@ -366,7 +368,7 @@ async def test_catalog_returns_zero_without_writing_and_filters_locations(db):
     assert "warehouse_id" not in all_rows["items"][0]
 
 
-def _order(order_id, item, quantity, completed=0, cancelled=False, status=None):
+def _order(order_id, item, quantity, completed=0, cancelled=False, status=None, branch_id=None):
     doc = {
         "id": order_id,
         "cancelled": cancelled,
@@ -377,6 +379,8 @@ def _order(order_id, item, quantity, completed=0, cancelled=False, status=None):
         }],
         "operator_splits": [{"line_idx": 0, "qty_completed": completed}],
     }
+    if branch_id:
+        doc["branch_id"] = branch_id
     if status:
         doc["status"] = status
     return doc
@@ -417,21 +421,23 @@ async def test_operational_stock_buckets(db):
     await _seed_balance(db, item_a, smg, smg_wh, 999)
     await _seed_balance(db, item_c, ygy, second, 0)
 
+    ygy_id = ygy["id"]
     await db.orders.insert_many([
-        _order("b", item_b, 300, 0),
-        _order("c", item_c, 300, 200),
-        _order("d", item_d, 300, 300),
-        _order("e", item_e, 300, 0),
-        _order("f", item_f, 300, 200),
-        _order("g", item_g, 300, 300, cancelled=True),
-        _order("g-void", item_g, 80, 80, status="void"),
-        _order("h1", item_h, 200, 50),
-        _order("h2", item_h, 100, 100),
-        _order("i", item_i, 10, 4),
-        _order("legacy", item_legacy, 300, 200),
-        _order("mix", item_b, 0, 0),
+        _order("b", item_b, 300, 0, branch_id=ygy_id),
+        _order("c", item_c, 300, 200, branch_id=ygy_id),
+        _order("d", item_d, 300, 300, branch_id=ygy_id),
+        _order("e", item_e, 300, 0, branch_id=ygy_id),
+        _order("f", item_f, 300, 200, branch_id=ygy_id),
+        _order("g", item_g, 300, 300, cancelled=True, branch_id=ygy_id),
+        _order("g-void", item_g, 80, 80, status="void", branch_id=ygy_id),
+        _order("h1", item_h, 200, 50, branch_id=ygy_id),
+        _order("h2", item_h, 100, 100, branch_id=ygy_id),
+        _order("i", item_i, 10, 4, branch_id=ygy_id),
+        _order("legacy", item_legacy, 300, 200, branch_id=ygy_id),
+        _order("mix", item_b, 0, 0, branch_id=ygy_id),
     ])
     await db.orders.update_one({"id": "mix"}, {"$set": {
+        "branch_id": ygy_id,
         "line_items": [
             {"master_item_id": item_b["id"], "quantity": 0, "production_process": "print"},
             {"master_item_id": item_i["id"], "quantity": 5, "production_process": "print"},
@@ -520,3 +526,99 @@ async def test_operational_warehouse_scope_excludes_non_operational_balances(db)
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
     hidden_qty = await db[BALANCE_COLLECTION].find_one({"warehouse_id": hidden["id"]}, {"_id": 0})
     assert hidden_qty["physical_qty"] == 99
+
+
+async def test_branch_isolation_same_master_ygy_vs_smg(db):
+    """Same master item: YGY stock/orders/delivery must not leak into SMG (and reverse)."""
+    item = await _seed_item(
+        db, item_code="ISO-CUP", item_name="Cup Isolasi Cabang", unit="pcs",
+    )
+    ygy = await _seed_branch(db, "YGY")
+    await db[BRANCHES_COLLECTION].update_one(
+        {"id": ygy["id"]}, {"$set": {"name": "Yogyakarta"}},
+    )
+    smg = await _seed_branch(db, "SMG")
+    await db[BRANCHES_COLLECTION].update_one(
+        {"id": smg["id"]}, {"$set": {"name": "Semarang"}},
+    )
+    wh_ygy = await _seed_warehouse(db, ygy, "GUD-A")
+    wh_smg = await _seed_warehouse(db, smg, "GUD-B")
+    await _seed_balance(db, item, ygy, wh_ygy, 100)
+    await _seed_balance(db, item, smg, wh_smg, 700)
+
+    # YGY: ordered 40, completed 30, delivered 10 → pesanan 10, belum 20
+    await db.orders.insert_one(_order(
+        "so-ygy", item, 40, completed=30, branch_id=ygy["id"],
+    ))
+    await _seed_ledger(
+        db, item, ygy, wh_ygy,
+        occurred_at="2026-10-01T00:00:00+00:00",
+        movement_type=MOVEMENT_SALES_DELIVERY,
+        qty_delta=-10,
+        reason="kirim-ygy",
+    )
+    # SMG: ordered 200, completed 50, delivered 20 then reversed → belum = 50
+    await db.orders.insert_one(_order(
+        "so-smg", item, 200, completed=50, branch_id=smg["id"],
+    ))
+    await _seed_ledger(
+        db, item, smg, wh_smg,
+        occurred_at="2026-10-01T01:00:00+00:00",
+        movement_type=MOVEMENT_SALES_DELIVERY,
+        qty_delta=-20,
+        reason="kirim-smg",
+    )
+    smg_mov = await db[LEDGER_COLLECTION].find_one(
+        {"reason": "kirim-smg"}, {"_id": 0, "id": 1},
+    )
+    await db[LEDGER_COLLECTION].insert_one({
+        "id": f"rev-{uuid.uuid4().hex[:8]}",
+        "master_item_id": item["id"],
+        "branch_id": smg["id"],
+        "warehouse_id": wh_smg["id"],
+        "occurred_at": "2026-10-01T02:00:00+00:00",
+        "created_at": "2026-10-01T02:00:00+00:00",
+        "movement_type": MOVEMENT_REVERSAL,
+        "qty_delta": 20,
+        "balance_before": 680,
+        "balance_after": 700,
+        "reference_type": "physical_stock_ledger",
+        "reference_id": smg_mov["id"],
+        "reason": "batal-smg",
+        "actor_id": "actor-1",
+        "metadata": {},
+    })
+    # Legacy order without branch_id must not invent itself onto either branch.
+    await db.orders.insert_one(_order("so-orphan", item, 999, completed=999))
+
+    ygy_cat = await list_physical_stock_catalog(db, branch_id=ygy["id"], q="ISO-CUP")
+    smg_cat = await list_physical_stock_catalog(db, branch_id=smg["id"], q="ISO-CUP")
+    ygy_row = ygy_cat["items"][0]
+    smg_row = smg_cat["items"][0]
+
+    assert ygy_row["physical_qty"] == 100
+    assert ygy_row["qty_pesanan"] == 10
+    assert ygy_row["qty_belum_terkirim"] == 20
+    assert ygy_row["qty_tersedia"] == 70
+
+    assert smg_row["physical_qty"] == 700
+    assert smg_row["qty_pesanan"] == 150
+    assert smg_row["qty_belum_terkirim"] == 50
+    assert smg_row["qty_tersedia"] == 500
+
+    # Foreign warehouse_id under the other branch must not invent stock.
+    cross = await list_physical_stock_catalog(
+        db, branch_id=ygy["id"], warehouse_id=wh_smg["id"], q="ISO-CUP",
+    )
+    assert cross["warehouse_count"] == 0
+    assert cross["items"][0]["physical_qty"] == 0
+    assert cross["items"][0]["qty_pesanan"] == 10
+
+    again_ygy = await list_physical_stock_catalog(db, branch_id=ygy["id"], q="ISO-CUP")
+    again_smg = await list_physical_stock_catalog(db, branch_id=smg["id"], q="ISO-CUP")
+    assert again_ygy["items"][0]["physical_qty"] == 100
+    assert again_ygy["items"][0]["qty_pesanan"] == 10
+    assert again_ygy["items"][0]["qty_belum_terkirim"] == 20
+    assert again_smg["items"][0]["physical_qty"] == 700
+    assert again_smg["items"][0]["qty_pesanan"] == 150
+    assert again_smg["items"][0]["qty_belum_terkirim"] == 50

@@ -676,7 +676,6 @@ async def test_concurrent_omitted_requests_do_not_release_the_live_claim(mongo, 
 
     order = _order("ord-concurrent")
     await _seed(mongo, order)
-    allow_winner = asyncio.Event()
     calls = {"n": 0}
     real_lock = server._with_quantity_lock
     real_release = engine.release_durable_stock_claim
@@ -687,25 +686,27 @@ async def test_concurrent_omitted_requests_do_not_release_the_live_claim(mongo, 
         return await real_release(*args, **kwargs)
 
     async def wrapped(order_id, mutate, extra_query=None):
+        # Do NOT wait before real_lock: the winner may already hold a durable
+        # stock claim, and a pre-lock barrier deadlocks the loser (never reaches
+        # _with_quantity_lock) — that hung CI at 180s (exit 124).
         calls["n"] += 1
         if calls["n"] == 1:
-            await allow_winner.wait()
             return await real_lock(order_id, mutate, extra_query=extra_query)
 
         def fail(_order):
             raise HTTPException(400, "injected duplicate failure")
 
-        try:
-            return await real_lock(order_id, fail, extra_query=extra_query)
-        finally:
-            allow_winner.set()
+        return await real_lock(order_id, fail, extra_query=extra_query)
 
     monkeypatch.setattr(server, "_with_quantity_lock", wrapped)
     monkeypatch.setattr(engine, "release_durable_stock_claim", spy_release)
-    results = await asyncio.gather(
-        _confirm(order["id"], "sj-1"),
-        _confirm(order["id"], "sj-1"),
-        return_exceptions=True,
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            _confirm(order["id"], "sj-1"),
+            _confirm(order["id"], "sj-1"),
+            return_exceptions=True,
+        ),
+        timeout=30,
     )
     statuses = []
     for result in results:

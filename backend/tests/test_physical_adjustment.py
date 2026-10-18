@@ -456,6 +456,7 @@ async def test_warehouse_isolation_and_availability_follow_r2_sum(db):
     await db.orders.insert_one({
         "id": "so-1",
         "cancelled": False,
+        "branch_id": branch["id"],
         "line_items": [{"master_item_id": item["id"], "quantity": 200, "production_process": "print"}],
         "operator_splits": [{"line_idx": 0, "qty_completed": 100}],
     })
