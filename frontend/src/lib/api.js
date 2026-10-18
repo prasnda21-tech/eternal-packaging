@@ -260,6 +260,14 @@ export const api = {
       picker: true,
     },
   }).then((r) => r.data),
+  /** Sales/CRM read-only catalog (po.edit / sales_order.create / product_request.create). */
+  salesCatalogProducts: (params = {}) => client.get(`/sales/catalog/products`, {
+    params: {
+      q: params.q ?? "",
+      status: params.status ?? "active",
+      page_size: params.page_size,
+    },
+  }).then((r) => r.data),
   masterItemsSync: () => client.post(`/master-items/sync`).then((r) => r.data),
   masterItemsCreate: (payload) => client.post(`/master-items`, payload).then((r) => r.data),
   masterItemsSetProductionProcess: (itemId, production_process) =>
