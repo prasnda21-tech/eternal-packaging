@@ -22,7 +22,7 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 import server
 from permissions import ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
 from server import app, current_user
-from services.sales_reports import allocate_header_discount
+from services.sales_reports import allocate_header_discount, _selected_columns
 
 pytestmark = pytest.mark.anyio
 
@@ -866,3 +866,15 @@ async def test_missing_category_is_named_and_export_matches_screen_total():
     assert sheet.cell(7, 4).value == "2.900,00"
     assert sheet.cell(8, 4).value == "2.900,00"
     assert sheet.cell(8, 3).value == "2"
+
+
+def test_report_columns_preserve_user_order_without_changing_values():
+    cols = _selected_columns("penjualan-per-barang", {
+        "columns": ["penjualan", "nama_barang", "satuan"]
+    })
+    assert [col["key"] for col in cols] == ["penjualan", "nama_barang", "satuan"]
+    # Unknown/duplicate columns may not be reflected into the output schema.
+    cols = _selected_columns("penjualan-per-barang", {
+        "columns": ["penjualan", "__unknown__", "penjualan", "satuan"]
+    })
+    assert [col["key"] for col in cols] == ["penjualan", "satuan"]
