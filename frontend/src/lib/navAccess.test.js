@@ -561,6 +561,7 @@ describe("productionMenuItems", () => {
     expect(items.map((item) => [item.label, item.to])).toEqual([
       ["Jadwal Produksi", "/produksi"],
       ["Jadwal Pengiriman", "/produksi/jadwal-pengiriman"],
+      ["Rencana Jadwal Kirim", "/produksi/rencana-jadwal-kirim"],
       ["Jadwal Pengiriman Ulang", "/produksi/jadwal-pengiriman-ulang"],
     ]);
     expect(items.some((item) => item.label === "Pengiriman Hari Ini")).toBe(false);

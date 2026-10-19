@@ -936,6 +936,7 @@ export const api = {
     }),
   orderTrackingLink: (id) => client.post(`/orders/${id}/tracking-link`).then((r) => r.data),
   deliverySchedule: (params = {}) => client.get(`/delivery/schedule`, { params }).then((r) => r.data),
+  deliveryPlan: (params = {}) => client.get(`/delivery/plan`, { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
   deliveryReschedules: (params = {}) => client.get(`/delivery/reschedules`, { params }).then((r) => r.data),
   requestDeliveryReschedule: (id, payload) => client.post(`/orders/${id}/delivery-reschedule`, payload).then((r) => r.data),
   setDeliveryRescheduleDate: (rescheduleId, payload) => client.patch(`/delivery/reschedules/${encodeURIComponent(rescheduleId)}`, payload).then((r) => r.data),
@@ -1261,7 +1262,38 @@ export const api = {
     form.append("file", file);
     return client.post("/spk/uploads", form).then((r) => r.data);
   },
+
+  paintMaster: (params = {}) => client.get("/paint/master", { params }).then((r) => r.data),
+  paintMasterCreate: (payload) => client.post("/paint/master", payload).then((r) => r.data),
+  paintMasterUpdate: (id, payload) => client.patch(`/paint/master/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  paintBranches: () => client.get("/paint/branches").then((r) => r.data),
+  paintEligibleEmployees: (params = {}) => client.get("/paint/employees/eligible", { params }).then((r) => r.data),
+  paintSummary: (params = {}) => client.get("/paint/summary", { params }).then((r) => r.data),
+  paintStock: (params = {}) => client.get("/paint/stock", { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  paintTransactions: (params = {}) => client.get("/paint/transactions", { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  paintOpening: (payload) => client.post("/paint/transactions/opening", payload).then((r) => r.data),
+  paintAdd: (payload) => client.post("/paint/transactions/add", payload).then((r) => r.data),
+  paintTake: (payload) => client.post("/paint/transactions/take", payload).then((r) => r.data),
+  paintReturn: (payload) => client.post("/paint/transactions/return", payload).then((r) => r.data),
+  paintAdjust: (payload) => client.post("/paint/transactions/adjust", payload).then((r) => r.data),
+  paintUsageReport: (params = {}) => client.get("/paint/reports/usage", { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  paintUsageExport: (params = {}) => client.get("/paint/reports/usage/export", { params, responseType: "blob", paramsSerializer: paintParamsSerializer }).then((r) => r.data),
 };
+
+function paintParamsSerializer(params) {
+  const sp = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null && item !== "") sp.append(key, String(item));
+      });
+      return;
+    }
+    sp.append(key, String(value));
+  });
+  return sp.toString();
+}
 
 function spkKeyHeader(payload) {
   const key = payload?.idempotency_key;

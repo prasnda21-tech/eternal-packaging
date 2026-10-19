@@ -4,6 +4,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
   COMPLAINT_CATEGORY_OPTIONS,
+  CRM_DAILY_DRAFT_DEBOUNCE_MS,
   CRM_DAILY_REPORT_LIST_PATH,
   NO_ORDER_REASON_LAINNYA,
   NO_ORDER_REASON_PRESETS,
@@ -12,14 +13,19 @@ import {
   SALES_SOURCE_LEGACY,
   SALES_SOURCE_MANUAL,
   STATUS_ORDER_OPTIONS,
+  buildCrmDailyDraftSnapshot,
   canCreateCrmDailyReport,
   canEditOwnCrmDailyReport,
   canUseManualSales,
+  clearCrmDailyDraft,
+  crmDailyDraftStorageKey,
   emptyCrmDailyReportForm,
   formFromCrmDailyReport,
+  readCrmDailyDraft,
   statusOrderBadgeClass,
   toCrmDailyReportPayload,
   validateCrmDailyReportForm,
+  writeCrmDailyDraft,
 } from "../lib/crmDailyReport";
 import "./crmDailyReport.css";
 
@@ -66,9 +72,25 @@ export default function CrmDailyReportForm() {
   const [salesQ, setSalesQ] = useState("");
   const [salesOpen, setSalesOpen] = useState(false);
   const [waWarning, setWaWarning] = useState("");
+  const [pendingEditDraft, setPendingEditDraft] = useState(null);
+  const [draftBanner, setDraftBanner] = useState("");
+  const [hasLocalDraft, setHasLocalDraft] = useState(false);
+  const [draftPersistReady, setDraftPersistReady] = useState(false);
   const submitLock = useRef(false);
   const clientSubmitId = useRef(`cdr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const manualSalesRef = useRef(null);
+  const draftKey = crmDailyDraftStorageKey(user, isNew ? "create" : "edit", isNew ? "new" : id);
+
+  const applyDraftSnapshot = (snap) => {
+    if (!snap?.form) return;
+    setForm(snap.form);
+    setSelectedCustomer(snap.ui?.selectedCustomer || null);
+    setSelectedOrder(snap.ui?.selectedOrder || null);
+    setCustomerQ(snap.ui?.customerQ || "");
+    setPoQ(snap.ui?.poQ || snap.form.po_number || "");
+    setSalesQ(snap.ui?.salesQ || snap.form.sales_label || "");
+    setErrors({});
+  };
 
   const patch = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -85,15 +107,34 @@ export default function CrmDailyReportForm() {
       .then((r) => {
         setMeta(r);
         if (isNew) {
-          setForm((prev) => ({ ...prev, report_date: r.today_wib || prev.report_date }));
+          setForm((prev) => (prev.report_date ? prev : { ...prev, report_date: r.today_wib || prev.report_date }));
         }
       })
       .catch(() => {});
   }, [isNew]);
 
+  // CREATE: restore session draft immediately (no auto-POST).
+  useEffect(() => {
+    if (!isNew || !draftKey) {
+      if (isNew) setDraftPersistReady(false);
+      return;
+    }
+    const snap = readCrmDailyDraft(draftKey);
+    if (snap) {
+      applyDraftSnapshot(snap);
+      setDraftBanner("Draft lokal dipulihkan. Belum dikirim ke server.");
+      setHasLocalDraft(true);
+    } else {
+      setHasLocalDraft(false);
+    }
+    setDraftPersistReady(true);
+  }, [draftKey, isNew]);
+
   useEffect(() => {
     if (isNew) return undefined;
     let cancelled = false;
+    setDraftPersistReady(false);
+    setPendingEditDraft(null);
     api.getCrmDailyReport(id)
       .then((r) => {
         if (cancelled) return;
@@ -102,6 +143,8 @@ export default function CrmDailyReportForm() {
         setForm(next);
         if (report.customer_id) {
           setSelectedCustomer({ id: report.customer_id, name: report.outlet_name, phone: report.whatsapp });
+        } else {
+          setSelectedCustomer(null);
         }
         if (report.order_id || report.po_number) {
           setSelectedOrder({
@@ -110,14 +153,48 @@ export default function CrmDailyReportForm() {
             customer: report.outlet_name,
           });
           setPoQ(report.po_number || "");
+        } else {
+          setSelectedOrder(null);
+          setPoQ("");
         }
         setSalesQ(report.sales_label || "");
         const editable = Boolean(report.can_edit) && canEditOwnCrmDailyReport(hasPerm);
-        setMode(forceEdit && editable ? "edit" : "view");
+        const nextMode = forceEdit && editable ? "edit" : "view";
+        setMode(nextMode);
+        // Server wins by default; offer draft only after explicit choice.
+        const snap = draftKey ? readCrmDailyDraft(draftKey) : null;
+        if (snap && nextMode === "edit") {
+          setPendingEditDraft(snap);
+          setHasLocalDraft(true);
+          setDraftBanner("");
+          setDraftPersistReady(false);
+        } else {
+          setPendingEditDraft(null);
+          setHasLocalDraft(Boolean(snap));
+          setDraftPersistReady(nextMode === "edit");
+        }
       })
       .catch((e) => setToast(errText(e)));
     return () => { cancelled = true; };
-  }, [forceEdit, hasPerm, id, isNew]);
+    // hasPerm is intentionally omitted — auth recreates the fn each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, forceEdit, id, isNew]);
+
+  // Debounced session draft persist (never auto-submits).
+  useEffect(() => {
+    if (!draftKey || !draftPersistReady || mode !== "edit") return undefined;
+    const handle = window.setTimeout(() => {
+      const ok = writeCrmDailyDraft(draftKey, buildCrmDailyDraftSnapshot(form, {
+        customerQ,
+        poQ,
+        salesQ,
+        selectedCustomer,
+        selectedOrder,
+      }));
+      if (ok) setHasLocalDraft(true);
+    }, CRM_DAILY_DRAFT_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [customerQ, draftKey, draftPersistReady, form, mode, poQ, salesQ, selectedCustomer, selectedOrder]);
 
   useEffect(() => {
     if (form.status_customer !== "Repeat" || mode !== "edit") return undefined;
@@ -269,9 +346,50 @@ export default function CrmDailyReportForm() {
     });
   };
 
+  const acceptEditDraft = () => {
+    if (!pendingEditDraft) return;
+    applyDraftSnapshot(pendingEditDraft);
+    setPendingEditDraft(null);
+    setHasLocalDraft(true);
+    setDraftBanner("Draft edit dipulihkan. Belum dikirim ke server.");
+    setDraftPersistReady(true);
+  };
+
+  const keepServerEdit = () => {
+    if (draftKey) clearCrmDailyDraft(draftKey);
+    setPendingEditDraft(null);
+    setHasLocalDraft(false);
+    setDraftBanner("Menampilkan data terbaru dari server.");
+    setDraftPersistReady(mode === "edit");
+  };
+
+  const discardDraftConfirmed = () => {
+    if (!window.confirm("Buang draft lokal formulir ini? Data yang belum disimpan akan hilang.")) return;
+    if (draftKey) clearCrmDailyDraft(draftKey);
+    setPendingEditDraft(null);
+    setHasLocalDraft(false);
+    setDraftBanner("");
+    if (isNew) {
+      setForm(emptyCrmDailyReportForm(meta?.today_wib || ""));
+      setSelectedCustomer(null);
+      setSelectedOrder(null);
+      setCustomerQ("");
+      setPoQ("");
+      setSalesQ("");
+      setErrors({});
+      setDraftPersistReady(true);
+    } else {
+      setDraftPersistReady(mode === "edit");
+    }
+  };
+
   const onSubmit = async (e) => {
     e.preventDefault();
     if (submitLock.current || saving) return;
+    if (pendingEditDraft) {
+      setToast("Pilih lanjutkan draft atau data terbaru sebelum menyimpan");
+      return;
+    }
     const nextErrors = validateCrmDailyReportForm(form);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
@@ -295,11 +413,21 @@ export default function CrmDailyReportForm() {
         ? await api.createCrmDailyReport(payload)
         : await api.updateCrmDailyReport(id, payload);
       if (res?.report?.wa_match_warning) setWaWarning(res.report.wa_match_warning);
+      if (draftKey) clearCrmDailyDraft(draftKey);
+      setHasLocalDraft(false);
+      setDraftBanner("");
       setToast("Laporan tersimpan");
       navigate(`${CRM_DAILY_REPORT_LIST_PATH}/${res.report.id}`);
     } catch (err) {
       setToast(errText(err));
       submitLock.current = false;
+      // Keep session draft on failed submit.
+      if (draftKey && draftPersistReady) {
+        const ok = writeCrmDailyDraft(draftKey, buildCrmDailyDraftSnapshot(form, {
+          customerQ, poQ, salesQ, selectedCustomer, selectedOrder,
+        }));
+        if (ok) setHasLocalDraft(true);
+      }
     } finally {
       setSaving(false);
     }
@@ -332,7 +460,25 @@ export default function CrmDailyReportForm() {
           <div className="cdr-head-actions">
             <Link className="ghost" to={CRM_DAILY_REPORT_LIST_PATH}>Kembali</Link>
             {canEditOwnCrmDailyReport(hasPerm) && meta?.today_wib === form.report_date && (
-              <button type="button" className="primary" onClick={() => setMode("edit")} data-testid="cdr-detail-edit">Edit</button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  setMode("edit");
+                  const snap = draftKey ? readCrmDailyDraft(draftKey) : null;
+                  if (snap) {
+                    setPendingEditDraft(snap);
+                    setHasLocalDraft(true);
+                    setDraftPersistReady(false);
+                  } else {
+                    setHasLocalDraft(false);
+                    setDraftPersistReady(true);
+                  }
+                }}
+                data-testid="cdr-detail-edit"
+              >
+                Edit
+              </button>
             )}
           </div>
         </div>
@@ -370,11 +516,33 @@ export default function CrmDailyReportForm() {
         </div>
         <div className="cdr-head-actions">
           <Link className="ghost" to={CRM_DAILY_REPORT_LIST_PATH}>Kembali</Link>
-          <button type="submit" className="primary" disabled={saving} data-testid="cdr-save">
+          {(hasLocalDraft || pendingEditDraft) ? (
+            <button type="button" className="ghost" onClick={discardDraftConfirmed} data-testid="cdr-discard-draft">
+              Buang Draft
+            </button>
+          ) : null}
+          <button type="submit" className="primary" disabled={saving || Boolean(pendingEditDraft)} data-testid="cdr-save">
             {saving ? "Menyimpan…" : "Simpan Laporan"}
           </button>
         </div>
       </div>
+
+      {pendingEditDraft ? (
+        <div className="cdr-draft-banner" role="status" data-testid="cdr-edit-draft-choice">
+          <p>Draft edit lokal ditemukan. Data server ditampilkan sebagai default.</p>
+          <div className="cdr-draft-banner-actions">
+            <button type="button" className="primary" onClick={acceptEditDraft} data-testid="cdr-draft-continue">
+              Lanjutkan draft sebelumnya
+            </button>
+            <button type="button" className="ghost" onClick={keepServerEdit} data-testid="cdr-draft-use-server">
+              Gunakan data terbaru
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {draftBanner && !pendingEditDraft ? (
+        <p className="cdr-draft-note" data-testid="cdr-draft-banner">{draftBanner}</p>
+      ) : null}
 
       <div className="cdr-form-body">
         <div className="cdr-grid">

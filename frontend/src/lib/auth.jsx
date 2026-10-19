@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import api from "./api";
 import { loginThenLoadUser } from "./authSession";
 import { clearCashBankWorkspaceTabs } from "./cashBankWorkspace";
+import { clearCrmDailyDraftsForUser } from "./crmDailyReport";
 import { clearGlobalWorkspaceTabs } from "./globalWorkspace";
 import { clearMobileOpsSessionForUser } from "./mobileOpsSession";
 import { clearProductionSummaryCache } from "./productionSummaryCache";
@@ -58,6 +59,8 @@ export function AuthProvider({ children }) {
       clearCashBankWorkspaceTabs(null);
       clearSalesWorkspaceTabs(previous);
       clearSalesWorkspaceTabs(null);
+      clearCrmDailyDraftsForUser(previous);
+      clearCrmDailyDraftsForUser(null);
       clearSalesInvoiceListCache();
       clearSalesOrderListCache();
       clearAllSmartListCaches();

@@ -10,6 +10,7 @@ export const NAV_KEYS = {
   dashboardFinance: "nav.dashboard.finance",
   production: "nav.production",
   schedule: "nav.production_schedule",
+  paintSentralisasi: "nav.production.paint",
   deliverySchedule: "nav.delivery_schedule",
   deliveryReschedule: "nav.delivery_reschedule",
   driverRoute: "nav.driver_route",
@@ -101,6 +102,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.chat, label: "Chat", parent: null },
   { key: NAV_KEYS.production, label: "Produksi", parent: null },
   { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: NAV_KEYS.production },
+  { key: NAV_KEYS.paintSentralisasi, label: "Sentralisasi Cat", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliverySchedule, label: "Jadwal Pengiriman", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliveryReschedule, label: "Jadwal Pengiriman Ulang", parent: NAV_KEYS.production },
   { key: NAV_KEYS.tasks, label: "Tugas Produksi", parent: NAV_KEYS.production },
@@ -547,24 +549,28 @@ export function reportsMenuItems(hasPerm) {
 
 export const PRODUCTION_NAV_ROUTES = {
   [NAV_KEYS.schedule]: "/produksi",
+  [NAV_KEYS.paintSentralisasi]: "/produksi/sentralisasi-cat",
   [NAV_KEYS.deliverySchedule]: "/produksi/jadwal-pengiriman",
   [NAV_KEYS.deliveryReschedule]: "/produksi/jadwal-pengiriman-ulang",
 };
 
 const PRODUCTION_VIS_FIELD = {
   [NAV_KEYS.schedule]: "schedule",
+  [NAV_KEYS.paintSentralisasi]: "paintSentralisasi",
   [NAV_KEYS.deliverySchedule]: "deliverySchedule",
   [NAV_KEYS.deliveryReschedule]: "deliveryReschedule",
 };
 
 export const PRODUCTION_TILE_TONES = {
   [NAV_KEYS.schedule]: "green",
+  [NAV_KEYS.paintSentralisasi]: "teal",
   [NAV_KEYS.deliverySchedule]: "blue",
   [NAV_KEYS.deliveryReschedule]: "orange",
 };
 
 export const PRODUCTION_TILE_TESTIDS = {
   [NAV_KEYS.schedule]: "top-nav-jadwal-produksi",
+  [NAV_KEYS.paintSentralisasi]: "top-nav-sentralisasi-cat",
   [NAV_KEYS.deliverySchedule]: "top-nav-jadwal-pengiriman",
   [NAV_KEYS.deliveryReschedule]: "top-nav-jadwal-pengiriman-ulang",
 };
@@ -587,6 +593,20 @@ export function productionMenuItems(hasPerm) {
       [NAV_KEYS.deliverySchedule]: { end: true },
     },
   );
+  // Rencana Jadwal Kirim reuses Jadwal Pengiriman access (no new permission key).
+  if (visible.deliverySchedule || hasPerm("delivery.schedule.view") || hasPerm("schedule.view")) {
+    const insertAt = items.findIndex((it) => it.key === NAV_KEYS.deliverySchedule);
+    const planItem = {
+      key: "delivery-plan",
+      label: "Rencana Jadwal Kirim",
+      to: "/produksi/rencana-jadwal-kirim",
+      tone: "teal",
+      testid: "top-nav-rencana-jadwal-kirim",
+      end: true,
+    };
+    if (insertAt >= 0) items.splice(insertAt + 1, 0, planItem);
+    else items.push(planItem);
+  }
   return items;
 }
 
@@ -792,15 +812,28 @@ export function taskMenuItems(hasPerm) {
   }));
 }
 
+export function paintNavVisible(hasPerm) {
+  // Menu when nav key OR any paint read capability is granted (report-only OK).
+  return !!(
+    canSeeNav(hasPerm, NAV_KEYS.paintSentralisasi)
+    || canSeeNav(hasPerm, "paint.view")
+    || canSeeNav(hasPerm, "paint.stock.view")
+    || canSeeNav(hasPerm, "paint.report.view")
+    || canSeeNav(hasPerm, "paint.settings.manage")
+  );
+}
+
 export function productionNavVisible(hasPerm) {
   const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
+  const paintSentralisasi = paintNavVisible(hasPerm);
   const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
   const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
   const deliveryToday = false; // Pengiriman Hari Ini menu removed — use Jadwal Pengiriman filter.
   const tasks = tasksNavVisible(hasPerm);
   return {
-    parent: !!(schedule || deliverySchedule || deliveryReschedule || tasks.parent),
+    parent: !!(schedule || paintSentralisasi || deliverySchedule || deliveryReschedule || tasks.parent),
     schedule,
+    paintSentralisasi,
     deliverySchedule,
     deliveryReschedule,
     deliveryToday,

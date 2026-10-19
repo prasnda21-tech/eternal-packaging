@@ -57,6 +57,12 @@ from services.delivery_schedule import (
     reschedule_rows as _delivery_reschedule_rows,
     schedule_rows as _delivery_schedule_rows,
 )
+from services.delivery_plan import (
+    PLAN_PROJECTION as _DELIVERY_PLAN_PROJECTION,
+    build_plan_rows as _build_delivery_plan_rows,
+    mongo_match as _delivery_plan_mongo_match,
+    paginate_rows as _paginate_delivery_plan_rows,
+)
 from services.workflow_stage_status import role_status_from_order as _role_status_from_order
 from services.delivery_history import (
     append_confirmation as _append_delivery_confirmation,
@@ -190,6 +196,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
+from services.paint_http import register_paint_routes
 from services.crm_daily_reports_http import register_crm_daily_report_routes
 from services.spk_http import register_spk_routes
 from services.customer_pricing_http import register_customer_pricing_routes
@@ -1985,13 +1992,21 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     """Predicate priority: overdue > h6 > h1 > normal. Kalau PO Terkirim →
     'terkirim' (warning aktif hilang; Tanggal Pengiriman tetap untuk audit).
 
-    Buffer Stock is not a customer SLA commitment: never return overdue.
+    Overdue uses WIB calendar dates (not seconds-past midnight). Due today is
+    never overdue. Buffer Stock is not a customer SLA — never overdue.
     Missing/None/false buffer_stock is treated as a normal PO.
     """
     if order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14:
         return "terkirim"
     if not deadline_iso:
         return "unknown"
+    from services.dashboard_today import wib_today
+    from services.tanggal_pengiriman import parse_calendar_date, wib_calendar_date
+
+    eff_key = wib_calendar_date(deadline_iso) or parse_calendar_date(deadline_iso)
+    today_key = wib_today().isoformat()
+    if eff_key and eff_key < today_key:
+        return "normal" if bool(order.get("buffer_stock")) else "overdue"
     try:
         dt = datetime.fromisoformat(str(deadline_iso).replace("Z", "+00:00"))
         if dt.tzinfo is None:
@@ -2001,6 +2016,9 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     now = datetime.now(timezone.utc)
     delta = dt - now
     if delta.total_seconds() <= 0:
+        # Past stored timestamp but still on the WIB due calendar day → Hari Ini.
+        if eff_key == today_key:
+            return "normal"
         return "normal" if bool(order.get("buffer_stock")) else "overdue"
     hours = delta.total_seconds() / 3600.0
     if hours <= 6:
@@ -7548,6 +7566,55 @@ async def list_delivery_schedule(user=Depends(current_user)):
             r.setdefault("optimization_status_label", "Belum Dioptimasi")
             r.setdefault("route_id", None)
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+
+
+@api_router.get("/delivery/plan")
+async def list_delivery_plan(
+    q: Optional[str] = None,
+    source: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    hf: Optional[list[str]] = Query(None),
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 50,
+    user=Depends(current_user),
+):
+    """Rencana Jadwal Kirim — read-only PO list with valid Tanggal Pengiriman.
+
+    Reuses tanggal_pengiriman resolver. No writes. Buffer Stock / cancelled /
+    fully delivered / missing date excluded. SJ not required.
+    Filter/sort (incl. header hf) run before pagination; totals cover full set.
+    """
+    await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
+    scope = sales_owner_match(user)
+    match = _delivery_plan_mongo_match(scope)
+    docs = await db.orders.find(match, _DELIVERY_PLAN_PROJECTION).to_list(None)
+    dd_settings = await _get_delivery_deadline_settings()
+    lead_days = dd_settings["lead_time_days"]
+    filters = {
+        "q": q,
+        "source": source,
+        "status": status,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+    rows = _build_delivery_plan_rows(
+        docs,
+        lead_time_days=lead_days,
+        filters=filters,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        hf=hf,
+    )
+    page_rows, meta = _paginate_delivery_plan_rows(rows, page=page or 1, page_size=page_size or 50)
+    return {
+        "rows": page_rows,
+        "generated_at": now_iso(),
+        **meta,
+    }
 
 
 @api_router.get("/delivery/reschedules")
@@ -15898,6 +15965,14 @@ register_product_request_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_paint_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_crm_daily_report_routes(
     api_router,
     get_db=lambda: db,
@@ -17741,6 +17816,8 @@ async def seed():
     await db.purchase_requests.create_index("created_at")
     from services.product_requests import ensure_indexes as _product_request_ensure_indexes
     await _product_request_ensure_indexes(db)
+    from services.paint_stock import ensure_indexes as _paint_stock_ensure_indexes
+    await _paint_stock_ensure_indexes(db)
     from services.spk import ensure_indexes as _spk_ensure_indexes
     await _spk_ensure_indexes(db)
     await db.purchase_orders.create_index("id", unique=True)

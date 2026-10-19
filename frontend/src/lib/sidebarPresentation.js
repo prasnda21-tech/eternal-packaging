@@ -103,9 +103,11 @@ export function buildDesktopSidebar({
   }
 
   const schedule = (productionItems || []).filter((item) => item.to === "/produksi");
+  const paintCat = (productionItems || []).filter((item) => item.to === "/produksi/sentralisasi-cat");
   const produksiTasks = (taskItems || []).filter((item) => PRODUCTION_TASK_KEYS.includes(item.key));
   const produksiSections = [
     section("Jadwal", "sidebar-section-jadwal", schedule),
+    section("Sentralisasi Cat", "sidebar-section-sentralisasi-cat", paintCat),
     section("Tugas Produksi", "top-nav-tasks-group", produksiTasks),
   ].filter(Boolean);
   if (produksiSections.length) {
@@ -120,7 +122,9 @@ export function buildDesktopSidebar({
   }
 
   const deliveryDocs = (productionItems || []).filter((item) => (
-    item.to === "/produksi/jadwal-pengiriman" || item.to === "/produksi/jadwal-pengiriman-ulang"
+    item.to === "/produksi/jadwal-pengiriman"
+    || item.to === "/produksi/rencana-jadwal-kirim"
+    || item.to === "/produksi/jadwal-pengiriman-ulang"
   ));
   const deliveryTasks = (taskItems || []).filter((item) => DELIVERY_TASK_KEYS.includes(item.key));
   const pengiriman = leavesOf([...deliveryDocs, ...deliveryTasks]);
@@ -286,7 +290,7 @@ export function isSalesReportPath(pathname) {
 
 export function isProductionRailActive(pathname) {
   const path = cleanPath(pathname);
-  if (path === "/produksi") return true;
+  if (path === "/produksi" || path === "/produksi/sentralisasi-cat") return true;
   return [
     "/tasks/designer",
     "/tasks/screener",
@@ -300,6 +304,7 @@ export function isProductionRailActive(pathname) {
 export function isDeliveryRailActive(pathname) {
   return [
     "/produksi/jadwal-pengiriman",
+    "/produksi/rencana-jadwal-kirim",
     "/produksi/jadwal-pengiriman-ulang",
     "/tasks/surat-jalan",
     "/tasks/loading",

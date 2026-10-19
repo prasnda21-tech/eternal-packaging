@@ -73,6 +73,7 @@ describe("desktop sidebar presentation", () => {
       "Penerimaan Penjualan",
       "Import PO",
       "Aktivitas Sales",
+      "Laporan Harian CRM",
       "Status PO",
       "Prediksi Order",
     ]);
@@ -155,9 +156,15 @@ describe("desktop sidebar presentation", () => {
   test("groups produksi, pengiriman, penjualan, and keuangan without new routes", () => {
     const rails = modelFrom(allow, { route: true, user: { role: "admin" } });
     const produksi = group(rails, "produksi");
-    expect(produksi.sections.map((section) => section.heading)).toEqual(["Jadwal", "Tugas Produksi"]);
+    expect(produksi.sections.map((section) => section.heading)).toEqual([
+      "Jadwal",
+      "Sentralisasi Cat",
+      "Tugas Produksi",
+    ]);
     expect(produksi.sections[0].items.map((item) => item.label)).toEqual(["Jadwal Produksi"]);
-    expect(produksi.sections[1].items.map((item) => item.label)).toEqual([
+    expect(produksi.sections[1].items.map((item) => item.label)).toEqual(["Sentralisasi Cat"]);
+    expect(produksi.sections[1].items.map((item) => item.to)).toEqual(["/produksi/sentralisasi-cat"]);
+    expect(produksi.sections[2].items.map((item) => item.label)).toEqual([
       "Designer",
       "Screener",
       "Kepala Produksi",
@@ -167,6 +174,7 @@ describe("desktop sidebar presentation", () => {
     ]);
     expect(labels(group(rails, "pengiriman"))).toEqual([
       "Jadwal Pengiriman",
+      "Rencana Jadwal Kirim",
       "Jadwal Pengiriman Ulang",
       "Surat Jalan",
       "Loading",
@@ -194,8 +202,14 @@ describe("desktop sidebar presentation", () => {
     expect(group(both, "keuangan").sections.map((section) => section.heading)).toEqual(["Kas & Bank", "Buku Besar"]);
     expect(group(modelFrom(has(NAV_KEYS.schedule)), "produksi").sections.map((section) => section.heading)).toEqual(["Jadwal"]);
     expect(group(modelFrom(has(NAV_KEYS.schedule)), "pengiriman")).toBeNull();
+    expect(group(modelFrom(has(NAV_KEYS.paintSentralisasi)), "produksi").sections.map((section) => section.heading)).toEqual([
+      "Sentralisasi Cat",
+    ]);
     expect(group(modelFrom(has(NAV_KEYS.deliverySchedule)), "produksi")).toBeNull();
-    expect(labels(group(modelFrom(has(NAV_KEYS.deliverySchedule)), "pengiriman"))).toEqual(["Jadwal Pengiriman"]);
+    expect(labels(group(modelFrom(has(NAV_KEYS.deliverySchedule)), "pengiriman"))).toEqual([
+      "Jadwal Pengiriman",
+      "Rencana Jadwal Kirim",
+    ]);
     expect(labels(group(modelFrom(has("delivery_note.manage")), "pengiriman"))).toEqual(["Surat Jalan"]);
     expect(labels(group(modelFrom(has("loading.view")), "pengiriman"))).toEqual(["Loading"]);
     const widget = modelFrom(has("dashboard.finance.view"));
@@ -206,12 +220,14 @@ describe("desktop sidebar presentation", () => {
   test("active rails split production from delivery and keep sales report paths", () => {
     expect(isProductionRailActive("/tasks/packing")).toBe(true);
     expect(isDeliveryRailActive("/tasks/packing")).toBe(false);
-    ["/tasks/surat-jalan", "/tasks/loading", "/tasks/delivery", "/produksi/jadwal-pengiriman", "/produksi/jadwal-pengiriman/batch/1", "/produksi/jadwal-pengiriman/review-optimasi", "/produksi/jadwal-pengiriman-ulang", "/optimasi-rute", "/optimasi-rute/abc"].forEach((path) => {
+    ["/tasks/surat-jalan", "/tasks/loading", "/tasks/delivery", "/produksi/jadwal-pengiriman", "/produksi/rencana-jadwal-kirim", "/produksi/jadwal-pengiriman/batch/1", "/produksi/jadwal-pengiriman/review-optimasi", "/produksi/jadwal-pengiriman-ulang", "/optimasi-rute", "/optimasi-rute/abc"].forEach((path) => {
       expect(isDeliveryRailActive(path)).toBe(true);
       expect(isProductionRailActive(path)).toBe(false);
     });
     expect(isProductionRailActive("/produksi")).toBe(true);
     expect(isDeliveryRailActive("/produksi")).toBe(false);
+    expect(isProductionRailActive("/produksi/sentralisasi-cat")).toBe(true);
+    expect(isDeliveryRailActive("/produksi/sentralisasi-cat")).toBe(false);
     expect(isSalesRailActive("/laporan/status-po")).toBe(true);
     expect(isSalesRailActive("/laporan/prediksi-order")).toBe(true);
     expect(isSalesRailActive("/penjualan/permintaan-produk/abc")).toBe(true);
@@ -234,6 +250,7 @@ describe("desktop sidebar presentation", () => {
     expect(groupedRailForPath("/tasks/loading")).toBe("pengiriman");
     expect(groupedRailForPath("/tasks/delivery")).toBe("pengiriman");
     expect(groupedRailForPath("/produksi/jadwal-pengiriman")).toBe("pengiriman");
+    expect(groupedRailForPath("/produksi/rencana-jadwal-kirim")).toBe("pengiriman");
     expect(groupedRailForPath("/optimasi-rute")).toBe("pengiriman");
     expect(groupedRailForPath("/penjualan/pesanan")).toBe("sales");
     expect(groupedRailForPath("/admin/import")).toBe("sales");
