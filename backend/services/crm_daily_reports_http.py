@@ -62,6 +62,20 @@ def register_crm_daily_report_routes(
             )
         }
 
+    @api_router.get("/crm-daily-reports/sales")
+    async def crm_daily_report_sales(
+        q: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(
+            user,
+            svc.PERM_CREATE,
+            svc.PERM_EDIT_OWN,
+            svc.PERM_VIEW_OWN,
+            svc.PERM_VIEW_ALL,
+        )
+        return {"sales": await svc.list_sales_for_report(get_db(), q=q or "")}
+
     @api_router.get("/crm-daily-reports/meta")
     async def crm_daily_report_meta(user=Depends(current_user)):
         perms = await _perms(user)
@@ -81,6 +95,7 @@ def register_crm_daily_report_routes(
                 "id": svc.actor_user_id(user),
                 "name": svc.actor_name(user),
             },
+            **svc.excel_dropdown_meta(),
         }
 
     @api_router.get("/crm-daily-reports")

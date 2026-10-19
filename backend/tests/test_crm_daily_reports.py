@@ -63,12 +63,54 @@ async def _upsert_users(db, users):
         })
 
 
+SALES_AYUB_ID = "sales-ayub-test"
+SALES_EUIS_ID = "sales-euis-test"
+SALES_AYUB_LABEL = "Sholahudin Al - Ayubi"
+SALES_EUIS_LABEL = "Euis Risnawati"
+
+
+async def _seed_sales_people(db):
+    """Canonical sales_eternal users + sales_user_mapping for CRM sales picker tests."""
+    await db.users.delete_many({"id": {"$in": [SALES_AYUB_ID, SALES_EUIS_ID]}})
+    await db.users.insert_many([
+        {
+            "id": SALES_AYUB_ID,
+            "email": "ayub@eternal.com",
+            "name": "Ayub",
+            "employee_id": "EMP-0049",
+            "role": "sales_eternal",
+            "status": "active",
+            "permissions_override": {},
+        },
+        {
+            "id": SALES_EUIS_ID,
+            "email": "euis@eternal.com",
+            "name": "Euis",
+            "employee_id": "EMP-0052",
+            "role": "sales_eternal",
+            "status": "active",
+            "permissions_override": {},
+        },
+    ])
+    await db.app_settings.delete_many({"key": "sales_user_mapping"})
+    await db.app_settings.insert_one({
+        "key": "sales_user_mapping",
+        "entries": [
+            {"label": SALES_AYUB_LABEL, "user_id": SALES_AYUB_ID},
+            {"label": SALES_EUIS_LABEL, "user_id": SALES_EUIS_ID},
+        ],
+    })
+    return SALES_AYUB_ID, SALES_EUIS_ID
+
+
 async def _prepare(db, users):
     await ensure_indexes(db)
     await ensure_sales_customer_indexes(db)
     await db[COLLECTION].delete_many({})
+    await db.orders.delete_many({})
     await db.audit_logs.delete_many({"action": {"$regex": r"^crm\.daily_report\."}})
     await _upsert_users(db, users)
+    await _seed_sales_people(db)
 
 
 async def _seed_customer(db, *, name="Kopi Repeat", phone="081234567890"):
@@ -108,7 +150,9 @@ def _new_payload(**overrides):
         "status_customer": "New",
         "outlet_name": "",
         "whatsapp": "081298765432",
-        "sales_label": "AYUB",
+        "sales_label": SALES_AYUB_LABEL,
+        "sales_user_id": SALES_AYUB_ID,
+        "sales_source": "existing",
         "status_order": "ORDER",
         "has_complaint": False,
         "has_issue": False,
@@ -116,6 +160,22 @@ def _new_payload(**overrides):
     }
     base.update(overrides)
     return base
+
+
+async def _seed_order(db, *, po_number, customer_id="", customer="", sales="", sales_user_id=None):
+    doc = {
+        "id": f"ord-{uuid.uuid4().hex[:8]}",
+        "po_number": po_number,
+        "customer_id": customer_id or None,
+        "customer": customer,
+        "sales": sales,
+        "sales_user_id": sales_user_id,
+        "order_date": today_wib_date(),
+        "cancelled": False,
+        "created_at": today_wib_date(),
+    }
+    await db.orders.insert_one(doc)
+    return doc
 
 
 @pytest.mark.anyio
@@ -171,7 +231,9 @@ async def test_repeat_requires_valid_customer():
             "report_date": today_wib_date(),
             "status_customer": "Repeat",
             "customer_id": cust["id"],
-            "sales_label": "EUIS",
+            "sales_label": SALES_EUIS_LABEL,
+            "sales_user_id": SALES_EUIS_ID,
+            "sales_source": "existing",
             "status_order": "ORDER",
             "has_complaint": False,
             "has_issue": False,
@@ -185,7 +247,9 @@ async def test_repeat_requires_valid_customer():
             "report_date": today_wib_date(),
             "status_customer": "Repeat",
             "customer_id": "missing",
-            "sales_label": "EUIS",
+            "sales_label": SALES_EUIS_LABEL,
+            "sales_user_id": SALES_EUIS_ID,
+            "sales_source": "existing",
             "status_order": "ORDER",
             "has_complaint": False,
             "has_issue": False,
@@ -205,10 +269,22 @@ async def test_tidak_order_and_complaint_issue_validation():
         ))
         assert no_reason.status_code == 400
 
+        lainnya_empty = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_order="TIDAK ORDER", no_order_reason="Lainnya",
+        ))
+        assert lainnya_empty.status_code == 400
+
         complaint = await client.post("/api/crm-daily-reports", json=_new_payload(
             has_complaint=True, complaint_description="",
         ))
         assert complaint.status_code == 400
+
+        complaint_no_cat = await client.post("/api/crm-daily-reports", json=_new_payload(
+            has_complaint=True,
+            complaint_description="Cetakan kurang rapi",
+            complaint_category="",
+        ))
+        assert complaint_no_cat.status_code == 400
 
         issue = await client.post("/api/crm-daily-reports", json=_new_payload(
             has_issue=True, issue_description="",
@@ -217,16 +293,18 @@ async def test_tidak_order_and_complaint_issue_validation():
 
         ok = await client.post("/api/crm-daily-reports", json=_new_payload(
             status_order="TIDAK ORDER",
-            no_order_reason="Budget belum cocok",
+            no_order_reason="Harga terlalu mahal",
             has_complaint=True,
+            complaint_category="CUP CACAT",
             complaint_description="Cetakan kurang rapi",
             has_issue=True,
             issue_description="Harga kompetitor lebih murah",
         ))
         assert ok.status_code == 200, ok.text
         report = ok.json()["report"]
-        assert report["no_order_reason"]
+        assert report["no_order_reason"] == "Harga terlalu mahal"
         assert report["has_complaint"] is True
+        assert report["complaint_category"] == "CUP CACAT"
         assert report["has_issue"] is True
 
         # ORDER clears no_order_reason
@@ -237,6 +315,136 @@ async def test_tidak_order_and_complaint_issue_validation():
         ))
         assert cleared.status_code == 200
         assert cleared.json()["report"]["no_order_reason"] == ""
+
+
+@pytest.mark.anyio
+async def test_excel_status_reasons_complaint_and_summary():
+    import server
+    from services.crm_daily_reports import (
+        COMPLAINT_CATEGORY_OPTIONS,
+        NO_ORDER_REASON_PRESETS,
+        STATUS_ORDER_OPTIONS,
+    )
+
+    crm = _user("crm", uid="crm-excel")
+    await _prepare(server.db, [crm])
+
+    assert list(STATUS_ORDER_OPTIONS) == [
+        "ORDER", "TIDAK ORDER", "PENGAJUAN PO", "PENGAJUAN DITOLAK", "FOLLOW UP",
+    ]
+    assert len(NO_ORDER_REASON_PRESETS) == 6
+    assert "Lainnya" in COMPLAINT_CATEGORY_OPTIONS
+
+    async with await _client(crm) as client:
+        meta = await client.get("/api/crm-daily-reports/meta")
+        assert meta.status_code == 200
+        assert meta.json()["status_order_options"] == list(STATUS_ORDER_OPTIONS)
+        assert meta.json()["no_order_reason_presets"] == list(NO_ORDER_REASON_PRESETS)
+
+        bad_status = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_order="MAYBE", whatsapp="081200000001",
+        ))
+        assert bad_status.status_code == 400
+
+        for reason in NO_ORDER_REASON_PRESETS:
+            resp = await client.post("/api/crm-daily-reports", json=_new_payload(
+                status_order="TIDAK ORDER",
+                no_order_reason=reason,
+                whatsapp=f"0812{abs(hash(reason)) % 10**8:08d}",
+            ))
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["report"]["no_order_reason"] == reason
+
+        lainnya_ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_order="TIDAK ORDER",
+            no_order_reason="Budget khusus cabang",
+            whatsapp="081200000099",
+        ))
+        assert lainnya_ok.status_code == 200
+        assert lainnya_ok.json()["report"]["no_order_reason"] == "Budget khusus cabang"
+
+        for status in ("PENGAJUAN PO", "PENGAJUAN DITOLAK", "FOLLOW UP"):
+            resp = await client.post("/api/crm-daily-reports", json=_new_payload(
+                status_order=status,
+                whatsapp=f"08121{abs(hash(status)) % 10**7:07d}",
+            ))
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["report"]["status_order"] == status
+            assert resp.json()["report"]["no_order_reason"] == ""
+
+        complaint_ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            has_complaint=True,
+            complaint_category="SALAH DESIGN",
+            complaint_description="Logo terbalik",
+            whatsapp="081200000088",
+        ))
+        assert complaint_ok.status_code == 200
+        assert complaint_ok.json()["report"]["complaint_category"] == "SALAH DESIGN"
+
+        # Legacy row without category remains readable / editable same-day.
+        legacy_id = "legacy-complaint-1"
+        await server.db[COLLECTION].insert_one({
+            "id": legacy_id,
+            "report_date": today_wib_date(),
+            "created_by_id": crm["id"],
+            "created_by_name": crm["name"],
+            "status_customer": "New",
+            "customer_id": None,
+            "outlet_name": "",
+            "whatsapp": "081200000077",
+            "whatsapp_norm": "6281200000077",
+            "order_id": None,
+            "po_number": "",
+            "sales_label": "Sales Legacy Free Text",
+            "sales_user_id": None,
+            "sales_source": "legacy",
+            "status_order": "ORDER",
+            "no_order_reason": "",
+            "has_complaint": True,
+            "complaint_description": "Legacy tanpa kategori",
+            "has_issue": False,
+            "issue_description": "",
+            "notes": "",
+            "created_at": "2026-04-16T01:00:00+00:00",
+            "updated_at": "2026-04-16T01:00:00+00:00",
+        })
+        detail = await client.get(f"/api/crm-daily-reports/{legacy_id}")
+        assert detail.status_code == 200
+        assert detail.json()["report"]["has_complaint"] is True
+        assert detail.json()["report"]["complaint_category"] == ""
+
+        legacy_edit = await client.patch(f"/api/crm-daily-reports/{legacy_id}", json={
+            "whatsapp": "081200000077",
+            "status_customer": "New",
+            "status_order": "ORDER",
+            "sales_label": "Sales Legacy Free Text",
+            "sales_user_id": None,
+            "sales_source": "legacy",
+            "has_complaint": True,
+            "complaint_description": "Legacy tanpa kategori (edit)",
+            "has_issue": False,
+            "notes": "still legacy",
+            "report_date": today_wib_date(),
+        })
+        assert legacy_edit.status_code == 200, legacy_edit.text
+        assert legacy_edit.json()["report"]["complaint_category"] == ""
+        assert legacy_edit.json()["report"]["sales_source"] in ("legacy", "manual")
+        assert legacy_edit.json()["report"]["sales_user_id"] in (None, "")
+
+        listing = await client.get("/api/crm-daily-reports")
+        assert listing.status_code == 200
+        summary = listing.json()["summary"]
+        assert summary["pengajuan_po_count"] == 1
+        assert summary["pengajuan_ditolak_count"] == 1
+        assert summary["follow_up_count"] == 1
+        # Extra statuses must not inflate ORDER / TIDAK ORDER.
+        assert summary["order_count"] >= 1
+        assert summary["no_order_count"] == len(NO_ORDER_REASON_PRESETS) + 1
+
+        filtered = await client.get("/api/crm-daily-reports", params={"status_order": "FOLLOW UP"})
+        assert filtered.status_code == 200
+        assert filtered.json()["summary"]["total"] == 1
+        assert all(r["status_order"] == "FOLLOW UP" for r in filtered.json()["items"])
 
 
 @pytest.mark.anyio
@@ -309,7 +517,11 @@ async def test_list_scope_filter_pagination_and_forge_creator():
     await _prepare(server.db, [crm, other])
 
     async with await _client(other) as client:
-        await client.post("/api/crm-daily-reports", json=_new_payload(whatsapp="081211100001", sales_label="OTHER"))
+        await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081211100001",
+            sales_label=SALES_EUIS_LABEL,
+            sales_user_id=SALES_EUIS_ID,
+        ))
 
     async with await _client(crm) as client:
         for i in range(3):
@@ -339,3 +551,249 @@ async def test_direktur_effective_has_view_all():
     # direktur_utama uses full access set at runtime
     from permissions import director_full_permission_set
     assert "crm.daily_report.view_all" in director_full_permission_set()
+
+
+@pytest.mark.anyio
+async def test_sales_po_picker_autofill_manual_and_validation():
+    import server
+
+    crm = _user("crm", uid="crm-sales-po")
+    helper = _user("helper", uid="help-sales-po")
+    await _prepare(server.db, [crm, helper])
+    cust = await _seed_customer(server.db, name="Outlet PO", phone="081277700001")
+    other = await _seed_customer(server.db, name="Outlet Lain", phone="081277700002")
+
+    order_with_sales = await _seed_order(
+        server.db,
+        po_number="PO/CRM/SALES/001",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales=SALES_AYUB_LABEL,
+        sales_user_id=SALES_AYUB_ID,
+    )
+    order_no_sales = await _seed_order(
+        server.db,
+        po_number="PO/CRM/NOSALES/002",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales="",
+        sales_user_id=None,
+    )
+    order_euis = await _seed_order(
+        server.db,
+        po_number="PO/CRM/EUIS/003",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales=SALES_EUIS_LABEL,
+        sales_user_id=SALES_EUIS_ID,
+    )
+
+    async with await _client(crm) as client:
+        sales_list = await client.get("/api/crm-daily-reports/sales")
+        assert sales_list.status_code == 200
+        labels = {row["label"] for row in sales_list.json()["sales"]}
+        assert SALES_AYUB_LABEL in labels
+        assert SALES_EUIS_LABEL in labels
+
+        # 1) PO with verified Sales → Sales follows PO
+        ok_po = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711101",
+            order_id=order_with_sales["id"],
+            po_number=order_with_sales["po_number"],
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            sales_user_id=SALES_EUIS_ID,  # conflicting claim ignored/rejected
+            sales_label=SALES_EUIS_LABEL,
+            sales_source="existing",
+        ))
+        assert ok_po.status_code == 400
+
+        ok_po = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711101",
+            order_id=order_with_sales["id"],
+            po_number=order_with_sales["po_number"],
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+            sales_source="existing",
+        ))
+        assert ok_po.status_code == 200, ok_po.text
+        report = ok_po.json()["report"]
+        assert report["order_id"] == order_with_sales["id"]
+        assert report["sales_user_id"] == SALES_AYUB_ID
+        assert report["sales_label"] == SALES_AYUB_LABEL
+        assert report["sales_source"] == "existing"
+        rid = report["id"]
+
+        # 2) PO without Sales → must choose existing
+        no_sales_missing = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711102",
+            order_id=order_no_sales["id"],
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            sales_user_id=None,
+            sales_label="",
+            sales_source="existing",
+        ))
+        assert no_sales_missing.status_code == 400
+
+        no_sales_ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711102",
+            order_id=order_no_sales["id"],
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            sales_user_id=SALES_EUIS_ID,
+            sales_label=SALES_EUIS_LABEL,
+            sales_source="existing",
+        ))
+        assert no_sales_ok.status_code == 200, no_sales_ok.text
+        assert no_sales_ok.json()["report"]["sales_user_id"] == SALES_EUIS_ID
+
+        # 3) Change PO → Sales updates to new PO sales
+        switched = await client.patch(f"/api/crm-daily-reports/{rid}", json={
+            **_new_payload(
+                status_customer="Repeat",
+                customer_id=cust["id"],
+                order_id=order_euis["id"],
+                po_number=order_euis["po_number"],
+                sales_user_id=SALES_EUIS_ID,
+                sales_label=SALES_EUIS_LABEL,
+            ),
+        })
+        assert switched.status_code == 200, switched.text
+        assert switched.json()["report"]["sales_user_id"] == SALES_EUIS_ID
+        assert switched.json()["report"]["order_id"] == order_euis["id"]
+
+        # 5) Customer mismatch with PO
+        mismatch = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711103",
+            status_customer="Repeat",
+            customer_id=other["id"],
+            order_id=order_with_sales["id"],
+            sales_user_id=SALES_AYUB_ID,
+        ))
+        assert mismatch.status_code == 400
+
+        # 6) No PO → existing sales accepted
+        no_po = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711104",
+            sales_user_id=SALES_EUIS_ID,
+            sales_label=SALES_EUIS_LABEL,
+        ))
+        assert no_po.status_code == 200
+        assert no_po.json()["report"]["sales_source"] == "existing"
+        assert no_po.json()["report"]["order_id"] in (None, "")
+
+        # 7) TIDAK ORDER without PO → manual OK
+        manual = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711105",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            sales_source="manual",
+            sales_user_id=None,
+            sales_label="Sales Freelancer X",
+            order_id=None,
+            po_number="",
+        ))
+        assert manual.status_code == 200, manual.text
+        assert manual.json()["report"]["sales_source"] == "manual"
+        assert manual.json()["report"]["sales_user_id"] in (None, "")
+        assert manual.json()["report"]["sales_label"] == "Sales Freelancer X"
+
+        # 8) TIDAK ORDER with PO → manual rejected
+        manual_with_po = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711106",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            order_id=order_with_sales["id"],
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            sales_source="manual",
+            sales_user_id=None,
+            sales_label="Manual Tidak Boleh",
+        ))
+        assert manual_with_po.status_code == 400
+
+        # 9/10) ORDER / FOLLOW UP with manual rejected
+        for status in ("ORDER", "FOLLOW UP", "PENGAJUAN PO", "PENGAJUAN DITOLAK"):
+            bad = await client.post("/api/crm-daily-reports", json=_new_payload(
+                whatsapp=f"0812777111{abs(hash(status)) % 90 + 10}",
+                status_order=status,
+                sales_source="manual",
+                sales_user_id=None,
+                sales_label="Manual Nama",
+                no_order_reason="",
+            ))
+            assert bad.status_code == 400, status
+
+        # 11) Manual empty rejected
+        empty_manual = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711107",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            sales_source="manual",
+            sales_label="",
+            sales_user_id=None,
+        ))
+        assert empty_manual.status_code == 400
+
+        # 12) Manual cannot forge sales_user_id
+        forged_uid = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711108",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            sales_source="manual",
+            sales_label="Manual Nama",
+            sales_user_id=SALES_AYUB_ID,
+        ))
+        assert forged_uid.status_code == 400
+
+        # 13) Invalid canonical sales rejected
+        bad_sales = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711109",
+            sales_user_id="not-a-sales",
+            sales_label="Fake",
+            sales_source="existing",
+        ))
+        assert bad_sales.status_code == 400
+
+        # Orders search returns PO + customer + sales flags
+        orders = await client.get("/api/crm-daily-reports/orders", params={"q": "PO/CRM"})
+        assert orders.status_code == 200
+        body = orders.json()["orders"]
+        assert any(row["po_number"] == "PO/CRM/SALES/001" and row["sales_verified"] for row in body)
+        assert any(row["po_number"] == "PO/CRM/NOSALES/002" and not row["sales_verified"] for row in body)
+
+        # 17) Create does not mutate PO / customer master
+        before_po = await server.db.orders.find_one({"id": order_with_sales["id"]})
+        before_cust = await server.db[CUSTOMERS].find_one({"id": cust["id"]})
+        await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081277711110",
+            order_id=order_with_sales["id"],
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            sales_user_id=SALES_AYUB_ID,
+        ))
+        after_po = await server.db.orders.find_one({"id": order_with_sales["id"]})
+        after_cust = await server.db[CUSTOMERS].find_one({"id": cust["id"]})
+        assert after_po["sales"] == before_po["sales"]
+        assert after_po["sales_user_id"] == before_po["sales_user_id"]
+        assert after_cust["name"] == before_cust["name"]
+
+    # 14) Role without PO permission sees empty order list
+    async with await _client(helper) as client:
+        # helper lacks crm daily report perms → 403 on endpoint
+        denied = await client.get("/api/crm-daily-reports/orders")
+        assert denied.status_code == 403
+
+    # CRM without po.view/sales_order.view → empty orders
+    crm_no_po = _user("crm", uid="crm-noperm", override={
+        "po.view": False,
+        "sales_order.view": False,
+    })
+    await _upsert_users(server.db, [crm_no_po])
+    async with await _client(crm_no_po) as client:
+        empty = await client.get("/api/crm-daily-reports/orders", params={"q": "PO"})
+        assert empty.status_code == 200
+        assert empty.json()["orders"] == []

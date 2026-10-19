@@ -228,6 +228,7 @@ export const api = {
   crmDailyReportMeta: () => client.get(`/crm-daily-reports/meta`).then((r) => r.data),
   crmDailyReportCustomers: (params = {}) => client.get(`/crm-daily-reports/customers`, { params }).then((r) => r.data),
   crmDailyReportOrders: (params = {}) => client.get(`/crm-daily-reports/orders`, { params }).then((r) => r.data),
+  crmDailyReportSales: (params = {}) => client.get(`/crm-daily-reports/sales`, { params }).then((r) => r.data),
   listCrmDailyReports: (params = {}) => client.get(`/crm-daily-reports`, { params }).then((r) => r.data),
   getCrmDailyReport: (id) => client.get(`/crm-daily-reports/${encodeURIComponent(id)}`).then((r) => r.data),
   createCrmDailyReport: (payload) => client.post(`/crm-daily-reports`, payload).then((r) => r.data),

@@ -48,13 +48,26 @@ Cabang
 Kategori
 - Dari kategori baris atau master item yang sudah tersimpan. Kosong menjadi
   Tanpa Kategori. Laporan tidak mengarang kategori.
-- Analisa kategori menjumlahkan kuantitas per satuan dan menampilkan satuan itu.
-  Dus dan Pcs tidak dijumlahkan menjadi satu kuantitas, dan tidak dikonversi
-  ke satu satuan kategori. Total kuantitas dikosongkan bila hasil memuat lebih
-  dari satu satuan. Nilai Penjualan tetap dijumlahkan.
+- Kuantitas laporan dinormalisasi ke PCS (lihat di bawah). Analisa kategori
+  menjumlahkan kuantitas PCS yang terverifikasi.
+
+Kuantitas laporan (PCS)
+- Semua kuantitas pada Penjualan per Barang dan Rincian dinormalisasi ke PCS.
+- Prioritas bukti: snapshot baris faktur saja (``base_qty`` + ``base_uom`` PCS,
+  atau ``conversion_factor`` dengan ``base_uom`` PCS pada baris).
+- ``product_unit_settings`` / master terkini TIDAK dipakai untuk mengisi
+  konversi historis — pengaturan itu tidak berversi/tanggal efektif dan
+  dapat mengubah angka laporan lama bila faktor master berubah.
+- Transaksi yang sudah PCS memakai kuantitas transaksi (tanpa double-convert
+  bila ``base_qty`` PCS konsisten).
+- Faktor nol/negatif/kosong, snapshot tidak lengkap, atau ``base_qty`` vs
+  faktor tidak konsisten → kuantitas belum terverifikasi; tidak dijumlahkan
+  ke total PCS.
+- Penjualan/diskon/BPP/laba tidak diubah oleh normalisasi ini.
 
 Total
 - Dihitung dari seluruh baris yang lolos filter, sebelum potongan halaman.
+- Total kuantitas dikosongkan bila ada kuantitas PCS yang belum terverifikasi.
 """
 from __future__ import annotations
 
@@ -137,7 +150,7 @@ SUMMARY_COLUMNS = (
     {"key": "kode", "label": "Kode #", "align": "left", "default": False},
     {"key": "nama_barang", "label": "Nama Barang", "align": "left", "default": True},
     {"key": "satuan", "label": "Satuan", "align": "left", "default": True},
-    {"key": "kuantitas", "label": "Kuantitas", "align": "right", "default": True, "numeric": True},
+    {"key": "kuantitas", "label": "Kuantitas (PCS)", "align": "right", "default": True, "numeric": True},
     {"key": "penjualan", "label": "Penjualan", "align": "right", "default": True, "numeric": True, "money": True},
     {"key": "nama_kategori", "label": "Nama Kategori Barang Barang & Jasa", "align": "left", "default": False},
 )
@@ -146,7 +159,7 @@ DETAIL_COLUMNS = (
     {"key": "nomor", "label": "Nomor #", "align": "left", "default": True},
     {"key": "tanggal", "label": "Tanggal", "align": "left", "default": True},
     {"key": "keterangan", "label": "Keterangan", "align": "left", "default": True},
-    {"key": "kuantitas", "label": "Kuantitas", "align": "right", "default": True, "numeric": True},
+    {"key": "kuantitas", "label": "Kuantitas (PCS)", "align": "right", "default": True, "numeric": True},
     {"key": "satuan", "label": "Satuan", "align": "left", "default": True},
     {"key": "harga", "label": "@Harga", "align": "right", "default": False, "numeric": True, "money": True},
     {"key": "diskon", "label": "Diskon", "align": "right", "default": False, "numeric": True, "money": True},
@@ -611,6 +624,11 @@ async def _sales_context(db) -> dict:
             token = _text(row.get(key))
             if token:
                 by_id[token] = row
+    unit_settings_by_mid = {}
+    for row in await _iter_docs(db, "product_unit_settings"):
+        mid = _text(row.get("master_item_id"))
+        if mid:
+            unit_settings_by_mid[mid] = row
     cogs_by_line: Dict[Tuple[str, str], dict] = {}
     seen_movements: Dict[Tuple[str, str], set] = {}
     for doc in await _iter_docs(db, "inventory_issue_accounting", {"status": "posted"}):
@@ -651,6 +669,7 @@ async def _sales_context(db) -> dict:
         "orders": orders,
         "masters_by_code": by_code,
         "masters_by_id": by_id,
+        "unit_settings_by_mid": unit_settings_by_mid,
         "cogs_by_line": cogs_by_line,
     }
 
@@ -666,6 +685,15 @@ def _master_for(line: dict, ctx: dict) -> Optional[dict]:
     return None
 
 
+def _unit_setting_for(line: dict, master: Optional[dict], ctx: dict) -> Optional[dict]:
+    settings = ctx.get("unit_settings_by_mid") or {}
+    for key in ("master_item_id", "item_id"):
+        token = _text(line.get(key) or (master or {}).get(key) or (master or {}).get("id"))
+        if token and token in settings:
+            return settings[token]
+    return None
+
+
 def _line_key(invoice: dict, line: dict) -> Tuple[str, str]:
     order_id = _text(invoice.get("po_id") or invoice.get("order_id"))
     line_id = _text(line.get("line_id"))
@@ -676,6 +704,126 @@ def _line_key(invoice: dict, line: dict) -> Tuple[str, str]:
 
 def _normalize_uom(value: Any) -> str:
     return _text(value).casefold()
+
+
+_PCS_UOM = frozenset({"pcs", "pc", "piece", "pieces"})
+
+
+def _is_pcs_uom(value: Any) -> bool:
+    return _normalize_uom(value) in _PCS_UOM
+
+
+def _qty_equal(left: Decimal, right: Decimal) -> bool:
+    return _dec(left).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP) == _dec(right).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP
+    )
+
+
+def _report_qty_pcs(
+    line: dict,
+    *,
+    master: Optional[dict] = None,
+    unit_setting: Optional[dict] = None,
+) -> dict:
+    """Normalize one invoice line quantity to PCS for reporting only.
+
+    Historical safety: only line-level conversion snapshots are trusted.
+    Current ``product_unit_settings`` / master unit are not used to invent PCS
+    for older invoices (no effective-dated conversion history on master).
+
+    Does not alter financial amounts or BPP allocation weights.
+    """
+    del master, unit_setting  # intentionally unused for historical conversion
+    tx_qty = _dec(line.get("quantity"))
+    # Unit identity must come from the invoice line, not current master.
+    tx_uom = _text(line.get("unit"))
+    has_base = line.get("base_qty") not in (None, "")
+    has_factor = line.get("conversion_factor") not in (None, "")
+    base_qty = _dec(line.get("base_qty")) if has_base else None
+    base_uom = _text(line.get("base_uom")) if has_base or line.get("base_uom") not in (None, "") else ""
+    factor = _dec(line.get("conversion_factor")) if has_factor else None
+
+    def ok(qty: Decimal, source: str) -> dict:
+        return {
+            "quantity": qty,
+            "unit": "Pcs",
+            "qty_verified": True,
+            "qty_note": "",
+            "qty_source": source,
+            "tx_quantity": tx_qty,
+            "tx_unit": tx_uom,
+        }
+
+    def bad(note: str) -> dict:
+        label = tx_uom or "—"
+        return {
+            "quantity": None,
+            "unit": f"{label} (belum PCS)",
+            "qty_verified": False,
+            "qty_note": note,
+            "qty_source": None,
+            "tx_quantity": tx_qty,
+            "tx_unit": tx_uom,
+        }
+
+    if tx_qty < 0:
+        return bad("kuantitas transaksi negatif tidak dapat dinormalisasi ke PCS")
+
+    if not tx_uom and not has_base and not has_factor:
+        return bad("satuan transaksi kosong; konversi ke PCS tidak dapat dibuktikan")
+
+    # 1) Transaction already in PCS.
+    if _is_pcs_uom(tx_uom):
+        if has_base:
+            if not _is_pcs_uom(base_uom or "PCS"):
+                return bad("base_uom baris bukan PCS meski satuan transaksi PCS")
+            if has_factor:
+                if factor is None or factor <= 0:
+                    return bad("faktor konversi baris tidak valid")
+                if not _qty_equal(tx_qty * factor, base_qty):
+                    return bad("base_qty dan conversion_factor tidak konsisten")
+                return ok(base_qty, "base_qty")
+            if not _qty_equal(base_qty, tx_qty):
+                return bad("base_qty PCS tidak sama dengan kuantitas transaksi PCS")
+        if has_factor and (factor is None or factor <= 0):
+            return bad("faktor konversi baris tidak valid")
+        if has_factor and factor != 1 and not has_base:
+            # Factor without base while unit is already PCS is ambiguous.
+            return bad("conversion_factor pada baris PCS tanpa base_qty tidak dipakai")
+        return ok(tx_qty, "tx_pcs")
+
+    # 2) Snapshot base_qty already in PCS — do not multiply again.
+    if has_base:
+        if base_qty is None or base_qty < 0:
+            return bad("base_qty tidak valid")
+        if not _is_pcs_uom(base_uom):
+            return bad("base_uom snapshot bukan PCS")
+        if has_factor:
+            if factor is None or factor <= 0:
+                return bad("faktor konversi baris tidak valid")
+            if not _qty_equal(tx_qty * factor, base_qty):
+                return bad("base_qty dan conversion_factor tidak konsisten")
+        return ok(base_qty, "base_qty")
+
+    # 3) Snapshot conversion_factor → PCS requires line-level base_uom PCS.
+    # Do not corroborate missing base_uom from current master settings.
+    if has_factor:
+        if factor is None or factor <= 0:
+            return bad("faktor konversi baris tidak valid")
+        snap_base = _text(line.get("base_uom"))
+        if not snap_base:
+            return bad(
+                "conversion_factor baris tanpa base_uom PCS pada snapshot; "
+                "master terkini tidak dipakai untuk histori"
+            )
+        if not _is_pcs_uom(snap_base):
+            return bad("dasar conversion_factor baris bukan PCS")
+        return ok(tx_qty * factor, "conversion_factor")
+
+    return bad(
+        "konversi ke PCS tidak tersedia pada snapshot baris; "
+        "pengaturan produk terkini tidak dipakai untuk transaksi historis"
+    )
 
 
 def _posting_uom(basis: dict, doc: dict) -> str:
@@ -723,7 +871,9 @@ def _claim_weight(row: dict, posted_uom: str) -> Optional[Decimal]:
         return None
     if mode == "base":
         return weight
-    if not posted_uom or _normalize_uom(row.get("unit")) != posted_uom:
+    # Compare posting UOM to the original transaction unit, never the report PCS label.
+    tx_unit = row.get("tx_unit") if row.get("tx_unit") not in (None, "") else row.get("unit")
+    if not posted_uom or _normalize_uom(tx_unit) != posted_uom:
         return None
     return weight
 
@@ -785,7 +935,9 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
         for index, line in enumerate(lines):
             qty = _dec(line.get("quantity"))
             master = _master_for(line, ctx)
+            unit_setting = _unit_setting_for(line, master, ctx)
             weight, weight_mode = _line_weight(line)
+            report_qty = _report_qty_pcs(line, master=master, unit_setting=unit_setting)
             finalized.append({
                 "invoice_id": invoice.get("id"),
                 "invoice_number": _text(invoice.get("invoice_number")),
@@ -795,8 +947,13 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
                 "keterangan": _keterangan(line),
                 "item_code": _text(line.get("item_code") or (master or {}).get("item_code")),
                 "item_name": _text(line.get("item_name") or line.get("name") or (master or {}).get("item_name")) or "—",
-                "unit": _text(line.get("unit") or (master or {}).get("unit")),
-                "quantity": qty,
+                "unit": report_qty["unit"],
+                "quantity": report_qty["quantity"],
+                "qty_verified": report_qty["qty_verified"],
+                "qty_note": report_qty["qty_note"],
+                "qty_source": report_qty["qty_source"],
+                "tx_quantity": report_qty["tx_quantity"],
+                "tx_unit": report_qty["tx_unit"],
                 "unit_price": _money(_dec(line.get("unit_price"))),
                 "subtotal": _net_before_header(line),
                 "discount": shares[index] if index < len(shares) else Decimal("0.00"),
@@ -867,15 +1024,28 @@ def _cell(column: dict, value: Any) -> Any:
     return value
 
 
+def _qty_complete(rows: Sequence[dict]) -> bool:
+    return all(row.get("qty_verified", row.get("quantity") is not None) for row in rows)
+
+
+def _sum_report_qty(rows: Sequence[dict]) -> Optional[Decimal]:
+    if not rows:
+        return Decimal("0")
+    if not _qty_complete(rows):
+        return None
+    return sum((_dec(row.get("quantity")) for row in rows), Decimal("0"))
+
+
 def _totals_payload(rows: Sequence[dict], columns: Sequence[dict], *, quantity_by_unit: bool = False) -> dict:
+    del quantity_by_unit  # legacy flag; PCS normalization owns quantity totals
     totals = {}
     bpp_complete = all(row.get("bpp") is not None for row in rows) if rows else True
-    units = {_text(row.get("unit")) for row in rows}
-    blank_quantity = quantity_by_unit and len(units) > 1
+    qty_complete = _qty_complete(rows) if rows else True
     for column in columns:
         key = column["key"]
         if key == "kuantitas":
-            totals[key] = None if blank_quantity else _qty_str(sum((_dec(row.get("quantity")) for row in rows), Decimal("0")))
+            total_qty = _sum_report_qty(rows)
+            totals[key] = None if total_qty is None else _qty_str(total_qty)
         elif key == "penjualan":
             totals[key] = _money_str(sum((row["penjualan"] for row in rows), Decimal("0.00")))
         elif key == "diskon":
@@ -888,6 +1058,7 @@ def _totals_payload(rows: Sequence[dict], columns: Sequence[dict], *, quantity_b
             else:
                 totals[key] = _money_str(sum((row[key] for row in rows), Decimal("0.00")))
     totals["bpp_complete"] = bpp_complete
+    totals["qty_complete"] = qty_complete
     totals["row_count"] = len(rows)
     return totals
 
@@ -897,16 +1068,25 @@ def _summary_rows(lines: Sequence[dict], analysis: str) -> List[dict]:
     order: List[Tuple] = []
     for line in lines:
         if analysis == "nama_kategori_barang":
-            key = (line.get("category") or "", line.get("unit") or "")
+            # PCS-normalized rows share one unit; unverified keep a distinct bucket.
+            if line.get("qty_verified"):
+                key = (line.get("category") or "", "Pcs")
+            else:
+                key = (line.get("category") or "", line.get("unit") or "?", "unverified", line.get("item_code") or "", id(line))
         else:
-            key = (line["item_code"], line["item_name"], line["unit"])
+            if line.get("qty_verified"):
+                key = (line["item_code"], line["item_name"], "Pcs")
+            else:
+                key = (line["item_code"], line["item_name"], line.get("unit") or "?", "unverified", id(line))
         if key not in buckets:
             buckets[key] = {
                 "item_code": line["item_code"],
                 "item_name": line["item_name"],
                 "unit": line["unit"],
                 "category": line.get("category"),
-                "quantity": Decimal("0"),
+                "quantity": Decimal("0") if line.get("qty_verified") else None,
+                "qty_verified": True,
+                "qty_note": "",
                 "penjualan": Decimal("0.00"),
                 "discount": Decimal("0.00"),
                 "bpp_values": [],
@@ -914,7 +1094,14 @@ def _summary_rows(lines: Sequence[dict], analysis: str) -> List[dict]:
             }
             order.append(key)
         bucket = buckets[key]
-        bucket["quantity"] += line["quantity"]
+        if line.get("qty_verified") and bucket["quantity"] is not None:
+            bucket["quantity"] += _dec(line.get("quantity"))
+        else:
+            bucket["quantity"] = None
+            bucket["qty_verified"] = False
+            bucket["qty_note"] = line.get("qty_note") or bucket["qty_note"] or "kuantitas belum terverifikasi ke PCS"
+            if not line.get("qty_verified"):
+                bucket["unit"] = line.get("unit") or bucket["unit"]
         bucket["penjualan"] = _money(bucket["penjualan"] + line["penjualan"])
         bucket["discount"] = _money(bucket["discount"] + line["discount"])
         bucket["bpp_values"].append(line.get("bpp"))
@@ -932,9 +1119,11 @@ def _summary_rows(lines: Sequence[dict], analysis: str) -> List[dict]:
             "kind": "line",
             "item_code": bucket["item_code"],
             "item_name": bucket["item_name"],
-            "unit": bucket["unit"],
+            "unit": bucket["unit"] if bucket["qty_verified"] else bucket["unit"],
             "category": bucket["category"],
             "quantity": bucket["quantity"],
+            "qty_verified": bucket["qty_verified"],
+            "qty_note": bucket["qty_note"],
             "penjualan": bucket["penjualan"],
             "discount": bucket["discount"],
             "bpp": bpp,
@@ -968,10 +1157,13 @@ def _detail_groups(lines: Sequence[dict], show_currency_group: bool) -> List[dic
         bpp_values = [line.get("bpp") for line in members]
         bpp = None if any(value is None for value in bpp_values) else _money(sum(bpp_values, Decimal("0.00")))
         penjualan = _money(sum((line["penjualan"] for line in members), Decimal("0.00")))
+        sub_qty = _sum_report_qty(members)
         rows.append({
             "kind": "subtotal",
             "label": name,
-            "quantity": sum((line["quantity"] for line in members), Decimal("0")),
+            "quantity": sub_qty,
+            "qty_verified": sub_qty is not None,
+            "unit": "Pcs" if sub_qty is not None else "",
             "penjualan": penjualan,
             "discount": _money(sum((line["discount"] for line in members), Decimal("0.00"))),
             "bpp": bpp,
@@ -1093,7 +1285,8 @@ def _methodology(branch: str, report_id: str) -> dict:
         "tax": "PPN tidak diaktifkan di pekerjaan ini; angka pajak yang sudah tersimpan tidak diubah",
         "bpp": "BPP = total HPP posted × kuantitas baris / kuantitas posting; sisa yang belum difaktur tidak dialokasikan",
         "bpp_missing": "BPP dan laba dikosongkan bila kuantitas posting atau satuan alokasi tidak dapat dibuktikan",
-        "category": "kategori master atau baris; kosong ditampilkan sebagai Tanpa Kategori; kuantitas dijumlahkan per satuan",
+        "category": "kategori master atau baris; kosong ditampilkan sebagai Tanpa Kategori; kuantitas dijumlahkan dalam PCS terverifikasi",
+        "quantity_pcs": "kuantitas laporan dinormalisasi ke PCS hanya dari snapshot baris (base_qty/conversion_factor + base_uom PCS); product_unit_settings/master terkini tidak dipakai untuk histori; tidak dijumlahkan bila belum terverifikasi",
         "branch_identity": "branch_id terstruktur didahulukan; teks hanya lewat peta eksplisit",
         "branch": branch,
         "orders_are_not_revenue": True,
@@ -1137,7 +1330,7 @@ async def run_report(
     if report_id == "penjualan-per-barang":
         full = _summary_rows(lines, analysis)
         display_rows = [_project_summary(row, columns) for row in full]
-        totals = _totals_payload(full, columns, quantity_by_unit=(analysis == "nama_kategori_barang"))
+        totals = _totals_payload(full, columns)
         grouped = False
     elif report_id == "rincian-penjualan-per-barang":
         grouped_rows = _detail_groups(lines, show_currency)
@@ -1157,6 +1350,7 @@ async def run_report(
             "total": _money_str(sum((row["grand_total"] for row in invoices), Decimal("0.00"))),
             "row_count": len(invoices),
             "bpp_complete": True,
+            "qty_complete": True,
         }
         full = invoices
         grouped = False
@@ -1174,11 +1368,22 @@ async def run_report(
         paged, page_meta = _page(display_rows, page, page_size)
         page_meta["filtered_count"] = data_count
 
-    gap = None
+    gap_parts = []
     if report_id != "daftar-faktur-penjualan" and lines and not totals.get("bpp_complete") and any(
         col["key"] in {"bpp", "laba"} for col in columns
     ):
-        gap = "Sebagian baris belum punya dasar alokasi HPP posted. BPP dan laba baris itu dikosongkan, bukan diisi dari harga beli."
+        gap_parts.append(
+            "Sebagian baris belum punya dasar alokasi HPP posted. BPP dan laba baris itu dikosongkan, bukan diisi dari harga beli."
+        )
+    if report_id != "daftar-faktur-penjualan" and lines and not totals.get("qty_complete") and any(
+        col["key"] == "kuantitas" for col in columns
+    ):
+        gap_parts.append(
+            "Sebagian kuantitas belum dapat dinormalisasi ke PCS dari snapshot baris faktur. "
+            "Pengaturan satuan produk terkini tidak dipakai untuk mengisi konversi historis. "
+            "Nilai itu dikosongkan dan tidak dijumlahkan ke total PCS."
+        )
+    gap = " ".join(gap_parts) if gap_parts else None
 
     return {
         "report_id": report_id,

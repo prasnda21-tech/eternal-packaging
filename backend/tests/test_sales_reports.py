@@ -22,7 +22,7 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 import server
 from permissions import ALL_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
 from server import app, current_user
-from services.sales_reports import allocate_header_discount, _selected_columns
+from services.sales_reports import allocate_header_discount, _report_qty_pcs, _selected_columns
 
 pytestmark = pytest.mark.anyio
 
@@ -44,7 +44,7 @@ def bind_motor():
 async def clean_db(bind_motor):
     names = (
         "sales_invoices", "orders", "master_items", "inventory_issue_accounting",
-        "users", "sales_report_memorized", "app_settings",
+        "product_unit_settings", "users", "sales_report_memorized", "app_settings",
     )
     for name in names:
         await server.db[name].delete_many({})
@@ -184,11 +184,28 @@ async def test_catalog_uses_verified_names_and_admin_branches():
     assert [row["id"] for row in body["branches"]] == ["jogja", "semarang", "semua"]
 
 
+def _line_pcs(name, qty, price, *, code="BRG", unit="Pcs", line_id="L1", category=None, factor=None, base_qty=None, base_uom="PCS"):
+    """Invoice line with optional PCS conversion snapshot for report qty tests."""
+    row = _line(name, qty, price, code=code, unit=unit, line_id=line_id, category=category)
+    if factor is not None:
+        row["conversion_factor"] = factor
+    if base_qty is not None:
+        row["base_qty"] = base_qty
+        row["base_uom"] = base_uom
+    elif factor is not None and str(unit).casefold() in {"pcs", "pc", "piece", "pieces"}:
+        row["base_qty"] = qty * factor
+        row["base_uom"] = base_uom
+    elif factor is not None:
+        row["base_qty"] = qty * factor
+        row["base_uom"] = base_uom
+    return row
+
+
 async def test_normal_discount_return_draft_cancelled_and_dates():
     await _invoice(
         number="SI.2026.03.00001",
         date="2026-03-02",
-        lines=[_line("Kursi Kantor", 1, 350000, code="KR", unit="Set", line_id="L-kursi")],
+        lines=[_line_pcs("Kursi Kantor", 1, 350000, code="KR", unit="Set", line_id="L-kursi", factor=1, base_qty=1)],
         outlet="Cabang Jogja",
         customer="CV Mitra",
     )
@@ -196,8 +213,8 @@ async def test_normal_discount_return_draft_cancelled_and_dates():
         number="SI.2026.03.00002",
         date="2026-03-10",
         lines=[
-            _line("Snack A", 2, 10000, code="SN", unit="Box", line_id="L-a"),
-            _line("Snack B", 1, 5000, code="SNB", unit="Box", line_id="L-b"),
+            _line_pcs("Snack A", 2, 10000, code="SN", unit="Box", line_id="L-a", factor=1, base_qty=2),
+            _line_pcs("Snack B", 1, 5000, code="SNB", unit="Box", line_id="L-b", factor=1, base_qty=1),
         ],
         discount=3000,
         ppn=2200,
@@ -256,12 +273,13 @@ async def test_normal_discount_return_draft_cancelled_and_dates():
     assert set(by_name) == {"Kursi Kantor", "Snack A", "Snack B", "Tepi Akhir"}
     assert by_name["Kursi Kantor"]["penjualan"] == "350000.00"
     assert by_name["Kursi Kantor"]["kuantitas"] == "1"
-    assert by_name["Kursi Kantor"]["satuan"] == "Set"
+    assert by_name["Kursi Kantor"]["satuan"] == "Pcs"
     # 20000 and 5000, discount 3000 → 2400 and 600. Net 17600 and 4400.
     assert by_name["Snack A"]["penjualan"] == "17600.00"
     assert by_name["Snack B"]["penjualan"] == "4400.00"
     assert body["totals"]["penjualan"] == "376000.00"
     assert body["totals"]["kuantitas"] == "5"
+    assert body["totals"].get("qty_complete") is True
     assert "Draft Item" not in by_name
     assert "Batal Item" not in by_name
     assert "Hanya Pesanan" not in by_name
@@ -355,7 +373,7 @@ async def test_detail_subtotal_bpp_and_missing_cost_is_blank():
     await _invoice(
         number="SI.2026.03.00001",
         date="2026-03-02",
-        lines=[_line("Kursi Kantor", 1, 350000, code="KR", unit="Set", line_id="L-kursi")],
+        lines=[_line_pcs("Kursi Kantor", 1, 350000, code="KR", unit="Set", line_id="L-kursi", factor=1, base_qty=1)],
         outlet="Cabang Jogja",
         po_id="po-kursi",
     )
@@ -537,7 +555,9 @@ async def test_partial_bpp_keeps_uninvoiced_cost_and_ignores_view_filters():
     assert full.json()["totals"]["laba"] == "200000.00"
     assert Decimal(full.json()["totals"]["bpp"]) != Decimal("100000.00")
     summary_lines = [row["values"] for row in summary.json()["rows"] if row["kind"] == "line"]
-    assert {row["kuantitas"] for row in summary_lines} == {"200", "300"}
+    # PCS-normalized rows for the same item merge (Pcs/PCS are one unit).
+    assert {row["kuantitas"] for row in summary_lines} == {"500"}
+    assert {row["satuan"] for row in summary_lines} == {"Pcs"}
     assert sum(Decimal(row["penjualan"]) for row in summary_lines) == Decimal("250000.00")
 
 
@@ -547,8 +567,8 @@ async def test_category_analysis_groups_verified_column():
         date="2026-03-05",
         lines=[
             _line("Keripik", 4, 2500, code="KR1", unit="Pcs", line_id="a", category="Snack"),
-            _line("Kue", 1, 10000, code="KR2", unit="Box", line_id="b", category="Snack"),
-            _line("Teh", 2, 3000, code="TH", unit="Cup", line_id="c", category="Minuman"),
+            _line_pcs("Kue", 1, 10000, code="KR2", unit="Box", line_id="b", category="Snack", factor=50, base_qty=50),
+            _line_pcs("Teh", 2, 3000, code="TH", unit="Cup", line_id="c", category="Minuman", factor=1, base_qty=2),
         ],
         po_id="po-kat",
     )
@@ -570,37 +590,38 @@ async def test_category_analysis_groups_verified_column():
     assert [col["label"] for col in body["columns"]] == [
         "Nama Kategori Barang Barang & Jasa",
         "Satuan",
-        "Kuantitas",
+        "Kuantitas (PCS)",
         "Penjualan",
     ]
     rows = {
         (row["values"]["nama_kategori"], row["values"]["satuan"]): row["values"]
         for row in body["rows"] if row["kind"] == "line"
     }
-    assert rows[("Snack", "Pcs")]["kuantitas"] == "4"
-    assert rows[("Snack", "Pcs")]["penjualan"] == "10000.00"
-    assert rows[("Snack", "Box")]["kuantitas"] == "1"
-    assert rows[("Snack", "Box")]["penjualan"] == "10000.00"
-    assert rows[("Minuman", "Cup")]["kuantitas"] == "2"
-    assert rows[("Minuman", "Cup")]["penjualan"] == "6000.00"
-    assert "5" not in {row["kuantitas"] for row in rows.values()}
+    assert rows[("Snack", "Pcs")]["kuantitas"] == "54"
+    assert rows[("Snack", "Pcs")]["penjualan"] == "20000.00"
+    assert rows[("Minuman", "Pcs")]["kuantitas"] == "2"
+    assert rows[("Minuman", "Pcs")]["penjualan"] == "6000.00"
     assert body["totals"]["penjualan"] == "26000.00"
-    assert body["totals"]["kuantitas"] is None
+    assert body["totals"]["kuantitas"] == "56"
+    assert body["totals"].get("qty_complete") is True
     assert exported.status_code == 200, exported.text
     book = load_workbook(BytesIO(exported.content))
     sheet = book.active
-    assert [sheet.cell(7, col).value for col in range(1, 5)] == ["Snack", "Pcs", "4", "10.000,00"]
-    assert [sheet.cell(8, col).value for col in range(1, 5)] == ["Snack", "Box", "1", "10.000,00"]
-    assert [sheet.cell(9, col).value for col in range(1, 5)] == ["Minuman", "Cup", "2", "6.000,00"]
-    assert sheet.cell(10, 1).value == "Total"
-    assert sheet.cell(10, 3).value in (None, "")
-    assert sheet.cell(10, 4).value == "26.000,00"
+    assert [sheet.cell(7, col).value for col in range(1, 5)] == ["Snack", "Pcs", "54", "20.000,00"]
+    assert [sheet.cell(8, col).value for col in range(1, 5)] == ["Minuman", "Pcs", "2", "6.000,00"]
+    assert sheet.cell(9, 1).value == "Total"
+    assert sheet.cell(9, 3).value == "56"
+    assert sheet.cell(9, 4).value == "26.000,00"
 
 
 async def test_export_follows_filter_and_permission():
     await _invoice(number="SI-J", date="2026-03-02", lines=[_line("Jogja", 1, 10, code="J", line_id="j")], outlet="Jogja")
     await _invoice(number="SI-S", date="2026-03-02", lines=[_line("Semarang", 1, 25, code="S", line_id="s")], outlet="Semarang", po_id="po-s")
-    viewer = _user(role="holding_team", permissions_override={"reports.sales.view": True})
+    # holding_team role defaults include export; revoke it to assert view-only denial.
+    viewer = _user(
+        role="holding_team",
+        permissions_override={"reports.sales.view": True, "reports.sales.export": False},
+    )
     async with await client_for(viewer) as client:
         denied = await client.post("/api/laporan/penjualan/ekspor", json={
             "report_id": "penjualan-per-barang",
@@ -868,7 +889,7 @@ async def test_missing_category_is_named_and_export_matches_screen_total():
     assert sheet.cell(8, 3).value == "2"
 
 
-def test_report_columns_preserve_user_order_without_changing_values():
+async def test_report_columns_preserve_user_order_without_changing_values():
     cols = _selected_columns("penjualan-per-barang", {
         "columns": ["penjualan", "nama_barang", "satuan"]
     })
@@ -878,3 +899,319 @@ def test_report_columns_preserve_user_order_without_changing_values():
         "columns": ["penjualan", "__unknown__", "penjualan", "satuan"]
     })
     assert [col["key"] for col in cols] == ["penjualan", "satuan"]
+
+
+async def test_report_qty_normalizes_dus_and_pcs_to_pcs_total():
+    """2 Dus×50 + 150 Pcs = 250 Pcs; different products keep own factors."""
+    await _invoice(
+        number="SI-PCS-1",
+        date="2026-03-12",
+        lines=[
+            _line_pcs("Produk A", 2, 1000, code="PA", unit="Dus", line_id="a", factor=50, base_qty=100),
+            _line("Produk Mix", 150, 10, code="PM", unit="Pcs", line_id="m"),
+        ],
+        po_id="po-pcs-1",
+    )
+    await _invoice(
+        number="SI-PCS-2",
+        date="2026-03-13",
+        lines=[
+            _line_pcs("Produk A", 1, 1000, code="PA", unit="Dus", line_id="a2", factor=50, base_qty=50),
+            _line_pcs("Produk B", 1, 2000, code="PB", unit="Dus", line_id="b", factor=100, base_qty=100),
+        ],
+        po_id="po-pcs-2",
+    )
+    # Ambiguous / invalid conversion snapshots must not invent PCS.
+    bad_zero = _line("Bad Zero", 3, 100, code="BZ", unit="Dus", line_id="bz")
+    bad_zero["conversion_factor"] = 0
+    bad_zero["base_uom"] = "PCS"
+    bad_neg = _line("Bad Neg", 2, 100, code="BN", unit="Dus", line_id="bn")
+    bad_neg["conversion_factor"] = -5
+    bad_neg["base_uom"] = "PCS"
+    bad_mismatch = _line("Bad Mismatch", 2, 100, code="BM", unit="Dus", line_id="bm")
+    bad_mismatch["conversion_factor"] = 50
+    bad_mismatch["base_qty"] = 80
+    bad_mismatch["base_uom"] = "PCS"
+    # base_qty already PCS — must not double-convert even if factor present.
+    already = _line("Already Base", 2, 100, code="AB", unit="Dus", line_id="ab")
+    already["base_qty"] = 100
+    already["base_uom"] = "PCS"
+    already["conversion_factor"] = 50
+    await _invoice(
+        number="SI-PCS-BAD",
+        date="2026-03-14",
+        lines=[bad_zero, bad_neg, bad_mismatch, already],
+        po_id="po-pcs-bad",
+    )
+
+    async with await client_for(_user()) as client:
+        summary = await _show(client, "penjualan-per-barang", layout={
+            "columns": ["nama_barang", "satuan", "kuantitas", "penjualan"],
+        })
+        detail = await _show(client, "rincian-penjualan-per-barang", layout={
+            "columns": ["nomor", "keterangan", "kuantitas", "satuan", "penjualan"],
+        })
+        exported = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-barang",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "layout": {"columns": ["nama_barang", "satuan", "kuantitas", "penjualan"]},
+            "include_all": True,
+        })
+        printed = await _show(
+            client, "penjualan-per-barang",
+            layout={"columns": ["nama_barang", "satuan", "kuantitas", "penjualan"]},
+            include_all=True,
+        )
+
+    assert summary.status_code == 200, summary.text
+    body = summary.json()
+    assert any(col["label"] == "Kuantitas (PCS)" for col in body["columns"])
+    by_name = {row["values"]["nama_barang"]: row["values"] for row in body["rows"] if row["kind"] == "line"}
+    assert by_name["Produk A"]["kuantitas"] == "150"  # 100 + 50
+    assert by_name["Produk A"]["satuan"] == "Pcs"
+    assert by_name["Produk Mix"]["kuantitas"] == "150"
+    assert by_name["Produk B"]["kuantitas"] == "100"
+    assert by_name["Already Base"]["kuantitas"] == "100"
+    assert by_name["Already Base"]["satuan"] == "Pcs"
+    assert by_name["Bad Zero"]["kuantitas"] is None
+    assert "belum PCS" in by_name["Bad Zero"]["satuan"]
+    assert by_name["Bad Neg"]["kuantitas"] is None
+    assert by_name["Bad Mismatch"]["kuantitas"] is None
+    # Grand total must not present a partial PCS sum as complete.
+    assert body["totals"]["kuantitas"] is None
+    assert body["totals"]["qty_complete"] is False
+    assert body["gap"] and "PCS" in body["gap"]
+    # Penjualan remains summed for all rows including unverified qty.
+    assert Decimal(body["totals"]["penjualan"]) > 0
+
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["totals"]["kuantitas"] is None
+    a_lines = []
+    capture = False
+    for row in detail_body["rows"]:
+        if row["kind"] == "group":
+            capture = row.get("label") == "Produk A"
+            continue
+        if row["kind"] == "line" and capture:
+            a_lines.append(row)
+        if row["kind"] == "subtotal":
+            capture = False
+    assert {row["values"]["kuantitas"] for row in a_lines} == {"100", "50"}
+    assert all(row["values"]["satuan"] == "Pcs" for row in a_lines)
+
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content))
+    sheet = book.active
+    assert sheet.cell(6, 3).value == "Kuantitas (PCS)"
+    # Total row leaves kuantitas blank when incomplete.
+    total_row = None
+    for row in sheet.iter_rows(min_row=7, max_row=40, values_only=True):
+        if row and row[0] == "Total":
+            total_row = row
+            break
+    assert total_row is not None
+    assert total_row[2] in (None, "")
+    assert printed.json()["totals"]["kuantitas"] is None
+    # Screen and print payload share PCS figures for verified goods.
+    print_map = {row["values"]["nama_barang"]: row["values"] for row in printed.json()["rows"] if row["kind"] == "line"}
+    assert print_map["Produk A"]["kuantitas"] == by_name["Produk A"]["kuantitas"]
+    assert print_map["Produk B"]["kuantitas"] == "100"
+
+
+async def test_report_qty_pcs_does_not_change_bpp_or_penjualan():
+    line = _line_pcs("Karton HPP", 2, 5000, code="KH", unit="Dus", line_id="L-kh", factor=50, base_qty=100)
+    await _invoice(number="SI-HPP-PCS", date="2026-03-16", lines=[line], po_id="po-kh")
+    await server.db.inventory_issue_accounting.insert_one({
+        "status": "posted",
+        "movement_id": "mov-kh",
+        "accounting_posting_basis": {
+            "order_id": "po-kh",
+            "line_id": "L-kh",
+            "base_qty": "100",
+            "base_uom": "PCS",
+            "total_cogs": "4000.00",
+        },
+    })
+    # Line weight for BPP uses conversion to posting base; report qty is also 100 PCS.
+    line_tx = _line("Karton HPP", 2, 5000, code="KH", unit="Dus", line_id="L-kh")
+    line_tx["conversion_factor"] = 50
+    line_tx["base_qty"] = 100
+    line_tx["base_uom"] = "PCS"
+    # Re-insert with snapshot on the stored invoice (already via _line_pcs).
+    async with await client_for(_user()) as client:
+        shown = await _show(client, "rincian-penjualan-per-barang", layout={
+            "columns": ["nomor", "kuantitas", "satuan", "penjualan", "bpp", "laba"],
+        })
+    assert shown.status_code == 200
+    row = next(r for r in shown.json()["rows"] if r["kind"] == "line")
+    assert row["values"]["kuantitas"] == "100"
+    assert row["values"]["satuan"] == "Pcs"
+    assert row["values"]["penjualan"] == "10000.00"
+    assert row["values"]["bpp"] == "4000.00"
+    assert row["values"]["laba"] == "6000.00"
+
+
+async def test_historical_pcs_snapshot_ignores_later_master_factor_change():
+    """CASE A/B: old 2 Dus×50 stays 100 PCS after master→60; new 2 Dus×60 = 120 PCS."""
+    mid = "mid-hist-dus"
+    await server.db.master_items.insert_one({
+        "id": mid,
+        "item_code": "HIST-DUS",
+        "item_name": "Produk Historis Dus",
+        "unit": "Dus",
+    })
+    # Current master conversion is 60 — must not rewrite older invoice snapshots.
+    await server.db.product_unit_settings.insert_one({
+        "id": "pus-hist",
+        "master_item_id": mid,
+        "transaction_uom": "Dus",
+        "base_uom": "PCS",
+        "conversion_factor": 60,
+    })
+    old_line = _line_pcs(
+        "Produk Historis Dus", 2, 1000,
+        code="HIST-DUS", unit="Dus", line_id="L-old",
+        factor=50, base_qty=100,
+    )
+    old_line["master_item_id"] = mid
+    old_line["item_id"] = mid
+    await _invoice(number="SI-HIST-OLD", date="2026-03-10", lines=[old_line], po_id="po-hist-old")
+
+    new_line = _line_pcs(
+        "Produk Historis Dus", 2, 1000,
+        code="HIST-DUS", unit="Dus", line_id="L-new",
+        factor=60, base_qty=120,
+    )
+    new_line["master_item_id"] = mid
+    new_line["item_id"] = mid
+    await _invoice(number="SI-HIST-NEW", date="2026-03-18", lines=[new_line], po_id="po-hist-new")
+
+    # Direct helper: even with a hostile master/unit_setting, snapshot wins.
+    hostile_setting = {"conversion_factor": 60, "base_uom": "PCS", "transaction_uom": "Dus"}
+    direct = _report_qty_pcs(old_line, master={"id": mid, "unit": "Dus"}, unit_setting=hostile_setting)
+    assert direct["qty_verified"] is True
+    assert direct["quantity"] == Decimal("100")
+    assert direct["qty_source"] == "base_qty"
+
+    async with await client_for(_user()) as client:
+        detail = await _show(client, "rincian-penjualan-per-barang", layout={
+            "columns": ["nomor", "kuantitas", "satuan", "penjualan"],
+        })
+        summary = await _show(client, "penjualan-per-barang", layout={
+            "columns": ["nama_barang", "kuantitas", "satuan", "penjualan"],
+        })
+        exported = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "rincian-penjualan-per-barang",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "layout": {"columns": ["nomor", "kuantitas", "satuan", "penjualan"]},
+            "include_all": True,
+        })
+
+    assert detail.status_code == 200, detail.text
+    by_no = {
+        row["values"]["nomor"]: row["values"]
+        for row in detail.json()["rows"] if row["kind"] == "line"
+    }
+    assert by_no["SI-HIST-OLD"]["kuantitas"] == "100"
+    assert by_no["SI-HIST-OLD"]["satuan"] == "Pcs"
+    assert by_no["SI-HIST-NEW"]["kuantitas"] == "120"
+    assert by_no["SI-HIST-NEW"]["satuan"] == "Pcs"
+    assert detail.json()["totals"]["kuantitas"] == "220"
+    assert detail.json()["totals"]["qty_complete"] is True
+    # Penjualan unchanged by PCS normalization (2×1000 each).
+    assert by_no["SI-HIST-OLD"]["penjualan"] == "2000.00"
+    assert by_no["SI-HIST-NEW"]["penjualan"] == "2000.00"
+
+    assert summary.status_code == 200
+    srow = next(
+        r["values"] for r in summary.json()["rows"]
+        if r["kind"] == "line" and r["values"]["nama_barang"] == "Produk Historis Dus"
+    )
+    assert srow["kuantitas"] == "220"  # 100 + 120, not 120+120 from master 60
+    assert srow["satuan"] == "Pcs"
+    assert summary.json()["totals"]["kuantitas"] == "220"
+
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content))
+    sheet = book.active
+    excel_qty = {}
+    for row in sheet.iter_rows(min_row=7, max_row=30, values_only=True):
+        if row and row[0] in {"SI-HIST-OLD", "SI-HIST-NEW"}:
+            excel_qty[row[0]] = row[1]
+    assert excel_qty["SI-HIST-OLD"] == "100"
+    assert excel_qty["SI-HIST-NEW"] == "120"
+
+
+async def test_incomplete_snapshot_does_not_use_current_master_for_pcs():
+    """CASE C: missing historical conversion → unverified; master 60 must not fill gaps."""
+    mid = "mid-incomplete"
+    await server.db.master_items.insert_one({
+        "id": mid,
+        "item_code": "INC-DUS",
+        "item_name": "Produk Incomplete",
+        "unit": "Dus",
+    })
+    await server.db.product_unit_settings.insert_one({
+        "id": "pus-inc",
+        "master_item_id": mid,
+        "transaction_uom": "Dus",
+        "base_uom": "PCS",
+        "conversion_factor": 60,
+    })
+    # No base_qty / conversion_factor / base_uom on the invoice line.
+    bare = _line("Produk Incomplete", 2, 1500, code="INC-DUS", unit="Dus", line_id="L-bare")
+    bare["master_item_id"] = mid
+    bare["item_id"] = mid
+    await _invoice(number="SI-INC-BARE", date="2026-03-11", lines=[bare], po_id="po-inc-bare")
+
+    # Factor present but no line base_uom PCS — still insufficient historical proof.
+    factor_only = _line("Produk Incomplete", 2, 1500, code="INC-DUS", unit="Dus", line_id="L-fo")
+    factor_only["master_item_id"] = mid
+    factor_only["conversion_factor"] = 50
+    await _invoice(number="SI-INC-FO", date="2026-03-12", lines=[factor_only], po_id="po-inc-fo")
+
+    direct_bare = _report_qty_pcs(
+        bare,
+        master={"id": mid},
+        unit_setting={"conversion_factor": 60, "base_uom": "PCS"},
+    )
+    assert direct_bare["qty_verified"] is False
+    assert direct_bare["quantity"] is None
+    assert "tidak dipakai" in direct_bare["qty_note"].casefold() or "tidak tersedia" in direct_bare["qty_note"].casefold()
+
+    direct_fo = _report_qty_pcs(
+        factor_only,
+        master={"id": mid},
+        unit_setting={"conversion_factor": 60, "base_uom": "PCS"},
+    )
+    assert direct_fo["qty_verified"] is False
+    assert direct_fo["quantity"] is None
+
+    async with await client_for(_user()) as client:
+        summary = await _show(client, "penjualan-per-barang", layout={
+            "columns": ["nama_barang", "kuantitas", "satuan", "penjualan"],
+        })
+        detail = await _show(client, "rincian-penjualan-per-barang", layout={
+            "columns": ["nomor", "kuantitas", "satuan", "penjualan"],
+        })
+
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["totals"]["kuantitas"] is None
+    assert body["totals"]["qty_complete"] is False
+    # Penjualan still complete; do not treat partial PCS as a full total.
+    assert Decimal(body["totals"]["penjualan"]) == Decimal("6000.00")
+    lines = [r["values"] for r in body["rows"] if r["kind"] == "line"]
+    assert all(row["kuantitas"] is None for row in lines)
+    assert all("belum PCS" in (row["satuan"] or "") for row in lines)
+
+    assert detail.status_code == 200
+    dbody = detail.json()
+    assert dbody["totals"]["kuantitas"] is None
+    assert dbody["totals"]["qty_complete"] is False
+    assert Decimal(dbody["totals"]["penjualan"]) == Decimal("6000.00")

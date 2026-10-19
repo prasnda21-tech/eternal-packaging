@@ -57,7 +57,7 @@ export default function ReportColumnSettings({ reportId, columns = [], rows = []
     setLayout(normalizeReportColumns(columns, read(key)));
     setPresets(Array.isArray(read(presetKey)) ? read(presetKey) : []);
     setQuery(""); setFilters({}); setNotice("");
-  }, [key, columns]);
+  }, [key, presetKey, columns]);
   useEffect(() => { write(key, layout); onViewChange?.(layout); }, [key, layout, onViewChange]);
   useEffect(() => {
     function move(e) {
