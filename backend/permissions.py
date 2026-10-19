@@ -153,6 +153,8 @@ PERMISSION_CATALOG = [
     ("Laporan", "reports.gaji_operator.view", "Lihat Gaji Operator"),
     ("Laporan", "reports.gaji_operator.repair_work_date", "Koreksi tanggal kerja output Gaji Operator"),
     ("Laporan", "reports.gaji_operator.repair_rate", "Koreksi snapshot tarif output Gaji Operator"),
+    ("Laporan", "reports.sales.view", "Lihat Laporan Penjualan"),
+    ("Laporan", "reports.sales.export", "Ekspor Laporan Penjualan"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
@@ -493,6 +495,7 @@ NAV_MENU_ITEMS = (
     ("nav.reports.shipment_status", "Status Pengiriman", "nav.reports"),
     ("nav.reports.gaji_operator", "Gaji Operator", "nav.reports"),
     ("nav.reports.order_prediction", "Prediksi Order", "nav.reports"),
+    ("nav.reports.sales", "Laporan Penjualan", "nav.reports"),
     ("nav.employee_administration", "Administrasi Karyawan", None),
     ("nav.employee_administration.mine", "Pengajuan Saya", "nav.employee_administration"),
     ("nav.employee_administration.create", "Buat Pengajuan", "nav.employee_administration"),
@@ -557,6 +560,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "reports.order_prediction.view" in existing:
         nav.add("nav.reports")
         nav.add("nav.reports.order_prediction")
+    if "reports.sales.view" in existing:
+        nav.add("nav.reports")
+        nav.add("nav.reports.sales")
     if "delivery.schedule.view" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_schedule")
@@ -888,6 +894,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "product_request.feedback",
         "product_request.update_status",
         "crm.daily_report.view_all",
+        "reports.sales.view", "reports.sales.export",
         "dashboard.owner.view",
         # Recovered Purchasing + Inventory + HPP package (production-only role).
         # Local admin still uses ALL_PERMISSIONS; production non-holding roles

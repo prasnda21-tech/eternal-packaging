@@ -3,6 +3,47 @@
 export const CRM_DAILY_REPORT_LIST_PATH = "/penjualan/laporan-harian-crm";
 export const CRM_DAILY_REPORT_NEW_PATH = "/penjualan/laporan-harian-crm/baru";
 
+/** Excel-aligned Status Order literals (DB/API). */
+export const STATUS_ORDER_OPTIONS = [
+  "ORDER",
+  "TIDAK ORDER",
+  "PENGAJUAN PO",
+  "PENGAJUAN DITOLAK",
+  "FOLLOW UP",
+];
+
+/** Exact Excel texts for Keterangan Tidak Order. */
+export const NO_ORDER_REASON_PRESETS = [
+  "Harga terlalu mahal",
+  "Slow Respon Customer",
+  "Deadline tidak cocok",
+  "Customer hanya tanya tanya",
+  "Desain belum selesai",
+  "Produk tidak ada di perusahaan",
+];
+
+export const NO_ORDER_REASON_LAINNYA = "Lainnya";
+
+/** Jenis Komplain when Komplain = Ya. */
+export const COMPLAINT_CATEGORY_OPTIONS = [
+  "CUP CACAT",
+  "SABLON CACAT",
+  "SALAH DESIGN",
+  "SALAH CUP",
+  "KESALAHAN DEALING HARGA",
+  "Lainnya",
+];
+
+export const SALES_SOURCE_EXISTING = "existing";
+export const SALES_SOURCE_MANUAL = "manual";
+export const SALES_SOURCE_LEGACY = "legacy";
+export const SALES_MANUAL_CHOICE = "__manual__";
+export const MANUAL_SALES_MAX_LEN = 80;
+
+export function canUseManualSales(form) {
+  return form?.status_order === "TIDAK ORDER" && !String(form?.order_id || "").trim();
+}
+
 export function canCreateCrmDailyReport(hasPerm) {
   return Boolean(hasPerm?.("crm.daily_report.create"));
 }
@@ -47,6 +88,9 @@ export function truncateText(value, max = 48) {
 export function complaintLabel(row) {
   if (!row) return "—";
   if (!row.has_complaint) return "Tidak";
+  // List stays compact: prefer category, fall back to description.
+  const cat = String(row.complaint_category || "").trim();
+  if (cat) return truncateText(cat, 40);
   return truncateText(row.complaint_description || "Ya", 40);
 }
 
@@ -54,6 +98,26 @@ export function issueLabel(row) {
   if (!row) return "—";
   if (!row.has_issue) return "Tidak";
   return truncateText(row.issue_description || "Ya", 40);
+}
+
+export function statusOrderBadgeClass(status) {
+  if (status === "ORDER") return "is-order";
+  if (status === "TIDAK ORDER") return "is-no-order";
+  if (status === "PENGAJUAN DITOLAK") return "is-rejected";
+  if (status === "PENGAJUAN PO") return "is-pengajuan";
+  if (status === "FOLLOW UP") return "is-follow-up";
+  return "";
+}
+
+/**
+ * Map stored no_order_reason → UI select value.
+ * Presets stay as-is; free-text / legacy → Lainnya.
+ */
+export function noOrderReasonChoice(reason) {
+  const text = String(reason || "").trim();
+  if (!text) return "";
+  if (NO_ORDER_REASON_PRESETS.includes(text)) return text;
+  return NO_ORDER_REASON_LAINNYA;
 }
 
 export function emptyCrmDailyReportForm(todayWib = "") {
@@ -67,13 +131,64 @@ export function emptyCrmDailyReportForm(todayWib = "") {
     po_number: "",
     sales_label: "",
     sales_user_id: "",
+    sales_source: "",
+    sales_choice: "",
+    sales_locked_from_po: false,
+    sales_note: "",
     status_order: "ORDER",
     no_order_reason: "",
+    no_order_reason_choice: "",
     has_complaint: false,
+    complaint_category: "",
     complaint_description: "",
+    legacy_complaint: false,
     has_issue: false,
     issue_description: "",
     notes: "",
+  };
+}
+
+export function formFromCrmDailyReport(report) {
+  const reason = report?.no_order_reason || "";
+  const salesUserId = report?.sales_user_id || "";
+  const salesLabel = report?.sales_label || "";
+  let salesSource = report?.sales_source || "";
+  if (!salesSource) {
+    salesSource = salesUserId
+      ? SALES_SOURCE_EXISTING
+      : (salesLabel ? SALES_SOURCE_LEGACY : "");
+  }
+  let salesChoice = "";
+  if (salesSource === SALES_SOURCE_MANUAL) salesChoice = SALES_MANUAL_CHOICE;
+  else if (salesUserId) salesChoice = salesUserId;
+  // Legacy free-text keeps empty choice so UI shows the legacy hint without
+  // pretending the value is a verified dropdown selection or new manual entry.
+
+  return {
+    report_date: report?.report_date || "",
+    status_customer: report?.status_customer || "New",
+    customer_id: report?.customer_id || "",
+    outlet_name: report?.outlet_name || "",
+    whatsapp: report?.whatsapp || "",
+    order_id: report?.order_id || "",
+    po_number: report?.po_number || "",
+    sales_label: salesLabel,
+    sales_user_id: salesUserId,
+    sales_source: salesSource,
+    sales_choice: salesChoice,
+    sales_locked_from_po: false,
+    sales_note: report?.sales_note || "",
+    status_order: report?.status_order || "ORDER",
+    no_order_reason: reason,
+    no_order_reason_choice: noOrderReasonChoice(reason),
+    has_complaint: Boolean(report?.has_complaint),
+    complaint_category: report?.complaint_category || "",
+    complaint_description: report?.complaint_description || "",
+    // Legacy rows may lack category — still openable/editable without forcing one.
+    legacy_complaint: Boolean(report?.has_complaint) && !String(report?.complaint_category || "").trim(),
+    has_issue: Boolean(report?.has_issue),
+    issue_description: report?.issue_description || "",
+    notes: report?.notes || "",
   };
 }
 
@@ -81,8 +196,7 @@ export function validateCrmDailyReportForm(form) {
   const errors = {};
   if (!String(form.report_date || "").trim()) errors.report_date = "Tanggal wajib";
   if (!["New", "Repeat"].includes(form.status_customer)) errors.status_customer = "Status Customer wajib";
-  if (!String(form.sales_label || "").trim()) errors.sales_label = "Sales wajib";
-  if (!["ORDER", "TIDAK ORDER"].includes(form.status_order)) errors.status_order = "Status Order wajib";
+  if (!STATUS_ORDER_OPTIONS.includes(form.status_order)) errors.status_order = "Status Order wajib";
 
   if (form.status_customer === "New") {
     if (!String(form.whatsapp || "").trim()) errors.whatsapp = "Nomor WhatsApp wajib untuk New";
@@ -90,11 +204,51 @@ export function validateCrmDailyReportForm(form) {
     errors.customer_id = "Pilih customer dari master untuk Repeat";
   }
 
-  if (form.status_order === "TIDAK ORDER" && !String(form.no_order_reason || "").trim()) {
-    errors.no_order_reason = "Keterangan Tidak Order wajib";
+  const salesSource = String(form.sales_source || "").trim();
+  const salesUserId = String(form.sales_user_id || "").trim();
+  const salesLabel = String(form.sales_label || "").trim();
+  const hasPo = Boolean(String(form.order_id || "").trim());
+  if (salesSource === SALES_SOURCE_MANUAL || form.sales_choice === SALES_MANUAL_CHOICE) {
+    if (!canUseManualSales(form)) {
+      errors.sales_label = "Input Manual hanya untuk TIDAK ORDER tanpa PO";
+    } else if (!salesLabel) {
+      errors.sales_label = "Nama Sales Manual wajib diisi";
+    } else if (salesLabel.length > MANUAL_SALES_MAX_LEN) {
+      errors.sales_label = `Nama Sales Manual maksimal ${MANUAL_SALES_MAX_LEN} karakter`;
+    } else if (salesUserId) {
+      errors.sales_label = "Sales manual tidak boleh memakai ID terverifikasi";
+    }
+  } else if (salesSource === SALES_SOURCE_LEGACY && salesLabel && !salesUserId) {
+    // Keep legacy snapshot editable without forcing remapping on open.
+  } else if (!salesUserId) {
+    errors.sales_label = hasPo && form.sales_note
+      ? "Pilih Sales dari daftar (PO tanpa Sales terverifikasi)"
+      : "Sales / Siapa yang Menjual wajib dipilih";
   }
-  if (form.has_complaint && !String(form.complaint_description || "").trim()) {
-    errors.complaint_description = "Deskripsi Komplain wajib";
+
+  if (form.status_order === "TIDAK ORDER") {
+    const choice = String(form.no_order_reason_choice || "").trim();
+    const reason = String(form.no_order_reason || "").trim();
+    if (!choice) {
+      errors.no_order_reason = "Keterangan Tidak Order wajib";
+    } else if (choice === NO_ORDER_REASON_LAINNYA && !reason) {
+      errors.no_order_reason = "Isi keterangan untuk Lainnya";
+    } else if (choice !== NO_ORDER_REASON_LAINNYA && !NO_ORDER_REASON_PRESETS.includes(choice)) {
+      errors.no_order_reason = "Keterangan Tidak Order tidak valid";
+    }
+  }
+  if (form.has_complaint) {
+    const category = String(form.complaint_category || "").trim();
+    if (!category) {
+      if (!form.legacy_complaint) {
+        errors.complaint_category = "Jenis Komplain wajib";
+      }
+    } else if (!COMPLAINT_CATEGORY_OPTIONS.includes(category)) {
+      errors.complaint_category = "Jenis Komplain tidak valid";
+    }
+    if (!String(form.complaint_description || "").trim()) {
+      errors.complaint_description = "Deskripsi Komplain wajib";
+    }
   }
   if (form.has_issue && !String(form.issue_description || "").trim()) {
     errors.issue_description = "Deskripsi Kendala wajib";
@@ -103,6 +257,17 @@ export function validateCrmDailyReportForm(form) {
 }
 
 export function toCrmDailyReportPayload(form, clientSubmitId) {
+  let noOrderReason = "";
+  if (form.status_order === "TIDAK ORDER") {
+    const choice = String(form.no_order_reason_choice || "").trim();
+    if (choice === NO_ORDER_REASON_LAINNYA) {
+      noOrderReason = String(form.no_order_reason || "").trim();
+    } else {
+      noOrderReason = choice;
+    }
+  }
+  const isManual = form.sales_source === SALES_SOURCE_MANUAL
+    || form.sales_choice === SALES_MANUAL_CHOICE;
   const payload = {
     report_date: String(form.report_date || "").trim(),
     status_customer: form.status_customer,
@@ -112,10 +277,16 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
     order_id: String(form.order_id || "").trim() || null,
     po_number: String(form.po_number || "").trim(),
     sales_label: String(form.sales_label || "").trim(),
-    sales_user_id: String(form.sales_user_id || "").trim() || null,
+    sales_user_id: isManual ? null : (String(form.sales_user_id || "").trim() || null),
+    sales_source: isManual
+      ? SALES_SOURCE_MANUAL
+      : (form.sales_source === SALES_SOURCE_LEGACY && !form.sales_user_id
+        ? SALES_SOURCE_LEGACY
+        : SALES_SOURCE_EXISTING),
     status_order: form.status_order,
-    no_order_reason: form.status_order === "TIDAK ORDER" ? String(form.no_order_reason || "").trim() : "",
+    no_order_reason: noOrderReason,
     has_complaint: Boolean(form.has_complaint),
+    complaint_category: form.has_complaint ? String(form.complaint_category || "").trim() : "",
     complaint_description: form.has_complaint ? String(form.complaint_description || "").trim() : "",
     has_issue: Boolean(form.has_issue),
     issue_description: form.has_issue ? String(form.issue_description || "").trim() : "",

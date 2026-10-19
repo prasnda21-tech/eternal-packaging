@@ -3,10 +3,21 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
+  COMPLAINT_CATEGORY_OPTIONS,
   CRM_DAILY_REPORT_LIST_PATH,
+  NO_ORDER_REASON_LAINNYA,
+  NO_ORDER_REASON_PRESETS,
+  SALES_MANUAL_CHOICE,
+  SALES_SOURCE_EXISTING,
+  SALES_SOURCE_LEGACY,
+  SALES_SOURCE_MANUAL,
+  STATUS_ORDER_OPTIONS,
   canCreateCrmDailyReport,
   canEditOwnCrmDailyReport,
+  canUseManualSales,
   emptyCrmDailyReportForm,
+  formFromCrmDailyReport,
+  statusOrderBadgeClass,
   toCrmDailyReportPayload,
   validateCrmDailyReportForm,
 } from "../lib/crmDailyReport";
@@ -36,6 +47,8 @@ export default function CrmDailyReportForm() {
   const { hasPerm, user } = useAuth();
   const navigate = useNavigate();
   const listId = useId();
+  const poListId = useId();
+  const salesListId = useId();
 
   const [meta, setMeta] = useState(null);
   const [form, setForm] = useState(() => emptyCrmDailyReportForm());
@@ -46,9 +59,16 @@ export default function CrmDailyReportForm() {
   const [customerQ, setCustomerQ] = useState("");
   const [customerHits, setCustomerHits] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [poQ, setPoQ] = useState("");
+  const [poHits, setPoHits] = useState([]);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [salesOptions, setSalesOptions] = useState([]);
+  const [salesQ, setSalesQ] = useState("");
+  const [salesOpen, setSalesOpen] = useState(false);
   const [waWarning, setWaWarning] = useState("");
   const submitLock = useRef(false);
   const clientSubmitId = useRef(`cdr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const manualSalesRef = useRef(null);
 
   const patch = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -78,27 +98,20 @@ export default function CrmDailyReportForm() {
       .then((r) => {
         if (cancelled) return;
         const report = r.report || {};
-        setForm({
-          report_date: report.report_date || "",
-          status_customer: report.status_customer || "New",
-          customer_id: report.customer_id || "",
-          outlet_name: report.outlet_name || "",
-          whatsapp: report.whatsapp || "",
-          order_id: report.order_id || "",
-          po_number: report.po_number || "",
-          sales_label: report.sales_label || "",
-          sales_user_id: report.sales_user_id || "",
-          status_order: report.status_order || "ORDER",
-          no_order_reason: report.no_order_reason || "",
-          has_complaint: Boolean(report.has_complaint),
-          complaint_description: report.complaint_description || "",
-          has_issue: Boolean(report.has_issue),
-          issue_description: report.issue_description || "",
-          notes: report.notes || "",
-        });
+        const next = formFromCrmDailyReport(report);
+        setForm(next);
         if (report.customer_id) {
           setSelectedCustomer({ id: report.customer_id, name: report.outlet_name, phone: report.whatsapp });
         }
+        if (report.order_id || report.po_number) {
+          setSelectedOrder({
+            id: report.order_id,
+            po_number: report.po_number,
+            customer: report.outlet_name,
+          });
+          setPoQ(report.po_number || "");
+        }
+        setSalesQ(report.sales_label || "");
         const editable = Boolean(report.can_edit) && canEditOwnCrmDailyReport(hasPerm);
         setMode(forceEdit && editable ? "edit" : "view");
       })
@@ -116,7 +129,145 @@ export default function CrmDailyReportForm() {
     return () => window.clearTimeout(handle);
   }, [customerQ, form.status_customer, mode]);
 
+  useEffect(() => {
+    if (mode !== "edit") return undefined;
+    const handle = window.setTimeout(() => {
+      const params = { q: poQ };
+      if (form.status_customer === "Repeat" && form.customer_id) {
+        params.customer_id = form.customer_id;
+      }
+      api.crmDailyReportOrders(params)
+        .then((r) => setPoHits(r.orders || []))
+        .catch(() => setPoHits([]));
+    }, 150);
+    return () => window.clearTimeout(handle);
+  }, [poQ, form.customer_id, form.status_customer, mode]);
+
+  useEffect(() => {
+    if (mode !== "edit") return undefined;
+    const handle = window.setTimeout(() => {
+      api.crmDailyReportSales({ q: salesQ })
+        .then((r) => setSalesOptions(r.sales || []))
+        .catch(() => setSalesOptions([]));
+    }, 150);
+    return () => window.clearTimeout(handle);
+  }, [salesQ, mode]);
+
   const reporterName = meta?.reporter?.name || user?.name || "—";
+
+  const applyOrderSelection = (order) => {
+    if (!order) {
+      setSelectedOrder(null);
+      setForm((prev) => ({
+        ...prev,
+        order_id: "",
+        po_number: "",
+        sales_locked_from_po: false,
+        sales_note: "",
+      }));
+      setPoQ("");
+      return;
+    }
+    setSelectedOrder(order);
+    setPoQ(order.po_number || "");
+    const verified = Boolean(order.sales_verified && (order.sales_user_id || order.sales_label_resolved));
+    setForm((prev) => {
+      const next = {
+        ...prev,
+        order_id: order.id || "",
+        po_number: order.po_number || "",
+      };
+      if (verified) {
+        next.sales_user_id = order.sales_user_id || "";
+        next.sales_label = order.sales_label_resolved || order.sales || "";
+        next.sales_source = SALES_SOURCE_EXISTING;
+        next.sales_choice = order.sales_user_id || "";
+        next.sales_locked_from_po = true;
+        next.sales_note = "Sales mengikuti PO yang dipilih";
+        setSalesQ(next.sales_label);
+      } else {
+        next.sales_locked_from_po = false;
+        next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
+        if (prev.sales_source === SALES_SOURCE_MANUAL || prev.sales_choice === SALES_MANUAL_CHOICE) {
+          next.sales_source = "";
+          next.sales_choice = "";
+          next.sales_user_id = "";
+          next.sales_label = "";
+          setSalesQ("");
+        }
+      }
+      return next;
+    });
+    setErrors((prev) => {
+      const n = { ...prev };
+      delete n.sales_label;
+      return n;
+    });
+  };
+
+  const applySalesSelection = (row) => {
+    if (!row) return;
+    if (row === SALES_MANUAL_CHOICE || row.user_id === SALES_MANUAL_CHOICE) {
+      setForm((prev) => ({
+        ...prev,
+        sales_choice: SALES_MANUAL_CHOICE,
+        sales_source: SALES_SOURCE_MANUAL,
+        sales_user_id: "",
+        sales_label: "",
+        sales_locked_from_po: false,
+        sales_note: "",
+      }));
+      setSalesQ("");
+      setSalesOpen(false);
+      setErrors((prev) => {
+        if (!prev.sales_label) return prev;
+        const n = { ...prev };
+        delete n.sales_label;
+        return n;
+      });
+      window.setTimeout(() => {
+        manualSalesRef.current?.focus?.();
+      }, 0);
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      sales_choice: row.user_id,
+      sales_user_id: row.user_id,
+      sales_label: row.label,
+      sales_source: SALES_SOURCE_EXISTING,
+      sales_locked_from_po: false,
+      sales_note: "",
+    }));
+    setSalesQ(row.label || "");
+    setSalesOpen(false);
+    setErrors((prev) => {
+      if (!prev.sales_label) return prev;
+      const n = { ...prev };
+      delete n.sales_label;
+      return n;
+    });
+  };
+
+  const returnToSalesList = () => {
+    setForm((prev) => ({
+      ...prev,
+      sales_choice: "",
+      sales_source: "",
+      sales_user_id: "",
+      sales_label: "",
+      sales_locked_from_po: false,
+      sales_note: "",
+    }));
+    setSalesQ("");
+    setSalesOpen(true);
+    setErrors((prev) => {
+      if (!prev.sales_label) return prev;
+      const n = { ...prev };
+      delete n.sales_label;
+      return n;
+    });
+  };
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -160,9 +311,15 @@ export default function CrmDailyReportForm() {
 
   const editing = mode === "edit";
   const showNoOrder = form.status_order === "TIDAK ORDER";
+  const showNoOrderLainnya = showNoOrder && form.no_order_reason_choice === NO_ORDER_REASON_LAINNYA;
   const showComplaint = form.has_complaint;
   const showIssue = form.has_issue;
   const isNewCustomer = form.status_customer === "New";
+  const allowManualSales = canUseManualSales(form);
+  const showManualSalesInput = allowManualSales && (
+    form.sales_choice === SALES_MANUAL_CHOICE || form.sales_source === SALES_SOURCE_MANUAL
+  );
+  const salesLocked = Boolean(form.sales_locked_from_po);
 
   if (!editing && !isNew) {
     return (
@@ -187,9 +344,15 @@ export default function CrmDailyReportForm() {
           <div><dt>Customer/Outlet</dt><dd>{form.outlet_name || "—"}</dd></div>
           <div><dt>No WA</dt><dd>{form.whatsapp || "—"}</dd></div>
           <div><dt>No PO</dt><dd>{form.po_number || "—"}</dd></div>
-          <div><dt>Sales</dt><dd>{form.sales_label || "—"}</dd></div>
+          <div><dt>Sales / Siapa yang Menjual</dt><dd>
+            {form.sales_label || "—"}
+            {form.sales_source === SALES_SOURCE_LEGACY ? " (teks lama, belum terverifikasi)" : ""}
+            {form.sales_source === SALES_SOURCE_MANUAL ? " (input manual)" : ""}
+          </dd></div>
           <div className="full"><dt>Keterangan Tidak Order</dt><dd>{form.no_order_reason || "—"}</dd></div>
-          <div className="full"><dt>Komplain</dt><dd>{form.has_complaint ? form.complaint_description : "Tidak"}</dd></div>
+          <div><dt>Komplain</dt><dd>{form.has_complaint ? "Ya" : "Tidak"}</dd></div>
+          <div><dt>Jenis Komplain</dt><dd>{form.has_complaint ? (form.complaint_category || "—") : "—"}</dd></div>
+          <div className="full"><dt>Deskripsi Komplain</dt><dd>{form.has_complaint ? (form.complaint_description || "—") : "—"}</dd></div>
           <div className="full"><dt>Kendala</dt><dd>{form.has_issue ? form.issue_description : "Tidak"}</dd></div>
           <div className="full"><dt>Catatan</dt><dd>{form.notes || "—"}</dd></div>
         </dl>
@@ -243,13 +406,44 @@ export default function CrmDailyReportForm() {
             </div>
           </Field>
           <Field label="Status Order" required error={errors.status_order}>
-            <div className="cdr-toggle" role="group" aria-label="Status Order">
-              <button type="button" className={form.status_order === "ORDER" ? "is-on" : ""} data-testid="cdr-order-yes" onClick={() => {
-                patch("status_order", "ORDER");
-                patch("no_order_reason", "");
-              }}>ORDER</button>
-              <button type="button" className={`is-danger ${form.status_order === "TIDAK ORDER" ? "is-on" : ""}`} data-testid="cdr-order-no" onClick={() => patch("status_order", "TIDAK ORDER")}>TIDAK ORDER</button>
-            </div>
+            <select
+              value={form.status_order}
+              onChange={(e) => {
+                const next = e.target.value;
+                setForm((prev) => {
+                  const clearedManual = next !== "TIDAK ORDER" && (
+                    prev.sales_source === SALES_SOURCE_MANUAL || prev.sales_choice === SALES_MANUAL_CHOICE
+                  );
+                  return {
+                    ...prev,
+                    status_order: next,
+                    no_order_reason: next === "TIDAK ORDER" ? prev.no_order_reason : "",
+                    no_order_reason_choice: next === "TIDAK ORDER" ? prev.no_order_reason_choice : "",
+                    ...(clearedManual && !prev.order_id ? {
+                      sales_choice: "",
+                      sales_source: "",
+                      sales_user_id: "",
+                      sales_label: "",
+                      sales_note: "Pilih Sales dari daftar Eternal",
+                    } : {}),
+                  };
+                });
+                setErrors((prev) => {
+                  if (!prev.status_order && !prev.no_order_reason && !prev.sales_label) return prev;
+                  const n = { ...prev };
+                  delete n.status_order;
+                  delete n.no_order_reason;
+                  delete n.sales_label;
+                  return n;
+                });
+              }}
+              data-testid="cdr-status-order"
+              aria-label="Status Order"
+            >
+              {STATUS_ORDER_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
           </Field>
 
           {isNewCustomer ? (
@@ -309,26 +503,175 @@ export default function CrmDailyReportForm() {
             </Field>
           )}
 
-          <Field label="No PO (opsional)">
+          <Field label="Nomor PO (opsional)" wide>
             <input
-              value={form.po_number}
-              onChange={(e) => patch("po_number", e.target.value)}
-              placeholder="PO/…"
-              data-testid="cdr-po-number"
+              value={poQ}
+              onChange={(e) => {
+                setPoQ(e.target.value);
+                if (selectedOrder) {
+                  applyOrderSelection(null);
+                }
+              }}
+              placeholder="Cari nomor PO atau nama customer…"
+              data-testid="cdr-po-search"
+              aria-controls={poListId}
+              autoComplete="off"
             />
+            {selectedOrder && (
+              <p className="cdr-hint" data-testid="cdr-po-selected">
+                Terpilih: {selectedOrder.po_number || "—"} · {selectedOrder.customer || "—"}
+                {" "}
+                <button type="button" className="ghost" data-testid="cdr-po-clear" onClick={() => applyOrderSelection(null)}>
+                  Hapus PO
+                </button>
+              </p>
+            )}
+            <ul className="cdr-customer-results" id={poListId} data-testid="cdr-po-results">
+              {poHits.map((order) => (
+                <li key={order.id}>
+                  <button type="button" onClick={() => applyOrderSelection(order)}>
+                    {order.po_number || "—"} · {order.customer || "—"}
+                    {order.sales_verified
+                      ? ` · Sales: ${order.sales_label_resolved || order.sales}`
+                      : " · Sales belum terverifikasi"}
+                  </button>
+                </li>
+              ))}
+              {!poHits.length && poQ.trim() ? (
+                <li className="cdr-empty-hit">Tidak ada PO yang cocok</li>
+              ) : null}
+            </ul>
           </Field>
-          <Field label="Sales" required error={errors.sales_label}>
-            <input
-              value={form.sales_label}
-              onChange={(e) => patch("sales_label", e.target.value)}
-              data-testid="cdr-sales"
-            />
+
+          <Field label="Sales / Siapa yang Menjual" required wide error={errors.sales_label}>
+            {form.sales_source === SALES_SOURCE_LEGACY && form.sales_label ? (
+              <p className="cdr-hint" data-testid="cdr-sales-legacy">
+                Nilai lama (belum terverifikasi): {form.sales_label}. Pilih ulang dari daftar bila memungkinkan.
+              </p>
+            ) : null}
+            {form.sales_note ? (
+              <p className="cdr-hint" data-testid="cdr-sales-note">{form.sales_note}</p>
+            ) : null}
+
+            {showManualSalesInput ? (
+              <div className="cdr-sales-manual-box" data-testid="cdr-sales-manual-box">
+                <p className="cdr-hint">Mode input manual aktif. Sales tidak terverifikasi di master Eternal.</p>
+                <label className="cdr-inline-label" htmlFor="cdr-sales-manual-name">
+                  Nama Sales Manual <span className="req">*</span>
+                </label>
+                <input
+                  id="cdr-sales-manual-name"
+                  ref={manualSalesRef}
+                  value={form.sales_label}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setForm((prev) => ({
+                      ...prev,
+                      sales_label: value,
+                      sales_source: SALES_SOURCE_MANUAL,
+                      sales_choice: SALES_MANUAL_CHOICE,
+                      sales_user_id: "",
+                    }));
+                    setErrors((prev) => {
+                      if (!prev.sales_label) return prev;
+                      const n = { ...prev };
+                      delete n.sales_label;
+                      return n;
+                    });
+                  }}
+                  placeholder="Ketik nama Sales…"
+                  maxLength={80}
+                  data-testid="cdr-sales-manual-name"
+                />
+                <button
+                  type="button"
+                  className="ghost cdr-sales-back"
+                  data-testid="cdr-sales-back-to-list"
+                  onClick={returnToSalesList}
+                >
+                  Kembali ke daftar Sales
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  value={salesQ}
+                  onChange={(e) => {
+                    if (salesLocked) return;
+                    setSalesQ(e.target.value);
+                    setSalesOpen(true);
+                  }}
+                  onFocus={() => { if (!salesLocked) setSalesOpen(true); }}
+                  placeholder={salesLocked ? "Sales mengikuti PO" : "Cari Sales Eternal…"}
+                  data-testid="cdr-sales"
+                  aria-controls={salesListId}
+                  autoComplete="off"
+                  disabled={salesLocked}
+                  readOnly={salesLocked}
+                />
+                {salesOpen && !salesLocked ? (
+                  <ul className="cdr-customer-results cdr-sales-results" id={salesListId} data-testid="cdr-sales-results">
+                    {salesOptions.map((row) => (
+                      <li key={row.user_id}>
+                        <button type="button" onClick={() => applySalesSelection(row)}>
+                          {row.label}{row.name && row.name !== row.label ? ` · ${row.name}` : ""}
+                        </button>
+                      </li>
+                    ))}
+                    {!salesOptions.length ? (
+                      <li className="cdr-empty-hit" data-testid="cdr-sales-empty">
+                        Tidak ada Sales yang cocok
+                      </li>
+                    ) : null}
+                    {allowManualSales ? (
+                      <li className="cdr-sales-manual-sep" aria-hidden="true" />
+                    ) : null}
+                    {allowManualSales ? (
+                      <li>
+                        <button
+                          type="button"
+                          className="cdr-sales-manual-option"
+                          data-testid="cdr-sales-manual-option"
+                          onClick={() => applySalesSelection(SALES_MANUAL_CHOICE)}
+                        >
+                          + Input Manual / Sales Lainnya
+                        </button>
+                      </li>
+                    ) : null}
+                  </ul>
+                ) : null}
+              </>
+            )}
           </Field>
 
           <Field label="Komplain?" required>
             <div className="cdr-toggle">
-              <button type="button" className={`is-danger ${form.has_complaint ? "is-on" : ""}`} data-testid="cdr-complaint-yes" onClick={() => patch("has_complaint", true)}>Ya</button>
-              <button type="button" className={!form.has_complaint ? "is-on" : ""} data-testid="cdr-complaint-no" onClick={() => { patch("has_complaint", false); patch("complaint_description", ""); }}>Tidak</button>
+              <button
+                type="button"
+                className={`is-danger ${form.has_complaint ? "is-on" : ""}`}
+                data-testid="cdr-complaint-yes"
+                onClick={() => {
+                  setForm((prev) => ({
+                    ...prev,
+                    has_complaint: true,
+                    legacy_complaint: false,
+                  }));
+                }}
+              >Ya</button>
+              <button
+                type="button"
+                className={!form.has_complaint ? "is-on" : ""}
+                data-testid="cdr-complaint-no"
+                onClick={() => {
+                  setForm((prev) => ({
+                    ...prev,
+                    has_complaint: false,
+                    complaint_category: "",
+                    complaint_description: "",
+                    legacy_complaint: false,
+                  }));
+                }}
+              >Tidak</button>
             </div>
           </Field>
           <Field label="Kendala?" required>
@@ -340,23 +683,78 @@ export default function CrmDailyReportForm() {
 
           {showNoOrder && (
             <Field label="Keterangan Tidak Order" required wide error={errors.no_order_reason}>
-              <textarea
-                value={form.no_order_reason}
-                onChange={(e) => patch("no_order_reason", e.target.value)}
-                maxLength={500}
+              <select
+                value={form.no_order_reason_choice || ""}
+                onChange={(e) => {
+                  const choice = e.target.value;
+                  setForm((prev) => ({
+                    ...prev,
+                    no_order_reason_choice: choice,
+                    no_order_reason: choice === NO_ORDER_REASON_LAINNYA
+                      ? (NO_ORDER_REASON_PRESETS.includes(prev.no_order_reason) ? "" : prev.no_order_reason)
+                      : choice,
+                  }));
+                  setErrors((prev) => {
+                    if (!prev.no_order_reason) return prev;
+                    const n = { ...prev };
+                    delete n.no_order_reason;
+                    return n;
+                  });
+                }}
                 data-testid="cdr-no-order-reason"
-              />
+                aria-label="Keterangan Tidak Order"
+              >
+                <option value="">Pilih keterangan…</option>
+                {NO_ORDER_REASON_PRESETS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+                <option value={NO_ORDER_REASON_LAINNYA}>{NO_ORDER_REASON_LAINNYA}</option>
+              </select>
+              {showNoOrderLainnya ? (
+                <textarea
+                  value={form.no_order_reason}
+                  onChange={(e) => patch("no_order_reason", e.target.value)}
+                  maxLength={500}
+                  placeholder="Isi keterangan Lainnya…"
+                  data-testid="cdr-no-order-reason-lainnya"
+                  style={{ marginTop: 8 }}
+                />
+              ) : null}
             </Field>
           )}
           {showComplaint && (
-            <Field label="Deskripsi Komplain" required wide error={errors.complaint_description}>
-              <textarea
-                value={form.complaint_description}
-                onChange={(e) => patch("complaint_description", e.target.value)}
-                maxLength={500}
-                data-testid="cdr-complaint-desc"
-              />
-            </Field>
+            <>
+              <Field label="Jenis Komplain" required wide error={errors.complaint_category}>
+                <select
+                  value={form.complaint_category || ""}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setForm((prev) => ({ ...prev, complaint_category: value, legacy_complaint: false }));
+                    setErrors((prev) => {
+                      if (!prev.complaint_category) return prev;
+                      const n = { ...prev };
+                      delete n.complaint_category;
+                      return n;
+                    });
+                  }}
+                  data-testid="cdr-complaint-category"
+                  aria-label="Jenis Komplain"
+                >
+                  <option value="">Pilih jenis komplain…</option>
+                  {COMPLAINT_CATEGORY_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Deskripsi Komplain" required wide error={errors.complaint_description}>
+                <textarea
+                  value={form.complaint_description}
+                  onChange={(e) => patch("complaint_description", e.target.value)}
+                  maxLength={500}
+                  data-testid="cdr-complaint-desc"
+                />
+              </Field>
+            </>
           )}
           {showIssue && (
             <Field label="Deskripsi Kendala" required wide error={errors.issue_description}>
@@ -385,9 +783,11 @@ export default function CrmDailyReportForm() {
         <div className="cdr-ringkas" data-testid="cdr-summary-bar">
           <span>CRM: {reporterName}</span>
           <span>Customer: {isNewCustomer ? (form.outlet_name || form.whatsapp || "—") : (selectedCustomer?.name || form.outlet_name || "—")}</span>
-          <span className={`cdr-badge ${form.status_order === "ORDER" ? "is-order" : "is-no-order"}`}>{form.status_order}</span>
+          <span className={`cdr-badge ${statusOrderBadgeClass(form.status_order)}`}>{form.status_order}</span>
           <span className={`cdr-badge ${form.status_customer === "New" ? "is-new" : "is-repeat"}`}>{form.status_customer}</span>
-          <span className={`cdr-badge ${form.has_complaint ? "is-ya" : ""}`}>Komplain: {form.has_complaint ? "Ya" : "Tidak"}</span>
+          <span className={`cdr-badge ${form.has_complaint ? "is-ya" : ""}`}>
+            Komplain: {form.has_complaint ? (form.complaint_category || "Ya") : "Tidak"}
+          </span>
           <span className={`cdr-badge ${form.has_issue ? "is-ya" : ""}`}>Kendala: {form.has_issue ? "Ya" : "Tidak"}</span>
         </div>
         <p className="cdr-disclaimer">
