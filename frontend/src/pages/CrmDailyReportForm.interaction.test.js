@@ -29,19 +29,27 @@ jest.mock("../lib/api", () => ({
   },
 }));
 
+const mockHasPerm = (k) => [
+  "crm.daily_report.create",
+  "crm.daily_report.view_own",
+  "crm.daily_report.edit_own",
+  "po.view",
+].includes(k);
+const mockAuthUser = { id: "u1", name: "Andi Dharma", role: "crm" };
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
-    user: { id: "u1", name: "Andi Dharma", role: "crm" },
-    hasPerm: (k) => [
-      "crm.daily_report.create",
-      "crm.daily_report.view_own",
-      "crm.daily_report.edit_own",
-      "po.view",
-    ].includes(k),
+    user: mockAuthUser,
+    hasPerm: mockHasPerm,
   }),
 }));
 
 import api from "../lib/api";
+import {
+  buildCrmDailyDraftSnapshot,
+  crmDailyDraftStorageKey,
+  writeCrmDailyDraft,
+} from "../lib/crmDailyReport";
 import CrmDailyReportForm from "./CrmDailyReportForm";
 
 function typeCharByChar(input, text) {
@@ -72,12 +80,16 @@ function typeTextareaCharByChar(input, text) {
   }
 }
 
-async function flush() {
+async function flush(ms = 160) {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
-    await new Promise((r) => setTimeout(r, 160));
+    await new Promise((r) => setTimeout(r, ms));
   });
+}
+
+async function flushDraft() {
+  await flush(350);
 }
 
 describe("CrmDailyReportForm interaction", () => {
@@ -87,6 +99,8 @@ describe("CrmDailyReportForm interaction", () => {
   beforeEach(() => {
     mockParams.id = undefined;
     mockNavigate.mockReset();
+    [...mockSearchParams.keys()].forEach((k) => mockSearchParams.delete(k));
+    window.sessionStorage.clear();
     api.crmDailyReportMeta.mockResolvedValue({
       today_wib: "2026-04-16",
       can_create: true,
@@ -115,6 +129,8 @@ describe("CrmDailyReportForm interaction", () => {
       ],
     });
     api.createCrmDailyReport.mockImplementation(async (payload) => ({ report: { id: "r1", ...payload } }));
+    api.getCrmDailyReport.mockReset();
+    api.updateCrmDailyReport.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -269,5 +285,195 @@ describe("CrmDailyReportForm interaction", () => {
     expect(payload.sales_user_id).toBe("sales-ayub");
     expect(payload.sales_source).toBe("existing");
     expect(payload.status_customer).toBe("New");
+  });
+
+  test("create draft survives remount (list/tab navigation) and clears after success", async () => {
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+    const wa = container.querySelector('[data-testid="cdr-whatsapp"]');
+    wa.focus();
+    typeCharByChar(wa, "ABCDE123");
+    await flushDraft();
+    expect(window.sessionStorage.getItem("cdr-draft:v1:u1:create:new")).toBeTruthy();
+
+    await act(async () => { root.unmount(); });
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-draft-banner"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="cdr-whatsapp"]').value).toBe("ABCDE123");
+    expect(document.activeElement).not.toBe(null);
+
+    const sales = container.querySelector('[data-testid="cdr-sales"]');
+    await act(async () => {
+      const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setInput.call(sales, "Ayub");
+      sales.dispatchEvent(new Event("input", { bubbles: true }));
+      sales.dispatchEvent(new Event("focus", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-sales-results"] button')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="crm-daily-report-form"]')
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(api.createCrmDailyReport).toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("cdr-draft:v1:u1:create:new")).toBeNull();
+  });
+
+  test("failed submit keeps create draft", async () => {
+    api.createCrmDailyReport.mockRejectedValueOnce({ response: { data: { detail: "server down" } } });
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+    const wa = container.querySelector('[data-testid="cdr-whatsapp"]');
+    await act(async () => {
+      const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setInput.call(wa, "08129999");
+      wa.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const sales = container.querySelector('[data-testid="cdr-sales"]');
+    await act(async () => {
+      const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setInput.call(sales, "Ayub");
+      sales.dispatchEvent(new Event("input", { bubbles: true }));
+      sales.dispatchEvent(new Event("focus", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-sales-results"] button')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="crm-daily-report-form"]')
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(window.sessionStorage.getItem("cdr-draft:v1:u1:create:new")).toBeTruthy();
+    expect(JSON.parse(window.sessionStorage.getItem("cdr-draft:v1:u1:create:new")).form.whatsapp).toBe("08129999");
+  });
+
+  test("edit shows server first and restores draft only after explicit choice", async () => {
+    mockParams.id = "rep-1";
+    const draftForm = {
+      report_date: "2026-04-16",
+      status_customer: "New",
+      customer_id: "",
+      outlet_name: "Draft Outlet",
+      whatsapp: "08120000",
+      order_id: "",
+      po_number: "",
+      sales_label: "Sholahudin Al - Ayubi",
+      sales_user_id: "sales-ayub",
+      sales_source: "existing",
+      sales_choice: "sales-ayub",
+      sales_locked_from_po: false,
+      sales_note: "",
+      status_order: "ORDER",
+      no_order_reason: "",
+      no_order_reason_choice: "",
+      has_complaint: false,
+      complaint_category: "",
+      complaint_description: "",
+      legacy_complaint: false,
+      has_issue: false,
+      issue_description: "",
+      notes: "from-draft",
+    };
+    writeCrmDailyDraft(
+      crmDailyDraftStorageKey({ id: "u1" }, "edit", "rep-1"),
+      buildCrmDailyDraftSnapshot(draftForm, {
+        customerQ: "", poQ: "", salesQ: "Sholahudin Al - Ayubi", selectedCustomer: null, selectedOrder: null,
+      }),
+    );
+    api.getCrmDailyReport.mockResolvedValue({
+      report: {
+        id: "rep-1",
+        report_date: "2026-04-16",
+        status_customer: "New",
+        outlet_name: "Server Outlet",
+        whatsapp: "08121111",
+        status_order: "ORDER",
+        sales_label: "Sholahudin Al - Ayubi",
+        sales_user_id: "sales-ayub",
+        sales_source: "existing",
+        notes: "from-server",
+        can_edit: true,
+      },
+    });
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+    expect(api.getCrmDailyReport).toHaveBeenCalledWith("rep-1");
+    // Detail first (no ?edit=1): server data wins; open Edit to choose draft.
+    expect(container.querySelector('[data-testid="crm-daily-report-detail"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/from-server|08121111|Server Outlet/);
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-detail-edit"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-edit-draft-choice"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="cdr-whatsapp"]').value).toBe("08121111");
+    expect(container.querySelector('[data-testid="cdr-notes"]').value).toBe("from-server");
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-draft-continue"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-whatsapp"]').value).toBe("08120000");
+    expect(container.querySelector('[data-testid="cdr-notes"]').value).toBe("from-draft");
+  });
+
+  test("manual sales + reason Lainnya restore from draft", async () => {
+    writeCrmDailyDraft(
+      crmDailyDraftStorageKey({ id: "u1" }, "create"),
+      buildCrmDailyDraftSnapshot({
+        report_date: "2026-04-16",
+        status_customer: "New",
+        customer_id: "",
+        outlet_name: "",
+        whatsapp: "08123333",
+        order_id: "",
+        po_number: "",
+        sales_label: "SalesX",
+        sales_user_id: "",
+        sales_source: "manual",
+        sales_choice: "__manual__",
+        sales_locked_from_po: false,
+        sales_note: "",
+        status_order: "TIDAK ORDER",
+        no_order_reason: "Budget",
+        no_order_reason_choice: "Lainnya",
+        has_complaint: true,
+        complaint_category: "CUP CACAT",
+        complaint_description: "retak",
+        legacy_complaint: false,
+        has_issue: true,
+        issue_description: "kirim telat",
+        notes: "catatan",
+      }, { salesQ: "", customerQ: "", poQ: "", selectedCustomer: null, selectedOrder: null }),
+    );
+
+    await act(async () => { root.render(<CrmDailyReportForm />); });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-whatsapp"]').value).toBe("08123333");
+    expect(container.querySelector('[data-testid="cdr-sales-manual-name"]').value).toBe("SalesX");
+    expect(container.querySelector('[data-testid="cdr-no-order-reason-lainnya"]').value).toBe("Budget");
+    expect(container.querySelector('[data-testid="cdr-complaint-desc"]').value).toBe("retak");
+    expect(container.querySelector('[data-testid="cdr-issue-desc"]').value).toBe("kirim telat");
   });
 });

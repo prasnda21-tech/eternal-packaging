@@ -62,6 +62,7 @@ const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
 const OwnerDashboard = lazy(() => import("./pages/OwnerDashboard"));
 const WidgetDashboard = lazy(() => import("./pages/WidgetDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
+const SentralisasiCat = lazy(() => import("./pages/SentralisasiCat"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
 const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
@@ -89,6 +90,7 @@ const DivisionTaskIndex = lazy(() => import("./pages/DivisionTaskPage").then((mo
 const KepalaProduksiKpiDetailPage = lazy(() => import("./pages/KepalaProduksiKpiDetailPage"));
 const DeliverySchedulePage = lazy(() => import("./pages/DeliverySchedulePage"));
 const DeliveryScheduleRouteReviewPage = lazy(() => import("./pages/DeliveryScheduleRouteReviewPage"));
+const DeliveryPlanPage = lazy(() => import("./pages/DeliveryPlanPage"));
 const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage"));
 const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
 const FormShowcase = lazy(() => import("./pages/FormShowcase"));
@@ -357,9 +359,11 @@ export default function App() {
             <Route path="/produksi/jadwal-pengiriman/review-optimasi" element={<PermGate anyOf={["route_optimizer.create", "route_optimizer.optimize", "route_optimizer.manage"]}><DeliveryScheduleRouteReviewPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman/buat" element={<Navigate to="/produksi/jadwal-pengiriman" replace />} />
             <Route path="/produksi/jadwal-pengiriman/batch/:batchId" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "delivery.update"]}><DeliveryBatchPage /></PermGate>} />
+            <Route path="/produksi/rencana-jadwal-kirim" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "schedule.view"]}><DeliveryPlanPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />
             <Route path="/produksi/pengiriman-hari-ini" element={<Navigate to="/produksi/jadwal-pengiriman?status=hari_ini" replace />} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
+            <Route path="/produksi/sentralisasi-cat" element={<PermGate anyOf={[NAV_KEYS.paintSentralisasi, "paint.view", "paint.stock.view", "paint.report.view", "paint.settings.manage"]}><SentralisasiCat /></PermGate>} />
             <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />

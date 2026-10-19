@@ -295,3 +295,192 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
   if (clientSubmitId) payload.client_submit_id = clientSubmitId;
   return payload;
 }
+
+/** sessionStorage draft — client-only; never POSTed automatically. */
+export const CRM_DAILY_DRAFT_VERSION = 1;
+export const CRM_DAILY_DRAFT_PREFIX = `cdr-draft:v${CRM_DAILY_DRAFT_VERSION}:`;
+export const CRM_DAILY_DRAFT_DEBOUNCE_MS = 300;
+
+const DRAFT_FORM_KEYS = Object.keys(emptyCrmDailyReportForm());
+
+export function crmDailyDraftUserKey(user) {
+  const id = String(user?.id || user?.email || user?.sub || "").trim();
+  return id;
+}
+
+export function crmDailyDraftStorageKey(user, mode, recordId = "new") {
+  const uid = crmDailyDraftUserKey(user);
+  if (!uid) return "";
+  if (mode === "edit") {
+    const rid = String(recordId || "").trim();
+    if (!rid || rid === "baru") return "";
+    return `${CRM_DAILY_DRAFT_PREFIX}${uid}:edit:${rid}`;
+  }
+  return `${CRM_DAILY_DRAFT_PREFIX}${uid}:create:new`;
+}
+
+function draftSessionStore(storage) {
+  if (storage) return storage;
+  try {
+    return typeof sessionStorage !== "undefined" ? sessionStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeDraftCustomer(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = String(raw.id || "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(raw.name || "").slice(0, 200),
+    phone: String(raw.phone || "").slice(0, 40),
+  };
+}
+
+function sanitizeDraftOrder(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = String(raw.id || "").trim();
+  const po = String(raw.po_number || "").trim();
+  if (!id && !po) return null;
+  return {
+    id,
+    po_number: po.slice(0, 80),
+    customer: String(raw.customer || "").slice(0, 200),
+    sales_verified: Boolean(raw.sales_verified),
+    sales_user_id: String(raw.sales_user_id || "").slice(0, 80),
+    sales_label_resolved: String(raw.sales_label_resolved || raw.sales || "").slice(0, 120),
+    sales: String(raw.sales || "").slice(0, 120),
+  };
+}
+
+function sanitizeDraftForm(raw) {
+  const base = emptyCrmDailyReportForm();
+  if (!raw || typeof raw !== "object") return base;
+  const next = { ...base };
+  for (const key of DRAFT_FORM_KEYS) {
+    if (!(key in raw)) continue;
+    const value = raw[key];
+    if (typeof base[key] === "boolean") next[key] = Boolean(value);
+    else next[key] = value == null ? "" : String(value).slice(0, key === "notes" || key.includes("description") || key === "no_order_reason" ? 2000 : 200);
+  }
+  if (!["New", "Repeat"].includes(next.status_customer)) next.status_customer = "New";
+  if (!STATUS_ORDER_OPTIONS.includes(next.status_order)) next.status_order = "ORDER";
+  if (next.sales_source === SALES_SOURCE_MANUAL || next.sales_choice === SALES_MANUAL_CHOICE) {
+    if (!canUseManualSales(next)) {
+      next.sales_source = "";
+      next.sales_choice = "";
+      next.sales_user_id = "";
+      next.sales_label = "";
+      next.sales_locked_from_po = false;
+      next.sales_note = "";
+    } else {
+      next.sales_source = SALES_SOURCE_MANUAL;
+      next.sales_choice = SALES_MANUAL_CHOICE;
+      next.sales_user_id = "";
+      next.sales_locked_from_po = false;
+    }
+  }
+  if (next.status_order !== "TIDAK ORDER") {
+    next.no_order_reason = "";
+    next.no_order_reason_choice = "";
+  } else if (next.no_order_reason_choice && next.no_order_reason_choice !== NO_ORDER_REASON_LAINNYA
+    && !NO_ORDER_REASON_PRESETS.includes(next.no_order_reason_choice)) {
+    next.no_order_reason_choice = noOrderReasonChoice(next.no_order_reason);
+  }
+  if (!next.has_complaint) {
+    next.complaint_category = "";
+    next.complaint_description = "";
+    next.legacy_complaint = false;
+  }
+  if (!next.has_issue) next.issue_description = "";
+  return next;
+}
+
+export function buildCrmDailyDraftSnapshot(form, ui = {}) {
+  return {
+    v: CRM_DAILY_DRAFT_VERSION,
+    savedAt: Date.now(),
+    form: sanitizeDraftForm(form),
+    ui: {
+      customerQ: String(ui.customerQ || "").slice(0, 120),
+      poQ: String(ui.poQ || "").slice(0, 120),
+      salesQ: String(ui.salesQ || "").slice(0, 120),
+      selectedCustomer: sanitizeDraftCustomer(ui.selectedCustomer),
+      selectedOrder: sanitizeDraftOrder(ui.selectedOrder),
+    },
+  };
+}
+
+export function sanitizeCrmDailyDraft(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (Number(raw.v) !== CRM_DAILY_DRAFT_VERSION) return null;
+  const form = sanitizeDraftForm(raw.form);
+  const uiRaw = raw.ui && typeof raw.ui === "object" ? raw.ui : {};
+  return {
+    v: CRM_DAILY_DRAFT_VERSION,
+    savedAt: Number(raw.savedAt) || 0,
+    form,
+    ui: {
+      customerQ: String(uiRaw.customerQ || "").slice(0, 120),
+      poQ: String(uiRaw.poQ || "").slice(0, 120),
+      salesQ: String(uiRaw.salesQ || "").slice(0, 120),
+      selectedCustomer: sanitizeDraftCustomer(uiRaw.selectedCustomer),
+      selectedOrder: sanitizeDraftOrder(uiRaw.selectedOrder),
+    },
+  };
+}
+
+export function readCrmDailyDraft(key, storage) {
+  const store = draftSessionStore(storage);
+  if (!key || !store) return null;
+  try {
+    const raw = store.getItem(key);
+    if (!raw) return null;
+    return sanitizeCrmDailyDraft(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+export function writeCrmDailyDraft(key, snapshot, storage) {
+  const store = draftSessionStore(storage);
+  if (!key || !store) return false;
+  const safe = sanitizeCrmDailyDraft(snapshot) || buildCrmDailyDraftSnapshot(snapshot?.form, snapshot?.ui);
+  try {
+    store.setItem(key, JSON.stringify(safe));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearCrmDailyDraft(key, storage) {
+  const store = draftSessionStore(storage);
+  if (!key || !store) return;
+  try {
+    store.removeItem(key);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+export function clearCrmDailyDraftsForUser(user, storage) {
+  const store = draftSessionStore(storage);
+  const uid = crmDailyDraftUserKey(user);
+  if (!store || !uid) return;
+  const prefix = `${CRM_DAILY_DRAFT_PREFIX}${uid}:`;
+  try {
+    const keys = [];
+    for (let i = 0; i < store.length; i += 1) {
+      const k = store.key(i);
+      if (k && k.startsWith(prefix)) keys.push(k);
+    }
+    keys.forEach((k) => {
+      try { store.removeItem(k); } catch { /* ignore */ }
+    });
+  } catch {
+    /* ignore */
+  }
+}

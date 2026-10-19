@@ -126,6 +126,29 @@
   min-height:34px;
 }
 
+.cdr-draft-banner{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:8px 10px;
+  border:1px solid #fcd34d;
+  background:#fffbeb;
+  border-radius:8px;
+}
+.cdr-draft-banner p{margin:0;color:#92400e;font-size:12px}
+.cdr-draft-banner-actions{display:flex;gap:8px;flex-wrap:wrap}
+.cdr-draft-note{
+  margin:0;
+  padding:6px 10px;
+  border-radius:8px;
+  background:#f0fdf4;
+  border:1px solid #bbf7d0;
+  color:#14532d;
+  font-size:12px;
+}
+
 .cdr-toolbar{
   display:flex;
   flex-direction:column;

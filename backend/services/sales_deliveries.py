@@ -1273,6 +1273,17 @@ async def get_sales_delivery_detail(db, delivery_id: str) -> Dict[str, Any]:
     }
 
 
+def _format_sj_pdf_phone_display(value: Any) -> str:
+    """Normalize phone text for SJ PDF rendering only (not persisted)."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Collapse unicode whitespace to ASCII space; drop other controls.
+    text = re.sub(r"[\s\u00a0\u2000-\u200b\u202f\u205f\u3000]+", " ", text)
+    text = "".join(ch for ch in text if ch.isprintable() or ch == " ")
+    return text.strip()[:40]
+
+
 def generate_sales_delivery_pdf_bytes(
     delivery: dict,
     po_summary: Optional[dict] = None,
@@ -1610,7 +1621,8 @@ def generate_sales_delivery_pdf_bytes(
         driver_img = _sig_image(*driver_file, cap_w, cap_h) if driver_file else None
         display_recipient = _text(recipient_name or delivery.get("recipient"))
         display_driver = _text(driver_name or delivery.get("driver_name"))
-        recipient_phone_text = _text(delivery.get("recipient_phone"))
+        # Display-only normalization — does not mutate delivery/order storage.
+        recipient_phone_text = _format_sj_pdf_phone_display(delivery.get("recipient_phone"))
         recipient_when = _signed_date(recipient_signed_at)
         driver_when = _signed_date(driver_signed_at)
 
@@ -1620,6 +1632,7 @@ def generate_sales_delivery_pdf_bytes(
         names = ["", "", display_driver, display_recipient]
         whens = ["", "", driver_when, recipient_when]
         slot = width / 4
+        name_width = slot - 16 * mm
         label_row = []
         gap_row = []
         line_row = []
@@ -1627,19 +1640,38 @@ def generate_sales_delivery_pdf_bytes(
             label_row.append(Paragraph(esc(label), sty["center"]))
             gap_row.append(image if image is not None else Spacer(1, 12 * mm))
             tgl = date_label + (f" {when}" if when else "")
-            shown = esc(name) if name else "&nbsp;"
+            # Underline only the name band — phone sits below so LINEBELOW
+            # cannot cut through telephone glyphs / space gaps.
+            name_para = Paragraph(esc(name) if name else "&nbsp;", sty["small"])
+            name_cell = Table([[name_para]], colWidths=[name_width])
+            name_cell.setStyle(TableStyle([
+                ("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.black),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+                ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+            ]))
+            stacked_rows = [[name_cell]]
             if idx == 3 and recipient_phone_text:
-                shown = f"{shown}<br/>{esc(recipient_phone_text)}"
+                stacked_rows.append([Paragraph(esc(recipient_phone_text), sty["small"])])
+            stacked = Table(stacked_rows, colWidths=[name_width])
+            stacked.setStyle(TableStyle([
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
             line = Table(
                 [[
                     Paragraph(esc(tgl), sty["small"]),
-                    Paragraph(shown, sty["small"]),
+                    stacked,
                 ]],
-                colWidths=[14 * mm, slot - 16 * mm],
+                colWidths=[14 * mm, name_width],
             )
             line.setStyle(TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-                ("LINEBELOW", (1, 0), (1, 0), 0.6, colors.black),
                 ("LEFTPADDING", (0, 0), (-1, -1), 1),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                 ("TOPPADDING", (0, 0), (-1, -1), 1),

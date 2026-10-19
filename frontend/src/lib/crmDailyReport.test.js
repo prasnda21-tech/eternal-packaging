@@ -1,23 +1,31 @@
 import {
   COMPLAINT_CATEGORY_OPTIONS,
+  CRM_DAILY_DRAFT_PREFIX,
   NO_ORDER_REASON_LAINNYA,
   NO_ORDER_REASON_PRESETS,
   SALES_MANUAL_CHOICE,
   SALES_SOURCE_EXISTING,
   SALES_SOURCE_MANUAL,
   STATUS_ORDER_OPTIONS,
+  buildCrmDailyDraftSnapshot,
   canAccessCrmDailyReport,
   canCreateCrmDailyReport,
   canUseManualSales,
   canViewAllCrmDailyReports,
+  clearCrmDailyDraft,
+  clearCrmDailyDraftsForUser,
   complaintLabel,
+  crmDailyDraftStorageKey,
   emptyCrmDailyReportForm,
   formFromCrmDailyReport,
   issueLabel,
   noOrderReasonChoice,
+  readCrmDailyDraft,
+  sanitizeCrmDailyDraft,
   toCrmDailyReportPayload,
   truncateText,
   validateCrmDailyReportForm,
+  writeCrmDailyDraft,
 } from "./crmDailyReport";
 
 const has = (...keys) => (k) => keys.includes(k);
@@ -154,5 +162,56 @@ describe("crmDailyReport helpers", () => {
     expect(complaintLabel({ has_complaint: true, complaint_category: "CUP CACAT", complaint_description: "panjang sekali deskripsi" })).toBe("CUP CACAT");
     expect(issueLabel({ has_issue: true, issue_description: "Harga kompetitor terlalu murah sekali dan panjang" })).toMatch(/…$/);
     expect(truncateText("", 10)).toBe("—");
+  });
+
+  test("draft storage keys are user/mode/record scoped", () => {
+    const a = { id: "user-a" };
+    const b = { id: "user-b" };
+    expect(crmDailyDraftStorageKey(a, "create")).toBe(`${CRM_DAILY_DRAFT_PREFIX}user-a:create:new`);
+    expect(crmDailyDraftStorageKey(a, "edit", "r9")).toBe(`${CRM_DAILY_DRAFT_PREFIX}user-a:edit:r9`);
+    expect(crmDailyDraftStorageKey(a, "create")).not.toBe(crmDailyDraftStorageKey(b, "create"));
+    expect(crmDailyDraftStorageKey(a, "edit", "r1")).not.toBe(crmDailyDraftStorageKey(a, "edit", "r2"));
+    expect(crmDailyDraftStorageKey(null, "create")).toBe("");
+  });
+
+  test("draft sanitize rejects bad version and strips invalid manual sales", () => {
+    expect(sanitizeCrmDailyDraft({ v: 99, form: {} })).toBeNull();
+    const snap = buildCrmDailyDraftSnapshot({
+      ...emptyCrmDailyReportForm("2026-04-16"),
+      status_order: "ORDER",
+      sales_source: SALES_SOURCE_MANUAL,
+      sales_choice: SALES_MANUAL_CHOICE,
+      sales_label: "Manual X",
+      whatsapp: "0812",
+    }, { salesQ: "Manual X" });
+    expect(snap.form.sales_source).toBe("");
+    expect(snap.form.sales_label).toBe("");
+  });
+
+  test("draft read/write/clear is user-isolated and safe on storage errors", () => {
+    const store = window.sessionStorage;
+    store.clear();
+    const userA = { id: "ua" };
+    const userB = { id: "ub" };
+    const keyA = crmDailyDraftStorageKey(userA, "create");
+    const keyB = crmDailyDraftStorageKey(userB, "create");
+    writeCrmDailyDraft(keyA, buildCrmDailyDraftSnapshot({
+      ...emptyCrmDailyReportForm("2026-04-16"),
+      whatsapp: "08121111",
+      notes: "draft-a",
+    }, {}));
+    writeCrmDailyDraft(keyB, buildCrmDailyDraftSnapshot({
+      ...emptyCrmDailyReportForm("2026-04-16"),
+      whatsapp: "08122222",
+      notes: "draft-b",
+    }, {}));
+    expect(readCrmDailyDraft(keyA).form.notes).toBe("draft-a");
+    expect(readCrmDailyDraft(keyB).form.notes).toBe("draft-b");
+    clearCrmDailyDraftsForUser(userA);
+    expect(readCrmDailyDraft(keyA)).toBeNull();
+    expect(readCrmDailyDraft(keyB).form.notes).toBe("draft-b");
+    clearCrmDailyDraft(keyB);
+    expect(readCrmDailyDraft(keyB)).toBeNull();
+    expect(writeCrmDailyDraft("", buildCrmDailyDraftSnapshot(emptyCrmDailyReportForm(), {}))).toBe(false);
   });
 });

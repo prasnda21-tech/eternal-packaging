@@ -10,6 +10,7 @@ from permissions import (
     NAV_CONFIGURED,
     NAV_MENU_ITEMS,
     NAV_PERMISSION_KEYS,
+    OPT_IN_ONLY_PERMISSIONS,
     ROLE_DEFAULT_PERMISSIONS,
     derived_nav_permissions,
     effective_permissions,
@@ -238,10 +239,16 @@ def test_non_admin_roles_do_not_auto_gain_route_optimizer_permissions():
 
 
 def test_admin_still_has_all_including_nav():
+    """Admin defaults include every nav key except OPT_IN_ONLY (e.g. paint)."""
     admin = set(ROLE_DEFAULT_PERMISSIONS["admin"])
     for key in NAV_PERMISSION_KEYS:
+        if key in OPT_IN_ONLY_PERMISSIONS:
+            assert key not in admin, key
+            continue
         assert key in admin, key
     assert NAV_CONFIGURED in admin
+    assert "nav.production.paint" in OPT_IN_ONLY_PERMISSIONS
+    assert "nav.production.paint" not in admin
 
 
 def test_helper_keeps_schedule_and_always_visible_menus():

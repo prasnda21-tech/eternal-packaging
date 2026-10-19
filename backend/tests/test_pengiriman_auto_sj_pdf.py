@@ -533,3 +533,111 @@ def test_role_defaults_keep_view_and_upload_separate():
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
         if "loading.update" in perms:
             assert "delivery_note.view_file" in perms, role
+
+
+def _sj_pdf_base_delivery(**overrides):
+    base = {
+        "customer": "Outlet Dummy PDF",
+        "address": "Jl. Dummy 1",
+        "sales": "Sales Dummy",
+        "sj_number": "SJ-DUMMY-001",
+        "expedition": "Internal",
+        "created_by_name": "Admin",
+        "delivery_date": "2026-10-19",
+        "delivery_zone": "Zona A",
+        "po_number": "PO-DUMMY-1",
+        "recipient": "Penerima Dummy",
+        "driver_name": "Kurir Dummy",
+        "lines": [{"name": "Cup Dummy", "qty": 12, "unit": "PCS", "notes": ""}],
+        "line_items": [{"name": "Cup Dummy", "qty": 12, "unit": "PCS", "line_idx": 0}],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_sj_pdf_phone_space_underline_does_not_cross_glyph_band():
+    """Phone sits below signature underline; ASCII spaces stay whitespace."""
+    import io
+    import pdfplumber
+    from services.sales_deliveries import _format_sj_pdf_phone_display
+
+    assert _format_sj_pdf_phone_display("0812\u00a03456") == "0812 3456"
+    assert _format_sj_pdf_phone_display("  ") == ""
+
+    cases = {
+        "spaces": "0812 3456 7890",
+        "nospace": "081234567890",
+        "empty": "",
+        "long": "0812 3456 7890 1234 5678 9012",
+    }
+    for label, phone in cases.items():
+        delivery = _sj_pdf_base_delivery(recipient_phone=phone or None)
+        before_phone = delivery.get("recipient_phone")
+        before_sj = delivery.get("sj_number")
+        pdf = generate_sales_delivery_pdf_bytes(
+            delivery,
+            recipient_name="Penerima Dummy",
+            recipient_signed_at="2026-10-19T10:00:00+00:00",
+            driver_name="Kurir Dummy",
+            driver_signed_at="2026-10-19T10:00:00+00:00",
+        )
+        assert delivery.get("recipient_phone") == before_phone
+        assert delivery.get("sj_number") == before_sj
+        assert pdf.startswith(b"%PDF")
+        with pdfplumber.open(io.BytesIO(pdf)) as doc:
+            page = doc.pages[0]
+            text = page.extract_text() or ""
+            assert "Cup Dummy" in text or "Kode Barang" in text
+            assert "Penerima" in text
+            if not phone:
+                continue
+            shown = _format_sj_pdf_phone_display(phone)
+            assert shown[:4] in text
+            if " " in shown:
+                # Spaces survive as whitespace separators (not tofu blocks).
+                assert shown.split()[0] in text and shown.split()[1] in text
+            phone_chars = [
+                c for c in (page.chars or [])
+                if c.get("text", "").isdigit() and c.get("x0", 0) > 470 and 320 < c.get("top", 0) < 380
+            ]
+            assert phone_chars, label
+            phone_top = min(c["top"] for c in phone_chars)
+            phone_bottom = max(c["bottom"] for c in phone_chars)
+            # Signature name underline in the Penerima column (above phone band).
+            sig_lines = [
+                ln for ln in (page.lines or [])
+                if (ln.get("width") or 0) > 20
+                and (ln.get("x0") or 0) > 450
+                and 320 < (ln.get("top") or 0) < 360
+            ]
+            assert sig_lines, label
+            assert all((ln.get("top") or 0) <= phone_top + 0.5 for ln in sig_lines), (
+                label, phone_top, [ln.get("top") for ln in sig_lines],
+            )
+            # Underline must not cut through the phone glyph vertical band.
+            assert all(
+                not (phone_top < (ln.get("top") or 0) < phone_bottom)
+                for ln in sig_lines
+            ), (label, phone_top, phone_bottom, [ln.get("top") for ln in sig_lines])
+
+
+def test_sj_pdf_custom_signature_labels_keep_four_columns():
+    import io
+    import pdfplumber
+
+    design = {
+        "surat_jalan": {
+            "signature_labels": ["Gudang", "QC", "Driver", "Customer"],
+            "date_label": "Tanggal",
+        }
+    }
+    pdf = generate_sales_delivery_pdf_bytes(
+        _sj_pdf_base_delivery(recipient_phone="0812 3456 7890"),
+        recipient_name="Penerima Dummy",
+        design=design,
+    )
+    assert pdf.startswith(b"%PDF")
+    with pdfplumber.open(io.BytesIO(pdf)) as doc:
+        text = doc.pages[0].extract_text() or ""
+    assert "Gudang" in text and "QC" in text and "Driver" in text and "Customer" in text
+    assert "0812" in text and "3456" in text
