@@ -4,7 +4,12 @@ Owner policy (explicit settings — never invent):
 - Historical orders may attribute demand to one configured org branch (e.g. YGY)
   when they carry listed Accurate digit branch ids (e.g. "50") or, when enabled,
   a missing branch_id/cabang_id — but ONLY before historical_cutoff_at.
-- Orders at/after the cutoff must match the org UUID exactly (fail-closed).
+- Null-branch attribution stays cutoff-gated (never live-mapped).
+- Accurate Live branch map (separate flag): validated Accurate Live orders with
+  configured digit branch ids (e.g. "50") attribute to org YGY at read-time
+  regardless of cutoff — still never rewrites orders.branch_id.
+- Orders at/after the cutoff without live-map identity must match org UUID
+  exactly (fail-closed), except via the Accurate Live map when enabled.
 - Never rewrite orders.branch_id. Never treat Accurate "50" as a UUID.
 - Delivery baseline is proven-shipped only; never sales_deliveries.status alone.
 - Baseline is branch-scoped and must not double-count ledger SALES_DELIVERY.
@@ -15,6 +20,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SETTINGS_KEY = "mode_b_legacy_demand"
+
+# Default import_source / accurate_source tokens that identify Accurate Live POs.
+DEFAULT_ACCURATE_LIVE_SOURCES = ["accurate_live"]
 
 
 class ModeBLegacyDemandError(Exception):
@@ -29,6 +37,17 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def default_accurate_live_branch_map() -> Dict[str, Any]:
+    """Read-time Accurate Live digit-branch → org branch map (off by default)."""
+    return {
+        "enabled": False,
+        "org_branch_id": "",
+        "accurate_branch_ids": [],
+        "allowed_sources": list(DEFAULT_ACCURATE_LIVE_SOURCES),
+        "require_accurate_id": True,
+    }
+
+
 def default_settings() -> Dict[str, Any]:
     return {
         "key": SETTINGS_KEY,
@@ -37,6 +56,7 @@ def default_settings() -> Dict[str, Any]:
         "historical_cutoff_at": None,
         "accurate_branch_ids": [],
         "include_null_branch": False,
+        "accurate_live_branch_map": default_accurate_live_branch_map(),
         "delivery_cutover": {
             "initialized": False,
             "cutover_at": None,
@@ -69,6 +89,23 @@ def _as_str_list(raw: Any) -> List[str]:
     return out
 
 
+def sanitize_accurate_live_branch_map(raw: Any) -> Dict[str, Any]:
+    base = default_accurate_live_branch_map()
+    if not isinstance(raw, dict):
+        return base
+    sources = _as_str_list(raw.get("allowed_sources"))
+    if not sources:
+        sources = list(DEFAULT_ACCURATE_LIVE_SOURCES)
+    require_id = raw.get("require_accurate_id")
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "org_branch_id": str(raw.get("org_branch_id") or "").strip(),
+        "accurate_branch_ids": _as_str_list(raw.get("accurate_branch_ids")),
+        "allowed_sources": sources,
+        "require_accurate_id": True if require_id is None else bool(require_id),
+    }
+
+
 def sanitize_settings(doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     base = default_settings()
     if not isinstance(doc, dict):
@@ -98,6 +135,9 @@ def sanitize_settings(doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         ),
         "accurate_branch_ids": _as_str_list(doc.get("accurate_branch_ids")),
         "include_null_branch": bool(doc.get("include_null_branch")),
+        "accurate_live_branch_map": sanitize_accurate_live_branch_map(
+            doc.get("accurate_live_branch_map"),
+        ),
         "delivery_cutover": cut,
         "updated_at": doc.get("updated_at"),
         "updated_by": doc.get("updated_by"),
@@ -128,6 +168,7 @@ async def configure_mode_b_legacy_demand(
     historical_cutoff_at: str,
     accurate_branch_ids: Optional[Iterable[str]] = None,
     include_null_branch: bool = False,
+    accurate_live_branch_map: Optional[dict] = None,
     user: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Upsert policy. Does not initialize delivery baseline and never rewrites orders."""
@@ -145,6 +186,23 @@ async def configure_mode_b_legacy_demand(
             )
     current = await get_mode_b_legacy_demand_settings(db)
     stamp = now_iso()
+    if accurate_live_branch_map is None:
+        live_map = dict(current.get("accurate_live_branch_map") or default_accurate_live_branch_map())
+    else:
+        live_map = sanitize_accurate_live_branch_map(accurate_live_branch_map)
+        if live_map.get("enabled"):
+            map_org = str(live_map.get("org_branch_id") or "").strip() or org
+            if not map_org:
+                raise ModeBLegacyDemandError(
+                    "accurate_live_branch_map.org_branch_id (atau org_branch_id induk) "
+                    "wajib ketika Accurate Live branch map diaktifkan."
+                )
+            if not live_map.get("accurate_branch_ids"):
+                raise ModeBLegacyDemandError(
+                    "accurate_live_branch_map.accurate_branch_ids wajib diisi "
+                    "ketika Accurate Live branch map diaktifkan (contoh: [\"50\"])."
+                )
+            live_map["org_branch_id"] = map_org
     saved = {
         "key": SETTINGS_KEY,
         "enabled": bool(enabled),
@@ -156,6 +214,7 @@ async def configure_mode_b_legacy_demand(
         if accurate_branch_ids is not None
         else list(current.get("accurate_branch_ids") or []),
         "include_null_branch": bool(include_null_branch),
+        "accurate_live_branch_map": live_map,
         "delivery_cutover": current.get("delivery_cutover") or default_settings()["delivery_cutover"],
         "updated_at": stamp,
         "updated_by": _actor_info(user),
@@ -185,6 +244,67 @@ def order_branch_raw(order: Optional[dict]) -> str:
     return str(order.get("branch_id") or order.get("cabang_id") or "").strip()
 
 
+def order_accurate_source_token(order: Optional[dict]) -> str:
+    """Primary Accurate import/sync source marker on the order (read-only)."""
+    if not isinstance(order, dict):
+        return ""
+    for key in ("import_source", "accurate_source"):
+        token = str(order.get(key) or "").strip()
+        if token:
+            return token
+    return ""
+
+
+def order_matches_accurate_live_identity(
+    order: Optional[dict],
+    live_map: Optional[dict],
+) -> bool:
+    """True when order carries validated Accurate Live identity for the live map."""
+    if not isinstance(order, dict):
+        return False
+    cfg = sanitize_accurate_live_branch_map(live_map)
+    allowed = {str(x).strip() for x in (cfg.get("allowed_sources") or []) if str(x).strip()}
+    if not allowed:
+        return False
+    source = order_accurate_source_token(order)
+    if source not in allowed:
+        return False
+    if cfg.get("require_accurate_id") and not str(order.get("accurate_id") or "").strip():
+        return False
+    return True
+
+
+def accurate_live_map_org_branch_id(settings: Optional[dict]) -> str:
+    cfg = sanitize_settings(settings if isinstance(settings, dict) else None)
+    live = cfg.get("accurate_live_branch_map") or {}
+    return str(live.get("org_branch_id") or cfg.get("org_branch_id") or "").strip()
+
+
+def order_matches_accurate_live_branch_map(
+    order: Optional[dict],
+    target_branch_id: Optional[str],
+    settings: Optional[dict],
+) -> bool:
+    """Read-time Accurate Live digit-branch → org map (independent of cutoff)."""
+    if not isinstance(order, dict):
+        return False
+    target = str(target_branch_id or "").strip()
+    if not target:
+        return False
+    cfg = sanitize_settings(settings if isinstance(settings, dict) else None)
+    live = sanitize_accurate_live_branch_map(cfg.get("accurate_live_branch_map"))
+    if not live.get("enabled"):
+        return False
+    map_org = accurate_live_map_org_branch_id(cfg)
+    if not map_org or map_org != target:
+        return False
+    if not order_matches_accurate_live_identity(order, live):
+        return False
+    raw = order_branch_raw(order)
+    mapped = {str(x) for x in (live.get("accurate_branch_ids") or [])}
+    return bool(raw and raw.isdigit() and raw in mapped)
+
+
 def order_is_historical(order: dict, cutoff_at: Optional[str]) -> bool:
     """Fail-closed: missing/unparseable created_at or cutoff → not historical."""
     cutoff = parse_iso_datetime(cutoff_at)
@@ -203,9 +323,13 @@ def order_attributed_to_branch(
 ) -> bool:
     """Whether this order contributes demand for target org branch.
 
-    Exact UUID/cabang match always counts. Legacy Accurate digit / null-branch
-    attribution applies only when settings.enabled, target == org_branch_id,
-    order is historical vs cutoff, and policy lists allow the raw id.
+    Exact UUID/cabang match always counts.
+
+    Accurate Live branch map (when enabled): validated Accurate Live orders with
+    configured digit branch ids attribute to map org_branch_id without cutoff.
+
+    Legacy digit / null-branch attribution (when settings.enabled): only before
+    historical_cutoff_at. Null-branch never uses the Accurate Live map.
     """
     if not isinstance(order, dict):
         return False
@@ -214,6 +338,9 @@ def order_attributed_to_branch(
         return False
     raw = order_branch_raw(order)
     if raw == target:
+        return True
+    # Live Accurate map first — independent of historical cutoff / null-branch.
+    if order_matches_accurate_live_branch_map(order, target, settings):
         return True
     cfg = sanitize_settings(settings if isinstance(settings, dict) else None)
     if not cfg.get("enabled"):
@@ -257,14 +384,24 @@ def mongo_order_branch_clauses(
         {"cabang_id": wanted},
     ]
     cfg = sanitize_settings(settings if isinstance(settings, dict) else None)
+    seen_digits: set = set()
+    live = sanitize_accurate_live_branch_map(cfg.get("accurate_live_branch_map"))
+    if live.get("enabled") and accurate_live_map_org_branch_id(cfg) == wanted:
+        for aid in live.get("accurate_branch_ids") or []:
+            token = str(aid).strip()
+            if token.isdigit() and token not in seen_digits:
+                seen_digits.add(token)
+                clauses.append({"branch_id": token})
     if (
         cfg.get("enabled")
         and str(cfg.get("org_branch_id") or "").strip() == wanted
         and cfg.get("historical_cutoff_at")
     ):
         for aid in cfg.get("accurate_branch_ids") or []:
-            if str(aid).strip().isdigit():
-                clauses.append({"branch_id": str(aid).strip()})
+            token = str(aid).strip()
+            if token.isdigit() and token not in seen_digits:
+                seen_digits.add(token)
+                clauses.append({"branch_id": token})
         if cfg.get("include_null_branch"):
             clauses.append({
                 "$and": [
@@ -418,6 +555,7 @@ async def preview_mode_b_delivery_cutover(
             "historical_cutoff_at": settings.get("historical_cutoff_at"),
             "accurate_branch_ids": settings.get("accurate_branch_ids"),
             "include_null_branch": settings.get("include_null_branch"),
+            "accurate_live_branch_map": settings.get("accurate_live_branch_map"),
         },
     }
 
@@ -487,6 +625,7 @@ async def initialize_mode_b_delivery_cutover(
             "historical_cutoff_at": settings.get("historical_cutoff_at"),
             "accurate_branch_ids": list(settings.get("accurate_branch_ids") or []),
             "include_null_branch": bool(settings.get("include_null_branch")),
+            "accurate_live_branch_map": settings.get("accurate_live_branch_map"),
             "basis": "proven_shipped_confirmations_or_shipment_terkirim",
             "excludes": "sales_deliveries.status_alone; ledger_booked_identities",
         },
@@ -498,6 +637,8 @@ async def initialize_mode_b_delivery_cutover(
         "historical_cutoff_at": settings.get("historical_cutoff_at"),
         "accurate_branch_ids": list(settings.get("accurate_branch_ids") or []),
         "include_null_branch": bool(settings.get("include_null_branch")),
+        "accurate_live_branch_map": settings.get("accurate_live_branch_map")
+        or default_accurate_live_branch_map(),
         "delivery_cutover": delivery_cutover,
         "updated_at": stamp,
         "updated_by": _actor_info(actor),

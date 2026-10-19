@@ -2944,14 +2944,14 @@ def _orders_for_branch(
     """Keep only orders attributed to this branch.
 
     Default: exact branch_id/cabang_id match (fail-closed for missing ids).
-    When Mode B legacy demand settings are enabled for this org branch,
-    historical Accurate digit ids / null-branch orders may attribute without
-    rewriting documents — see services.mode_b_legacy_demand.
+    When Mode B legacy demand settings are present, attribution (historical
+    Accurate/null cutoff rules and optional Accurate Live branch map) runs via
+    services.mode_b_legacy_demand — never rewrites documents.
     """
     wanted = str(branch_id or "").strip()
     if not wanted:
         return []
-    if legacy_settings and legacy_settings.get("enabled"):
+    if legacy_settings is not None:
         from services.mode_b_legacy_demand import filter_orders_for_branch
 
         return filter_orders_for_branch(orders, wanted, legacy_settings)
