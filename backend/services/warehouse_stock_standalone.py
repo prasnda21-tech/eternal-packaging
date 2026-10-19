@@ -935,15 +935,23 @@ async def apply_confirmed_sales_delivery_standalone(
 
     from services.stock_compatibility_read import proven_delivered_qty_by_order_line
 
-    # Compatibility-proven historical delivery on the order (confirmations /
-    # Terkirim / single-line qty_delivered). Ledger posts after Mode B must not
-    # double-count the same ship: take max(proven, ledger) as already delivered.
-    proven_by_line, _unproven = proven_delivered_qty_by_order_line(order)
+    # Compatibility-proven *prior* delivery only. The business confirm is often
+    # stamped on order.shipments / delivery_confirmations before the warehouse
+    # ledger exists (crash/retry). Exclude this confirmation + SJ so ready-qty
+    # does not treat the in-flight confirm as already delivered history.
+    exclude_conf_ids = [confirmation_id]
+    exclude_ship_ids = [sj_id] if sj_id else []
+    proven_by_line, _unproven = proven_delivered_qty_by_order_line(
+        order,
+        exclude_confirmation_ids=exclude_conf_ids,
+        exclude_shipment_ids=exclude_ship_ids,
+    )
     for line in resolved:
         completed = _completed_qty_for_line(order, line["line_idx"])
         line_idx = int(line["line_idx"])
         proven_done = int(max(_qty_num(proven_by_line.get(line_idx, 0)), 0))
-        # Standalone delivered qty = sum of existing SALES_DELIVERY for this line.
+        # Prior ledger for this line — omit movements for the current confirmation
+        # (idempotent retry / partial resume must not count itself as history).
         prior = 0
         async for mov in db[LEDGER_COLLECTION].find(
             {
@@ -951,18 +959,23 @@ async def apply_confirmed_sales_delivery_standalone(
                 "metadata.order_id": order_id,
                 "metadata.line_idx": line_idx,
             },
-            {"_id": 0, "qty_delta": 1},
+            {"_id": 0, "qty_delta": 1, "metadata.confirmation_id": 1},
         ):
+            mov_conf = str((mov.get("metadata") or {}).get("confirmation_id") or "").strip()
+            if mov_conf and mov_conf == confirmation_id:
+                continue
             prior += abs(int(mov.get("qty_delta") or 0))
-        # Subtract reversals
         async for mov in db[LEDGER_COLLECTION].find(
             {
                 "movement_type": MOVEMENT_REVERSAL,
                 "metadata.order_id": order_id,
                 "metadata.line_idx": line_idx,
             },
-            {"_id": 0, "qty_delta": 1},
+            {"_id": 0, "qty_delta": 1, "metadata.confirmation_id": 1},
         ):
+            mov_conf = str((mov.get("metadata") or {}).get("confirmation_id") or "").strip()
+            if mov_conf and mov_conf == confirmation_id:
+                continue
             prior -= abs(int(mov.get("qty_delta") or 0))
         already = max(proven_done, max(int(prior), 0))
         ready = max(int(completed) - already, 0)
