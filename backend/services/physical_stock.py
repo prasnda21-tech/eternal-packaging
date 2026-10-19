@@ -2935,15 +2935,26 @@ def _order_branch_id(order: Optional[dict]) -> str:
     return str(order.get("branch_id") or order.get("cabang_id") or "").strip()
 
 
-def _orders_for_branch(orders: Iterable[dict], branch_id: Optional[str]) -> List[dict]:
-    """Keep only orders proven for this branch — never invent YGY/SMG allocation.
+def _orders_for_branch(
+    orders: Iterable[dict],
+    branch_id: Optional[str],
+    *,
+    legacy_settings: Optional[dict] = None,
+) -> List[dict]:
+    """Keep only orders attributed to this branch.
 
-    Orders without branch_id/cabang_id are excluded (fail-closed). Callers must
-    not treat omission as zero demand when auditing legacy data separately.
+    Default: exact branch_id/cabang_id match (fail-closed for missing ids).
+    When Mode B legacy demand settings are enabled for this org branch,
+    historical Accurate digit ids / null-branch orders may attribute without
+    rewriting documents — see services.mode_b_legacy_demand.
     """
     wanted = str(branch_id or "").strip()
     if not wanted:
         return []
+    if legacy_settings and legacy_settings.get("enabled"):
+        from services.mode_b_legacy_demand import filter_orders_for_branch
+
+        return filter_orders_for_branch(orders, wanted, legacy_settings)
     return [
         order for order in orders
         if _order_branch_id(order) == wanted
@@ -3219,30 +3230,49 @@ async def list_physical_stock_catalog(
         )
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
-    # Demand is branch-scoped. Unattributed legacy orders are excluded — never
-    # invent Yogyakarta↔Semarang allocation of qty pesanan / belum terkirim.
+    from services.mode_b_legacy_demand import (
+        get_mode_b_legacy_demand_settings,
+        mongo_order_branch_clauses,
+    )
+    from services.stock_compatibility_read import (
+        BELUM_STATUS_UNVERIFIED,
+        aggregate_legacy_delivered_qty,
+    )
+
+    legacy_settings = await get_mode_b_legacy_demand_settings(db)
+    # Demand is branch-scoped. Default excludes unattributed orders; optional
+    # Mode B legacy policy may attribute historical Accurate/null ids to one
+    # configured org branch without rewriting documents.
     order_query: Dict[str, Any] = {}
     if operational_id:
-        order_query["$or"] = [
-            {"branch_id": operational_id},
-            {"cabang_id": operational_id},
-        ]
+        order_query["$or"] = mongo_order_branch_clauses(operational_id, legacy_settings)
     else:
         # No resolvable branch → no inventable demand.
         order_query = {"_id": {"$exists": False}}
     orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
-    # Defense in depth: filter again in Python (cabang_id / stray docs).
-    orders = _orders_for_branch(orders, operational_id)
+    # Defense in depth: filter again in Python (cabang_id / stray docs / cutoff).
+    orders = _orders_for_branch(
+        orders, operational_id, legacy_settings=legacy_settings,
+    )
     progress = aggregate_operational_orders(
         orders, owners, exclude_master_ids=service_master_ids,
     )
     master_ids = [master["id"] for master in masters if master.get("id")]
-    delivered = await _r2_confirmed_delivery_qty(
-        db, master_ids, branch_id=operational_id,
-    )
-    # Company-wide cutover baseline has no branch keys. Applying it to a branch
-    # catalog would invent cross-branch delivery — fail-closed: omit.
-    baseline_by_item: Dict[str, float] = {}
+    # Qty Belum Terkirim delivery proof = Compatibility live rules (confirmed
+    # shipment / qty_delivered fallback). Do NOT also add SALES_DELIVERY ledger
+    # here — ledger is Stock Fisik authority only (avoids double-count once Mode B
+    # confirmations also stamp order.shipments). R2 ledger path remains for R2.
+    if catalog_mode == "r2":
+        delivered = await _r2_confirmed_delivery_qty(
+            db, master_ids, branch_id=operational_id,
+        )
+        delivery_provenance: Dict[str, str] = {
+            mid: "r2_ledger" for mid in delivered
+        }
+    else:
+        delivered, delivery_provenance = aggregate_legacy_delivered_qty(
+            orders, [], owners,
+        )
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
     balance_docs = []
     if warehouse_ids and master_ids:
@@ -3267,8 +3297,11 @@ async def list_physical_stock_catalog(
             "completion_unproven": False,
         }
         mid = master.get("id")
-        effective_delivered = _qty_num(delivered.get(mid, 0)) + _qty_num(baseline_by_item.get(str(mid), 0))
+        # Compatibility parity: delivered from proven shipments / qty_delivered only
+        # (standalone Mode B). R2 still uses ledger map above.
+        effective_delivered = _qty_num(delivered.get(mid, 0))
         completion_unproven = bool(demand.get("completion_unproven"))
+        delivery_unproven = str(delivery_provenance.get(str(mid) or mid, "") or "") == "unproven"
         completed_for_buckets = demand["completed_qty"]
         buckets = operational_availability(
             physical_qty=physical,
@@ -3276,9 +3309,11 @@ async def list_physical_stock_catalog(
             completed_qty=completed_for_buckets,
             r2_delivered_qty=effective_delivered,
         )
-        # Fail-closed siap kirim when process Add On completion cannot be proven.
+        # Fail-closed siap kirim when process Add On completion cannot be proven
+        # OR Compatibility delivery attribution is unproven for this master.
         belum_unverified = bool(
-            completion_unproven and _qty_num(completed_for_buckets) > 0
+            (completion_unproven and _qty_num(completed_for_buckets) > 0)
+            or (delivery_unproven and _qty_num(completed_for_buckets) > 0)
         )
         if belum_unverified:
             buckets = dict(buckets)
@@ -3347,10 +3382,25 @@ async def list_physical_stock_catalog(
             baseline_status = BASELINE_UNRECONCILED
         else:
             baseline_status = BASELINE_RECONCILED
-        # Reconciled book is not enough when Belum Terkirim itself is unverified.
+        # Reconciled warehouse book + proven Belum (Compatibility rules).
         qty_tersedia_valid = (
             baseline_status == BASELINE_RECONCILED and not belum_unverified
         )
+        if belum_unverified:
+            if delivery_unproven:
+                tersedia_note = (
+                    "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
+                    "(bukti pengiriman ambigu / BELUM_TERVERIFIKASI)."
+                )
+            else:
+                tersedia_note = (
+                    "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
+                    "(proses Add On / completion tidak dapat dibuktikan)."
+                )
+        elif baseline_status != BASELINE_RECONCILED:
+            tersedia_note = "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi"
+        else:
+            tersedia_note = None
         row = {
             "master_item_id": master.get("id"),
             "item_code": master.get("item_code") or "",
@@ -3364,23 +3414,15 @@ async def list_physical_stock_catalog(
             # and Belum Terkirim is verified.
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
-            "qty_tersedia_note": (
-                "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
-                "(proses Add On / completion tidak dapat dibuktikan)."
-                if belum_unverified
-                else (
-                    "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi"
-                    if not qty_tersedia_valid
-                    else None
-                )
-            ),
+            "qty_tersedia_note": tersedia_note,
+            "delivery_provenance": delivery_provenance.get(str(mid) or mid),
             # Provisional from balance stamps; replaced by the same final movement
             # used for updated_by_name during page enrich (never master_items.updated_by).
             "updated_at": max(updated) if updated else None,
             "updated_by_name": None,
             "_candidate_movement_ids": candidate_movement_ids,
             "belum_terkirim_status": (
-                "BELUM_TERVERIFIKASI" if belum_unverified else "READY"
+                BELUM_STATUS_UNVERIFIED if belum_unverified else "READY"
             ),
             "stock_read_mode": catalog_mode,
             "baseline_status": baseline_status,
@@ -3405,18 +3447,28 @@ async def list_physical_stock_catalog(
                 "Qty Pesanan / Belum Terkirim adalah lingkup cabang; "
                 "bukan alokasi per gudang."
             )
-            row["qty_tersedia_note"] = (
+            scope_note = (
                 "Qty Tersedia memakai permintaan cabang terhadap saldo buku gudang ini "
                 "— bukan ketersediaan yang dialokasikan per gudang."
             )
+            if row.get("qty_tersedia_note"):
+                row["qty_tersedia_note"] = (
+                    f"{row['qty_tersedia_note']} {scope_note}"
+                ).strip()
+            else:
+                row["qty_tersedia_note"] = scope_note
         else:
             row["physical_qty_scope"] = "BRANCH"
-        if not qty_tersedia_valid:
-            row["qty_tersedia_note"] = (
-                (str(row.get("qty_tersedia_note") or "").strip() + " ").lstrip()
-                + "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi "
+        if not qty_tersedia_valid and baseline_status != BASELINE_RECONCILED:
+            existing_note = str(row.get("qty_tersedia_note") or "").strip()
+            recon_note = (
+                "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi "
                 "(Saldo Awal / Stock Opname)."
-            ).strip()
+            )
+            if recon_note not in existing_note:
+                row["qty_tersedia_note"] = (
+                    f"{existing_note} {recon_note}".strip()
+                )
         rows.append(row)
     total = len(rows)
     start = (safe_page - 1) * safe_limit

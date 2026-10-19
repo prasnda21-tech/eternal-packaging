@@ -192,6 +192,99 @@ def aggregate_legacy_delivered_qty(
     return delivered, provenance
 
 
+def proven_delivered_qty_by_order_line(
+    order: dict,
+    accurate_owners: Optional[Dict[str, str]] = None,
+) -> Tuple[Dict[int, float], bool]:
+    """Compatibility-proven delivered qty per line_idx for one order.
+
+    Returns (by_line_idx, has_unproven_shipment). Uses the same confirmation /
+    Terkirim / single-line qty_delivered rules as aggregate_legacy_delivered_qty.
+    sales_deliveries.status alone never counts.
+    """
+    from services.r2_go_live import (
+        _confirmation_line_qtys,
+        _delivery_identity_tokens,
+        _proven_shipped_qty_for_shipment,
+        _resolve_proven_line_attribution,
+    )
+
+    if not isinstance(order, dict) or _order_cancelled(order):
+        return {}, False
+    owners = accurate_owners or {}
+    order_id = str(order.get("id") or "").strip()
+    order_lines = list(order.get("line_items") or [])
+    if not order_lines:
+        return {}, False
+
+    by_line: Dict[int, float] = {}
+    unproven = False
+    seen_identities: set = set()
+    confirmed_any = False
+
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        proven = _proven_shipped_qty_for_shipment(order, sh)
+        if proven <= 0:
+            continue
+        tokens = _delivery_identity_tokens(sh)
+        if tokens and any(t in seen_identities for t in tokens):
+            continue
+        for t in tokens:
+            seen_identities.add(t)
+
+        confirmation_lines = _confirmation_line_qtys(
+            order, sh, order_line_count=len(order_lines),
+        )
+        shipment_lines: Dict[int, float] = {}
+        if not confirmation_lines:
+            line_rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+            unresolved = False
+            for ln in line_rows:
+                if not isinstance(ln, dict):
+                    continue
+                qty = _delivery_line_qty(ln)
+                if qty <= 0:
+                    continue
+                try:
+                    idx = int(ln.get("line_idx"))
+                except (TypeError, ValueError):
+                    unresolved = True
+                    continue
+                if idx < 0 or idx >= len(order_lines):
+                    unresolved = True
+                    continue
+                shipment_lines[idx] = float(shipment_lines.get(idx, 0.0)) + qty
+            if unresolved and len(order_lines) > 1:
+                unproven = True
+                continue
+        sh_tokens = _delivery_identity_tokens(sh)
+        attributed, resolve_issues = _resolve_proven_line_attribution(
+            order_id=order_id or "(missing-order)",
+            identity=sh_tokens[0] if sh_tokens else "(missing-id)",
+            proven=proven,
+            order_line_count=len(order_lines),
+            confirmation_lines=confirmation_lines,
+            shipment_lines=shipment_lines,
+        )
+        if resolve_issues or not attributed:
+            unproven = True
+            continue
+        for idx, qty in attributed.items():
+            if idx < 0 or idx >= len(order_lines):
+                continue
+            by_line[idx] = float(by_line.get(idx, 0.0)) + float(qty)
+            confirmed_any = True
+
+    if not confirmed_any and len(order_lines) == 1:
+        qd = _qty_num(order.get("qty_delivered"))
+        if qd > 0:
+            by_line[0] = float(by_line.get(0, 0.0)) + qd
+
+    return by_line, unproven
+
+
 # Honest fallback — never invent actor from master_items.updated_by.
 LAST_STOCK_ACTOR_UNKNOWN = "Tidak tercatat"
 

@@ -933,15 +933,23 @@ async def apply_confirmed_sales_delivery_standalone(
             "engine": MODE_WAREHOUSE_STANDALONE,
         }
 
+    from services.stock_compatibility_read import proven_delivered_qty_by_order_line
+
+    # Compatibility-proven historical delivery on the order (confirmations /
+    # Terkirim / single-line qty_delivered). Ledger posts after Mode B must not
+    # double-count the same ship: take max(proven, ledger) as already delivered.
+    proven_by_line, _unproven = proven_delivered_qty_by_order_line(order)
     for line in resolved:
         completed = _completed_qty_for_line(order, line["line_idx"])
+        line_idx = int(line["line_idx"])
+        proven_done = int(max(_qty_num(proven_by_line.get(line_idx, 0)), 0))
         # Standalone delivered qty = sum of existing SALES_DELIVERY for this line.
         prior = 0
         async for mov in db[LEDGER_COLLECTION].find(
             {
                 "movement_type": MOVEMENT_SALES_DELIVERY,
                 "metadata.order_id": order_id,
-                "metadata.line_idx": int(line["line_idx"]),
+                "metadata.line_idx": line_idx,
             },
             {"_id": 0, "qty_delta": 1},
         ):
@@ -951,12 +959,13 @@ async def apply_confirmed_sales_delivery_standalone(
             {
                 "movement_type": MOVEMENT_REVERSAL,
                 "metadata.order_id": order_id,
-                "metadata.line_idx": int(line["line_idx"]),
+                "metadata.line_idx": line_idx,
             },
             {"_id": 0, "qty_delta": 1},
         ):
             prior -= abs(int(mov.get("qty_delta") or 0))
-        ready = max(int(completed) - max(prior, 0), 0)
+        already = max(proven_done, max(int(prior), 0))
+        ready = max(int(completed) - already, 0)
         if line["qty"] > ready:
             raise PhysicalStockValidationError(
                 "Kuantitas terkirim melebihi Qty Belum Terkirim pada baris pesanan ini"
