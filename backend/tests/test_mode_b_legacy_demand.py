@@ -19,6 +19,7 @@ from services.mode_b_legacy_demand import (  # noqa: E402
     initialize_mode_b_delivery_cutover,
     order_attributed_to_branch,
     preview_mode_b_delivery_cutover,
+    sanitize_settings,
 )
 from services.physical_stock import (  # noqa: E402
     BALANCE_COLLECTION,
@@ -31,8 +32,12 @@ from services.physical_stock import (  # noqa: E402
     WAREHOUSES_COLLECTION,
     list_physical_stock_catalog,
 )
-from services.r2_go_live import set_r2_authority_active  # noqa: E402
+from services.r2_go_live import (  # noqa: E402
+    is_r2_authority_active,
+    set_r2_authority_active,
+)
 from services.warehouse_stock_standalone import (  # noqa: E402
+    MODE_WAREHOUSE_STANDALONE,
     set_warehouse_stock_standalone_enabled,
 )
 import server  # noqa: E402
@@ -131,6 +136,9 @@ def _order(
     shipments=None,
     delivery_confirmations=None,
     production_process="print",
+    import_source=None,
+    accurate_id=None,
+    qty_delivered=None,
 ):
     doc = {
         "id": oid,
@@ -152,7 +160,24 @@ def _order(
         doc["branch_id"] = branch_id
     if cancelled:
         doc["cancelled"] = True
+    if import_source is not None:
+        doc["import_source"] = import_source
+        doc["accurate_source"] = import_source
+    if accurate_id is not None:
+        doc["accurate_id"] = accurate_id
+    if qty_delivered is not None:
+        doc["qty_delivered"] = qty_delivered
     return doc
+
+
+def _live_map(*, enabled=True, org_branch_id="", accurate_ids=None, sources=None):
+    return {
+        "enabled": enabled,
+        "org_branch_id": org_branch_id,
+        "accurate_branch_ids": list(accurate_ids if accurate_ids is not None else ["50"]),
+        "allowed_sources": list(sources if sources is not None else ["accurate_live"]),
+        "require_accurate_id": True,
+    }
 
 
 async def _enable_legacy(db, ygy, *, include_null=True, accurate_ids=None):
@@ -522,8 +547,182 @@ async def test_no_hardcoded_production_counts(db):
     """Regression guard: implementation must not bake Owner audit counts."""
     import pathlib
     text = pathlib.Path("/workspace/backend/services/mode_b_legacy_demand.py").read_text()
-    for banned in ("702", "695", "498", "204", "616", "727"):
+    for banned in ("702", "695", "498", "204", "616", "727", "729", "217", "512", "113"):
         assert banned not in text
+
+
+async def test_accurate_live_50_maps_after_cutoff_when_enabled(db):
+    """Accurate Live branch 50 → YGY at read-time; null stays cutoff-gated."""
+    ygy = await _branch(db, "YGY")
+    smg = await _branch(db, "SMG")
+    settings = await configure_mode_b_legacy_demand(
+        db,
+        enabled=True,
+        org_branch_id=ygy["id"],
+        historical_cutoff_at=CUTOFF,
+        accurate_branch_ids=["50"],
+        include_null_branch=True,
+        accurate_live_branch_map=_live_map(org_branch_id=ygy["id"]),
+    )
+
+    live_new = _order(
+        "live50", {"id": "x"}, 10, 10,
+        branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-SO-NEW-50",
+    )
+    bare_new = _order("bare50", {"id": "x"}, 10, 10, branch_id="50", created_at=NEW)
+    hist_50 = _order("h50", {"id": "x"}, 10, 10, branch_id="50", created_at=HIST)
+    hist_null = _order("hnull", {"id": "x"}, 10, 10, created_at=HIST)
+    hist_null.pop("branch_id", None)
+    new_null = _order("nnull", {"id": "x"}, 10, 10, created_at=NEW)
+    new_null.pop("branch_id", None)
+    other = _order(
+        "live-smg", {"id": "x"}, 10, 10,
+        branch_id=smg["id"], created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-SMG",
+    )
+    wrong_src = _order(
+        "file50", {"id": "x"}, 10, 10,
+        branch_id="50", created_at=NEW,
+        import_source="file", accurate_id="FILE-1",
+    )
+    no_acc_id = _order(
+        "noid", {"id": "x"}, 10, 10,
+        branch_id="50", created_at=NEW,
+        import_source="accurate_live",
+    )
+
+    assert order_attributed_to_branch(live_new, ygy["id"], settings) is True
+    assert order_attributed_to_branch(bare_new, ygy["id"], settings) is False
+    assert order_attributed_to_branch(hist_50, ygy["id"], settings) is True
+    assert order_attributed_to_branch(hist_null, ygy["id"], settings) is True
+    assert order_attributed_to_branch(new_null, ygy["id"], settings) is False
+    assert order_attributed_to_branch(other, ygy["id"], settings) is False
+    assert order_attributed_to_branch(wrong_src, ygy["id"], settings) is False
+    assert order_attributed_to_branch(no_acc_id, ygy["id"], settings) is False
+    assert order_attributed_to_branch(live_new, smg["id"], settings) is False
+
+
+async def test_accurate_live_map_disableable(db):
+    ygy = await _branch(db, "YGY")
+    settings = await configure_mode_b_legacy_demand(
+        db,
+        enabled=True,
+        org_branch_id=ygy["id"],
+        historical_cutoff_at=CUTOFF,
+        accurate_branch_ids=["50"],
+        include_null_branch=True,
+        accurate_live_branch_map=_live_map(enabled=False, org_branch_id=ygy["id"]),
+    )
+    live_new = _order(
+        "off50", {"id": "x"}, 10, 10,
+        branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-OFF",
+    )
+    assert order_attributed_to_branch(live_new, ygy["id"], settings) is False
+    assert sanitize_settings(settings)["accurate_live_branch_map"]["enabled"] is False
+
+
+async def test_catalog_accurate_live_new_50_pesanan_and_belum(db):
+    """Post-cutoff Accurate Live 50 counts in YGY Qty Pesanan / Belum (Compatibility)."""
+    ygy = await _branch(db, "YGY")
+    smg = await _branch(db, "SMG")
+    wh_y = await _wh(db, ygy)
+    wh_s = await _wh(db, smg)
+    item = await _item(db, "CUP-LIVE")
+    await _balance(db, item, ygy, wh_y, 500)
+    await _balance(db, item, smg, wh_s, 200)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True)
+    await set_r2_authority_active(db, active=False)
+    await configure_mode_b_legacy_demand(
+        db,
+        enabled=True,
+        org_branch_id=ygy["id"],
+        historical_cutoff_at=CUTOFF,
+        accurate_branch_ids=["50"],
+        include_null_branch=True,
+        accurate_live_branch_map=_live_map(org_branch_id=ygy["id"]),
+    )
+
+    # New Accurate Live unfinished → pesanan
+    await db.orders.insert_one(_order(
+        "live-open", item, 90, 0, branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-OPEN",
+    ))
+    # New Accurate Live ready, unshipped → belum
+    await db.orders.insert_one(_order(
+        "live-ready", item, 40, 40, branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-READY",
+    ))
+    # Partial shipped (Compatibility proven)
+    await db.orders.insert_one(_order(
+        "live-part", item, 100, 100, branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-PART",
+        shipments=[{
+            "id": "sj-part",
+            "delivered": True,
+            "delivered_at": NEW,
+            "lines": [{"line_idx": 0, "qty": 30}],
+        }],
+        delivery_confirmations=[{
+            "id": "conf-part",
+            "shipment_id": "sj-part",
+            "items": [{"line_idx": 0, "qty": 30}],
+            "confirmed_at": NEW,
+        }],
+    ))
+    # Full shipped
+    await db.orders.insert_one(_order(
+        "live-full", item, 20, 20, branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-FULL",
+        shipments=[{
+            "id": "sj-full",
+            "delivered": True,
+            "delivered_at": NEW,
+            "lines": [{"line_idx": 0, "qty": 20}],
+        }],
+        delivery_confirmations=[{
+            "id": "conf-full",
+            "shipment_id": "sj-full",
+            "items": [{"line_idx": 0, "qty": 20}],
+            "confirmed_at": NEW,
+        }],
+    ))
+    # Cancelled Accurate Live — excluded
+    await db.orders.insert_one(_order(
+        "live-can", item, 500, 500, branch_id="50", created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-CAN", cancelled=True,
+    ))
+    # Null post-cutoff — excluded
+    null_new = _order("null-new", item, 777, 777, created_at=NEW)
+    null_new.pop("branch_id", None)
+    await db.orders.insert_one(null_new)
+    await db.orders.update_one(
+        {"id": "null-new"}, {"$unset": {"branch_id": "", "cabang_id": ""}},
+    )
+    # Other branch UUID — SMG only
+    await db.orders.insert_one(_order(
+        "smg-live", item, 15, 15, branch_id=smg["id"], created_at=NEW,
+        import_source="accurate_live", accurate_id="ACC-SMG2",
+    ))
+
+    ygy_cat = await list_physical_stock_catalog(db, branch_id=ygy["id"], q="CUP-LIVE")
+    row = ygy_cat["items"][0]
+    # pesanan = unfinished only → 90
+    assert row["qty_pesanan"] == 90
+    # belum = ready unshipped 40 + partial remaining 70 = 110
+    assert row["qty_belum_terkirim"] == 110
+    assert await is_r2_authority_active(db) is False
+    assert ygy_cat.get("stock_read_mode") == MODE_WAREHOUSE_STANDALONE
+
+    # branch_id on documents unchanged
+    live_doc = await db.orders.find_one({"id": "live-open"}, {"_id": 0, "branch_id": 1})
+    assert live_doc["branch_id"] == "50"
+
+    smg_cat = await list_physical_stock_catalog(db, branch_id=smg["id"], q="CUP-LIVE")
+    smg_row = smg_cat["items"][0]
+    assert smg_row["qty_pesanan"] == 0
+    assert smg_row["qty_belum_terkirim"] == 15
 
 
 async def test_force_reinit_blocked_when_ledger_exists(db):
