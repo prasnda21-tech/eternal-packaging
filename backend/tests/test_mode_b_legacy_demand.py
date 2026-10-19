@@ -32,8 +32,12 @@ from services.physical_stock import (  # noqa: E402
     WAREHOUSES_COLLECTION,
     list_physical_stock_catalog,
 )
-from services.r2_go_live import set_r2_authority_active  # noqa: E402
+from services.r2_go_live import (  # noqa: E402
+    is_r2_authority_active,
+    set_r2_authority_active,
+)
 from services.warehouse_stock_standalone import (  # noqa: E402
+    MODE_WAREHOUSE_STANDALONE,
     set_warehouse_stock_standalone_enabled,
 )
 import server  # noqa: E402
@@ -708,12 +712,8 @@ async def test_catalog_accurate_live_new_50_pesanan_and_belum(db):
     assert row["qty_pesanan"] == 90
     # belum = ready unshipped 40 + partial remaining 70 = 110
     assert row["qty_belum_terkirim"] == 110
-    assert await db.app_settings.find_one(
-        {"key": "r2_authority_active", "active": True},
-    ) is None or True
-    # R2 remains off for catalog path under Mode B standalone
-    assert ygy_cat.get("stock_read_mode") in ("warehouse_standalone", "mode_b", "standalone") or \
-        "r2" not in str(ygy_cat.get("stock_read_mode") or "").lower()
+    assert await is_r2_authority_active(db) is False
+    assert ygy_cat.get("stock_read_mode") == MODE_WAREHOUSE_STANDALONE
 
     # branch_id on documents unchanged
     live_doc = await db.orders.find_one({"id": "live-open"}, {"_id": 0, "branch_id": 1})
