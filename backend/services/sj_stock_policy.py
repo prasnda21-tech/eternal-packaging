@@ -43,3 +43,33 @@ def sj_stock_reference(order: Mapping[str, Any], shipment: Optional[Mapping[str,
     if not sid:
         raise ValueError("SJ_STOCK_ID_REQUIRED")
     return sid
+
+
+def resolve_v2_sj_stock_identity(order: Mapping[str, Any], selected_shipment_id: str) -> str:
+    """Resolve exactly one SJ for a V2 stock event; never fall back to the PO.
+
+    Matching aliases are allowed only when they identify the same shipment.
+    Ambiguous/missing mappings must stop the stock mutation, not reassign it.
+    """
+    if not is_sj_stock_v2(order):
+        raise ValueError("SJ_STOCK_V2_REQUIRED")
+    want = str(selected_shipment_id or "").strip()
+    if not want:
+        raise ValueError("SJ_STOCK_ID_REQUIRED")
+    matches = []
+    for row in order.get("shipments") or []:
+        if not isinstance(row, Mapping):
+            continue
+        keys = {
+            str(row.get("id") or "").strip(),
+            str(row.get("sales_delivery_id") or "").strip(),
+        }
+        keys.discard("")
+        if want in keys:
+            matches.append(row)
+    if len(matches) != 1:
+        raise ValueError("SJ_STOCK_ID_AMBIGUOUS_OR_MISSING")
+    result = canonical_sj_id(matches[0])
+    if not result:
+        raise ValueError("SJ_STOCK_ID_REQUIRED")
+    return result
