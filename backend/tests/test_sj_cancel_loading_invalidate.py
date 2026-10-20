@@ -212,3 +212,39 @@ def test_cancelled_loading_does_not_block_product_replace_hits():
 def test_active_loading_still_blocks_replace():
     order = _order_two_sj()
     assert "loading" in collect_order_embedded_downstream_hits(order, 0)
+
+
+
+def test_multi_sj_cancel_only_unblocks_own_loading_and_keeps_qty_until_manual_hapus():
+    """SJ-A cancelled in Pengiriman Pesanan; SJ-B remains active and unchanged."""
+    order = _order_two_sj(sj_a_cancelled=True)
+    before_b = dict(order["loading_confirmations"][2])
+    # Cancelled SJ does not implicitly release its Loading allocation.
+    assert qty_loaded_for_line(order, 0) == 1000
+    assert [c["id"] for c in loading_confirmations_stored(order)] == [
+        "lc-a1", "lc-a2", "lc-b",
+    ]
+    assert validate_cancel_loading_confirmation(order, "lc-a1") is None
+    assert validate_cancel_loading_confirmation(order, "lc-b") == MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
+
+    # Operator explicitly cancels only SJ-A's confirmation.
+    cancel_loading_confirmation(order, "lc-a1", actor={"email": "operator@test.local"}, cancelled_at="t1")
+    assert qty_loaded_for_line(order, 0) == 600
+    assert [c["id"] for c in loading_confirmations_stored(order)] == ["lc-a2", "lc-b"]
+    assert order["loading_confirmations"][2] == before_b
+    assert validate_cancel_loading_confirmation(order, "lc-b") == MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
+
+    # Repeated cancellation must not silently touch SJ-B or double-release qty.
+    assert validate_cancel_loading_confirmation(order, "lc-a1") == "Konfirmasi Loading tidak ditemukan."
+    assert qty_loaded_for_line(order, 0) == 600
+
+
+def test_multi_sj_cancel_b_does_not_unlock_a_loading():
+    order = _order_two_sj()
+    order["shipments"][1].update({
+        "is_cancelled": True, "cancelled": True,
+        "status": "cancelled", "sj_status": "cancelled",
+    })
+    assert validate_cancel_loading_confirmation(order, "lc-b") is None
+    assert validate_cancel_loading_confirmation(order, "lc-a1") == MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL
+    assert qty_loaded_for_line(order, 0) == 1000
