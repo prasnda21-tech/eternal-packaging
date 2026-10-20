@@ -1933,11 +1933,27 @@ async def cancel_sales_delivery_document(
                                     row["cancelled"] = True
                                     row["cancelled_at"] = cancelled_at
                                 confirmations.append(row)
+                            files = []
+                            for entry in order.get("surat_jalan_files") or []:
+                                if not isinstance(entry, dict):
+                                    continue
+                                file_row = dict(entry)
+                                # Keep the document for audit, but stop treating the cancelled SJ as live.
+                                if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
+                                    str(file_row.get("id") or "") == delivery_id
+                                    or str(file_row.get("shipment_id") or "") == delivery_id
+                                ):
+                                    file_row["cancelled"] = True
+                                    file_row["status"] = "cancelled"
+                                    file_row["cancelled_at"] = cancelled_at
+                                files.append(file_row)
                             order["shipments"] = shipments
+                            order["surat_jalan_files"] = files
                             order["delivery_confirmations"] = confirmations
                             recomputed = _recompute_order_delivery_after_cancel(order)
                             order_patch = {
                                 "shipments": shipments,
+                                "surat_jalan_files": files,
                                 "delivery_confirmations": confirmations,
                                 "qty_delivered": recomputed["qty_delivered"],
                                 "delivery_status": recomputed["delivery_status"],
