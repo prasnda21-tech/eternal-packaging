@@ -3,7 +3,7 @@ import pytest
 
 from services.sj_stock_policy import (
     POLICY_V2, LEGACY_POLICY, canonical_sj_id,
-    is_sj_stock_v2, policy_version, sj_stock_reference,
+    is_sj_stock_v2, policy_version, sj_stock_reference, resolve_v2_sj_stock_identity,
 )
 
 
@@ -37,3 +37,29 @@ def test_canonical_business_id_precedes_shipment_row_id():
 
 def test_string_version_cannot_enable_v2():
     assert policy_version({"stock_business_rule_version": "2"}) == LEGACY_POLICY
+
+
+def test_v2_requires_unique_existing_sj_on_order():
+    order = {
+        "id": "po-new", "stock_business_rule_version": 2,
+        "shipments": [
+            {"id": "shipment-a", "sales_delivery_id": "sj-a"},
+            {"id": "shipment-b", "sales_delivery_id": "sj-b"},
+        ],
+    }
+    assert resolve_v2_sj_stock_identity(order, "shipment-a") == "sj-a"
+    assert resolve_v2_sj_stock_identity(order, "sj-b") == "sj-b"
+    with pytest.raises(ValueError, match="AMBIGUOUS_OR_MISSING"):
+        resolve_v2_sj_stock_identity(order, "sj-unrelated")
+
+
+def test_v2_duplicate_sj_identity_fails_closed():
+    order = {
+        "stock_business_rule_version": 2,
+        "shipments": [
+            {"id": "row-a", "sales_delivery_id": "sj-duplicate"},
+            {"id": "row-b", "sales_delivery_id": "sj-duplicate"},
+        ],
+    }
+    with pytest.raises(ValueError, match="AMBIGUOUS_OR_MISSING"):
+        resolve_v2_sj_stock_identity(order, "sj-duplicate")
