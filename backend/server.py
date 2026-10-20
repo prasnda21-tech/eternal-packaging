@@ -13605,7 +13605,9 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
         PhysicalStockUnavailableError,
         PhysicalStockValidationError,
         _r2_confirmation_ids_for_sales_delivery,
+        assess_sales_delivery_cancel_stock,
         cancel_sales_delivery_document,
+        cancel_sales_delivery_document_operational,
         reverse_r2_deliveries_for_sales_delivery,
     )
     from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active_cancel
@@ -13624,9 +13626,27 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     r2_on_cancel = await _is_r2_authority_active_cancel(db)
     standalone_cancel = (not r2_on_cancel) and await _is_standalone_for_cancel(db)
 
-    if needs_soft_cancel:
+    try:
+        stock_assessment = await assess_sales_delivery_cancel_stock(db, delivery)
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    stock_mode = str(stock_assessment.get("mode") or "")
+    if stock_mode in {"ambiguous", "unsupported_stock"}:
+        raise HTTPException(400, str(stock_assessment.get("reason") or "Pembatalan ditolak."))
+
+    # Loading / delivery evidence without stock mutations → operational soft-cancel
+    # (no Mongo transaction / no stock reversal). Active R2 stock still uses
+    # the transactional or standalone reversal engines.
+    if needs_soft_cancel or stock_mode == "requires_stock_reversal":
         try:
-            if standalone_cancel:
+            if stock_mode == "operational_only":
+                result = await cancel_sales_delivery_document_operational(
+                    db,
+                    delivery,
+                    actor_id=actor_id,
+                    reason="Pembatalan Surat Jalan",
+                )
+            elif standalone_cancel:
                 result = await cancel_sales_delivery_document_standalone(
                     db,
                     delivery,
@@ -13660,8 +13680,10 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
                 "qty_delivered": result.get("qty_delivered"),
                 "delivery_status": result.get("delivery_status"),
                 "engine": result.get("engine"),
+                "stock_mode": stock_mode,
             },
         )
+        no_stock = str(result.get("engine") or "") == "operational_no_stock"
         return {
             "deleted": False,
             "soft_cancelled": True,
@@ -13676,7 +13698,12 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
             "delivery_status": result.get("delivery_status"),
             "current_stage": result.get("current_stage"),
             "stock_engine": result.get("engine"),
-            "message": "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi.",
+            "stock_mode": stock_mode,
+            "message": (
+                "Surat Jalan dibatalkan. Loading terkait tetap aktif — hapus manual melalui Workflow bila perlu."
+                if no_stock
+                else "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi."
+            ),
         }
 
     # Draft SJ — no delivery evidence: hard delete (legacy).
