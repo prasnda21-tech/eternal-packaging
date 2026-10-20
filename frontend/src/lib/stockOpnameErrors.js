@@ -6,14 +6,26 @@ function detailText(err) {
 }
 
 /** Map HTTP status to operator-facing guidance. Never auto-retry posting. */
-export function stockOpnameErrorMessage(err) {
+export function stockOpnameErrorMessage(err, { sessionStatusLabel } = {}) {
   const status = err?.response?.status;
   const detail = detailText(err);
   if (status === 400) {
     return `Perbaiki input: ${detail}`;
   }
   if (status === 409) {
-    return `${detail} Data dipertahankan — review ulang angka/net movement sebelum konfirmasi. Tidak ada posting ulang otomatis.`;
+    const lower = String(detail || "").toLowerCase();
+    const concurrent = lower.includes("perubahan bersamaan") || lower.includes("confirm_lock");
+    const statusNote = sessionStatusLabel
+      ? ` Status sesi saat ini: ${sessionStatusLabel}.`
+      : "";
+    if (concurrent) {
+      return (
+        `${detail}${statusNote} `
+        + "Konfirmasi lain sedang diproses atau kunci sementara masih aktif. "
+        + "Tunggu lalu coba sekali lagi. Tidak ada posting ulang otomatis."
+      );
+    }
+    return `${detail}${statusNote} Data dipertahankan — review ulang angka/net movement sebelum konfirmasi. Tidak ada posting ulang otomatis.`;
   }
   if (status === 503) {
     return `${detail} Prasyarat: otoritas R2 fisik harus aktif di lingkungan yang diizinkan. Preview utama tetap R2 off.`;

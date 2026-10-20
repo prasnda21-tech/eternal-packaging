@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { formatDate } from "../lib/constants";
@@ -13,8 +13,8 @@ import {
   STOCK_OPNAME_TZ_LABEL,
   formatWibDateTime,
   isoToWibLocalInput,
-  wibLocalInputToIso,
 } from "../lib/stockOpnameTime";
+import { buildStockOpnameCountPayload } from "../lib/stockOpnameCounts";
 import { stockOpnameErrorMessage } from "../lib/stockOpnameErrors";
 
 function newKey() {
@@ -59,6 +59,8 @@ export default function StockOpname() {
   const [busy, setBusy] = useState(false);
   const [confirmKey, setConfirmKey] = useState(newKey);
   const [successNote, setSuccessNote] = useState("");
+  /** Sync guard: React setState(busy) is too late to stop a double-click race. */
+  const confirmInFlightRef = useRef(false);
 
   const choices = useMemo(
     () => opnameWarehouseChoices(branches, warehouses),
@@ -164,47 +166,32 @@ export default function StockOpname() {
     }
   }
 
+  function countPayloadOrError() {
+    return buildStockOpnameCountPayload({
+      sessionLines: session?.lines || [],
+      drafts,
+      timeDrafts,
+      applyBulkTime,
+      bulkCountAt,
+      mode: sessionMode(session),
+    });
+  }
+
   async function saveCounts() {
-    const lines = [];
-    const mode = sessionMode(session);
-    const bulkIso = applyBulkTime ? wibLocalInputToIso(bulkCountAt) : null;
-    if (applyBulkTime && !bulkIso) {
-      setError("Perbaiki input: centang terapkan waktu hitung ke banyak baris memerlukan waktu WIB yang valid.");
-      return;
-    }
-    for (const line of session?.lines || []) {
-      const raw = drafts[line.line_id];
-      const timeRaw = timeDrafts[line.line_id];
-      const hasQty = !(raw === "" || raw === undefined);
-      const lineTimeIso = wibLocalInputToIso(timeRaw);
-      const physicalCountAt = applyBulkTime && hasQty ? bulkIso : lineTimeIso;
-      if (!hasQty && !physicalCountAt) continue;
-      const row = { line_id: line.line_id };
-      if (hasQty) {
-        // Blank is omitted (not zero). Explicit 0 is sent as "0".
-        row.physical_count_qty = raw;
-      }
-      if (physicalCountAt) {
-        row.physical_count_at = physicalCountAt;
-      } else if (mode === "operational" && timeRaw === "" && line.physical_count_at) {
-        // User cleared a previously set count time.
-        row.physical_count_at = null;
-      }
-      if (row.physical_count_qty !== undefined || Object.prototype.hasOwnProperty.call(row, "physical_count_at")) {
-        lines.push(row);
-      }
-    }
-    if (!lines.length) {
-      setError("Perbaiki input: isi Stock Fisik. Kosong bukan nol. Waktu hitung diisi terpisah (bukan waktu impor).");
-      return;
+    const built = countPayloadOrError();
+    if (!built.ok) {
+      setError(`Perbaiki input: ${built.error}`);
+      return false;
     }
     setBusy(true);
     setError("");
     setSuccessNote("");
     try {
-      setSession(await api.countStockOpnameSession(session.id, { lines }));
+      setSession(await api.countStockOpnameSession(session.id, { lines: built.lines }));
+      return true;
     } catch (err) {
       setError(stockOpnameErrorMessage(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -250,6 +237,12 @@ export default function StockOpname() {
   }
 
   async function review() {
+    if (busy) return;
+    // Flush drafts first so physical_count_at / qty reach the API before REVIEW.
+    if (session?.status === "COUNTING") {
+      const saved = await saveCounts();
+      if (!saved) return;
+    }
     setBusy(true);
     setError("");
     setSuccessNote("");
@@ -264,7 +257,14 @@ export default function StockOpname() {
   }
 
   async function confirm() {
-    if (busy || session?.status === "CONFIRMED") return;
+    if (confirmInFlightRef.current || busy || session?.status === "CONFIRMED") return;
+    if (session?.status !== "REVIEW" && session?.status !== "PARTIAL") {
+      setError(
+        `Konfirmasi hanya dari status Review. Status saat ini: ${statusLabel(session?.status)}.`,
+      );
+      return;
+    }
+    confirmInFlightRef.current = true;
     setBusy(true);
     setError("");
     setSuccessNote("");
@@ -280,16 +280,20 @@ export default function StockOpname() {
       await refreshList();
     } catch (err) {
       const status = err?.response?.status;
-      setError(stockOpnameErrorMessage(err));
+      let statusLabelNow = statusLabel(session?.status);
       if (status === 409 && session?.id) {
         try {
-          // Keep inputs/times; refresh API numbers for re-review. Do not auto-retry posting.
-          setSession(await api.stockOpnameSession(session.id));
+          // Refresh authoritative status/lock view. Do not auto-retry posting.
+          const fresh = await api.stockOpnameSession(session.id);
+          setSession(fresh);
+          statusLabelNow = statusLabel(fresh?.status);
         } catch (_) {
           /* keep current session */
         }
       }
+      setError(stockOpnameErrorMessage(err, { sessionStatusLabel: statusLabelNow }));
     } finally {
+      confirmInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -450,6 +454,7 @@ export default function StockOpname() {
                         type="datetime-local"
                         value={bulkCountAt}
                         onChange={(event) => setBulkCountAt(event.target.value)}
+                        onInput={(event) => setBulkCountAt(event.target.value)}
                         disabled={!applyBulkTime || busy}
                         data-testid="opname-bulk-count-at"
                       />
@@ -472,9 +477,10 @@ export default function StockOpname() {
                   className="primary"
                   onClick={confirm}
                   disabled={busy || session.status === "CONFIRMED"}
+                  aria-busy={busy || undefined}
                   data-testid="opname-confirm"
                 >
-                  Konfirmasi Stock Opname
+                  {busy ? "Mengonfirmasi…" : "Konfirmasi Stock Opname"}
                 </button>
               </>
             )}
@@ -556,6 +562,7 @@ export default function StockOpname() {
                           type="datetime-local"
                           value={timeRaw}
                           onChange={(event) => setTimeDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
+                          onInput={(event) => setTimeDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
                           aria-label={`Waktu hitung ${line.item_code} ${STOCK_OPNAME_TZ_LABEL}`}
                           data-testid={`opname-count-at-${line.item_code}`}
                           disabled={applyBulkTime}
