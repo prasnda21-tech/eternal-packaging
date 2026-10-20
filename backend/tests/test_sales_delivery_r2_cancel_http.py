@@ -397,6 +397,15 @@ async def test_5_partial_multi_delivery_cancel_one(db):
     await database.orders.update_one({"id": po_id}, {
         "$push": {
             "shipments": sh2,
+            "surat_jalan_files": {
+                "id": sj2, "shipment_id": sj2, "sj_number": sh2["number"],
+                "name": f"{sj2}.pdf", "source": "SYSTEM_GENERATED",
+                "lines": [{"line_idx": 0, "line_id": line_id, "qty": 5}],
+            },
+            "loading_confirmations": {
+                "id": f"loading-{sj2}", "shipment_id": sj2, "surat_jalan_id": sj2,
+                "lines": [{"line_idx": 0, "qty": 5}],
+            },
             "delivery_confirmations": {
                 "id": f"conf-order-{sj2}", "shipment_id": sj2,
                 "sales_delivery_id": sj2, "qty": 5,
@@ -434,6 +443,18 @@ async def test_5_partial_multi_delivery_cancel_one(db):
     assert body["qty_delivered"] == 5
     assert body["delivery_status"] == "Sebagian Terkirim"
     assert await _qty(database, fx, fx["wh_a"]) == before_a + 5
+    # Cancel only SJ-2; both Loading confirmations remain until separately cancelled.
+    from quantity_rules import validate_cancel_loading_confirmation, qty_loaded_for_line
+    updated = await database.orders.find_one({"id": po_id}, {"_id": 0})
+    by_id = {row["id"]: row for row in updated["surat_jalan_files"]}
+    assert by_id[sj2]["cancelled"] is True
+    assert by_id[first["sj_id"]].get("cancelled") is not True
+    confirmations = {row["shipment_id"]: row for row in updated["loading_confirmations"]}
+    assert confirmations[sj2].get("cancelled") is not True
+    assert confirmations[first["sj_id"]].get("cancelled") is not True
+    assert qty_loaded_for_line(updated, 0) == 10
+    assert validate_cancel_loading_confirmation(updated, f"loading-{sj2}") is None
+    assert validate_cancel_loading_confirmation(updated, confirmations[first["sj_id"]]["id"]) is not None
     # First SJ still active
     d1 = await database.sales_deliveries.find_one({"id": first["sj_id"]})
     assert d1.get("is_cancelled") is not True
