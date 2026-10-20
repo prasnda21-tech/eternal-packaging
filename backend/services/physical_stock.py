@@ -1768,18 +1768,21 @@ async def assess_sales_delivery_cancel_stock(db, delivery: dict) -> dict:
             if str(cid or "").strip()
         ]
         if listed:
+            # Include reversed docs so a completed cancel is not treated as
+            # "listed but missing" (that falsely fails closed on idempotent replay).
             rows = await db[SALES_DELIVERY_CONFIRMATIONS].find(
-                {"id": {"$in": listed}, "reversed": {"$ne": True}},
-                {"_id": 0, "id": 1, "sales_delivery_id": 1},
+                {"id": {"$in": listed}},
+                {"_id": 0, "id": 1, "sales_delivery_id": 1, "reversed": 1},
             ).to_list(200)
-            known = {str(r.get("id")) for r in rows}
+            known = {str(r.get("id")): r for r in rows if r.get("id")}
             for cid in listed:
-                if cid not in known:
+                row = known.get(cid)
+                if not row:
                     # Listed but missing doc — cannot prove attribution.
                     evidence["ambiguous_confirmation_ids"].append(cid)
                     continue
-            for row in rows:
-                cid = str(row.get("id") or "").strip()
+                if row.get("reversed") is True:
+                    continue  # already reversed — not an active cancel blocker
                 sj = str(row.get("sales_delivery_id") or "").strip()
                 if not sj:
                     evidence["ambiguous_confirmation_ids"].append(cid)

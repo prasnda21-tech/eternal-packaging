@@ -13631,7 +13631,9 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     except PhysicalStockValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
     stock_mode = str(stock_assessment.get("mode") or "")
-    if stock_mode in {"ambiguous", "unsupported_stock"}:
+    # Fail-closed only on first cancel. Idempotent replay of an already-cancelled
+    # SJ must return 200 without creating new stock reversals.
+    if stock_mode in {"ambiguous", "unsupported_stock"} and not already_cancelled:
         raise HTTPException(400, str(stock_assessment.get("reason") or "Pembatalan ditolak."))
 
     # Loading / delivery evidence without stock mutations → operational soft-cancel
@@ -13639,7 +13641,14 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     # the transactional or standalone reversal engines.
     if needs_soft_cancel or stock_mode == "requires_stock_reversal":
         try:
-            if stock_mode == "operational_only":
+            # Replay after a completed cancel has no active stock work left
+            # (assessment → operational_only). Ambiguous/unsupported on an
+            # already-cancelled SJ also heals via operational replay only.
+            use_operational = (
+                stock_mode == "operational_only"
+                or (already_cancelled and stock_mode in {"ambiguous", "unsupported_stock"})
+            )
+            if use_operational:
                 result = await cancel_sales_delivery_document_operational(
                     db,
                     delivery,

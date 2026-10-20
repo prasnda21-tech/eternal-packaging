@@ -335,6 +335,38 @@ async def test_6_ambiguous_po_confirmation_fail_closed(db):
     assert still.get("is_cancelled") is not True
 
 
+async def test_6b_reversed_listed_confirmation_not_ambiguous_on_replay(db):
+    """Completed cancel must not treat reversed PO-listed confirmation as ambiguous."""
+    database, _ = db
+    seeded = await _seed_multi_sj(database)
+    conf_id = f"conf-rev-{uuid.uuid4().hex[:8]}"
+    await database[SALES_DELIVERY_CONFIRMATIONS].insert_one({
+        "id": conf_id,
+        "sales_delivery_id": seeded["sj_a"],
+        "reversed": True,
+        "lines": [{"line_idx": 0, "qty": 5}],
+    })
+    await database.orders.update_one(
+        {"id": seeded["po_id"]},
+        {"$set": {"r2_confirmed_delivery_ids": [conf_id]}},
+    )
+    await database.sales_deliveries.update_one(
+        {"id": seeded["sj_a"]},
+        {"$set": {"is_cancelled": True, "cancelled": True, "status": "DIBATALKAN"}},
+    )
+    delivery = await database.sales_deliveries.find_one({"id": seeded["sj_a"]}, {"_id": 0})
+    assessment = await assess_sales_delivery_cancel_stock(database, delivery)
+    assert assessment["mode"] == "operational_only"
+
+    _admin()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.delete(f"/api/sales-deliveries/{seeded['sj_a']}")
+    assert res.status_code == 200, res.text
+    assert res.json().get("replayed") is True
+    assert await database[LEDGER_COLLECTION].count_documents({"movement_type": "REVERSAL"}) == 0
+
+
 async def test_7_idempotent_replay_no_double_stock_and_heals_order(db):
     database, _ = db
     seeded = await _seed_multi_sj(database)
