@@ -1627,7 +1627,13 @@ def _sales_delivery_identity_tokens(delivery: dict) -> set:
 
 
 async def _r2_confirmation_ids_for_sales_delivery(db, delivery: dict, *, session=None) -> list:
-    """Resolve physical R2 confirmation ids linked to one SJ document."""
+    """Resolve physical R2 confirmation ids linked to one SJ document.
+
+    Only identity-attributed confirmations are returned. PO-level
+    ``r2_confirmed_delivery_ids`` without a matching ``sales_delivery_id``
+    are intentionally excluded — callers that need fail-closed semantics
+    must use ``assess_sales_delivery_cancel_stock``.
+    """
     if not isinstance(delivery, dict):
         return []
     identity = _sales_delivery_identity_tokens(delivery)
@@ -1661,18 +1667,411 @@ async def _r2_confirmation_ids_for_sales_delivery(db, delivery: dict, *, session
                 confirmation_ids.add(cid)
 
     po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
-    if po_id and not confirmation_ids:
-        # Fallback: only explicit R2 confirmation ids on the order.
+    if po_id and identity:
+        # Attribute PO-listed confirmations only when sales_delivery_id matches
+        # this SJ. Never inherit sibling-SJ confirmations.
         order = await db.orders.find_one(
             {"id": po_id},
             {"_id": 0, "r2_confirmed_delivery_ids": 1},
             **find_kwargs,
         )
         if order:
-            for cid in order.get("r2_confirmed_delivery_ids") or []:
-                if cid:
-                    confirmation_ids.add(str(cid))
+            listed = [
+                str(cid).strip()
+                for cid in (order.get("r2_confirmed_delivery_ids") or [])
+                if str(cid or "").strip()
+            ]
+            if listed:
+                rows = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+                    {"id": {"$in": listed}},
+                    {"_id": 0, "id": 1, "sales_delivery_id": 1},
+                    **find_kwargs,
+                ).to_list(200)
+                for row in rows:
+                    sj = str(row.get("sales_delivery_id") or "").strip()
+                    if sj and sj in identity and row.get("id"):
+                        confirmation_ids.add(str(row["id"]))
     return sorted(confirmation_ids)
+
+
+async def _ledger_row_is_reversed(db, movement_id: str, *, session=None) -> bool:
+    mid = str(movement_id or "").strip()
+    if not mid:
+        return True
+    find_kwargs = {"session": session} if session is not None else {}
+    rev = await db[LEDGER_COLLECTION].find_one(
+        {"movement_type": MOVEMENT_REVERSAL, "reference_id": mid},
+        {"_id": 1},
+        **find_kwargs,
+    )
+    return bool(rev)
+
+
+async def assess_sales_delivery_cancel_stock(db, delivery: dict) -> dict:
+    """Classify whether SJ cancel needs stock reversal, is operational-only, or must fail closed.
+
+    Modes:
+    - operational_only: no SJ-attributed stock mutation that must be reversed
+    - requires_stock_reversal: R2/standalone ledger confirmations exist for this SJ
+    - ambiguous: PO-level / unattributable delivery stock evidence
+    - unsupported_stock: PSS/durable mutations attributed to this SJ (no safe cancel reversal here)
+    """
+    if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
+        raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")
+    identity = _sales_delivery_identity_tokens(delivery)
+    delivery_id = str(delivery["id"])
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    evidence: Dict[str, Any] = {
+        "confirmation_ids": [],
+        "active_ledger_ids": [],
+        "pss_movement_ids": [],
+        "pending_event_ids": [],
+        "ambiguous_confirmation_ids": [],
+        "orphan_ledger_ids": [],
+    }
+
+    confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
+    active_confirmation_ids: List[str] = []
+    for cid in confirmation_ids:
+        conf = await db[SALES_DELIVERY_CONFIRMATIONS].find_one({"id": cid}, {"_id": 0, "reversed": 1})
+        if conf and conf.get("reversed") is True:
+            continue
+        active_confirmation_ids.append(cid)
+    evidence["confirmation_ids"] = list(active_confirmation_ids)
+
+    if identity:
+        ledger_rows = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_SALES_DELIVERY,
+                "metadata.sales_delivery_id": {"$in": list(identity)},
+            },
+            {"_id": 0, "id": 1},
+        ).to_list(500)
+        for row in ledger_rows:
+            mid = str(row.get("id") or "").strip()
+            if mid and not await _ledger_row_is_reversed(db, mid):
+                evidence["active_ledger_ids"].append(mid)
+
+    # Unattributable PO-listed R2 confirmations → fail closed (never reverse sibling SJ).
+    if po_id:
+        order = await db.orders.find_one(
+            {"id": po_id},
+            {
+                "_id": 0,
+                "r2_confirmed_delivery_ids": 1,
+                "delivery_confirmations": 1,
+            },
+        ) or {}
+        listed = [
+            str(cid).strip()
+            for cid in (order.get("r2_confirmed_delivery_ids") or [])
+            if str(cid or "").strip()
+        ]
+        if listed:
+            # Include reversed docs so a completed cancel is not treated as
+            # "listed but missing" (that falsely fails closed on idempotent replay).
+            rows = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+                {"id": {"$in": listed}},
+                {"_id": 0, "id": 1, "sales_delivery_id": 1, "reversed": 1},
+            ).to_list(200)
+            known = {str(r.get("id")): r for r in rows if r.get("id")}
+            for cid in listed:
+                row = known.get(cid)
+                if not row:
+                    # Listed but missing doc — cannot prove attribution.
+                    evidence["ambiguous_confirmation_ids"].append(cid)
+                    continue
+                if row.get("reversed") is True:
+                    continue  # already reversed — not an active cancel blocker
+                sj = str(row.get("sales_delivery_id") or "").strip()
+                if not sj:
+                    evidence["ambiguous_confirmation_ids"].append(cid)
+                elif identity and sj not in identity:
+                    continue  # sibling SJ — independent
+                elif identity and sj in identity and cid not in evidence["confirmation_ids"]:
+                    evidence["confirmation_ids"].append(cid)
+                    if cid not in active_confirmation_ids:
+                        active_confirmation_ids.append(cid)
+
+        # Orphan R2 ledger on this PO without sales_delivery_id attribution.
+        orphan_rows = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_SALES_DELIVERY,
+                "metadata.order_id": po_id,
+                "$or": [
+                    {"metadata.sales_delivery_id": {"$exists": False}},
+                    {"metadata.sales_delivery_id": None},
+                    {"metadata.sales_delivery_id": ""},
+                ],
+            },
+            {"_id": 0, "id": 1, "metadata.confirmation_id": 1},
+        ).to_list(500)
+        for row in orphan_rows:
+            mid = str(row.get("id") or "").strip()
+            if not mid or await _ledger_row_is_reversed(db, mid):
+                continue
+            evidence["orphan_ledger_ids"].append(mid)
+
+        # Delivery-confirmed operational rows linked to this SJ may have PSS stock-out.
+        linked_conf_ids = []
+        for rec in order.get("delivery_confirmations") or []:
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("is_deleted") or rec.get("deleted") or rec.get("is_cancelled") or rec.get("cancelled"):
+                continue
+            linked = False
+            for field in ("shipment_id", "surat_jalan_id", "sj_number", "sales_delivery_id", "delivery_id"):
+                token = str(rec.get(field) or "").strip()
+                if token and token in identity:
+                    linked = True
+                    break
+            if linked:
+                cid = str(rec.get("id") or rec.get("action_id") or "").strip()
+                if cid:
+                    linked_conf_ids.append(cid)
+
+        pss_query_or = [
+            {"reference_type": "sales_delivery", "reference_id": {"$in": list(identity)}},
+            {"event_key": {"$regex": f"^stock_out:sales_delivery:{re.escape(delivery_id)}:"}},
+        ]
+        for cid in linked_conf_ids:
+            pss_query_or.append(
+                {"event_key": {"$regex": f"^stock_out:delivery:{re.escape(po_id)}:{re.escape(cid)}:"}}
+            )
+        pss_rows = await db.stock_movements.find(
+            {
+                "$or": pss_query_or,
+                "status": {"$nin": ["VOID", "REVERSED", "CANCELLED", "void", "reversed", "cancelled"]},
+            },
+            {"_id": 0, "id": 1, "event_key": 1, "status": 1},
+        ).to_list(500)
+        for row in pss_rows:
+            evidence["pss_movement_ids"].append(str(row.get("id") or row.get("event_key") or ""))
+
+        # In-flight durable claims attributed to this SJ.
+        try:
+            from services.product_stock_state import COLLECTION as STATE_COLLECTION
+        except Exception:  # pragma: no cover - import isolation
+            STATE_COLLECTION = "product_stock_state"
+        pending_or = [
+            {"pending_event.event_id": {"$regex": f"^stock_out:sales_delivery:{re.escape(delivery_id)}:"}},
+            {"pending_event.reference_type": "sales_delivery", "pending_event.reference_id": {"$in": list(identity)}},
+        ]
+        for cid in linked_conf_ids:
+            pending_or.append({
+                "pending_event.event_id": {
+                    "$regex": f"^stock_out:delivery:{re.escape(po_id)}:{re.escape(cid)}:"
+                },
+            })
+        pending_rows = await db[STATE_COLLECTION].find(
+            {"$or": pending_or},
+            {"_id": 0, "pending_event.event_id": 1},
+        ).to_list(200)
+        for row in pending_rows:
+            ev = str(((row.get("pending_event") or {}).get("event_id")) or "").strip()
+            if ev:
+                evidence["pending_event_ids"].append(ev)
+
+    if evidence["ambiguous_confirmation_ids"] or evidence["orphan_ledger_ids"]:
+        return {
+            "mode": "ambiguous",
+            "reason": (
+                "Mutasi stok pengiriman pada PO tidak dapat diatribusikan ke Surat Jalan ini "
+                "secara unik. Pembatalan ditolak (fail closed)."
+            ),
+            "evidence": evidence,
+        }
+    if evidence["pss_movement_ids"] or evidence["pending_event_ids"]:
+        return {
+            "mode": "unsupported_stock",
+            "reason": (
+                "Surat Jalan memiliki mutasi stok PSS/durable aktif yang belum dapat "
+                "dibalikkan secara aman melalui pembatalan ini."
+            ),
+            "evidence": evidence,
+        }
+    if evidence["active_ledger_ids"] and not evidence["confirmation_ids"]:
+        return {
+            "mode": "unsupported_stock",
+            "reason": (
+                "Surat Jalan memiliki mutasi ledger stok aktif tanpa konfirmasi R2 "
+                "yang dapat di-reversal secara aman. Pembatalan ditolak."
+            ),
+            "evidence": evidence,
+        }
+    if evidence["confirmation_ids"]:
+        return {
+            "mode": "requires_stock_reversal",
+            "reason": "Surat Jalan memiliki mutasi stok R2/warehouse yang harus di-reversal.",
+            "evidence": evidence,
+            "confirmation_ids": list(evidence["confirmation_ids"]),
+        }
+    return {
+        "mode": "operational_only",
+        "reason": "Tidak ada mutasi stok yang perlu dibalik untuk Surat Jalan ini.",
+        "evidence": evidence,
+        "confirmation_ids": [],
+    }
+
+
+def _order_soft_cancel_patch_for_delivery(
+    order: dict,
+    *,
+    identity: set,
+    delivery_id: str,
+    cancelled_at: str,
+) -> dict:
+    """Build order $set patch for soft-cancelling one SJ. Loading is never touched."""
+    shipments = []
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        row = dict(sh)
+        if _shipment_matches_delivery(row, identity):
+            row["is_cancelled"] = True
+            row["cancelled"] = True
+            row["status"] = "cancelled"
+            row["sj_status"] = "cancelled"
+            row["cancelled_at"] = cancelled_at
+        shipments.append(row)
+    confirmations = []
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict):
+            continue
+        row = dict(rec)
+        linked = False
+        for field in (
+            "shipment_id", "surat_jalan_id", "sj_number",
+            "sales_delivery_id", "delivery_id",
+        ):
+            token = str(row.get(field) or "").strip()
+            if token and token in identity:
+                linked = True
+                break
+        if linked:
+            row["is_cancelled"] = True
+            row["cancelled"] = True
+            row["cancelled_at"] = cancelled_at
+        confirmations.append(row)
+    files = []
+    for entry in order.get("surat_jalan_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        file_row = dict(entry)
+        if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
+            str(file_row.get("id") or "") == delivery_id
+            or str(file_row.get("shipment_id") or "") == delivery_id
+        ):
+            file_row["cancelled"] = True
+            file_row["status"] = "cancelled"
+            file_row["cancelled_at"] = cancelled_at
+        files.append(file_row)
+    order_view = dict(order)
+    order_view["shipments"] = shipments
+    order_view["surat_jalan_files"] = files
+    order_view["delivery_confirmations"] = confirmations
+    recomputed = _recompute_order_delivery_after_cancel(order_view)
+    return {
+        "shipments": shipments,
+        "surat_jalan_files": files,
+        "delivery_confirmations": confirmations,
+        "qty_delivered": recomputed["qty_delivered"],
+        "delivery_status": recomputed["delivery_status"],
+        "current_stage": recomputed["current_stage"],
+        "updated_at": cancelled_at,
+    }
+
+
+async def cancel_sales_delivery_document_operational(
+    db,
+    delivery: dict,
+    *,
+    actor_id: str,
+    reason: str = "",
+) -> dict:
+    """Soft-cancel SJ + reconcile order without stock writes or multi-doc transactions.
+
+    Safe on MongoDB standalone when assess_sales_delivery_cancel_stock reports
+    operational_only. Loading confirmations are never auto-cancelled.
+
+    Recovery / idempotency: SJ cancel is written first (conditional). Replays
+    always re-apply the order patch so a crash between the two writes heals.
+    """
+    if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
+        raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")
+    delivery_id = str(delivery["id"])
+    actor = _as_text(actor_id, "actor_id")
+    note = str(reason or "").strip() or "Pembatalan Surat Jalan"
+    identity = _sales_delivery_identity_tokens(delivery)
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+
+    fresh = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0})
+    if not fresh:
+        raise PhysicalStockNotFoundError("Pengiriman Pesanan tidak ditemukan.")
+
+    already = bool(
+        fresh.get("is_cancelled") is True
+        or str(fresh.get("status") or "").lower() in {"cancelled", "dibatalkan", "deleted"}
+    )
+    cancelled_at = str(fresh.get("cancelled_at") or "").strip() or now_iso()
+    replayed = already
+
+    if not already:
+        cancelled_at = now_iso()
+        result = await db.sales_deliveries.update_one(
+            {
+                "id": delivery_id,
+                "is_cancelled": {"$ne": True},
+                "status": {"$nin": ["DIBATALKAN", "CANCELLED", "DELETED", "cancelled", "dibatalkan", "deleted"]},
+            },
+            {"$set": {
+                "is_cancelled": True,
+                "cancelled": True,
+                "status": "DIBATALKAN",
+                "cancelled_at": cancelled_at,
+                "cancel_reason": note,
+                "cancelled_by": actor,
+                "r2_reversal": {
+                    "reversed_confirmations": [],
+                    "confirmation_ids": [],
+                    "engine": "operational_no_stock",
+                },
+                "updated_at": cancelled_at,
+            }},
+        )
+        if result.matched_count == 0:
+            # Concurrent cancel won — treat as replay and heal order.
+            replayed = True
+            fresh = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0}) or fresh
+            cancelled_at = str(fresh.get("cancelled_at") or cancelled_at)
+        else:
+            replayed = False
+
+    order_patch: Dict[str, Any] = {}
+    if po_id:
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+        if order:
+            order_patch = _order_soft_cancel_patch_for_delivery(
+                order,
+                identity=identity,
+                delivery_id=delivery_id,
+                cancelled_at=cancelled_at,
+            )
+            await db.orders.update_one({"id": po_id}, {"$set": order_patch})
+
+    return {
+        "id": delivery_id,
+        "sj_number": fresh.get("sj_number", delivery_id),
+        "soft_cancelled": True,
+        "deleted": False,
+        "replayed": replayed,
+        "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
+        "order_id": po_id or None,
+        "qty_delivered": order_patch.get("qty_delivered"),
+        "delivery_status": order_patch.get("delivery_status"),
+        "current_stage": order_patch.get("current_stage"),
+        "engine": "operational_no_stock",
+    }
 
 
 def _shipment_matches_delivery(shipment: dict, identity: set) -> bool:
