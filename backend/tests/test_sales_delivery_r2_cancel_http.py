@@ -329,6 +329,12 @@ async def test_1_2_3_4_9_12_cancel_terkirim_restores_origin_warehouse(db):
     assert order["qty_delivered"] == 0
     assert order["delivery_status"] == "Belum Terkirim"
     assert order["shipments"][0]["is_cancelled"] is True
+    # Cancelled business SJ must disappear from active Workflow SJ, without cancelling Loading.
+    assert order["surat_jalan_files"][0]["cancelled"] is True
+    assert order["surat_jalan_files"][0]["status"] == "cancelled"
+    from quantity_rules import has_surat_jalan_file, validate_cancel_loading_confirmation
+    assert has_surat_jalan_file(order) is False
+    assert validate_cancel_loading_confirmation(order, order["loading_confirmations"][0]["id"]) is None
     assert len([p for p in order["delivery_proofs"] if not p.get("is_deleted")]) == 2
     assert order.get("delivery_recipient_signature", {}).get("signature_storage_path")
     # Batalkan SJ must NOT auto-cancel Loading — Hapus Loading is a separate step.
