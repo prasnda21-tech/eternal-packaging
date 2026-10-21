@@ -682,6 +682,82 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
   });
 
+  test("ship-tab click closes open item lookup via synthetic mousedown and keeps form state", async () => {
+    api.salesCatalogProducts.mockResolvedValue({
+      items: [{ id: "m1", accurate_item_id: "a1", item_name: "Box Karton", item_code: "BX-01", unit: "pcs" }],
+    });
+    api.salesOrderPriceQuote.mockResolvedValue({
+      status: "matched",
+      unit_price: 500,
+      source: "pengaturan_harga",
+    });
+    await openCreate();
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "25");
+      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "GOHO COFFEE");
+    });
+    await chooseFirstMaster("Box");
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("500");
+
+    const search = container.querySelector('[data-testid="line-item-search-0-input"]');
+    await act(async () => {
+      search.focus();
+      setNativeValue(search, "box");
+    });
+    await tick(350);
+    expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    await tick(0);
+    // Synthetic mousedown on tab switch must dismiss the portal before ship inputs are used.
+    expect(document.body.querySelector('[data-testid="line-item-search-0-list"]')).toBeNull();
+
+    const phone = container.querySelector('[data-testid="input-customer-phone"]');
+    const address = container.querySelector('[data-testid="input-address"]');
+    expect(phone).toBeTruthy();
+    expect(address).toBeTruthy();
+    await act(async () => {
+      phone.focus();
+    });
+    expect(document.activeElement).toBe(phone);
+    let built = "";
+    for (const ch of "08123456789") {
+      built += ch;
+      await act(async () => {
+        setNativeValue(phone, built);
+      });
+      expect(document.activeElement).toBe(phone);
+      expect(phone.value).toBe(built);
+    }
+    await act(async () => {
+      address.focus();
+    });
+    expect(document.activeElement).toBe(address);
+    built = "";
+    for (const ch of "Jl. Malioboro 10") {
+      built += ch;
+      await act(async () => {
+        setNativeValue(address, built);
+      });
+      expect(document.activeElement).toBe(address);
+      expect(address.value).toBe(built);
+    }
+
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-items"]').click();
+    });
+    expect(container.querySelector('[data-testid="line-qty-0"]').value).toBe("25");
+    expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("500");
+    expect(container.querySelector('[data-testid="input-customer"]').value).toBe("GOHO COFFEE");
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    expect(container.querySelector('[data-testid="input-customer-phone"]').value).toBe("08123456789");
+    expect(container.querySelector('[data-testid="input-address"]').value).toBe("Jl. Malioboro 10");
+  });
+
   test("price quote is a real client method, not a test-only guard", () => {
     const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
     const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");

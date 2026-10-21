@@ -2724,7 +2724,7 @@ export default function FakturPenjualan() {
                 <div className="ux90-doc-summary is-inline" data-testid="invoice-breakdown">
                   <div className="ux90-doc-summary-rows">
                     <div>
-                      <span>Sub Total</span>
+                      <span>Subtotal</span>
                       <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
                     </div>
                     <div>
@@ -2732,13 +2732,25 @@ export default function FakturPenjualan() {
                       <strong>{formatRupiah(createCalculations.discount)}</strong>
                     </div>
                     <div>
-                      <span>Biaya lainnya</span>
+                      <span>DPP</span>
+                      <strong data-testid="invoice-dpp">
+                        {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>PPN ({createCalculations.ppnPercent}%)</span>
+                      <strong data-testid="invoice-ppn">
+                        {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Biaya Lainnya</span>
                       <strong data-testid="invoice-other-charges-total">
                         {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
                       </strong>
                     </div>
                     <div className="is-total">
-                      <span>Total</span>
+                      <span>Total Faktur</span>
                       <strong data-testid="invoice-grand-total">
                         {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
                           ? formatRupiah(createCalculations.grandTotal)

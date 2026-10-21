@@ -72,6 +72,23 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/fully-invoiced-banner/);
   });
 
+  test("invoice-breakdown restores DPP and PPN rows from existing createCalculations", () => {
+    const breakdown = pageSrc.split('data-testid="invoice-breakdown"')[1] || "";
+    expect(breakdown).toMatch(/>\s*Subtotal\s*</);
+    expect(breakdown).toMatch(/>\s*Diskon\s*</);
+    expect(breakdown).toMatch(/>\s*DPP\s*</);
+    expect(breakdown).toMatch(/createCalculations\.afterDiscount/);
+    expect(breakdown).toMatch(/PPN \(\{createCalculations\.ppnPercent\}%\)/);
+    expect(breakdown).toMatch(/createCalculations\.ppn/);
+    expect(breakdown).toMatch(/data-testid="invoice-dpp"/);
+    expect(breakdown).toMatch(/data-testid="invoice-ppn"/);
+    expect(breakdown).toMatch(/>\s*Biaya Lainnya\s*</);
+    expect(breakdown).toMatch(/>\s*Total Faktur\s*</);
+    expect(breakdown).toMatch(/data-testid="invoice-grand-total"/);
+    // Display-only restore — formula site must stay afterDiscount + ppn + charges.
+    expect(pageSrc).toMatch(/afterDiscount\s*\+\s*ppn\s*\+\s*chargeSummary\.total/);
+  });
+
   test("navAccess includes Faktur Penjualan under Penjualan parent", () => {
     expect(navSrc).toMatch(/salesInvoice:\s*"nav\.sales\.sales_invoice"/);
     expect(navSrc).toMatch(/Faktur Penjualan/);
