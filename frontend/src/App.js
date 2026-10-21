@@ -54,6 +54,9 @@ const StatusPO = lazy(() => import("./pages/StatusPO"));
 const GajiOperator = lazy(() => import("./pages/GajiOperator"));
 const PrediksiOrder = lazy(() => import("./pages/PrediksiOrder"));
 const LaporanPenjualan = lazy(() => import("./pages/LaporanPenjualan"));
+const LaporanPembelian = lazy(() => import("./pages/LaporanPembelian"));
+const LaporanPersediaan = lazy(() => import("./pages/LaporanPersediaan"));
+const ReportCatalog = lazy(() => import("./pages/ReportCatalog"));
 const OptimasiRute = lazy(() => import("./pages/OptimasiRute"));
 const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -222,11 +225,7 @@ function PembelianIndex() {
 function LaporanIndex() {
   const { hasPerm } = useAuth();
   const r = reportsNavVisible(hasPerm);
-  if (r.analytics) return <Navigate to="/laporan/analitik-output" replace />;
-  if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
-  if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
-  if (r.orderPrediction) return <Navigate to="/laporan/prediksi-order" replace />;
-  if (r.salesReports) return <Navigate to="/laporan/penjualan" replace />;
+  if (r.parent || r.catalogList) return <ReportCatalog />;
   return <Navigate to="/" replace />;
 }
 
@@ -422,6 +421,8 @@ export default function App() {
             <Route path="/laporan/gaji-operator" element={<PermGate anyOf={[NAV_KEYS.gajiOperator]} alsoAnyOf={["reports.gaji_operator.view", "schedule.view"]}><GajiOperator /></PermGate>} />
             <Route path="/laporan/prediksi-order" element={<PermGate anyOf={[NAV_KEYS.orderPrediction]} alsoAnyOf={["reports.order_prediction.view"]}><PrediksiOrder /></PermGate>} />
             <Route path="/laporan/penjualan" element={<PermGate anyOf={["reports.sales.view"]}><LaporanPenjualan /></PermGate>} />
+            <Route path="/laporan/pembelian" element={<PermGate anyOf={["reports.purchase.view"]}><LaporanPembelian /></PermGate>} />
+            <Route path="/laporan/persediaan" element={<PermGate anyOf={["current_stock.view"]} alsoAnyOf={["master_items.view", "permissions.manage"]}><LaporanPersediaan /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/administrasi-karyawan" element={<AdministrasiIndex />} />
             <Route path="/administrasi-karyawan/pengajuan-saya" element={<PermGate anyOf={[NAV_KEYS.employeeAdminMine, NAV_KEYS.employeeAdmin, "employee_admin.view_own", "employee_admin.submit"]}><EmployeeAdmin mode="mine" /></PermGate>} />

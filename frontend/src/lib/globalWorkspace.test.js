@@ -131,7 +131,8 @@ describe("global workspace tabs", () => {
     expect(byPath["/persediaan/master-barang-jasa"]).toBeTruthy();
     expect(byPath["/kas-bank/daftar"]).toBeTruthy();
     expect(byPath["/buku-besar/jurnal-umum"]).toBeTruthy();
-    expect(byPath["/laporan/analitik-output"]).toBeTruthy();
+    expect(byPath["/laporan"]).toBeTruthy();
+
     expect(byPath["/administrasi-karyawan/pengajuan-saya"]).toBeTruthy();
     expect(byPath["/hr-payroll/penggajian"]).toBeTruthy();
     expect(byPath["/settings"]).toBeTruthy();
@@ -278,13 +279,13 @@ describe("global workspace tabs", () => {
   });
 
   test("settings children are distinct tabs and query does not duplicate", () => {
-    const a = openOrActivateGlobalTab([], "/laporan/analitik-output");
+    const a = openOrActivateGlobalTab([], "/laporan");
     expect(a.tabs.map((t) => t.id)).not.toContain("settings");
     const b = openOrActivateGlobalTab(a.tabs, "/settings/sales-accounting");
     const c = openOrActivateGlobalTab(b.tabs, "/settings/payroll-accounting");
     const d = openOrActivateGlobalTab(c.tabs, "/settings/sales-accounting?x=1");
     expect(d.tabs.map((t) => t.path)).toEqual([
-      "/laporan/analitik-output",
+      "/laporan",
       "/settings/sales-accounting",
       "/settings/payroll-accounting",
     ]);

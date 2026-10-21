@@ -755,6 +755,14 @@ jobs:
           src/components/OperatorSplitPanel.screenSize.test.js
           src/mobile/workspaces/MobilePrintWorkspace.test.js
           src/mobile/components/MobileDesignFile.test.js
+          src/pages/ReportCatalog.test.js
+          src/lib/reportCatalog.test.js
+          src/pages/LaporanPenjualan.integration.test.js
+          src/pages/LaporanPembelian.wave2Polish.test.js
+          src/pages/LaporanPersediaan.test.js
+          src/pages/PricingCatalogSettings.test.js
+          src/lib/sidebarPresentation.test.js
+          src/components/AppShell.chatUnread.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

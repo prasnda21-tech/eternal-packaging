@@ -155,6 +155,8 @@ PERMISSION_CATALOG = [
     ("Laporan", "reports.gaji_operator.repair_rate", "Koreksi snapshot tarif output Gaji Operator"),
     ("Laporan", "reports.sales.view", "Lihat Laporan Penjualan"),
     ("Laporan", "reports.sales.export", "Ekspor Laporan Penjualan"),
+    ("Laporan", "reports.purchase.view", "Lihat Laporan Pembelian"),
+    ("Laporan", "reports.purchase.export", "Ekspor Laporan Pembelian"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
@@ -429,6 +431,10 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "paint.report.export",
     "paint.settings.manage",
     "nav.production.paint",
+    # Report Center pembelian Wave 1 — default OFF; assign via Hak Akses & Role.
+    # Never implied by purchase_invoices.view.
+    "reports.purchase.view",
+    "reports.purchase.export",
 })
 
 DEFAULT_GRANT_PERMISSIONS = tuple(

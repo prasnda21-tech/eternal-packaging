@@ -61,7 +61,7 @@ describe("desktop sidebar presentation", () => {
       "Keuangan",
       "Administrasi Karyawan",
       "HR & Payroll",
-      "Laporan Operasional",
+      "Laporan",
       "Pengaturan",
     ]);
     expect(labels(group(rails, "sales"))).toEqual([
@@ -184,7 +184,7 @@ describe("desktop sidebar presentation", () => {
     expect(group(rails, "pengiriman").sections[0].items.find((item) => item.label === "Kurir / Terkirim").to).toBe("/tasks/delivery");
     expect(group(rails, "pengiriman").sections[0].items.find((item) => item.label === "Optimasi Rute").to).toBe("/optimasi-rute");
     expect(labels(group(rails, "sales"))).toContain("Pengiriman Pesanan");
-    expect(labels(group(rails, "reports"))).toEqual(["Analitik Output", "Gaji Operator"]);
+    expect(labels(group(rails, "reports"))).toEqual(["Daftar Laporan", "Laporan Tersimpan"]);
     expect(sidebarLeaves(rails).some((leaf) => leaf.to === "/dashboard/penjualan" && leaf.label === "Dashboard Bisnis")).toBe(true);
     expect(dashboardMenuItems(allow, { role: "admin" }).some((item) => item.label === "Dashboard Penjualan")).toBe(true);
   });

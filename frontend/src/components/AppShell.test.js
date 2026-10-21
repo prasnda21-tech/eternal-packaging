@@ -24,6 +24,8 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/e\.key !== "Escape"/);
     expect(shell).toMatch(/setActiveSidebarMenu\(null\)/);
     expect(shell).toMatch(/trigger\.focus/);
+    expect(shell).toMatch(/\[location\.pathname, location\.search\]/);
+    expect(shell).toMatch(/onNavigate=\{closeFlyout\}/);
   });
 
   test("active route still marks parent and tooltip is preserved", () => {
@@ -66,7 +68,7 @@ describe("sidebar flyout interaction", () => {
     expect(shell).toMatch(/Penjualan/);
     expect(shell).toMatch(/Pembelian/);
     expect(shell).toMatch(/Persediaan/);
-    expect(shell).toMatch(/Laporan Operasional/);
+    expect(shell).toMatch(/Laporan/);
     expect(shell).toMatch(/Administrasi Karyawan/);
     expect(shell).toMatch(/Pengaturan/);
     expect(shell).toMatch(/Keuangan/);
@@ -79,7 +81,8 @@ describe("sidebar flyout interaction", () => {
     expect(nav).toMatch(/TASK_NAV_ORDER/);
     expect(nav).toMatch(/"\/produksi\/jadwal-pengiriman"/);
     expect(nav).toMatch(/\/persediaan\/master-barang-jasa/);
-    expect(nav).toMatch(/\/laporan\/gaji-operator/);
+    expect(nav).toMatch(/"\/laporan"/);
+    expect(nav).toMatch(/\/laporan\?view=saved/);
     expect(nav).toMatch(/Dashboard Produksi/);
     expect(nav).toMatch(/Dashboard Penjualan/);
     expect(nav).toMatch(/Driver \/ Terkirim/);

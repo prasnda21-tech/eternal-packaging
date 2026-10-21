@@ -80,11 +80,20 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 
+from services.customer_identity import (
+    display_customer_name,
+    extract_stable_customer_id,
+)
 from services.sales_invoices import (
     FINANCIAL_FINALIZED,
     effective_financial_status,
 )
-from services.sales_user_mapping import is_sales_pwa_role
+from services.sales_user_mapping import (
+    SALES_PWA_ROLE,
+    exact_sales_label,
+    is_sales_pwa_role,
+    load_mapping_doc,
+)
 
 PERM_VIEW = "reports.sales.view"
 PERM_EXPORT = "reports.sales.export"
@@ -118,6 +127,10 @@ REF_FAKTUR = (
     "https://help.accurate.id/product/accurate-online/fitur-aol/laporan/"
     "daftar-laporan/jumlah-faktur-penjualan/"
 )
+REF_CUSTOMER = (
+    "https://help.accurate.id/product/accurate-online/fitur-aol/laporan/"
+    "daftar-laporan/membuat-laporan-penjualan-perpelanggan/"
+)
 REF_MEMORIZE = (
     "https://help.accurate.id/product/accurate-online/fitur-aol/laporan/"
     "daftar-laporan/simpan-format-laporan-modifikasi/"
@@ -128,9 +141,25 @@ _CATALOG: Tuple[dict, ...] = (
     {"id": "penjualan-per-barang", "name": "Penjualan per Barang", "description": "Menampilkan daftar nilai penjualan per barang", "implemented": True, "reference": REF_CATEGORY},
     {"id": "rincian-penjualan-per-barang", "name": "Rincian Penjualan per Barang", "description": "Menampilkan rincian nilai penjualan per barang", "implemented": True, "reference": REF_BPP},
     {"id": "daftar-faktur-penjualan", "name": "Daftar Faktur Penjualan", "description": "Laporan yang berisi daftar faktur penjualan", "implemented": True, "reference": REF_FAKTUR},
+    {"id": "penjualan-per-pelanggan", "name": "Penjualan per Pelanggan", "description": "Nilai penjualan finalized per customer_id kanonis", "implemented": True, "reference": REF_CUSTOMER},
+    {
+        "id": "penjualan-per-sales",
+        "name": "Penjualan per Sales",
+        "description": "Nilai penjualan finalized per Mapping Sales Accurate (saat ini)",
+        "implemented": True,
+        "reference": REF_CUSTOMER,
+    },
 )
 
 NO_CATEGORY = "Tanpa Kategori"
+NO_CUSTOMER_ID = "__tanpa_id_pelanggan__"
+NO_CUSTOMER_LABEL = "Tanpa ID Pelanggan"
+UNVERIFIED_SALES_ID = "__belum_terverifikasi__"
+UNVERIFIED_SALES_LABEL = "Belum Terverifikasi"
+ATTR_MAPPED = "mapped_current"
+ATTR_UNVERIFIED = "unverified"
+ATTR_ALL = "all"
+_INACTIVE_USER_STATUSES = frozenset({"inactive", "nonaktif", "disabled", "non-aktif"})
 
 # Exact labels only. A longer outlet name that merely contains the city is not a branch.
 _BRANCH_TEXT = {
@@ -174,6 +203,27 @@ INVOICE_COLUMNS = (
     {"key": "tanggal", "label": "Tanggal", "align": "left", "default": True},
     {"key": "pelanggan", "label": "Pelanggan", "align": "left", "default": True},
     {"key": "total", "label": "Total", "align": "right", "default": True, "numeric": True, "money": True},
+)
+
+CUSTOMER_COLUMNS = (
+    {"key": "pelanggan", "label": "Pelanggan", "align": "left", "default": True},
+    {"key": "customer_id", "label": "ID Pelanggan", "align": "left", "default": False},
+    {"key": "jumlah_faktur", "label": "Jumlah Faktur", "align": "right", "default": True, "numeric": True},
+    {"key": "kuantitas", "label": "Kuantitas (PCS)", "align": "right", "default": True, "numeric": True},
+    {"key": "penjualan", "label": "Penjualan", "align": "right", "default": True, "numeric": True, "money": True},
+    {"key": "bpp", "label": "BPP", "align": "right", "default": False, "numeric": True, "money": True},
+    {"key": "laba", "label": "Laba", "align": "right", "default": False, "numeric": True, "money": True},
+)
+
+SALES_COLUMNS = (
+    {"key": "sales", "label": "Sales", "align": "left", "default": True},
+    {"key": "sales_user_id", "label": "ID Sales", "align": "left", "default": False},
+    {"key": "attribution_status", "label": "Status Atribusi", "align": "left", "default": True},
+    {"key": "status_user", "label": "Status User", "align": "left", "default": True},
+    {"key": "jumlah_faktur", "label": "Jumlah Faktur", "align": "right", "default": True, "numeric": True},
+    {"key": "kuantitas", "label": "Kuantitas (PCS)", "align": "right", "default": True, "numeric": True},
+    {"key": "penjualan", "label": "Penjualan", "align": "right", "default": True, "numeric": True, "money": True},
+    {"key": "label_mapping", "label": "Label Accurate", "align": "left", "default": False},
 )
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des")
@@ -367,6 +417,10 @@ def _column_defs(report_id: str) -> List[dict]:
         source = SUMMARY_COLUMNS
     elif report_id == "rincian-penjualan-per-barang":
         source = DETAIL_COLUMNS
+    elif report_id == "penjualan-per-pelanggan":
+        source = CUSTOMER_COLUMNS
+    elif report_id == "penjualan-per-sales":
+        source = SALES_COLUMNS
     else:
         source = INVOICE_COLUMNS
     return [
@@ -380,6 +434,8 @@ def _selected_columns(report_id: str, layout: Optional[dict]) -> List[dict]:
         "penjualan-per-barang": SUMMARY_COLUMNS,
         "rincian-penjualan-per-barang": DETAIL_COLUMNS,
         "daftar-faktur-penjualan": INVOICE_COLUMNS,
+        "penjualan-per-pelanggan": CUSTOMER_COLUMNS,
+        "penjualan-per-sales": SALES_COLUMNS,
     }[report_id]
     # Preserve user-selected column ordering without changing totals or amounts.
     requested = None
@@ -600,9 +656,19 @@ def _customer_name(invoice: dict, order: Optional[dict]) -> str:
     return _text(
         invoice.get("customer_name")
         or invoice.get("customer")
-        or (order or {}).get("customer")
+        or display_customer_name(order)
         or (order or {}).get("customer_name")
+        or invoice.get("customer_snapshot_name")
     )
+
+
+def _stable_customer_id(invoice: dict, order: Optional[dict]) -> Optional[str]:
+    """Canonical customer_id from related order (preferred) or invoice. Never name-match."""
+    for record in (order, invoice):
+        stable = extract_stable_customer_id(record)
+        if stable:
+            return stable
+    return None
 
 
 async def _sales_context(db) -> dict:
@@ -943,6 +1009,9 @@ def _prepared_lines(ctx: dict, start: str, end: str, branch: str) -> Tuple[List[
                 "invoice_number": _text(invoice.get("invoice_number")),
                 "invoice_date": business,
                 "customer": _customer_name(invoice, order),
+                "customer_id": _stable_customer_id(invoice, order),
+                # Invoice Accurate sales label snapshot only — never orders.sales_user_id / CRM owner.
+                "sales_label": exact_sales_label(invoice.get("sales") or invoice.get("sales_name")),
                 "branch": _invoice_branch(invoice, order),
                 "keterangan": _keterangan(line),
                 "item_code": _text(line.get("item_code") or (master or {}).get("item_code")),
@@ -1052,6 +1121,8 @@ def _totals_payload(rows: Sequence[dict], columns: Sequence[dict], *, quantity_b
             totals[key] = _money_str(sum((row["discount"] for row in rows), Decimal("0.00")))
         elif key == "total":
             totals[key] = _money_str(sum((_dec(row.get("grand_total")) for row in rows), Decimal("0.00")))
+        elif key == "jumlah_faktur":
+            totals[key] = int(sum(int(row.get("jumlah_faktur") or 0) for row in rows))
         elif key in {"bpp", "laba"}:
             if not rows or not bpp_complete:
                 totals[key] = None
@@ -1254,6 +1325,292 @@ def _invoice_rows(lines: Sequence[dict]) -> List[dict]:
     return seen
 
 
+def _customer_rows(lines: Sequence[dict]) -> List[dict]:
+    """Group net sales by stable customer_id. Missing IDs share one bucket only."""
+    buckets: Dict[str, dict] = {}
+    order: List[str] = []
+    for line in lines:
+        stable = _text(line.get("customer_id"))
+        key = stable or NO_CUSTOMER_ID
+        if key not in buckets:
+            buckets[key] = {
+                "kind": "line",
+                "customer_id": stable or None,
+                "customer": NO_CUSTOMER_LABEL if key == NO_CUSTOMER_ID else (line.get("customer") or "—"),
+                "invoice_ids": set(),
+                "penjualan": Decimal("0.00"),
+                "quantity": Decimal("0"),
+                "qty_verified": True,
+                "bpp_values": [],
+                "lines": [],
+            }
+            order.append(key)
+        bucket = buckets[key]
+        if key != NO_CUSTOMER_ID and line.get("customer"):
+            # Prefer a non-empty display name; do not merge by name across IDs.
+            if not bucket["customer"] or bucket["customer"] == "—":
+                bucket["customer"] = line["customer"]
+        inv_token = _text(line.get("invoice_id") or line.get("invoice_number"))
+        if inv_token:
+            bucket["invoice_ids"].add(inv_token)
+        bucket["penjualan"] = _money(bucket["penjualan"] + line["penjualan"])
+        if line.get("qty_verified") and bucket["qty_verified"]:
+            bucket["quantity"] += _dec(line.get("quantity"))
+        else:
+            bucket["qty_verified"] = False
+            bucket["quantity"] = None
+        bucket["bpp_values"].append(line.get("bpp"))
+        bucket["lines"].append(line)
+    rows = []
+    for key in order:
+        bucket = buckets[key]
+        if any(value is None for value in bucket["bpp_values"]):
+            bpp = None
+            laba = None
+        else:
+            bpp = _money(sum(bucket["bpp_values"], Decimal("0.00")))
+            laba = _money(bucket["penjualan"] - bpp)
+        rows.append({
+            "kind": "line",
+            "customer_id": bucket["customer_id"],
+            "customer": bucket["customer"],
+            "jumlah_faktur": len(bucket["invoice_ids"]),
+            "quantity": bucket["quantity"] if bucket["qty_verified"] else None,
+            "qty_verified": bucket["qty_verified"],
+            "penjualan": bucket["penjualan"],
+            "bpp": bpp,
+            "laba": laba,
+            "drill": None,
+        })
+    # Stable IDs first (by display name), no-ID bucket last.
+    rows.sort(key=lambda row: (
+        1 if row.get("customer_id") is None else 0,
+        (row.get("customer") or "").casefold(),
+        row.get("customer_id") or "",
+    ))
+    return rows
+
+
+def _project_customer(row: dict, columns: Sequence[dict]) -> dict:
+    values = {}
+    for column in columns:
+        key = column["key"]
+        if key == "pelanggan":
+            raw = row.get("customer") or NO_CUSTOMER_LABEL
+        elif key == "customer_id":
+            raw = row.get("customer_id") or ""
+        elif key == "jumlah_faktur":
+            raw = row.get("jumlah_faktur")
+        elif key == "kuantitas":
+            raw = row.get("quantity")
+        elif key == "penjualan":
+            raw = row.get("penjualan")
+        elif key == "bpp":
+            raw = row.get("bpp")
+        elif key == "laba":
+            raw = row.get("laba")
+        else:
+            raw = row.get(key)
+        values[key] = _cell(column, raw)
+    return {"kind": "line", "values": values, "drill": row.get("drill")}
+
+
+def _user_is_inactive(user: Optional[dict]) -> bool:
+    if not user:
+        return False
+    if user.get("is_active") is False or user.get("active") is False:
+        return True
+    status = exact_sales_label(user.get("status") or "active").casefold()
+    return status in _INACTIVE_USER_STATUSES
+
+
+def _mapping_index(entries: Optional[Sequence[dict]]) -> Tuple[Dict[str, str], set]:
+    """Build exact label→user_id map; labels with >1 entry are ambiguous."""
+    mapping: Dict[str, str] = {}
+    counts: Dict[str, int] = {}
+    ambiguous: set = set()
+    for row in entries or []:
+        if not isinstance(row, dict):
+            continue
+        label = exact_sales_label(row.get("label"))
+        uid = _text(row.get("user_id"))
+        if not label or not uid:
+            continue
+        counts[label] = counts.get(label, 0) + 1
+        if counts[label] > 1:
+            ambiguous.add(label)
+        mapping[label] = uid
+    return mapping, ambiguous
+
+
+def _resolve_sales_attribution(
+    sales_label: Any,
+    mapping: Dict[str, str],
+    ambiguous: set,
+    users_by_id: Dict[str, dict],
+) -> dict:
+    """MAPPED_CURRENT vs UNVERIFIED from invoice label + current mapping. Read-only."""
+    label = exact_sales_label(sales_label)
+    if not label:
+        return {
+            "sales_user_id": None,
+            "attribution_status": ATTR_UNVERIFIED,
+            "sales_label": "",
+            "user_inactive": False,
+            "display_name": UNVERIFIED_SALES_LABEL,
+        }
+    if label in ambiguous:
+        return {
+            "sales_user_id": None,
+            "attribution_status": ATTR_UNVERIFIED,
+            "sales_label": label,
+            "user_inactive": False,
+            "display_name": UNVERIFIED_SALES_LABEL,
+        }
+    uid = _text(mapping.get(label))
+    if not uid:
+        return {
+            "sales_user_id": None,
+            "attribution_status": ATTR_UNVERIFIED,
+            "sales_label": label,
+            "user_inactive": False,
+            "display_name": UNVERIFIED_SALES_LABEL,
+        }
+    user = users_by_id.get(uid)
+    if not user:
+        return {
+            "sales_user_id": None,
+            "attribution_status": ATTR_UNVERIFIED,
+            "sales_label": label,
+            "user_inactive": False,
+            "display_name": UNVERIFIED_SALES_LABEL,
+        }
+    if exact_sales_label(user.get("role")) != SALES_PWA_ROLE:
+        return {
+            "sales_user_id": None,
+            "attribution_status": ATTR_UNVERIFIED,
+            "sales_label": label,
+            "user_inactive": False,
+            "display_name": UNVERIFIED_SALES_LABEL,
+        }
+    inactive = _user_is_inactive(user)
+    display = _text(user.get("name")) or _text(user.get("email")) or label
+    return {
+        "sales_user_id": uid,
+        "attribution_status": ATTR_MAPPED,
+        "sales_label": label,
+        "user_inactive": inactive,
+        "display_name": display,
+    }
+
+
+def _sales_rows(
+    lines: Sequence[dict],
+    mapping: Dict[str, str],
+    ambiguous: set,
+    users_by_id: Dict[str, dict],
+) -> List[dict]:
+    """Group net sales by current Accurate mapping user_id; unverified share one bucket."""
+    buckets: Dict[str, dict] = {}
+    order: List[str] = []
+    for line in lines:
+        attr = _resolve_sales_attribution(line.get("sales_label"), mapping, ambiguous, users_by_id)
+        if attr["attribution_status"] == ATTR_MAPPED and attr["sales_user_id"]:
+            key = attr["sales_user_id"]
+        else:
+            key = UNVERIFIED_SALES_ID
+        if key not in buckets:
+            buckets[key] = {
+                "kind": "line",
+                "sales_user_id": attr["sales_user_id"] if key != UNVERIFIED_SALES_ID else None,
+                "sales": attr["display_name"] if key != UNVERIFIED_SALES_ID else UNVERIFIED_SALES_LABEL,
+                "attribution_status": ATTR_MAPPED if key != UNVERIFIED_SALES_ID else ATTR_UNVERIFIED,
+                "attribution_label": (
+                    "Berdasarkan Mapping Saat Ini" if key != UNVERIFIED_SALES_ID else UNVERIFIED_SALES_LABEL
+                ),
+                "user_inactive": bool(attr["user_inactive"]) if key != UNVERIFIED_SALES_ID else False,
+                "labels": set(),
+                "invoice_ids": set(),
+                "penjualan": Decimal("0.00"),
+                "quantity": Decimal("0"),
+                "qty_verified": True,
+            }
+            order.append(key)
+        bucket = buckets[key]
+        if key != UNVERIFIED_SALES_ID:
+            if attr.get("display_name") and (
+                not bucket["sales"] or bucket["sales"] == UNVERIFIED_SALES_LABEL
+            ):
+                bucket["sales"] = attr["display_name"]
+            if attr.get("user_inactive"):
+                bucket["user_inactive"] = True
+        label = exact_sales_label(attr.get("sales_label") or line.get("sales_label"))
+        if label:
+            bucket["labels"].add(label)
+        inv_token = _text(line.get("invoice_id") or line.get("invoice_number"))
+        if inv_token:
+            bucket["invoice_ids"].add(inv_token)
+        bucket["penjualan"] = _money(bucket["penjualan"] + line["penjualan"])
+        if line.get("qty_verified") and bucket["qty_verified"]:
+            bucket["quantity"] += _dec(line.get("quantity"))
+        else:
+            bucket["qty_verified"] = False
+            bucket["quantity"] = None
+    rows = []
+    for key in order:
+        bucket = buckets[key]
+        rows.append({
+            "kind": "line",
+            "sales_user_id": bucket["sales_user_id"],
+            "sales": bucket["sales"],
+            "attribution_status": bucket["attribution_status"],
+            "attribution_label": bucket["attribution_label"],
+            "user_inactive": bucket["user_inactive"],
+            "status_user": (
+                "Nonaktif" if bucket["user_inactive"]
+                else ("Aktif" if bucket["attribution_status"] == ATTR_MAPPED else "")
+            ),
+            "label_mapping": ", ".join(sorted(bucket["labels"])),
+            "jumlah_faktur": len(bucket["invoice_ids"]),
+            "quantity": bucket["quantity"] if bucket["qty_verified"] else None,
+            "qty_verified": bucket["qty_verified"],
+            "penjualan": bucket["penjualan"],
+            "drill": None,
+        })
+    rows.sort(key=lambda row: (
+        1 if row.get("attribution_status") == ATTR_UNVERIFIED else 0,
+        (row.get("sales") or "").casefold(),
+        row.get("sales_user_id") or "",
+    ))
+    return rows
+
+
+def _project_sales(row: dict, columns: Sequence[dict]) -> dict:
+    values = {}
+    for column in columns:
+        key = column["key"]
+        if key == "sales":
+            raw = row.get("sales") or UNVERIFIED_SALES_LABEL
+        elif key == "sales_user_id":
+            raw = row.get("sales_user_id") or ""
+        elif key == "attribution_status":
+            raw = row.get("attribution_label") or row.get("attribution_status") or ""
+        elif key == "status_user":
+            raw = row.get("status_user") or ""
+        elif key == "jumlah_faktur":
+            raw = row.get("jumlah_faktur")
+        elif key == "kuantitas":
+            raw = row.get("quantity")
+        elif key == "penjualan":
+            raw = row.get("penjualan")
+        elif key == "label_mapping":
+            raw = row.get("label_mapping") or ""
+        else:
+            raw = row.get(key)
+        values[key] = _cell(column, raw)
+    return {"kind": "line", "values": values, "drill": row.get("drill")}
+
+
 def _project_invoice(row: dict, columns: Sequence[dict]) -> dict:
     values = {}
     for column in columns:
@@ -1306,6 +1663,8 @@ async def run_report(
     page: int = 1,
     page_size: int = 25,
     include_all: bool = False,
+    sales_user_id: Any = "",
+    attribution_status: Any = ATTR_ALL,
 ) -> dict:
     if is_sales_pwa_role(user):
         raise SalesReportError(403, "Laporan ERP tidak tersedia untuk peran ini.")
@@ -1326,6 +1685,10 @@ async def run_report(
     lines, meta = _prepared_lines(ctx, start, end, chosen)
     company = await _company_name(db)
     branch_label = next(row["label"] for row in BRANCH_OPTIONS if row["id"] == chosen)
+    sales_filter = _text(sales_user_id)
+    attr_filter = (_text(attribution_status) or ATTR_ALL).casefold()
+    if attr_filter not in {ATTR_ALL, ATTR_MAPPED, ATTR_UNVERIFIED}:
+        attr_filter = ATTR_ALL
 
     if report_id == "penjualan-per-barang":
         full = _summary_rows(lines, analysis)
@@ -1343,6 +1706,36 @@ async def run_report(
         totals = _totals_payload(lines, columns)
         full = lines
         grouped = True
+    elif report_id == "penjualan-per-pelanggan":
+        full = _customer_rows(lines)
+        display_rows = [_project_customer(row, columns) for row in full]
+        totals = _totals_payload(full, columns)
+        grouped = False
+    elif report_id == "penjualan-per-sales":
+        mapping_doc = await load_mapping_doc(db)
+        mapping, ambiguous = _mapping_index(mapping_doc.get("entries"))
+        # Load only mapped user ids — validation for role/active; no mutation.
+        user_ids = sorted({uid for uid in mapping.values() if uid})
+        users_by_id: Dict[str, dict] = {}
+        if user_ids:
+            for row in await _iter_docs(db, "users", {"id": {"$in": user_ids}}):
+                users_by_id[_text(row.get("id"))] = row
+        full = _sales_rows(lines, mapping, ambiguous, users_by_id)
+        if attr_filter == ATTR_MAPPED:
+            full = [row for row in full if row.get("attribution_status") == ATTR_MAPPED]
+        elif attr_filter == ATTR_UNVERIFIED:
+            full = [row for row in full if row.get("attribution_status") == ATTR_UNVERIFIED]
+        if sales_filter:
+            full = [row for row in full if _text(row.get("sales_user_id")) == sales_filter]
+        display_rows = [_project_sales(row, columns) for row in full]
+        totals = _totals_payload(full, columns)
+        meta = {
+            **meta,
+            "attribution_mode": "mapping_current",
+            "mapping_updated_at": mapping_doc.get("updated_at"),
+            "ambiguous_labels": sorted(ambiguous),
+        }
+        grouped = False
     else:
         invoices = _invoice_rows(lines)
         display_rows = [_project_invoice(row, columns) for row in invoices]
@@ -1355,7 +1748,12 @@ async def run_report(
         full = invoices
         grouped = False
 
-    data_count = len(lines) if report_id == "rincian-penjualan-per-barang" else len(full if report_id == "penjualan-per-barang" else invoices)
+    if report_id == "rincian-penjualan-per-barang":
+        data_count = len(lines)
+    elif report_id in {"penjualan-per-barang", "penjualan-per-pelanggan", "penjualan-per-sales"}:
+        data_count = len(full)
+    else:
+        data_count = len(invoices)
     if include_all:
         paged = display_rows
         page_meta = {
@@ -1369,13 +1767,13 @@ async def run_report(
         page_meta["filtered_count"] = data_count
 
     gap_parts = []
-    if report_id != "daftar-faktur-penjualan" and lines and not totals.get("bpp_complete") and any(
+    if report_id not in {"daftar-faktur-penjualan"} and lines and not totals.get("bpp_complete") and any(
         col["key"] in {"bpp", "laba"} for col in columns
     ):
         gap_parts.append(
             "Sebagian baris belum punya dasar alokasi HPP posted. BPP dan laba baris itu dikosongkan, bukan diisi dari harga beli."
         )
-    if report_id != "daftar-faktur-penjualan" and lines and not totals.get("qty_complete") and any(
+    if report_id not in {"daftar-faktur-penjualan"} and lines and not totals.get("qty_complete") and any(
         col["key"] == "kuantitas" for col in columns
     ):
         gap_parts.append(
@@ -1383,7 +1781,36 @@ async def run_report(
             "Pengaturan satuan produk terkini tidak dipakai untuk mengisi konversi historis. "
             "Nilai itu dikosongkan dan tidak dijumlahkan ke total PCS."
         )
+    if report_id == "penjualan-per-pelanggan" and any(row.get("customer_id") is None for row in (full if report_id == "penjualan-per-pelanggan" else [])):
+        gap_parts.append(
+            "Faktur tanpa customer_id kanonis digabung di kelompok Tanpa ID Pelanggan. "
+            "Kesamaan nama tidak dipakai untuk menggabungkan pelanggan."
+        )
+    gap_detail = None
+    if report_id == "penjualan-per-sales":
+        gap_parts = [
+            "Berdasarkan Mapping Saat Ini (bukan atribusi historis permanen).",
+        ]
+        if any(row.get("attribution_status") == ATTR_UNVERIFIED for row in full):
+            gap_parts.append("Sebagian faktur masuk Belum Terverifikasi.")
+        if any(row.get("user_inactive") for row in full):
+            gap_parts.append("Sales nonaktif tetap ditampilkan jika mapping dan role valid.")
+        gap_detail = (
+            "Sumber omzet: sales_invoices finalized; nilai net dan PCS dari engine sales_reports. "
+            "Atribusi: exact_sales_label (strip-only) → app_settings.sales_user_mapping → users.id role sales_eternal. "
+            "CRM owner dan orders.sales_user_id tidak dipakai. "
+            "Label kosong/unmatched/ambiguous/user atau role invalid → Belum Terverifikasi. "
+            "Beberapa label Accurate ke satu user_id digabung. "
+            "Perubahan mapping mengubah atribusi laporan; data faktur tidak diubah."
+        )
     gap = " ".join(gap_parts) if gap_parts else None
+
+    methodology = _methodology(chosen, report_id)
+    if report_id == "penjualan-per-sales":
+        methodology["sales_attribution"] = (
+            "Mapping Sales Accurate saat laporan dijalankan; bukan snapshot ownership historis"
+        )
+        methodology["sales_identity"] = "exact_sales_label strip-only; no fuzzy; no CRM fallback"
 
     return {
         "report_id": report_id,
@@ -1403,7 +1830,8 @@ async def run_report(
         "grouped": grouped,
         "analysis_row": analysis or None,
         "gap": gap,
-        "methodology": _methodology(chosen, report_id),
+        "gap_detail": gap_detail,
+        "methodology": methodology,
         "source_meta": meta,
         **page_meta,
     }
@@ -1433,9 +1861,10 @@ def export_workbook(report: dict) -> bytes:
         values = row.get("values") or {}
         for index, key in enumerate(keys, start=1):
             raw = values.get(key)
-            shown = _display_number(raw) if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} else raw
+            moneyish = {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas", "jumlah_faktur"}
+            shown = _display_number(raw) if key in moneyish else raw
             cell = sheet.cell(row_index, index, "" if shown is None else shown)
-            if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} and shown not in (None, ""):
+            if key in moneyish and shown not in (None, ""):
                 cell.alignment = Alignment(horizontal="right")
         row_index += 1
     totals = report.get("totals") or {}
@@ -1444,7 +1873,8 @@ def export_workbook(report: dict) -> bytes:
         sheet.cell(row_index, 1).font = Font(bold=True)
         for index, key in enumerate(keys, start=1):
             if key in totals and totals.get(key) is not None:
-                shown = _display_number(totals.get(key)) if key in {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas"} else totals.get(key)
+                moneyish = {"penjualan", "bpp", "laba", "diskon", "harga", "total", "kuantitas", "jumlah_faktur"}
+                shown = _display_number(totals.get(key)) if key in moneyish else totals.get(key)
                 cell = sheet.cell(row_index, index, shown)
                 cell.font = Font(bold=True)
                 cell.alignment = Alignment(horizontal="right")
