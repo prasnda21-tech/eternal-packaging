@@ -28,6 +28,7 @@ jest.mock("../lib/api", () => ({
   default: {
     listSalesOrders: jest.fn(),
     salesOrderOptions: jest.fn(),
+    salesMasterCatalog: jest.fn(),
     createSalesOrder: jest.fn(),
     salesOrderRepeatSource: jest.fn(),
     salesCatalogProducts: jest.fn(),
@@ -88,6 +89,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       outlets_by_customer: { "PT Maju": [{ outlet: "Pusat", address: "Jl. Master", recipient: "Rina" }] },
       sales_options: ["Vira"],
     });
+    api.salesMasterCatalog.mockReset();
+    api.salesMasterCatalog.mockResolvedValue({ items: [] });
     api.createSalesOrder.mockReset();
     api.createSalesOrder.mockResolvedValue({ message: "Pesanan Penjualan berhasil dibuat!", order: { id: "po-1" } });
     api.salesOrderRepeatSource.mockReset();

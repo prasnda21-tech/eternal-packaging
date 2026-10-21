@@ -39,6 +39,7 @@ export const SALES_SOURCE_MANUAL = "manual";
 export const SALES_SOURCE_LEGACY = "legacy";
 export const SALES_MANUAL_CHOICE = "__manual__";
 export const MANUAL_SALES_MAX_LEN = 80;
+export const CRM_OTHER_OPTION_ID = "__other__";
 
 export function canUseManualSales(form) {
   return form?.status_order === "TIDAK ORDER" && !String(form?.order_id || "").trim();
@@ -129,6 +130,7 @@ export function emptyCrmDailyReportForm(todayWib = "") {
     whatsapp: "",
     order_id: "",
     po_number: "",
+    sales_master_id: "",
     sales_label: "",
     sales_user_id: "",
     sales_source: "",
@@ -137,12 +139,15 @@ export function emptyCrmDailyReportForm(todayWib = "") {
     sales_note: "",
     status_order: "ORDER",
     no_order_reason: "",
+    no_order_reason_id: "",
     no_order_reason_choice: "",
     has_complaint: false,
     complaint_category: "",
+    complaint_category_id: "",
     complaint_description: "",
     legacy_complaint: false,
     has_issue: false,
+    issue_category_id: "",
     issue_description: "",
     notes: "",
   };
@@ -172,6 +177,7 @@ export function formFromCrmDailyReport(report) {
     whatsapp: report?.whatsapp || "",
     order_id: report?.order_id || "",
     po_number: report?.po_number || "",
+    sales_master_id: report?.sales_master_id || "",
     sales_label: salesLabel,
     sales_user_id: salesUserId,
     sales_source: salesSource,
@@ -180,13 +186,16 @@ export function formFromCrmDailyReport(report) {
     sales_note: report?.sales_note || "",
     status_order: report?.status_order || "ORDER",
     no_order_reason: reason,
+    no_order_reason_id: report?.no_order_reason_id || "",
     no_order_reason_choice: noOrderReasonChoice(reason),
     has_complaint: Boolean(report?.has_complaint),
     complaint_category: report?.complaint_category || "",
+    complaint_category_id: report?.complaint_category_id || "",
     complaint_description: report?.complaint_description || "",
     // Legacy rows may lack category — still openable/editable without forcing one.
     legacy_complaint: Boolean(report?.has_complaint) && !String(report?.complaint_category || "").trim(),
     has_issue: Boolean(report?.has_issue),
+    issue_category_id: report?.issue_category_id || "",
     issue_description: report?.issue_description || "",
     notes: report?.notes || "",
   };
@@ -229,21 +238,28 @@ export function validateCrmDailyReportForm(form) {
   if (form.status_order === "TIDAK ORDER") {
     const choice = String(form.no_order_reason_choice || "").trim();
     const reason = String(form.no_order_reason || "").trim();
-    if (!choice) {
+    const reasonId = String(form.no_order_reason_id || "").trim();
+    if (!choice && !reasonId) {
       errors.no_order_reason = "Keterangan Tidak Order wajib";
-    } else if (choice === NO_ORDER_REASON_LAINNYA && !reason) {
+    } else if ((choice === NO_ORDER_REASON_LAINNYA || reasonId === CRM_OTHER_OPTION_ID) && !reason) {
       errors.no_order_reason = "Isi keterangan untuk Lainnya";
-    } else if (choice !== NO_ORDER_REASON_LAINNYA && !NO_ORDER_REASON_PRESETS.includes(choice)) {
+    } else if (
+      choice
+      && choice !== NO_ORDER_REASON_LAINNYA
+      && !NO_ORDER_REASON_PRESETS.includes(choice)
+      && !reasonId
+    ) {
       errors.no_order_reason = "Keterangan Tidak Order tidak valid";
     }
   }
   if (form.has_complaint) {
     const category = String(form.complaint_category || "").trim();
-    if (!category) {
+    const categoryId = String(form.complaint_category_id || "").trim();
+    if (!category && !categoryId) {
       if (!form.legacy_complaint) {
         errors.complaint_category = "Jenis Komplain wajib";
       }
-    } else if (!COMPLAINT_CATEGORY_OPTIONS.includes(category)) {
+    } else if (category && !COMPLAINT_CATEGORY_OPTIONS.includes(category) && !categoryId) {
       errors.complaint_category = "Jenis Komplain tidak valid";
     }
     if (!String(form.complaint_description || "").trim()) {
@@ -276,6 +292,7 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
     whatsapp: form.status_customer === "New" ? String(form.whatsapp || "").trim() : "",
     order_id: String(form.order_id || "").trim() || null,
     po_number: String(form.po_number || "").trim(),
+    sales_master_id: String(form.sales_master_id || "").trim() || null,
     sales_label: String(form.sales_label || "").trim(),
     sales_user_id: isManual ? null : (String(form.sales_user_id || "").trim() || null),
     sales_source: isManual
@@ -284,11 +301,20 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
         ? SALES_SOURCE_LEGACY
         : SALES_SOURCE_EXISTING),
     status_order: form.status_order,
+    no_order_reason_id: form.status_order === "TIDAK ORDER"
+      ? (String(form.no_order_reason_id || "").trim() || null)
+      : null,
     no_order_reason: noOrderReason,
     has_complaint: Boolean(form.has_complaint),
+    complaint_category_id: form.has_complaint
+      ? (String(form.complaint_category_id || "").trim() || null)
+      : null,
     complaint_category: form.has_complaint ? String(form.complaint_category || "").trim() : "",
     complaint_description: form.has_complaint ? String(form.complaint_description || "").trim() : "",
     has_issue: Boolean(form.has_issue),
+    issue_category_id: form.has_issue
+      ? (String(form.issue_category_id || "").trim() || null)
+      : null,
     issue_description: form.has_issue ? String(form.issue_description || "").trim() : "",
     notes: String(form.notes || "").trim(),
   };

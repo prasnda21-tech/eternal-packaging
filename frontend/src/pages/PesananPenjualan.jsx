@@ -575,6 +575,7 @@ export default function PesananPenjualan() {
     delivery_zone: "",
     payment_terms: "",
     sales: "",
+    sales_master_id: "",
     created_by_user: user?.name || user?.email || "",
     expedition: "Internal fleet",
     estimated_delivery: getThreeDaysLaterString(),
@@ -672,8 +673,26 @@ export default function PesananPenjualan() {
   const loadOptions = useCallback(async ({ applySuggestedPo = false } = {}) => {
     setOptionsLoading(true);
     try {
-      const data = await api.salesOrderOptions();
-      setOptions(data || {});
+      // Guard: tests/mocks may omit salesMasterCatalog or return a non-thenable.
+      const catalogPromise = Promise.resolve()
+        .then(() => (
+          typeof api.salesMasterCatalog === "function"
+            ? api.salesMasterCatalog()
+            : { items: [] }
+        ))
+        .then((res) => res || { items: [] })
+        .catch(() => ({ items: [] }));
+      const [data, catalogRes] = await Promise.all([
+        api.salesOrderOptions(),
+        catalogPromise,
+      ]);
+      const catalog = Array.isArray(catalogRes?.items) ? catalogRes.items : [];
+      const catalogNames = catalog.map((s) => s.sales_name).filter(Boolean);
+      const mergedSales = Array.from(new Set([
+        ...(Array.isArray(data?.sales_options) ? data.sales_options : []),
+        ...catalogNames,
+      ])).sort((a, b) => String(a).localeCompare(String(b), "id"));
+      setOptions({ ...(data || {}), sales_options: mergedSales, sales_master_catalog: catalog });
       // List mode loads options for header filters (e.g. Sales); only create may seed PO.
       if (applySuggestedPo && data?.suggested_po_number) {
         setFormData((prev) => ({
@@ -1503,6 +1522,7 @@ export default function PesananPenjualan() {
       delivery_zone: "",
       payment_terms: "",
       sales: "",
+      sales_master_id: "",
       created_by_user: user?.name || user?.email || "",
       expedition: "Internal fleet",
       estimated_delivery: getThreeDaysLaterString(),
@@ -2993,23 +3013,53 @@ export default function PesananPenjualan() {
               <h3>Pengiriman & Detail</h3>
               {extraFields.map((item) => (
                 <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
-                  <input
-                    id={`so-${item.field}`}
-                    type={item.type || "text"}
-                    className="so-line-input"
-                    list={item.list}
-                    value={formData[item.field]}
-                    onChange={(e) => setFormData((p) => ({ ...p, [item.field]: e.target.value }))}
-                    placeholder={item.placeholder}
-                    data-testid={item.testId}
-                    aria-invalid={fieldHasError(item.field) || undefined}
-                  />
-                  {item.field === "sales" && (
-                    <datalist id="sales-suggestions">
-                      {options.sales_options?.map((s) => (
-                        <option key={s} value={s} />
+                  {item.field === "sales" && (options.sales_master_catalog || []).length > 0 ? (
+                    <select
+                      id={`so-${item.field}`}
+                      className="so-line-input"
+                      value={formData.sales_master_id || ""}
+                      onChange={(e) => {
+                        const sid = e.target.value;
+                        const hit = (options.sales_master_catalog || []).find((s) => s.id === sid);
+                        setFormData((p) => ({
+                          ...p,
+                          sales_master_id: sid,
+                          sales: hit?.sales_name || "",
+                        }));
+                      }}
+                      data-testid={item.testId}
+                      aria-invalid={fieldHasError(item.field) || undefined}
+                    >
+                      <option value="">— pilih Sales —</option>
+                      {(options.sales_master_catalog || []).map((s) => (
+                        <option key={s.id} value={s.id}>{s.sales_name}</option>
                       ))}
-                    </datalist>
+                    </select>
+                  ) : (
+                    <>
+                      <input
+                        id={`so-${item.field}`}
+                        type={item.type || "text"}
+                        className="so-line-input"
+                        list={item.list}
+                        value={formData[item.field]}
+                        onChange={(e) => setFormData((p) => ({
+                          ...p,
+                          [item.field]: e.target.value,
+                          ...(item.field === "sales" ? { sales_master_id: "" } : {}),
+                        }))}
+                        placeholder={item.placeholder}
+                        data-testid={item.testId}
+                        aria-invalid={fieldHasError(item.field) || undefined}
+                      />
+                      {item.field === "sales" && (
+                        <datalist id="sales-suggestions">
+                          {options.sales_options?.map((s) => (
+                            <option key={s} value={s} />
+                          ))}
+                        </datalist>
+                      )}
+                    </>
                   )}
                 </SoField>
               ))}

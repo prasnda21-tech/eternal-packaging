@@ -1236,6 +1236,8 @@ export const SETTINGS_TAB_IDS = [
   "route-optimizer",
   "accurate-creators",
   "sales-user-mapping",
+  "sales-master",
+  "crm-daily-report-options",
   "audit",
 ];
 
@@ -1268,6 +1270,8 @@ export const SETTINGS_TILE_TONES = {
   "route-optimizer": "blue",
   "accurate-creators": "purple",
   "sales-user-mapping": "teal",
+  "sales-master": "teal",
+  "crm-daily-report-options": "cyan",
   audit: "orange",
 };
 
@@ -1298,6 +1302,8 @@ export const SETTINGS_TILE_LABELS = {
   "route-optimizer": "Optimasi Rute",
   "accurate-creators": "Pembuat PO Accurate",
   "sales-user-mapping": "Mapping Sales Accurate",
+  "sales-master": "Master Sales",
+  "crm-daily-report-options": "Dropdown Laporan Harian CRM",
   audit: "Audit Log",
 };
 
@@ -1387,6 +1393,12 @@ export function settingsNavVisible(hasPerm) {
   const salesUserMapping = canSeeNav(hasPerm, "settings.sales_user_mapping.view")
     || canSeeNav(hasPerm, "settings.sales_user_mapping.manage")
     || canSeeNav(hasPerm, "permissions.manage");
+  const salesMaster = canSeeNav(hasPerm, "settings.sales_master.view")
+    || canSeeNav(hasPerm, "settings.sales_master.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const crmDailyReportOptions = canSeeNav(hasPerm, "settings.crm_daily_report.view")
+    || canSeeNav(hasPerm, "settings.crm_daily_report.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
   const audit = canSeeNav(hasPerm, "audit.view");
   const children = {
     employees: Boolean(parentGranted && employees),
@@ -1411,6 +1423,8 @@ export function settingsNavVisible(hasPerm) {
     "route-optimizer": Boolean(parentGranted && routeOptimizer),
     "accurate-creators": Boolean(parentGranted && accurateCreators),
     "sales-user-mapping": Boolean(parentGranted && salesUserMapping),
+    "sales-master": Boolean(parentGranted && salesMaster),
+    "crm-daily-report-options": Boolean(parentGranted && crmDailyReportOptions),
     audit: Boolean(parentGranted && audit),
   };
   return {

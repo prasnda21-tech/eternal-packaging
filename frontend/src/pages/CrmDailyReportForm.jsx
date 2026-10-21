@@ -6,6 +6,7 @@ import {
   COMPLAINT_CATEGORY_OPTIONS,
   CRM_DAILY_DRAFT_DEBOUNCE_MS,
   CRM_DAILY_REPORT_LIST_PATH,
+  CRM_OTHER_OPTION_ID,
   NO_ORDER_REASON_LAINNYA,
   NO_ORDER_REASON_PRESETS,
   SALES_MANUAL_CHOICE,
@@ -33,6 +34,21 @@ function errText(e) {
   const d = e?.response?.data?.detail;
   if (typeof d === "string") return d;
   return d?.message || e?.message || "Gagal menyimpan";
+}
+
+function matchSalesMasterId(catalog, { userId = "", label = "" } = {}) {
+  const rows = Array.isArray(catalog) ? catalog : [];
+  const uid = String(userId || "").trim();
+  const name = String(label || "").trim();
+  if (uid) {
+    const byUid = rows.find((row) => String(row?.user_id || "").trim() === uid);
+    if (byUid?.id) return String(byUid.id);
+  }
+  if (name) {
+    const byName = rows.find((row) => String(row?.sales_name || "").trim() === name);
+    if (byName?.id) return String(byName.id);
+  }
+  return "";
 }
 
 function Field({ label, required, error, wide, children }) {
@@ -248,6 +264,7 @@ export default function CrmDailyReportForm() {
     setSelectedOrder(order);
     setPoQ(order.po_number || "");
     const verified = Boolean(order.sales_verified && (order.sales_user_id || order.sales_label_resolved));
+    const catalog = meta?.sales_catalog || [];
     setForm((prev) => {
       const next = {
         ...prev,
@@ -261,16 +278,34 @@ export default function CrmDailyReportForm() {
         next.sales_choice = order.sales_user_id || "";
         next.sales_locked_from_po = true;
         next.sales_note = "Sales mengikuti PO yang dipilih";
+        next.sales_master_id = matchSalesMasterId(catalog, {
+          userId: next.sales_user_id,
+          label: next.sales_label,
+        });
         setSalesQ(next.sales_label);
       } else {
-        next.sales_locked_from_po = false;
-        next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
-        if (prev.sales_source === SALES_SOURCE_MANUAL || prev.sales_choice === SALES_MANUAL_CHOICE) {
-          next.sales_source = "";
-          next.sales_choice = "";
+        const rawLabel = String(order.sales_label_resolved || order.sales || "").trim();
+        if (rawLabel) {
+          // Unmapped PO: keep Accurate label; do not silently substitute another Sales.
           next.sales_user_id = "";
-          next.sales_label = "";
-          setSalesQ("");
+          next.sales_label = rawLabel;
+          next.sales_source = SALES_SOURCE_LEGACY;
+          next.sales_choice = "";
+          next.sales_locked_from_po = true;
+          next.sales_note = "Sales PO belum terpetakan; label Accurate dipertahankan";
+          next.sales_master_id = matchSalesMasterId(catalog, { label: rawLabel });
+          setSalesQ(rawLabel);
+        } else {
+          next.sales_locked_from_po = false;
+          next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
+          next.sales_master_id = "";
+          if (prev.sales_source === SALES_SOURCE_MANUAL || prev.sales_choice === SALES_MANUAL_CHOICE) {
+            next.sales_source = "";
+            next.sales_choice = "";
+            next.sales_user_id = "";
+            next.sales_label = "";
+            setSalesQ("");
+          }
         }
       }
       return next;
@@ -284,6 +319,7 @@ export default function CrmDailyReportForm() {
 
   const applySalesSelection = (row) => {
     if (!row) return;
+    const catalog = meta?.sales_catalog || [];
     if (row === SALES_MANUAL_CHOICE || row.user_id === SALES_MANUAL_CHOICE) {
       setForm((prev) => ({
         ...prev,
@@ -291,6 +327,7 @@ export default function CrmDailyReportForm() {
         sales_source: SALES_SOURCE_MANUAL,
         sales_user_id: "",
         sales_label: "",
+        sales_master_id: "",
         sales_locked_from_po: false,
         sales_note: "",
       }));
@@ -307,16 +344,35 @@ export default function CrmDailyReportForm() {
       }, 0);
       return;
     }
+    // Master Sales catalog row (manual-allowed): label snapshot, no verified user id.
+    if (row.sales_master_id && !row.user_id) {
+      setForm((prev) => ({
+        ...prev,
+        sales_choice: SALES_MANUAL_CHOICE,
+        sales_source: SALES_SOURCE_MANUAL,
+        sales_user_id: "",
+        sales_label: row.label || row.sales_name || "",
+        sales_master_id: row.sales_master_id,
+        sales_locked_from_po: false,
+        sales_note: "",
+      }));
+      setSalesQ(row.label || row.sales_name || "");
+      setSalesOpen(false);
+      return;
+    }
+    const label = row.label || row.sales_name || "";
+    const userId = row.user_id || "";
     setForm((prev) => ({
       ...prev,
-      sales_choice: row.user_id,
-      sales_user_id: row.user_id,
-      sales_label: row.label,
+      sales_choice: userId,
+      sales_user_id: userId,
+      sales_label: label,
       sales_source: SALES_SOURCE_EXISTING,
+      sales_master_id: row.sales_master_id || matchSalesMasterId(catalog, { userId, label }),
       sales_locked_from_po: false,
       sales_note: "",
     }));
-    setSalesQ(row.label || "");
+    setSalesQ(label);
     setSalesOpen(false);
     setErrors((prev) => {
       if (!prev.sales_label) return prev;
@@ -333,6 +389,7 @@ export default function CrmDailyReportForm() {
       sales_source: "",
       sales_user_id: "",
       sales_label: "",
+      sales_master_id: "",
       sales_locked_from_po: false,
       sales_note: "",
     }));
@@ -587,11 +644,13 @@ export default function CrmDailyReportForm() {
                     status_order: next,
                     no_order_reason: next === "TIDAK ORDER" ? prev.no_order_reason : "",
                     no_order_reason_choice: next === "TIDAK ORDER" ? prev.no_order_reason_choice : "",
+                    no_order_reason_id: next === "TIDAK ORDER" ? prev.no_order_reason_id : "",
                     ...(clearedManual && !prev.order_id ? {
                       sales_choice: "",
                       sales_source: "",
                       sales_user_id: "",
                       sales_label: "",
+                      sales_master_id: "",
                       sales_note: "Pilih Sales dari daftar Eternal",
                     } : {}),
                   };
@@ -739,6 +798,7 @@ export default function CrmDailyReportForm() {
                       sales_source: SALES_SOURCE_MANUAL,
                       sales_choice: SALES_MANUAL_CHOICE,
                       sales_user_id: "",
+                      sales_master_id: matchSalesMasterId(meta?.sales_catalog || [], { label: value }),
                     }));
                     setErrors((prev) => {
                       if (!prev.sales_label) return prev;
@@ -835,6 +895,7 @@ export default function CrmDailyReportForm() {
                     ...prev,
                     has_complaint: false,
                     complaint_category: "",
+                    complaint_category_id: "",
                     complaint_description: "",
                     legacy_complaint: false,
                   }));
@@ -845,7 +906,14 @@ export default function CrmDailyReportForm() {
           <Field label="Kendala?" required>
             <div className="cdr-toggle">
               <button type="button" className={`is-danger ${form.has_issue ? "is-on" : ""}`} data-testid="cdr-issue-yes" onClick={() => patch("has_issue", true)}>Ya</button>
-              <button type="button" className={!form.has_issue ? "is-on" : ""} data-testid="cdr-issue-no" onClick={() => { patch("has_issue", false); patch("issue_description", ""); }}>Tidak</button>
+              <button type="button" className={!form.has_issue ? "is-on" : ""} data-testid="cdr-issue-no" onClick={() => {
+                setForm((prev) => ({
+                  ...prev,
+                  has_issue: false,
+                  issue_category_id: "",
+                  issue_description: "",
+                }));
+              }}>Tidak</button>
             </div>
           </Field>
 
@@ -855,12 +923,19 @@ export default function CrmDailyReportForm() {
                 value={form.no_order_reason_choice || ""}
                 onChange={(e) => {
                   const choice = e.target.value;
+                  const dyn = (meta?.no_order_reasons || []).find((o) => o.label === choice || o.id === choice);
+                  const isOther = choice === NO_ORDER_REASON_LAINNYA
+                    || dyn?.is_other
+                    || dyn?.id === (meta?.other_option_id || CRM_OTHER_OPTION_ID);
                   setForm((prev) => ({
                     ...prev,
-                    no_order_reason_choice: choice,
-                    no_order_reason: choice === NO_ORDER_REASON_LAINNYA
+                    no_order_reason_choice: isOther ? NO_ORDER_REASON_LAINNYA : (dyn?.label || choice),
+                    no_order_reason_id: isOther
+                      ? (meta?.other_option_id || CRM_OTHER_OPTION_ID)
+                      : (dyn?.id || ""),
+                    no_order_reason: isOther
                       ? (NO_ORDER_REASON_PRESETS.includes(prev.no_order_reason) ? "" : prev.no_order_reason)
-                      : choice,
+                      : (dyn?.label || choice),
                   }));
                   setErrors((prev) => {
                     if (!prev.no_order_reason) return prev;
@@ -876,6 +951,11 @@ export default function CrmDailyReportForm() {
                 {NO_ORDER_REASON_PRESETS.map((opt) => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
+                {(meta?.no_order_reasons || [])
+                  .filter((o) => !o.is_other && !NO_ORDER_REASON_PRESETS.includes(o.label))
+                  .map((o) => (
+                    <option key={o.id} value={o.label}>{o.label}</option>
+                  ))}
                 <option value={NO_ORDER_REASON_LAINNYA}>{NO_ORDER_REASON_LAINNYA}</option>
               </select>
               {showNoOrderLainnya ? (
@@ -897,7 +977,13 @@ export default function CrmDailyReportForm() {
                   value={form.complaint_category || ""}
                   onChange={(e) => {
                     const value = e.target.value;
-                    setForm((prev) => ({ ...prev, complaint_category: value, legacy_complaint: false }));
+                    const dyn = (meta?.complaint_categories || []).find((o) => o.label === value || o.id === value);
+                    setForm((prev) => ({
+                      ...prev,
+                      complaint_category: dyn?.label || value,
+                      complaint_category_id: dyn?.id || "",
+                      legacy_complaint: false,
+                    }));
                     setErrors((prev) => {
                       if (!prev.complaint_category) return prev;
                       const n = { ...prev };
@@ -912,6 +998,11 @@ export default function CrmDailyReportForm() {
                   {COMPLAINT_CATEGORY_OPTIONS.map((opt) => (
                     <option key={opt} value={opt}>{opt}</option>
                   ))}
+                  {(meta?.complaint_categories || [])
+                    .filter((o) => !o.is_other && !COMPLAINT_CATEGORY_OPTIONS.includes(o.label))
+                    .map((o) => (
+                      <option key={o.id} value={o.label}>{o.label}</option>
+                    ))}
                 </select>
               </Field>
               <Field label="Deskripsi Komplain" required wide error={errors.complaint_description}>
