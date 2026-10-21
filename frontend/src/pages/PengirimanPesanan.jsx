@@ -1048,8 +1048,10 @@ export default function PengirimanPesanan() {
                       <strong data-testid="total-delivery-qty">{totalShippingQty.toLocaleString("id-ID")} pcs</strong>
                     </div>
                     <div>
-                      <span>Sisa PO</span>
-                      <strong>{poSummary ? Number(poSummary.total_remaining || 0).toLocaleString("id-ID") : "—"} pcs</strong>
+                      <span>Sisa PO Sebelum SJ Ini</span>
+                      <strong data-testid="delivery-po-remaining-before">
+                        {poSummary ? Number(poSummary.total_remaining || 0).toLocaleString("id-ID") : "—"} pcs
+                      </strong>
                     </div>
                     <div className="is-total">
                       <span>Sisa setelah SJ</span>

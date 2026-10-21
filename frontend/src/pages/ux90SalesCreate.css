@@ -1759,10 +1759,47 @@
   min-height: 0;
   overflow: auto;
 }
+/* Faktur: single scroll above footer — avoid nested table scroll painting under footer */
+.ux90-fp-filled.ux90-create-shell,
+.ux90-fp-filled.sd-form-fill {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+}
+.ux90-fp-filled .ux90-workspace {
+  display: block !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+.ux90-fp-filled .ux90-main {
+  display: block !important;
+  overflow: visible !important;
+  min-height: 0 !important;
+}
+.ux90-fp-filled .ux90-invoice-lines,
+.ux90-fp-filled .ux90-table-wrap.ux90-invoice-lines {
+  flex: none !important;
+  display: block !important;
+  overflow: visible !important;
+  min-height: 0 !important;
+}
+.ux90-fp-filled .ux90-table-scroll {
+  flex: none !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+.ux90-fp-filled .ux90-footer,
 .ux90-fp-filled .ux90-doc-footer {
+  position: relative !important;
+  bottom: auto !important;
+  flex: 0 0 auto !important;
   flex-shrink: 0;
   background: #fff;
   border-top: 1px solid var(--ux90-border);
+  z-index: 2;
 }
 .ux90-sr-page .ux90-sr-body {
   scroll-padding-bottom: 20px;
@@ -1770,4 +1807,29 @@
 .ux90-sr-page .ux90-footer {
   position: relative;
   z-index: 1;
+}
+
+/* Final preview polish: prevent price helper clipping; keep lookup menus above footer */
+.ux90-fp-filled .ux90-table td,
+.ux90-fp-filled .fp-lines td {
+  vertical-align: top;
+  overflow: visible;
+  padding-top: 8px;
+  padding-bottom: 10px;
+}
+.ux90-fp-filled .ux90-inline-ok,
+.ux90-fp-filled .ux90-inline-warn,
+.ux90-fp-filled .ux90-inline-err {
+  display: block;
+  line-height: 1.3;
+  white-space: normal;
+  overflow: visible;
+}
+.ux90-fp-filled .ux90-table-scroll {
+  overflow: auto;
+}
+.ux90-sr-page .mis-list,
+.ux90-sr-page .mis-dropdown,
+.ux90-sr-page [role="listbox"] {
+  z-index: 50;
 }

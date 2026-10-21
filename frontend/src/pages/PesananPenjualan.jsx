@@ -3200,9 +3200,10 @@ export default function PesananPenjualan() {
                 data-testid="input-notes-visible"
               />
               <div className="so-price-note" style={{ marginTop: 4 }}>
-                {sellingIncomplete ? <em data-testid="so-price-incomplete">Ada harga yang belum diisi.</em> : (
+                {/* Warning harga kosong hanya di dekat tabel (so-side-price-warning) — hindari duplikat di footer. */}
+                {!sellingIncomplete ? (
                   <span>Harga tersimpan di pesanan dan otomatis terisi saat membuat faktur.</span>
-                )}
+                ) : null}
               </div>
             </div>
             <div className="so-footer-totals">
