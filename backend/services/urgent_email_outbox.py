@@ -105,10 +105,18 @@ def _backoff_seconds(attempt: int) -> int:
 
 
 async def resolve_email_notify_recipients(db) -> List[dict]:
-    """Active users with explicit urgent.email_notify + valid email. Deduped by email."""
+    """Active users with urgent.email_notify + valid notification_email. No login-email fallback."""
     users = await db.users.find(
         {"status": {"$ne": "inactive"}},
-        {"_id": 0, "id": 1, "email": 1, "role": 1, "permissions_override": 1, "status": 1, "name": 1},
+        {
+            "_id": 0,
+            "id": 1,
+            "notification_email": 1,
+            "role": 1,
+            "permissions_override": 1,
+            "status": 1,
+            "name": 1,
+        },
     ).to_list(2000)
     role_docs = await db.role_permissions.find({}, {"_id": 0, "role": 1, "permissions": 1}).to_list(200)
     role_override = {d["role"]: list(d.get("permissions") or []) for d in role_docs if d.get("role")}
@@ -121,9 +129,13 @@ async def resolve_email_notify_recipients(db) -> List[dict]:
         override = u.get("permissions_override") or {}
         if not opt_in_permission_granted(u.get("role"), override, PERM_EMAIL_NOTIFY, role_override or None):
             continue
-        ok, norm = _validate_email_strict(u.get("email") or "")
+        ok, norm = _validate_email_strict(u.get("notification_email") or "")
         if not ok:
-            logger.info("urgent_email skip recipient invalid_email user_id=%s reason=%s", u.get("id"), norm)
+            logger.info(
+                "urgent_email skip recipient missing_or_invalid_notification_email user_id=%s reason=%s",
+                u.get("id"),
+                norm,
+            )
             continue
         if norm in seen_emails:
             continue
@@ -201,18 +213,20 @@ async def enqueue_decision_email(db, *, order: dict, request: dict) -> Optional[
     uid = str(request.get("requested_by_id") or "").strip()
     email_raw = str(request.get("requested_by_email") or "").strip()
     user = None
+    _user_proj = {"_id": 0, "id": 1, "notification_email": 1, "status": 1}
     if uid:
-        user = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "email": 1, "status": 1})
+        user = await db.users.find_one({"id": uid}, _user_proj)
     if not user and email_raw:
+        # Lookup by login email identity only — recipient address is notification_email.
         user = await db.users.find_one(
             {"email": {"$regex": f"^{re.escape(email_raw)}$", "$options": "i"}},
-            {"_id": 0, "id": 1, "email": 1, "status": 1},
+            _user_proj,
         )
     if not user or str(user.get("status") or "").lower() == "inactive":
         logger.info("urgent_email decision skip inactive_or_missing request=%s", request.get("id"))
         return None
 
-    ok, norm = _validate_email_strict(user.get("email") or email_raw)
+    ok, norm = _validate_email_strict(user.get("notification_email") or "")
     if not ok:
         now = now_iso()
         # Terminal skipped row so we don't retry forever; unique per request+event
@@ -231,7 +245,7 @@ async def enqueue_decision_email(db, *, order: dict, request: dict) -> Optional[
             "body_html": "",
             "status": STATUS_SKIPPED,
             "attempt_count": 0,
-            "last_error": f"invalid_email:{norm}",
+            "last_error": f"invalid_notification_email:{norm}",
             "next_retry_at": now,
             "lease_token": None,
             "lease_expires_at": None,
