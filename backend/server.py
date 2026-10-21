@@ -198,11 +198,13 @@ from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
 from services.paint_http import register_paint_routes
 from services.crm_daily_reports_http import register_crm_daily_report_routes
+from services.crm_daily_report_settings_http import register_crm_daily_report_settings_routes
 from services.spk_http import register_spk_routes
 from services.customer_pricing_http import register_customer_pricing_routes
 from services.public_catalog_http import register_public_catalog_routes
 from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
+from services.sales_master_http import register_sales_master_routes
 from services.sales_pwa_http import register_sales_pwa_routes
 from services.sales_user_mapping import (
     attach_sales_ownership,
@@ -10088,6 +10090,7 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "payment_status": "Waiting",
         "design_status": "Waiting",
         "sales": preview.get("sales"),
+        "sales_master_id": None,
         "created_by_user": preview.get("created_by_user"),
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
@@ -10124,6 +10127,19 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
     branch_id = str(preview.get("branch_id") or "").strip()
     if branch_id.isdigit():
         new["branch_id"] = branch_id
+    # Soft-attach Master Sales id when Accurate label matches; never auto-create master.
+    from services.sales_master import resolve_for_po_write
+    import_mid, import_label, _ = await resolve_for_po_write(
+        db,
+        sales_master_id=None,
+        sales_label=new.get("sales"),
+        user=None,
+    )
+    if import_mid:
+        new["sales_master_id"] = import_mid
+    if import_label:
+        new["sales"] = import_label
+        new["seller"] = new.get("seller") or import_label
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
@@ -10734,6 +10750,7 @@ class SalesOrderCreatePayload(BaseModel):
     delivery_zone: Optional[str] = None
     payment_terms: Optional[str] = None
     sales: Optional[str] = None
+    sales_master_id: Optional[str] = None
     created_by_user: Optional[str] = None
     expedition: Optional[str] = None
     estimated_delivery: Optional[str] = None
@@ -11376,6 +11393,14 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "uploaded_at": now,
         })
 
+    from services.sales_master import resolve_for_po_write
+    sales_master_id, sales_label, _sales_uid_hint = await resolve_for_po_write(
+        db,
+        sales_master_id=payload.sales_master_id,
+        sales_label=payload.sales,
+        user=user,
+    )
+
     new_order = {
         "id": order_id,
         "po_number": po_num,
@@ -11399,14 +11424,15 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "payment_terms": (payload.payment_terms or "").strip() or None,
         "payment_status": "Waiting",
         "design_status": "Waiting",
-        "sales": (payload.sales or "").strip() or None,
+        "sales": sales_label,
+        "sales_master_id": sales_master_id,
         "created_by_user": (payload.created_by_user or "").strip() or user.get("name") or user.get("email"),
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
         "imported_at": now,
         "expedition": (payload.expedition or "").strip() or None,
         "delivery_zone": (payload.delivery_zone or "").strip() or None,
-        "seller": (payload.sales or "").strip() or None,
+        "seller": sales_label,
         "line_items": normalized_lines,
         "total_quantity": total_qty,
         "item_count": item_cnt,
@@ -11600,6 +11626,7 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
 class OrderSalesUpdatePayload(BaseModel):
     """Reassignment of Accurate sales label. Does not guess users.id."""
     sales: Optional[str] = None
+    sales_master_id: Optional[str] = None
 
 
 @api_router.patch("/orders/{order_id}/sales")
@@ -11608,6 +11635,7 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
 
     Unmatched labels explicitly clear sales_user_id. The label itself is kept
     as submitted (including empty). Permission: po.edit or sales_order.create.
+    Optional sales_master_id resolves label from Master Sales without rewriting history.
     """
     await _require_any_perm(user, "po.edit", "sales_order.create")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -11617,15 +11645,34 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
     before = {
         "sales": order.get("sales"),
         "sales_user_id": order.get("sales_user_id"),
+        "sales_master_id": order.get("sales_master_id"),
     }
-    new_label = (payload.sales or "").strip() or None
-    order["sales"] = new_label
+    from services.sales_master import resolve_for_po_write
+    mid, label, _hint_uid = await resolve_for_po_write(
+        db,
+        sales_master_id=payload.sales_master_id,
+        sales_label=payload.sales,
+        user=user,
+    )
+    order["sales"] = label
+    order["sales_master_id"] = mid
     await attach_sales_ownership(db, order)
     add_timeline(order, order.get("current_stage") or 0, user, note="Edit Sales")
-    await _persist_order(order, persist_keys=("sales", "sales_user_id", "sales_ownership_status", "sales_needs_verification", "timeline"))
+    await _persist_order(
+        order,
+        persist_keys=(
+            "sales",
+            "sales_master_id",
+            "sales_user_id",
+            "sales_ownership_status",
+            "sales_needs_verification",
+            "timeline",
+        ),
+    )
     after = {
         "sales": order.get("sales"),
         "sales_user_id": order.get("sales_user_id"),
+        "sales_master_id": order.get("sales_master_id"),
     }
     await _audit_po(order, "orders.sales.update", user, before=before, after=after, note="Edit / reassignment Sales")
     return {"order": order}
@@ -16083,6 +16130,20 @@ register_purchase_accounting_settings_routes(
     Depends=Depends,
 )
 register_sales_user_mapping_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_sales_master_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_crm_daily_report_settings_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,
