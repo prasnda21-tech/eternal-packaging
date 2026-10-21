@@ -1733,3 +1733,41 @@
   gap: 10px;
   flex: 0 0 auto;
 }
+
+
+/* PR #632 review polish: CREATE-only document layout, no business-state changes. */
+.ux90-so-create .ux90-doc-summary-rows {
+  /* The sticky PO footer already shows quantity and total; avoid duplicating totals. */
+  display: none;
+}
+.ux90-so-create .ux90-doc-summary {
+  align-items: flex-start;
+  border-top: 0;
+  padding-top: 0;
+}
+.ux90-so-create .ux90-doc-summary .ux90-warn-box {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.ux90-fp-filled .ux90-main,
+.ux90-pj-delivery .ux90-main {
+  min-height: 0;
+  min-width: 0;
+}
+.ux90-fp-filled .ux90-table-scroll,
+.ux90-pj-delivery .ux90-table-scroll {
+  min-height: 0;
+  overflow: auto;
+}
+.ux90-fp-filled .ux90-doc-footer {
+  flex-shrink: 0;
+  background: #fff;
+  border-top: 1px solid var(--ux90-border);
+}
+.ux90-sr-page .ux90-sr-body {
+  scroll-padding-bottom: 20px;
+}
+.ux90-sr-page .ux90-footer {
+  position: relative;
+  z-index: 1;
+}
