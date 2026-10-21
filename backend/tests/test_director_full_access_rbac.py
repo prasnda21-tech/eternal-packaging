@@ -16,7 +16,13 @@ os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 
 import server
-from permissions import ALL_PERMISSIONS, OPT_IN_ONLY_PERMISSIONS, director_full_permission_set, is_director_full_access_role
+from permissions import (
+    ALL_PERMISSIONS,
+    DIRECTOR_MUST_OPT_IN_PERMISSIONS,
+    OPT_IN_ONLY_PERMISSIONS,
+    director_full_permission_set,
+    is_director_full_access_role,
+)
 from server import app, current_user, user_permissions
 from services.purchasing_inventory_access import (
     PACKAGE_CONFIRMED_KEYS_FIELD,
@@ -48,8 +54,11 @@ async def bind_db(monkeypatch):
 
 def test_director_helpers():
     assert is_director_full_access_role("direktur_utama")
-    assert director_full_permission_set() == set(ALL_PERMISSIONS)
-    assert OPT_IN_ONLY_PERMISSIONS.issubset(director_full_permission_set())
+    assert director_full_permission_set() == set(ALL_PERMISSIONS) - DIRECTOR_MUST_OPT_IN_PERMISSIONS
+    assert (OPT_IN_ONLY_PERMISSIONS - DIRECTOR_MUST_OPT_IN_PERMISSIONS).issubset(
+        director_full_permission_set()
+    )
+    assert not DIRECTOR_MUST_OPT_IN_PERMISSIONS.intersection(director_full_permission_set())
 
 
 def test_confirm_helpers_do_not_auto_activate_on_shrink():
@@ -196,10 +205,13 @@ async def test_director_super_admin_keeps_opt_in_purge_and_auth_me(bind_db, monk
     assert PURGE not in admin_sa
     assert PURGE in holding
     assert PURGE not in operator
-    # Director-full includes other OPT_IN keys; non-director SA still strips them.
-    for opt_in in OPT_IN_ONLY_PERMISSIONS:
+    # Director-full includes OPT_IN except DIRECTOR_MUST_OPT_IN; non-director SA strips OPT_IN.
+    for opt_in in OPT_IN_ONLY_PERMISSIONS - DIRECTOR_MUST_OPT_IN_PERMISSIONS:
         assert opt_in in dir_sa
         assert opt_in not in admin_sa
+    for must in DIRECTOR_MUST_OPT_IN_PERMISSIONS:
+        assert must not in dir_sa
+        assert must not in admin_sa
 
     app.dependency_overrides[current_user] = lambda: {
         "id": "dir-sa-1",

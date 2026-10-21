@@ -83,7 +83,16 @@ export const api = {
   assignOperators: (id, splits) => client.post(`/orders/${id}/assign-operators`, { splits }).then((r) => r.data),
   cancelOperatorSplit: (id, splitId, qty, reason = "") =>
     client.post(`/orders/${id}/operator-splits/${splitId}/cancel`, { qty, reason }).then((r) => r.data),
+  /** @deprecated Legacy direct toggle — server returns 410. Use urgent-requests. */
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
+  submitUrgentRequest: (id, payload, config) =>
+    client.post(`/orders/${id}/urgent-requests`, payload, config).then((r) => r.data),
+  getLatestUrgentRequest: (id) =>
+    client.get(`/orders/${id}/urgent-requests/latest`).then((r) => r.data),
+  decideUrgentRequest: (requestId, payload) =>
+    client.post(`/urgent-requests/${requestId}/decide`, payload).then((r) => r.data),
+  cancelUrgentRequest: (requestId) =>
+    client.post(`/urgent-requests/${requestId}/cancel`).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload, config) => client.post(`/orders/${id}/attachment`, payload, config).then((r) => r.data),
   getOrderAttachment: (id, kind, fileId, config = {}) =>

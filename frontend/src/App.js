@@ -97,6 +97,7 @@ const DeliveryPlanPage = lazy(() => import("./pages/DeliveryPlanPage"));
 const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage"));
 const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
 const FormShowcase = lazy(() => import("./pages/FormShowcase"));
+const UrgentPoApprovalPreview = lazy(() => import("./pages/UrgentPoApprovalPreview"));
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const SpkDashboard = lazy(() => import("./pages/SpkDashboard"));
 const SpkCreate = lazy(() => import("./pages/SpkCreate"));
@@ -447,6 +448,9 @@ export default function App() {
           </Route>
           {/* Dev-only showcase (no auth needed for dev preview) */}
           <Route path="/dev/form-showcase" element={<FormShowcase />} />
+          {process.env.NODE_ENV !== "production" ? (
+            <Route path="/dev/urgent-po-approval-preview" element={<UrgentPoApprovalPreview />} />
+          ) : null}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </Suspense>

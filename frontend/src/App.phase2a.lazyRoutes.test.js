@@ -87,6 +87,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
       "DeliveryReschedulePage",
       "DeliveryBatchPage",
       "FormShowcase",
+      "UrgentPoApprovalPreview",
       "ChatPage",
     ].forEach((name) => {
       expect(app).toMatch(lazyPage(name));

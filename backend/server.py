@@ -541,6 +541,7 @@ async def user_permissions(user: dict) -> set:
         OPT_IN_ONLY_PERMISSIONS,
         director_full_permission_set,
         is_director_full_access_role,
+        merge_director_must_opt_in,
         strip_opt_in_permissions,
     )
 
@@ -551,14 +552,22 @@ async def user_permissions(user: dict) -> set:
     # Super admin gets everything, always — except production package filter
     # (Holding/Direktur unrestricted; others need explicit package confirmation).
     # OPT_IN_ONLY keys require explicit permissions_override True for super-admin
-    # unless the account role is direktur_utama (director-full includes OPT_IN).
+    # unless the account role is direktur_utama (director-full includes OPT_IN,
+    # except DIRECTOR_MUST_OPT_IN which stay explicit).
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
             sa_role = str(u.get("role") or role).strip().lower()
             if is_director_full_access_role(sa_role) and sa_role not in inactive:
-                return filter_package_permissions(
+                role_override = await _role_defaults_override()
+                base = merge_director_must_opt_in(
                     director_full_permission_set(),
+                    sa_role,
+                    user.get("permissions_override"),
+                    role_override,
+                )
+                return filter_package_permissions(
+                    base,
                     user,
                     os.environ.get("APP_ENV"),
                     os.environ.get("MONGO_URL"),
@@ -595,11 +604,19 @@ async def user_permissions(user: dict) -> set:
             user_confirmed_keys=user_confirmed,
         )
 
-    # Direktur: full registered permission set. Short role_permissions / deny
-    # overrides do not reduce access; Mongo docs are left intact.
+    # Direktur: full registered permission set minus DIRECTOR_MUST_OPT_IN
+    # (all Phase A urgent.* keys). Short role_permissions / deny
+    # overrides do not reduce other access; Mongo docs are left intact.
     if is_director_full_access_role(role):
-        return filter_package_permissions(
+        role_override = await _role_defaults_override()
+        base = merge_director_must_opt_in(
             director_full_permission_set(),
+            role,
+            user.get("permissions_override"),
+            role_override,
+        )
+        return filter_package_permissions(
+            base,
             user,
             os.environ.get("APP_ENV"),
             os.environ.get("MONGO_URL"),
@@ -5023,17 +5040,19 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
 
 @api_router.post("/orders/{order_id}/urgent")
-async def set_urgent(order_id: str, payload: UrgentPayload, user=Depends(current_user)):
-    await _require_perm(user, "urgent.manage")
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
-    order["priority"] = "urgent" if payload.urgent else "normal"
-    order["urgency_approved_by"] = user.get("email") if payload.urgent else None
-    add_timeline(order, order["current_stage"], user, note=f"Prioritas diubah ke {order['priority']}")
-    await _persist_order(order)
-    return {"order": order}
+async def set_urgent(order_id: str, user=Depends(current_user)):
+    """Legacy direct priority toggle — blocked. Use urgent-requests workflow.
+
+    Body is intentionally ignored so clients of any shape always receive 410
+    (not 422 from UrgentPayload validation).
+    """
+    raise HTTPException(
+        410,
+        "Endpoint Urgent lama dinonaktifkan. Gunakan pengajuan Urgent "
+        "(POST /orders/{id}/urgent-requests) dan persetujuan "
+        "(POST /urgent-requests/{id}/decide). Permission urgent.manage "
+        "tidak lagi mengubah prioritas PO.",
+    )
 
 
 class BufferStockPayload(BaseModel):
@@ -9849,6 +9868,7 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     from permissions import (
         director_full_permission_set,
         is_director_full_access_role,
+        merge_director_must_opt_in,
     )
     from services.purchasing_inventory_access import (
         PACKAGE_CONFIRMED_KEYS_FIELD,
@@ -9864,9 +9884,16 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     if role in inactive:
         default_from_role = []
     elif is_director_full_access_role(role):
-        # Runtime full-access; persisted role_permissions may be short — do not
-        # present that shortfall as the Direktur default in the triad UI.
-        default_from_role = sorted(director_full_permission_set())
+        # Runtime full-access minus DIRECTOR_MUST_OPT_IN; persisted role_permissions
+        # may be short — do not present that shortfall as the Direktur default.
+        default_from_role = sorted(
+            merge_director_must_opt_in(
+                director_full_permission_set(),
+                role,
+                existing.get("permissions_override"),
+                role_override,
+            )
+        )
     elif role_override and role in role_override:
         default_from_role = list(with_nav_defaults(set(role_override[role] or [])))
     else:
@@ -16127,6 +16154,14 @@ register_notification_routes(
     require_perm=_require_perm,
     Depends=Depends,
 )
+from services.urgent_requests_http import register_urgent_request_routes
+register_urgent_request_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_opt_in_perm=_require_opt_in_perm,
+    Depends=Depends,
+)
 register_general_journal_routes(
     api_router,
     get_db=lambda: db,
@@ -17775,7 +17810,10 @@ async def _ensure_unique_business_number_index(collection, field: str) -> None:
 @app.on_event("shutdown")
 async def shutdown_db_client():
     from services.sales_activity.evaluator import stop_evaluator_loop
+    from services.urgent_email_worker import stop_urgent_email_worker
+
     stop_evaluator_loop()
+    stop_urgent_email_worker()
     client.close()
 
 
@@ -17987,6 +18025,12 @@ async def seed():
     await _financial_opening_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
+    from services.urgent_requests import ensure_indexes as _urgent_requests_ensure_indexes
+    await _urgent_requests_ensure_indexes(db)
+    from services.urgent_email_outbox import ensure_indexes as _urgent_email_outbox_ensure_indexes
+    await _urgent_email_outbox_ensure_indexes(db)
+    from services.urgent_email_worker import start_urgent_email_worker
+    start_urgent_email_worker(db)
     from services.public_catalog import ensure_indexes as _public_catalog_ensure_indexes
     await _public_catalog_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes
