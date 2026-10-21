@@ -28,6 +28,7 @@ import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import LookupSearchSelect from "../components/LookupSearchSelect";
+import { deliveryBelumSjMeta } from "../lib/ux90RemainingMeta";
 import "./salesSubmenuDensity.css";
 import "./pengirimanPesananList.css";
 import "./ux90SalesCreate.css";
@@ -877,14 +878,11 @@ export default function PengirimanPesanan() {
                         onChange={(id) => handleSelectPO(id || "")}
                         getOptionValue={(p) => p.id}
                         getOptionLabel={(p) => String(p.po_number || p.id || "")}
-                        getOptionMeta={(p) => {
-                          const sisa = p.delivery_summary?.total_remaining ?? p.total_quantity;
-                          return [
-                            p.customer,
-                            p.outlet || null,
-                            sisa != null ? `Sisa ${Number(sisa).toLocaleString("id-ID")} pcs` : null,
-                          ].filter(Boolean).join(" · ");
-                        }}
+                        getOptionMeta={(p) => [
+                          p.customer,
+                          p.outlet || null,
+                          deliveryBelumSjMeta(p),
+                        ].filter(Boolean).join(" · ")}
                         getSearchText={(p) => [p.po_number, p.customer, p.outlet].filter(Boolean).join(" ")}
                         placeholder="Ketik nomor PO atau customer…"
                         noResultLabel="Tidak ada hasil yang cocok"

@@ -19,6 +19,7 @@ import { addSalesInvoiceCalendarDays, formatSalesInvoiceDate, salesInvoiceDateTo
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import LookupSearchSelect from "../components/LookupSearchSelect";
+import { invoiceBelumDifakturMeta } from "../lib/ux90RemainingMeta";
 import { FormProgress } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
@@ -1035,19 +1036,57 @@ export default function FakturPenjualan() {
     }
   };
 
-  // Load Available POs for selection
+  // Load Available POs for selection.
+  // Use five-tab list_tab=all (not legacy status=aktif/gabungan): legacy aktif/gabungan
+  // strips HOLD rows after decorate, which hides early-stage POs that still appear in
+  // Pesanan Penjualan (Pending/Semua) and remain invoiceable on the backend (only
+  // cancelled is rejected). Server `q` finds rows beyond the first page.
   const loadAvailablePOs = useCallback(async () => {
     if (!canCreate) return;
     setLoadingPOs(true);
     try {
-      const res = await api.listSalesOrders({ status: "aktif" });
-      setAvailablePOs((res.orders || []).filter((o) => !o.cancelled));
+      const res = await api.listSalesOrders({
+        list_tab: "all",
+        page: 1,
+        page_size: 100,
+      });
+      setAvailablePOs(res.orders || []);
     } catch {
       // Best effort load
     } finally {
       setLoadingPOs(false);
     }
   }, [canCreate]);
+
+  const fetchInvoicePoOptions = useCallback(async (queryText) => {
+    const needle = String(queryText || "").trim();
+    const res = await api.listSalesOrders({
+      list_tab: "all",
+      page: 1,
+      page_size: 100,
+      ...(needle ? { q: needle } : {}),
+    });
+    // Return rows only — do not setAvailablePOs here (would retrigger lookup effect).
+    return res.orders || [];
+  }, []);
+
+  const isInvoicePoDisabled = useCallback((po) => {
+    if (!po || po.cancelled) return true;
+    const summary = po.invoiceable_summary;
+    if (summary?.available === true && Number(summary.total_remaining_invoice_qty) <= 0) {
+      return true;
+    }
+    return false;
+  }, []);
+
+  const invoicePoDisabledReason = useCallback((po) => {
+    if (po?.cancelled) return "PO dibatalkan";
+    const summary = po?.invoiceable_summary;
+    if (summary?.available === true && Number(summary.total_remaining_invoice_qty) <= 0) {
+      return "PO sudah difaktur sepenuhnya";
+    }
+    return "PO belum dapat difaktur";
+  }, []);
 
   // Load PO preview when creating invoice from PO
   const loadPoPreview = useCallback(async (poId) => {
@@ -1103,14 +1142,19 @@ export default function FakturPenjualan() {
       loadInvoices();
     } else if (viewMode === "create") {
       loadAvailablePOs();
-      if (selectedPoId) {
-        loadPoPreview(selectedPoId);
-      }
       api.salesInvoiceLifecycleCapability()
         .then((res) => setCreateLifecycleCapability(res?.lifecycle_capability || res || null))
         .catch(() => setCreateLifecycleCapability(null));
     }
-  }, [viewMode, loadInvoices, loadAvailablePOs, loadPoPreview, selectedPoId]);
+  }, [viewMode, loadInvoices, loadAvailablePOs]);
+
+  // Load PO preview only when the selected id changes to a different PO than the
+  // one already shown — preserves local edits when confirm-discard is cancelled.
+  useEffect(() => {
+    if (viewMode !== "create" || !selectedPoId) return;
+    if (previewData?.po_id === selectedPoId) return;
+    loadPoPreview(selectedPoId);
+  }, [viewMode, selectedPoId, loadPoPreview, previewData?.po_id]);
 
   // Settled search / filter changes reset page — not every keystroke.
   useEffect(() => {
@@ -1205,29 +1249,33 @@ export default function FakturPenjualan() {
     };
   }, [viewMode]);
 
-  // Handle PO selector change (UX: confirm before discarding local create edits)
-  const handleSelectPoId = (pId) => {
+  // Handle PO selector change (UX: confirm before discarding local create edits).
+  // Typing clears the bound id without wiping preview; picking another PO confirms discard.
+  const handleSelectPoId = (pId, poOpt) => {
     const nextId = pId || "";
+    if (nextId && poOpt && isInvoicePoDisabled(poOpt)) {
+      return;
+    }
+    if (!nextId) {
+      setSelectedPoId("");
+      return;
+    }
+    const previousId = selectedPoId || previewData?.po_id || queryPoId || "";
     if (
       previewData
-      && selectedPoId
-      && nextId
-      && nextId !== selectedPoId
+      && previousId
+      && nextId !== previousId
       && !window.confirm("Mengganti Nomor PO akan menghapus perubahan qty, harga, diskon, dan biaya yang belum disimpan. Lanjutkan?")
     ) {
+      setSelectedPoId(previousId);
       return;
     }
     setSelectedPoId(nextId);
     setOtherCharges([]);
     setShowChargeErrors(false);
     setInvoiceFormTab("items");
-    if (nextId) {
-      setSearchParams({ action: "create", po_id: nextId });
-      loadPoPreview(nextId);
-    } else {
-      setSearchParams({ action: "create" });
-      setPreviewData(null);
-    }
+    setSearchParams({ action: "create", po_id: nextId });
+    loadPoPreview(nextId);
   };
 
   const invoicePoSearchText = (p) => [
@@ -1240,11 +1288,10 @@ export default function FakturPenjualan() {
   const invoicePoOptionLabel = (p) => String(p?.po_number || p?.id || "");
 
   const invoicePoOptionMeta = (p) => {
-    const qty = Number(p?.delivery_summary?.total_remaining ?? p?.total_quantity ?? 0);
     const bits = [
       p?.customer,
       formatDisplayDate(p?.order_date || p?.created_at) || null,
-      Number.isFinite(qty) ? `Sisa ${qty.toLocaleString("id-ID")}` : null,
+      invoiceBelumDifakturMeta(p),
     ].filter(Boolean);
     return bits.join(" · ");
   };
@@ -2398,13 +2445,16 @@ export default function FakturPenjualan() {
                   <LookupSearchSelect
                     options={availablePOs}
                     value={selectedPoId}
-                    onChange={(id) => handleSelectPoId(id)}
+                    onChange={handleSelectPoId}
                     getOptionValue={(p) => p.id}
                     getOptionLabel={invoicePoOptionLabel}
                     getOptionMeta={invoicePoOptionMeta}
                     getSearchText={invoicePoSearchText}
+                    fetchOptions={fetchInvoicePoOptions}
+                    isOptionDisabled={isInvoicePoDisabled}
+                    getOptionDisabledReason={invoicePoDisabledReason}
                     placeholder={loadingPOs ? "Memuat PO…" : "Ketik nomor PO atau customer…"}
-                    noResultLabel="Tidak ada hasil yang cocok"
+                    noResultLabel="PO tidak ditemukan"
                     disabled={previewLoading || formBusy || loadingPOs}
                     testId="po-selector"
                   />
@@ -2429,26 +2479,27 @@ export default function FakturPenjualan() {
             <form className="sd-form-fill fp-create-fill ux90-create-shell ux90-fp-filled" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
               <div className="ux90-workspace">
                 <div className="ux90-main">
-                  {!queryPoId ? (
-                    <div className="ux90-card ux90-po-switch" style={{ flex: "0 0 auto", padding: "10px 12px" }}>
-                      <div className="ux90-field" style={{ maxWidth: 420 }}>
-                        <span>Nomor PO <span className="ux90-req">*</span></span>
-                        <LookupSearchSelect
-                          options={availablePOs}
-                          value={selectedPoId}
-                          onChange={(id) => handleSelectPoId(id)}
-                          getOptionValue={(p) => p.id}
-                          getOptionLabel={invoicePoOptionLabel}
-                          getOptionMeta={invoicePoOptionMeta}
-                          getSearchText={invoicePoSearchText}
-                          placeholder="Ketik nomor PO atau customer…"
-                          noResultLabel="Tidak ada hasil yang cocok"
-                          disabled={previewLoading || formBusy}
-                          testId="po-selector"
-                        />
-                      </div>
+                  <div className="ux90-card ux90-po-switch" style={{ flex: "0 0 auto", padding: "10px 12px" }} data-testid="fp-po-switch">
+                    <div className="ux90-field" style={{ maxWidth: 420 }}>
+                      <span>Nomor PO <span className="ux90-req">*</span></span>
+                      <LookupSearchSelect
+                        options={availablePOs}
+                        value={selectedPoId}
+                        onChange={handleSelectPoId}
+                        getOptionValue={(p) => p.id}
+                        getOptionLabel={invoicePoOptionLabel}
+                        getOptionMeta={invoicePoOptionMeta}
+                        getSearchText={invoicePoSearchText}
+                        fetchOptions={fetchInvoicePoOptions}
+                        isOptionDisabled={isInvoicePoDisabled}
+                        getOptionDisabledReason={invoicePoDisabledReason}
+                        placeholder="Ketik nomor PO atau customer…"
+                        noResultLabel="PO tidak ditemukan"
+                        disabled={previewLoading || formBusy}
+                        testId="po-selector"
+                      />
                     </div>
-                  ) : null}
+                  </div>
 
                   <div className="ux90-card ux90-invoice-info" data-testid="po-snapshot-card" style={{ flex: "0 0 auto" }}>
                     <h3>Informasi Faktur</h3>

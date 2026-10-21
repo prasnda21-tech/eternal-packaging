@@ -7,9 +7,12 @@ import "./masterItemSearchSelect.css";
 export const LOOKUP_SEARCH_DEBOUNCE_MS = 150;
 
 /**
- * Client-side searchable lookup for create forms.
+ * Searchable lookup for create forms.
  * Selected value is always the option id/key — typing never invents a new identity.
  * Editing the query after a selection clears the bound id until the user re-selects.
+ *
+ * Optional fetchOptions(query) uses the existing backend search (debounced) instead of
+ * filtering only a preloaded client subset.
  */
 export default function LookupSearchSelect({
   options = [],
@@ -27,12 +30,31 @@ export default function LookupSearchSelect({
   className = "",
   /** Raise list above modal overlays (receipt create). */
   overModal = false,
+  /** Optional async (query: string) => option[]. When set, search is server-driven. */
+  fetchOptions = null,
+  isOptionDisabled = null,
+  getOptionDisabledReason = null,
 }) {
   const listId = useId();
   const rootRef = useRef(null);
   const listRef = useRef(null);
-  const gettersRef = useRef({ getOptionValue, getOptionLabel, getOptionMeta, getSearchText });
-  gettersRef.current = { getOptionValue, getOptionLabel, getOptionMeta, getSearchText };
+  const reqSeq = useRef(0);
+  const gettersRef = useRef({
+    getOptionValue,
+    getOptionLabel,
+    getOptionMeta,
+    getSearchText,
+    isOptionDisabled,
+    getOptionDisabledReason,
+  });
+  gettersRef.current = {
+    getOptionValue,
+    getOptionLabel,
+    getOptionMeta,
+    getSearchText,
+    isOptionDisabled,
+    getOptionDisabledReason,
+  };
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -40,30 +62,75 @@ export default function LookupSearchSelect({
   const [filtered, setFiltered] = useState(options || []);
   const [highlight, setHighlight] = useState(0);
   const [listBox, setListBox] = useState(null);
+  const [knownOptions, setKnownOptions] = useState(options || []);
+
+  useEffect(() => {
+    if (typeof fetchOptions === "function") return;
+    setKnownOptions(options || []);
+  }, [options, fetchOptions]);
 
   const selected = useMemo(() => {
     const resolveValue = gettersRef.current.getOptionValue;
-    return (options || []).find((opt) => String(resolveValue(opt)) === String(value)) || null;
-  }, [options, value]);
+    const pool = [...(knownOptions || []), ...(options || [])];
+    return pool.find((opt) => String(resolveValue(opt)) === String(value)) || null;
+  }, [knownOptions, options, value]);
 
   const selectedLabel = selected
     ? gettersRef.current.getOptionLabel(selected)
     : "";
   const display = open ? query : selectedLabel;
+  const asyncMode = typeof fetchOptions === "function";
 
   useEffect(() => {
     if (!open || disabled) return undefined;
     setPending(true);
     setFiltered([]);
-    const handle = window.setTimeout(() => {
-      const { getOptionLabel: labelFn, getSearchText: searchFn } = gettersRef.current;
-      const resolveSearch = searchFn || labelFn;
-      setFiltered(filterFacetOptions(options, query, resolveSearch));
-      setHighlight(0);
-      setPending(false);
+    const requestId = ++reqSeq.current;
+    const handle = window.setTimeout(async () => {
+      const {
+        getOptionLabel: labelFn,
+        getSearchText: searchFn,
+      } = gettersRef.current;
+      try {
+        if (asyncMode) {
+          const rows = await fetchOptions(query);
+          if (requestId !== reqSeq.current) return;
+          const list = Array.isArray(rows) ? rows : [];
+          setKnownOptions((prev) => {
+            const resolveValue = gettersRef.current.getOptionValue;
+            const map = new Map();
+            [...(prev || []), ...list].forEach((row) => {
+              const key = String(resolveValue(row) || "");
+              if (key) map.set(key, row);
+            });
+            return Array.from(map.values());
+          });
+          setFiltered(list);
+        } else {
+          const resolveSearch = searchFn || labelFn;
+          setFiltered(filterFacetOptions(options, query, resolveSearch));
+        }
+        setHighlight(0);
+        setPending(false);
+      } catch {
+        if (requestId !== reqSeq.current) return;
+        setFiltered([]);
+        setPending(false);
+      }
     }, LOOKUP_SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [query, open, disabled, options]);
+    return () => {
+      window.clearTimeout(handle);
+      reqSeq.current += 1;
+    };
+  }, [
+    query,
+    open,
+    disabled,
+    asyncMode,
+    fetchOptions,
+    // Client-filter mode only — async fetch must not re-run when parent options change.
+    asyncMode ? null : options,
+  ]);
 
   const placeList = useCallback(() => {
     const anchor = rootRef.current;
@@ -119,8 +186,13 @@ export default function LookupSearchSelect({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
+  const optionDisabled = (opt) => {
+    const fn = gettersRef.current.isOptionDisabled;
+    return typeof fn === "function" ? Boolean(fn(opt)) : false;
+  };
+
   const pick = (opt) => {
-    if (!opt) return;
+    if (!opt || optionDisabled(opt)) return;
     const { getOptionValue: valueFn } = gettersRef.current;
     onChange?.(valueFn(opt), opt);
     setQuery("");
@@ -145,10 +217,18 @@ export default function LookupSearchSelect({
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setOpen(true);
-      setHighlight((h) => Math.min(h + 1, Math.max(filtered.length - 1, 0)));
+      setHighlight((h) => {
+        let next = Math.min(h + 1, Math.max(filtered.length - 1, 0));
+        while (next < filtered.length - 1 && optionDisabled(filtered[next])) next += 1;
+        return next;
+      });
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setHighlight((h) => Math.max(h - 1, 0));
+      setHighlight((h) => {
+        let next = Math.max(h - 1, 0);
+        while (next > 0 && optionDisabled(filtered[next])) next -= 1;
+        return next;
+      });
     } else if (event.key === "Enter" && open) {
       event.preventDefault();
       if (!pending && filtered[highlight]) pick(filtered[highlight]);
@@ -181,23 +261,33 @@ export default function LookupSearchSelect({
         <li className="mis-status" data-testid={`${testId}-empty`}>{noResultLabel}</li>
       )}
       {view === "results" && filtered.map((opt, index) => {
-        const { getOptionValue: valueFn, getOptionLabel: labelFn, getOptionMeta: metaFn } = gettersRef.current;
+        const {
+          getOptionValue: valueFn,
+          getOptionLabel: labelFn,
+          getOptionMeta: metaFn,
+          getOptionDisabledReason: reasonFn,
+        } = gettersRef.current;
         const key = String(valueFn(opt) || index);
         const active = highlight === index;
+        const blocked = optionDisabled(opt);
         const meta = metaFn ? metaFn(opt) : "";
+        const reason = blocked && typeof reasonFn === "function" ? reasonFn(opt) : "";
         return (
           <li key={key}>
             <button
               type="button"
               role="option"
               aria-selected={active}
-              className={`mis-option${active ? " is-active" : ""}`}
+              aria-disabled={blocked ? "true" : undefined}
+              disabled={blocked}
+              className={`mis-option${active ? " is-active" : ""}${blocked ? " is-disabled" : ""}`}
               onMouseEnter={() => setHighlight(index)}
               onClick={() => pick(opt)}
               data-testid={`${testId}-option-${key}`}
             >
               <span className="mis-option-name">{labelFn(opt)}</span>
               {meta ? <span className="mis-option-meta">{meta}</span> : null}
+              {reason ? <span className="mis-option-meta ux90-lookup-disabled-reason">{reason}</span> : null}
             </button>
           </li>
         );

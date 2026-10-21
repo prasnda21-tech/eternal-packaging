@@ -35,11 +35,20 @@ describe("LookupSearchSelect contract", () => {
     const so = fs.readFileSync(path.join(__dirname, "../pages/PesananPenjualan.jsx"), "utf8");
     expect(faktur).toMatch(/LookupSearchSelect/);
     expect(faktur).toMatch(/testId="po-selector"/);
+    expect(faktur).toMatch(/fetchOptions=\{fetchInvoicePoOptions\}/);
     expect(kirim).toMatch(/testId="select-po-for-delivery"/);
     expect(terima).toMatch(/testId="select-receipt-invoice"/);
     expect(terima).toMatch(/testId="select-receipt-cash-bank"/);
     expect(terima).toMatch(/overModal/);
     expect(so).toMatch(/testId="input-sales"/);
     expect(so).toMatch(/LookupSearchSelect/);
+  });
+
+  test("supports optional server fetchOptions and disabled options", () => {
+    expect(src).toMatch(/fetchOptions = null/);
+    expect(src).toMatch(/isOptionDisabled/);
+    expect(src).toMatch(/getOptionDisabledReason/);
+    expect(src).toMatch(/if \(!opt \|\| optionDisabled\(opt\)\) return/);
+    expect(src).toMatch(/await fetchOptions\(query\)/);
   });
 });

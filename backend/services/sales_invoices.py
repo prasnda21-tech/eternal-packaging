@@ -517,6 +517,149 @@ async def attach_invoice_accounting_fields(db, invoices: List[Dict[str, Any]]) -
     return invoices
 
 
+def accumulate_invoiced_qty_by_line_idx(invoices: Optional[List[dict]]) -> Dict[int, int]:
+    """Sum invoice line qty by line_idx. Cancelled invoices do not consume qty."""
+    cumulative_by_line_idx: Dict[int, int] = {}
+    for inv in invoices or []:
+        if not isinstance(inv, dict):
+            continue
+        if effective_financial_status(inv) == FINANCIAL_CANCELLED:
+            continue
+        for line in inv.get("lines") or []:
+            if not isinstance(line, dict):
+                continue
+            try:
+                l_idx = int(line.get("line_idx", 0))
+                q = int(line.get("quantity", 0))
+            except (ValueError, TypeError):
+                continue
+            cumulative_by_line_idx[l_idx] = cumulative_by_line_idx.get(l_idx, 0) + q
+    return cumulative_by_line_idx
+
+
+def summarize_po_invoiceable_quantities(
+    raw_lines: Optional[list],
+    cumulative_by_line_idx: Optional[Dict[int, int]] = None,
+) -> Dict[str, Any]:
+    """Invoiceable remaining qty — same rules as get_po_invoice_preview line math.
+
+    Returns totals plus remaining_by_unit for safe multi-unit UI labels.
+    Does not decide PO eligibility or touch delivery/shipping quantities.
+    """
+    cumulative = cumulative_by_line_idx or {}
+    lines_out: List[dict] = []
+    total_ordered_qty = 0
+    total_remaining_invoice_qty = 0
+    remaining_by_unit: Dict[str, int] = {}
+    unit_order: List[str] = []
+
+    for idx, li in enumerate(raw_lines or []):
+        if not isinstance(li, dict):
+            continue
+        try:
+            line_idx = int(li.get("line_idx", idx) if li.get("line_idx") is not None else idx)
+        except (ValueError, TypeError):
+            line_idx = idx
+        unit = str(li.get("unit") or "pcs").strip() or "pcs"
+        try:
+            ordered_qty = int(li.get("quantity") or 0)
+        except (ValueError, TypeError):
+            ordered_qty = 0
+        invoiced_cumulative = int(cumulative.get(line_idx, 0) or 0)
+        remaining_invoice_qty = max(ordered_qty - invoiced_cumulative, 0)
+        total_ordered_qty += ordered_qty
+        total_remaining_invoice_qty += remaining_invoice_qty
+        if unit not in remaining_by_unit:
+            unit_order.append(unit)
+            remaining_by_unit[unit] = 0
+        remaining_by_unit[unit] += remaining_invoice_qty
+        lines_out.append({
+            "line_idx": line_idx,
+            "unit": unit,
+            "ordered_qty": ordered_qty,
+            "invoiced_cumulative": invoiced_cumulative,
+            "remaining_invoice_qty": remaining_invoice_qty,
+        })
+
+    return {
+        "available": True,
+        "total_ordered_qty": total_ordered_qty,
+        "total_remaining_invoice_qty": total_remaining_invoice_qty,
+        "remaining_by_unit": [
+            {"unit": unit, "qty": remaining_by_unit[unit]} for unit in unit_order
+        ],
+        "unit_count": len(unit_order),
+        "lines": lines_out,
+    }
+
+
+_INVOICEABLE_LIST_INVOICE_HARD_MAX = 20000
+
+
+async def batch_po_invoiceable_summaries(
+    db,
+    orders: List[dict],
+    *,
+    hard_max_invoices: int = _INVOICEABLE_LIST_INVOICE_HARD_MAX,
+) -> Dict[str, Dict[str, Any]]:
+    """One bounded invoice scan for many POs. Keys are po_id.
+
+    Shares accumulate + summarize rules with get_po_invoice_preview.
+    """
+    po_ids = [str(o.get("id")) for o in orders if o.get("id")]
+    if not po_ids:
+        return {}
+    cumulative_by_po: Dict[str, Dict[int, int]] = {pid: {} for pid in po_ids}
+    scanned = 0
+    cursor = db.sales_invoices.find(
+        {"po_id": {"$in": po_ids}},
+        {"_id": 0, "po_id": 1, "lines": 1, "financial_status": 1},
+    )
+    async for inv in cursor:
+        scanned += 1
+        if scanned > hard_max_invoices:
+            break
+        po_id = str(inv.get("po_id") or "")
+        if po_id not in cumulative_by_po:
+            continue
+        if effective_financial_status(inv) == FINANCIAL_CANCELLED:
+            continue
+        bucket = cumulative_by_po[po_id]
+        for line in inv.get("lines") or []:
+            if not isinstance(line, dict):
+                continue
+            try:
+                l_idx = int(line.get("line_idx", 0))
+                q = int(line.get("quantity", 0))
+            except (ValueError, TypeError):
+                continue
+            bucket[l_idx] = bucket.get(l_idx, 0) + q
+
+    truncated = scanned > hard_max_invoices
+    out: Dict[str, Dict[str, Any]] = {}
+    for order in orders:
+        po_id = str(order.get("id") or "")
+        if not po_id:
+            continue
+        raw_lines = order.get("line_items") or order.get("items") or []
+        summary = summarize_po_invoiceable_quantities(
+            raw_lines,
+            cumulative_by_po.get(po_id) or {},
+        )
+        if truncated:
+            # Fail closed for UI: do not invent totals when scan was capped.
+            summary = {
+                "available": False,
+                "total_ordered_qty": None,
+                "total_remaining_invoice_qty": None,
+                "remaining_by_unit": [],
+                "unit_count": 0,
+                "lines": [],
+            }
+        out[po_id] = summary
+    return out
+
+
 async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Optional[str] = None) -> Dict[str, Any]:
     """Generates an invoice snapshot preview from exact PO data.
 
@@ -551,42 +694,30 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         invoice_filter, {"_id": 0, "lines": 1, "financial_status": 1}
     ).to_list(500)
 
-    # Cumulative invoiced per exact line_idx (cancelled invoices do not consume qty)
-    cumulative_by_line_idx: Dict[int, int] = {}
-    for inv in existing_invoices:
-        if effective_financial_status(inv) == FINANCIAL_CANCELLED:
-            continue
-        for l in inv.get("lines", []):
-            try:
-                l_idx = int(l.get("line_idx", 0))
-                q = int(l.get("quantity", 0))
-                cumulative_by_line_idx[l_idx] = cumulative_by_line_idx.get(l_idx, 0) + q
-            except (ValueError, TypeError):
-                continue
-
+    cumulative_by_line_idx = accumulate_invoiced_qty_by_line_idx(existing_invoices)
     raw_lines = order.get("line_items") or order.get("items") or []
+    qty_summary = summarize_po_invoiceable_quantities(raw_lines, cumulative_by_line_idx)
+    qty_by_line = {
+        int(row["line_idx"]): row for row in qty_summary.get("lines") or []
+    }
     preview_lines = []
-    total_ordered_qty = 0
-    total_remaining_invoice_qty = 0
 
     for idx, li in enumerate(raw_lines):
-        line_idx = int(li.get("line_idx", idx) if li.get("line_idx") is not None else idx)
+        if not isinstance(li, dict):
+            continue
+        try:
+            line_idx = int(li.get("line_idx", idx) if li.get("line_idx") is not None else idx)
+        except (ValueError, TypeError):
+            line_idx = idx
         line_id = str(li.get("line_id") or li.get("id") or f"line_{idx}")
         item_name = str(li.get("name") or li.get("item_name") or "").strip()
         item_code = str(li.get("item_code") or "").strip()
         unit = str(li.get("unit") or "pcs").strip()
         color = str(li.get("color") or "").strip()
-
-        try:
-            ordered_qty = int(li.get("quantity") or 0)
-        except (ValueError, TypeError):
-            ordered_qty = 0
-
-        invoiced_cumulative = cumulative_by_line_idx.get(line_idx, 0)
-        remaining_invoice_qty = max(ordered_qty - invoiced_cumulative, 0)
-
-        total_ordered_qty += ordered_qty
-        total_remaining_invoice_qty += remaining_invoice_qty
+        qty_row = qty_by_line.get(line_idx) or {}
+        ordered_qty = int(qty_row.get("ordered_qty") or 0)
+        invoiced_cumulative = int(qty_row.get("invoiced_cumulative") or 0)
+        remaining_invoice_qty = int(qty_row.get("remaining_invoice_qty") or 0)
         stored_price = stored_order_unit_price(li)
         stored_subtotal = None
         if stored_price is not None:
@@ -610,6 +741,9 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
             "line_total": stored_subtotal,
         })
 
+    total_ordered_qty = int(qty_summary.get("total_ordered_qty") or 0)
+    total_remaining_invoice_qty = int(qty_summary.get("total_remaining_invoice_qty") or 0)
+
     return {
         "po_id": po_id,
         "po_number": po_number,
@@ -623,6 +757,7 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         "total_ordered_qty": total_ordered_qty,
         "total_remaining_invoice_qty": total_remaining_invoice_qty,
         "total_qty": total_remaining_invoice_qty,
+        "remaining_by_unit": qty_summary.get("remaining_by_unit") or [],
         "lines": preview_lines,
         "subtotal": 0.0,
         "discount_amount": 0.0,

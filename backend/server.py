@@ -12155,6 +12155,7 @@ _SALES_ORDER_LIST_PROJECTION = {
             "in": {
                 "quantity": "$$li.quantity",
                 "unit": "$$li.unit",
+                "line_idx": "$$li.line_idx",
             },
         }
     },
@@ -12355,10 +12356,13 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
     from services.sales_list_tabs import classify_sales_order_list_tab
 
     from services.sales_deliveries import summarize_po_delivery_quantities
+    from services.sales_invoices import batch_po_invoiceable_summaries
     from services.sales_order_delivery_display import build_sales_order_delivery_progress
 
     dd_settings = await _get_delivery_deadline_settings()
     po_ids = [o["id"] for o in orders if o.get("id")]
+    # Batch invoiceable qty before line_items are reduced to quantity_by_unit.
+    invoiceable_by_po = await batch_po_invoiceable_summaries(db, orders) if po_ids else {}
     display_shipments: Dict[str, list] = {}
     confirmation_rows: Dict[str, list] = {}
     embedded_shipments: Dict[str, list] = {}
@@ -12453,12 +12457,40 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
             deliv_st = "SEBAGIAN"
         else:
             deliv_st = "SELESAI"
+        remain_by_unit: Dict[str, int] = {}
+        unit_order: list = []
+        for line in qty.get("lines") or []:
+            unit = str((line or {}).get("unit") or "pcs").strip() or "pcs"
+            try:
+                remain_q = int((line or {}).get("remaining_qty") or 0)
+            except (TypeError, ValueError):
+                remain_q = 0
+            if unit not in remain_by_unit:
+                unit_order.append(unit)
+                remain_by_unit[unit] = 0
+            remain_by_unit[unit] += remain_q
         o["delivery_summary"] = {
             "total_ordered": tot_ordered,
             "total_shipped": tot_shipped,
             "total_remaining": tot_remain,
             "status": deliv_st,
             "shipment_count": qty["shipment_count"],
+            "remaining_by_unit": [
+                {"unit": unit, "qty": remain_by_unit[unit]} for unit in unit_order
+            ],
+            "available": True,
+        }
+        inv_summary = invoiceable_by_po.get(str(o.get("id") or "")) or {
+            "available": False,
+            "total_remaining_invoice_qty": None,
+            "remaining_by_unit": [],
+            "unit_count": 0,
+        }
+        o["invoiceable_summary"] = {
+            "available": bool(inv_summary.get("available")),
+            "total_remaining_invoice_qty": inv_summary.get("total_remaining_invoice_qty"),
+            "remaining_by_unit": inv_summary.get("remaining_by_unit") or [],
+            "unit_count": inv_summary.get("unit_count") or 0,
         }
         progress = build_sales_order_delivery_progress(
             raw_lines,
