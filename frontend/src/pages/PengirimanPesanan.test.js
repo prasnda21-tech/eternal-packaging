@@ -131,8 +131,9 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
   });
 
   test("renders required helper texts and read-only attributes for PO and SJ numbers", () => {
-    expect(src).toMatch(/Data diisi otomatis dari Pesanan Penjualan dan dapat disesuaikan untuk pengiriman ini\./);
-    expect(src).toMatch(/Terkunci berdasarkan PO dan urutan pengiriman\./);
+    expect(src).toMatch(/ux90-pj-delivery/);
+    expect(src).toMatch(/Alokasi Qty Surat Jalan/);
+    expect(src).toMatch(/Satu PO dapat memiliki beberapa Surat Jalan/);
     expect(src).toMatch(/data-testid="display-po-number"/);
     expect(src).toMatch(/data-testid="display-suggested-sj"/);
     expect(src).toMatch(/data-testid="display-customer"/);
@@ -247,6 +248,7 @@ describe("SJ location override on create form", () => {
     expect(src).toMatch(/sjLocationOverride/);
     expect(src).toMatch(/sjOverridePayload\(sjLocationOverride\)/);
     expect(src).toMatch(/if \(locationOverride\) payload\.delivery_location = locationOverride/);
+    expect(src).toMatch(/compact/);
     expect(src).not.toMatch(/saveDeliveryOutlet/);
     expect(picker).not.toMatch(/saveDeliveryOutlet/);
     expect(picker).not.toMatch(/buildSaveDeliveryOutletPayload/);
@@ -256,9 +258,21 @@ describe("SJ location override on create form", () => {
     expect(picker).toMatch(/sj-location-clear/);
     expect(picker).toMatch(/Hapus override — kembali ke lokasi PO/);
     expect(picker).toMatch(/OutletLocationMap/);
+    expect(picker).toMatch(/compact/);
+    expect(picker).toMatch(/Alamat Terpilih/);
+    expect(picker).toMatch(/sj-loc-maps-link/);
+    expect(picker).toMatch(/sj-loc-use-maps-link/);
     expect(picker).toMatch(/searchDeliveryPlaces/);
     expect(picker).toMatch(/resolveDeliveryMapsLink/);
     expect(modal).toMatch(/saveDeliveryOutlet/);
+  });
+
+  test("create form uses compact picker without Alamat Terpilih panel or map preview", () => {
+    expect(src).toMatch(/<SjDeliveryLocationPicker[\s\S]*compact/);
+    expect(picker).toMatch(/data-compact=\{compact \? "true" : "false"\}/);
+    // Compact path keeps short selected line; full "Alamat Terpilih" label only when !compact
+    expect(picker).toMatch(/compact \? \(/);
+    expect(picker).toMatch(/!compact|compact \?/);
   });
 });
 

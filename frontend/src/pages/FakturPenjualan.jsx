@@ -18,7 +18,8 @@ import { formatDisplayDate } from "../lib/constants";
 import { addSalesInvoiceCalendarDays, formatSalesInvoiceDate, salesInvoiceDateToIso } from "../lib/salesInvoiceDate";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
-import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
+import LookupSearchSelect from "../components/LookupSearchSelect";
+import { FormProgress } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
@@ -57,6 +58,7 @@ import {
   shouldHideLegacyManualAccounting,
 } from "../lib/salesLifecycleUi";
 import "./salesSubmenuDensity.css";
+import "./ux90SalesCreate.css";
 
 function getTodayString() {
   const d = new Date();
@@ -1203,19 +1205,48 @@ export default function FakturPenjualan() {
     };
   }, [viewMode]);
 
-  // Handle PO selector change
-  const handleSelectPo = (e) => {
-    const pId = e.target.value;
-    setSelectedPoId(pId);
+  // Handle PO selector change (UX: confirm before discarding local create edits)
+  const handleSelectPoId = (pId) => {
+    const nextId = pId || "";
+    if (
+      previewData
+      && selectedPoId
+      && nextId
+      && nextId !== selectedPoId
+      && !window.confirm("Mengganti Nomor PO akan menghapus perubahan qty, harga, diskon, dan biaya yang belum disimpan. Lanjutkan?")
+    ) {
+      return;
+    }
+    setSelectedPoId(nextId);
     setOtherCharges([]);
     setShowChargeErrors(false);
-    if (pId) {
-      setSearchParams({ action: "create", po_id: pId });
-      loadPoPreview(pId);
+    setInvoiceFormTab("items");
+    if (nextId) {
+      setSearchParams({ action: "create", po_id: nextId });
+      loadPoPreview(nextId);
     } else {
       setSearchParams({ action: "create" });
       setPreviewData(null);
     }
+  };
+
+  const invoicePoSearchText = (p) => [
+    p?.po_number,
+    p?.customer,
+    p?.outlet,
+    formatDisplayDate(p?.order_date || p?.created_at),
+  ].map((v) => String(v || "").trim()).filter(Boolean).join(" ");
+
+  const invoicePoOptionLabel = (p) => String(p?.po_number || p?.id || "");
+
+  const invoicePoOptionMeta = (p) => {
+    const qty = Number(p?.delivery_summary?.total_remaining ?? p?.total_quantity ?? 0);
+    const bits = [
+      p?.customer,
+      formatDisplayDate(p?.order_date || p?.created_at) || null,
+      Number.isFinite(qty) ? `Sisa ${qty.toLocaleString("id-ID")}` : null,
+    ].filter(Boolean);
+    return bits.join(" · ");
   };
 
   // Due Date calculation helper
@@ -2347,373 +2378,338 @@ export default function FakturPenjualan() {
         </section>
       )}
 
-      {/* VIEW: CREATE */}
+      {/* VIEW: CREATE — Eternal UX 9.0 invoice workspace */}
       {viewMode === "create" && (
         <div
-          className="sd-form fp-create"
+          className="sd-form fp-create ux90-create-shell ux90-fp-create"
           data-testid="invoice-create-lifecycle"
           data-legacy-manual={hideLegacyOnCreate ? "required" : "hidden"}
+          data-gate-only={!previewData && !previewLoading ? "true" : "false"}
         >
-          {/* Step 1: PO Selector Panel (Only shown if opened directly from menu without pre-selected PO) */}
-          {!queryPoId && (
-            <FormSection
-              id="fp-select-po"
-              title="Pilih Pesanan Penjualan"
-              description="Satu PO bisa difakturkan sebagian berkali-kali. Pilih PO, lalu sesuaikan sisa qty."
-              status={computeStatus([{ value: selectedPoId, isRequired: true }])}
-              className="fp-po-section"
-            >
-              <div className="fp-po-select">
-                <FormField id="fp-po-selector-field" label="Nomor PO" isRequired value={selectedPoId}>
-                  <select
+          {!previewData && !previewLoading && (
+            <div className="ux90-gate" data-testid="fp-po-gate">
+              <h2>Langkah 1: Pilih Pesanan Penjualan</h2>
+              <p className="ux90-hint" data-testid="multi-invoice-hint">
+                Satu PO dapat difakturkan sebagian berkali-kali. Pilih Nomor PO, lalu sesuaikan qty faktur.
+              </p>
+              <div className="ux90-gate-row">
+                <div className="ux90-field">
+                  <span>Nomor PO <span className="ux90-req">*</span></span>
+                  <LookupSearchSelect
+                    options={availablePOs}
                     value={selectedPoId}
-                    onChange={handleSelectPo}
-                    disabled={previewLoading || formBusy}
-                    data-testid="po-selector"
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: 6,
-                      fontSize: "0.95rem",
-                    }}
-                  >
-                    <option value="">-- Pilih PO --</option>
-                    {availablePOs.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.po_number} — {p.customer} ({Number(p.total_quantity || 0).toLocaleString("id-ID")} pcs)
-                      </option>
-                    ))}
-                  </select>
-                </FormField>
+                    onChange={(id) => handleSelectPoId(id)}
+                    getOptionValue={(p) => p.id}
+                    getOptionLabel={invoicePoOptionLabel}
+                    getOptionMeta={invoicePoOptionMeta}
+                    getSearchText={invoicePoSearchText}
+                    placeholder={loadingPOs ? "Memuat PO…" : "Ketik nomor PO atau customer…"}
+                    noResultLabel="Tidak ada hasil yang cocok"
+                    disabled={previewLoading || formBusy || loadingPOs}
+                    testId="po-selector"
+                  />
+                </div>
+                <p className="ux90-hint" style={{ marginBottom: 6 }}>
+                  Form faktur muncul setelah PO dipilih. Tidak ada langkah kosong di bawah.
+                </p>
               </div>
-            </FormSection>
+              {previewErr ? (
+                <div className="alert-box error" data-testid="create-error-alert" style={{ marginTop: 12 }}>
+                  <AlertCircle size={16} /> <span>{previewErr}</span>
+                </div>
+              ) : null}
+            </div>
           )}
 
           {previewLoading ? (
-            <div className="sd-form-stage" style={{ padding: 32, textAlign: "center", color: "#64748b" }}>Memuat data PO...</div>
-          ) : previewData ? (
-            <form className="sd-form-fill fp-create-fill" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice}>
-              <div className="sd-form-stage">
-              <div className="fp-summary" data-testid="po-snapshot-card">
-                <div>
-                  <span>Nomor PO</span>
-                  <strong data-testid="snapshot-po-number">{previewData.po_number}</strong>
-                </div>
-                <div>
-                  <span>Pelanggan</span>
-                  <strong data-testid="snapshot-customer">{previewData.customer}</strong>
-                </div>
-                <div>
-                  <span>Outlet / Cabang</span>
-                  <strong data-testid="snapshot-outlet">{previewData.outlet || "-"}</strong>
-                </div>
-                <div>
-                  <span>Sisa qty dapat difakturkan</span>
-                  <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"}>
-                    {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
-                  </strong>
-                </div>
-              </div>
-              <p className="fp-multi-invoice-hint" data-testid="multi-invoice-hint">
-                Faktur parsial diperbolehkan. Qty faktur tidak boleh melebihi sisa per baris.
-              </p>
+            <div className="ux90-gate" data-testid="fp-preview-loading">Memuat data PO...</div>
+          ) : null}
 
-              <div className="fp-terms fp-terms-essential" data-testid="invoice-essential-terms">
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Tanggal Faktur <span style={{ color: "#ef4444" }}>*</span>
-                    </label>
-                    <SalesInvoiceDateField
-                      ref={createDateRef}
-                      valueIso={invoiceDate}
-                      onChange={setInvoiceDate}
-                      testId="invoice-date-input"
-                    />
-                  </div>
+          {previewData ? (
+            <form className="sd-form-fill fp-create-fill ux90-create-shell ux90-fp-filled" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              <div className="ux90-workspace">
+                <div className="ux90-main">
+                  {!queryPoId ? (
+                    <div className="ux90-card ux90-po-switch" style={{ flex: "0 0 auto", padding: "10px 12px" }}>
+                      <div className="ux90-field" style={{ maxWidth: 420 }}>
+                        <span>Nomor PO <span className="ux90-req">*</span></span>
+                        <LookupSearchSelect
+                          options={availablePOs}
+                          value={selectedPoId}
+                          onChange={(id) => handleSelectPoId(id)}
+                          getOptionValue={(p) => p.id}
+                          getOptionLabel={invoicePoOptionLabel}
+                          getOptionMeta={invoicePoOptionMeta}
+                          getSearchText={invoicePoSearchText}
+                          placeholder="Ketik nomor PO atau customer…"
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          disabled={previewLoading || formBusy}
+                          testId="po-selector"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
 
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Termin (Hari)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={paymentTermDays}
-                      onChange={(e) => setPaymentTermDays(e.target.value)}
-                      data-testid="invoice-term-input"
-                      placeholder="0"
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                    <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: 4 }}>
-                      Jatuh Tempo: <strong>{formatSalesInvoiceDate(calculatedDueDate) || "-"}</strong>
+                  <div className="ux90-card ux90-invoice-info" data-testid="po-snapshot-card" style={{ flex: "0 0 auto" }}>
+                    <h3>Informasi Faktur</h3>
+                    <div className="ux90-field-grid ux90-invoice-essentials" data-testid="invoice-essential-terms">
+                      <div className="ux90-field">
+                        <span>Pelanggan</span>
+                        <input className="ux90-input" readOnly value={previewData.customer || ""} data-testid="snapshot-customer" />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Nomor PO</span>
+                        <input className="ux90-input" readOnly value={previewData.po_number || ""} data-testid="snapshot-po-number" />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Outlet / Cabang</span>
+                        <input className="ux90-input" readOnly value={previewData.outlet || "-"} data-testid="snapshot-outlet" />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Tanggal Faktur <span className="ux90-req">*</span></span>
+                        <SalesInvoiceDateField
+                          ref={createDateRef}
+                          valueIso={invoiceDate}
+                          onChange={setInvoiceDate}
+                          testId="invoice-date-input"
+                        />
+                      </div>
+                      <div className="ux90-field">
+                        <span>PPN (%)</span>
+                        <input
+                          className="ux90-input ux90-num"
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="any"
+                          value={ppnPercent}
+                          onChange={(e) => setPpnPercent(e.target.value)}
+                          data-testid="invoice-ppn-input"
+                          placeholder="0"
+                        />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Termin (Hari)</span>
+                        <input
+                          className="ux90-input ux90-num"
+                          type="number"
+                          min="0"
+                          value={paymentTermDays}
+                          onChange={(e) => setPaymentTermDays(e.target.value)}
+                          data-testid="invoice-term-input"
+                          placeholder="0"
+                        />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Jatuh Tempo</span>
+                        <input className="ux90-input" readOnly value={formatSalesInvoiceDate(calculatedDueDate) || "-"} data-testid="invoice-due-display" />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Diskon Global (Rp)</span>
+                        <input
+                          className="ux90-input ux90-num"
+                          type="number"
+                          min="0"
+                          value={discountAmount}
+                          onChange={(e) => setDiscountAmount(e.target.value)}
+                          data-testid="invoice-discount-input"
+                          placeholder="0"
+                        />
+                      </div>
+                      <div className="ux90-field">
+                        <span>Sisa qty dapat difakturkan</span>
+                        <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"} style={{ fontSize: 14, paddingTop: 6 }}>
+                          {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
+                        </strong>
+                      </div>
                     </div>
                   </div>
 
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Diskon (Rp)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={discountAmount}
-                      onChange={(e) => setDiscountAmount(e.target.value)}
-                      data-testid="invoice-discount-input"
-                      placeholder="0"
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
+                  <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur" style={{ flex: "0 0 auto", margin: 0 }}>
+                    <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Daftar Barang</button>
+                    <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Catatan & Biaya</button>
+                  </div>
+
+                  <div className="fp-terms sd-pane-terms ux90-card ux90-invoice-terms">
+                    <div className="ux90-field is-span-3">
+                      <span>Catatan Faktur (Opsional)</span>
+                      <input
+                        className="ux90-input"
+                        type="text"
+                        placeholder="Catatan tambahan faktur penjualan..."
+                        value={invoiceNotes}
+                        onChange={(e) => setInvoiceNotes(e.target.value)}
+                        data-testid="invoice-notes-input"
+                      />
+                    </div>
+                    <OtherChargesEditor
+                      rows={otherCharges}
+                      accounts={chargeAccounts}
+                      disabled={formBusy}
+                      showErrors={showChargeErrors}
+                      onChange={setOtherCharges}
+                      idPrefix="create"
                     />
                   </div>
 
-                  <div>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      PPN (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="any"
-                      value={ppnPercent}
-                      onChange={(e) => setPpnPercent(e.target.value)}
-                      data-testid="invoice-ppn-input"
-                      placeholder="0"
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
+                  <div className="fp-items sd-pane-items ux90-table-wrap ux90-invoice-lines">
+                    <div className="ux90-table-head">
+                      <h3>Daftar Barang</h3>
+                      <span className="ux90-hint">Qty faktur ≤ sisa per baris · multi-faktur per PO</span>
+                    </div>
+                    <div className="ux90-table-scroll" data-testid="invoice-lines-scroll">
+                      <table className="ux90-table fp-lines">
+                        <thead>
+                          <tr>
+                            <th>Produk</th>
+                            <th className="is-num">Sisa</th>
+                            <th className="is-num">Qty Faktur</th>
+                            <th className="is-num">Harga</th>
+                            <th className="is-num">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {createCalculations.lines.map((li) => (
+                            <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
+                              <td>
+                                <div className="ux90-item-name">{li.item_name}</div>
+                                {li.color ? <div className="ux90-item-meta">Warna: {li.color}</div> : null}
+                              </td>
+                              <td className="is-num">
+                                <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
+                              </td>
+                              <td className="is-num">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={li.remaining}
+                                  value={lineQuantities[li.line_idx] !== undefined ? lineQuantities[li.line_idx] : li.remaining}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
+                                  }}
+                                  data-testid={`qty-input-${li.line_idx}`}
+                                  className={`ux90-qty-input${li.isQtyOver ? " is-over" : ""}`}
+                                />
+                                {li.isQtyOver ? <div className="ux90-inline-err">Maks {li.remaining}</div> : null}
+                              </td>
+                              <td className="is-num">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={linePrices[li.line_idx] !== undefined ? linePrices[li.line_idx] : ""}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
+                                  }}
+                                  readOnly={Boolean(li.price_from_order)}
+                                  placeholder={li.price_from_order ? "" : "Isi harga"}
+                                  data-testid={`unit-price-input-${li.line_idx}`}
+                                  className="ux90-price-input"
+                                />
+                                {li.price_from_order ? <div className="ux90-inline-ok">Harga dari pesanan</div> : null}
+                                {li.priceMissing && li.numericQty > 0 ? <div className="ux90-inline-warn">Lengkapi harga jual</div> : null}
+                              </td>
+                              <td className="is-num" data-testid={`line-total-${li.line_idx}`}>
+                                {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-              </div>
 
-              <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur">
-                <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Barang & Harga</button>
-                <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Catatan & Biaya</button>
-              </div>
+                  {createCalculations.totalRemaining <= 0 ? (
+                    <div className="ux90-card" data-testid="fully-invoiced-banner" style={{ borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", flex: "0 0 auto" }}>
+                      <AlertCircle size={16} style={{ verticalAlign: "middle", marginRight: 6 }} />
+                      Pesanan Penjualan ini sudah difakturkan sepenuhnya. Tidak ada sisa kuantitas untuk difakturkan.
+                    </div>
+                  ) : null}
 
-              <div className="fp-terms sd-pane-terms">
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "#334155", display: "block", marginBottom: 6 }}>
-                      Catatan Faktur (Opsional)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Catatan tambahan faktur penjualan..."
-                      value={invoiceNotes}
-                      onChange={(e) => setInvoiceNotes(e.target.value)}
-                      data-testid="invoice-notes-input"
-                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6 }}
-                    />
-                  </div>
-                  <OtherChargesEditor
-                    rows={otherCharges}
-                    accounts={chargeAccounts}
-                    disabled={formBusy}
-                    showErrors={showChargeErrors}
-                    onChange={setOtherCharges}
-                    idPrefix="create"
-                  />
-              </div>
-
-              <div className="fp-items sd-pane-items">
-                <div className="sd-lines sd-lines-scroll" data-testid="invoice-lines-scroll">
-                  <table className="fp-lines">
-                    <thead>
-                      <tr>
-                        <th>Barang</th>
-                        <th>Sisa dapat difakturkan</th>
-                        <th>Qty faktur</th>
-                        <th>Harga satuan</th>
-                        <th>Total baris</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {createCalculations.lines.map((li) => (
-                        <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
-                          <td>
-                            <div className="fp-item-name">{li.item_name}</div>
-                            {li.color && <div className="fp-item-meta">Warna: {li.color}</div>}
-                          </td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", color: "#64748b" }}>
-                            <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
-                          </td>
-                          <td style={{ padding: "8px 12px", textAlign: "right" }}>
-                            <input
-                              type="number"
-                              min="0"
-                              max={li.remaining}
-                              value={lineQuantities[li.line_idx] !== undefined ? lineQuantities[li.line_idx] : li.remaining}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
-                              }}
-                              data-testid={`qty-input-${li.line_idx}`}
-                              className={li.isQtyOver ? "is-over" : undefined}
-                              style={{
-                                width: 120,
-                                padding: "6px 10px",
-                                border: `1px solid ${li.isQtyOver ? "#ef4444" : "#cbd5e1"}`,
-                                borderRadius: 6,
-                                fontWeight: 600,
-                                textAlign: "right",
-                                background: li.isQtyOver ? "#fef2f2" : "#fff",
-                              }}
-                            />
-                            {li.isQtyOver && (
-                              <div style={{ fontSize: "0.75rem", color: "#ef4444", marginTop: 2 }}>Maks {li.remaining}</div>
-                            )}
-                          </td>
-                          <td style={{ padding: "8px 12px", textAlign: "right" }}>
-                            <input
-                              type="number"
-                              min="0"
-                              step="any"
-                              value={linePrices[li.line_idx] !== undefined ? linePrices[li.line_idx] : ""}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
-                              }}
-                              readOnly={Boolean(li.price_from_order)}
-                              placeholder={li.price_from_order ? "" : "Isi harga"}
-                              data-testid={`unit-price-input-${li.line_idx}`}
-                              style={{
-                                width: "100%",
-                                padding: "6px 10px",
-                                border: "1px solid #CBD5E1",
-                                borderRadius: 6,
-                                fontWeight: 600,
-                                textAlign: "right",
-                                background: li.price_from_order ? "#f8fafc" : "#fff",
-                              }}
-                            />
-                            {li.price_from_order && (
-                              <div style={{ fontSize: "0.75rem", color: "#166534", marginTop: 2 }}>Harga dari pesanan</div>
-                            )}
-                            {li.priceMissing && li.numericQty > 0 && (
-                              <div style={{ fontSize: "0.75rem", color: "#b45309", marginTop: 2 }}>Lengkapi harga jual</div>
-                            )}
-                          </td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#0f172a" }} data-testid={`line-total-${li.line_idx}`}>
-                            {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  {formErr ? (
+                    <div className="alert-box error" data-testid="create-error-alert" style={{ flex: "0 0 auto" }}>
+                      <AlertCircle size={16} />
+                      <span>{formErr}</span>
+                    </div>
+                  ) : null}
                 </div>
 
-                <p className="fp-price-note">Harga mengikuti pesanan penjualan. Sesuaikan qty faktur bila perlu (multi-faktur per PO).</p>
+                <aside className="ux90-side">
+                  <div className="ux90-card" data-testid="invoice-breakdown">
+                    <h3>Ringkasan Faktur</h3>
+                    <div className="ux90-summary-rows">
+                      <div>
+                        <span>Subtotal</span>
+                        <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                      </div>
+                      <div>
+                        <span>Diskon</span>
+                        <strong>{formatRupiah(createCalculations.discount)}</strong>
+                      </div>
+                      <div>
+                        <span>DPP</span>
+                        <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}</strong>
+                      </div>
+                      <div>
+                        <span>PPN ({createCalculations.ppnPercent}%)</span>
+                        <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}</strong>
+                      </div>
+                      <div>
+                        <span>Biaya lainnya</span>
+                        <strong data-testid="invoice-other-charges-total">
+                          {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
+                        </strong>
+                      </div>
+                      <div className="is-total">
+                        <span>Total Faktur</span>
+                        <strong data-testid="invoice-grand-total">
+                          {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
+                            ? formatRupiah(createCalculations.grandTotal)
+                            : "Belum lengkap"}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Sisa qty PO</span>
+                        <strong data-testid="invoice-remaining-qty-summary">
+                          {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="ux90-card">
+                    <h3>Informasi PO</h3>
+                    <p className="ux90-card-muted" data-testid="multi-invoice-hint">
+                      PO {previewData.po_number} · Outlet {previewData.outlet || "—"}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
+                    </p>
+                  </div>
+                </aside>
               </div>
 
-              <div className="fp-breakdown fp-breakdown-sticky" data-testid="invoice-breakdown">
-                  <div>
-                    <span>Subtotal</span>
-                    <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
-                  </div>
-                  <div>
-                    <span>Diskon</span>
-                    <strong>{formatRupiah(createCalculations.discount)}</strong>
-                  </div>
-                  <div>
-                    <span>PPN ({createCalculations.ppnPercent}%)</span>
-                    <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}</strong>
-                  </div>
-                  <div>
-                    <span>Biaya lainnya</span>
-                    <strong data-testid="invoice-other-charges-total">
-                      {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
-                    </strong>
-                  </div>
-                  <div className="fp-breakdown-remaining">
-                    <span>Sisa qty PO</span>
-                    <strong data-testid="invoice-remaining-qty-summary">
-                      {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
-                    </strong>
-                  </div>
-              </div>
-
-              {createCalculations.totalRemaining <= 0 && (
-                <div
-                  style={{
-                    padding: "12px 16px",
-                    backgroundColor: "#fef3c7",
-                    border: "1px solid #fde68a",
-                    color: "#92400e",
-                    borderRadius: 8,
-                    marginBottom: 16,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                  }}
-                  data-testid="fully-invoiced-banner"
-                >
-                  <AlertCircle size={18} />
-                  <span>Pesanan Penjualan ini sudah difakturkan sepenuhnya (100%). Tidak ada sisa kuantitas untuk difakturkan.</span>
-                </div>
-              )}
-
-              {formErr && (
-                <div
-                  className="alert-box error"
-                  data-testid="create-error-alert"
-                  style={{
-                    background: "#fef2f2",
-                    border: "1px solid #fecaca",
-                    color: "#b91c1c",
-                    padding: "10px 14px",
-                    borderRadius: 8,
-                    marginBottom: 16,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                  }}
-                >
-                  <AlertCircle size={16} />
-                  <span>{formErr}</span>
-                </div>
-              )}
-
-              </div>
-              <div className="invoice-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, paddingRight: 96 }}>
-                <div className="fp-total">
-                  <span>Total faktur</span>
-                  <strong data-testid="invoice-grand-total">{invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null ? formatRupiah(createCalculations.grandTotal) : "Belum lengkap"}</strong>
-                </div>
-                <div className="fp-action-buttons">
+              <div className="ux90-footer invoice-actions">
                 <button
                   type="button"
-                  className="ghost"
+                  className="ux90-btn-ghost"
                   onClick={() => {
                     setSearchParams({});
                     setViewMode("list");
                   }}
                   disabled={formBusy}
-                  style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #CBD5E1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="primary"
+                  className="ux90-btn-primary primary"
                   disabled={formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0}
                   data-testid="save-invoice-btn"
-                  style={{
-                    padding: "10px 24px",
-                    borderRadius: 8,
-                    background: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "#94a3b8" : "#166534",
-                    color: "#fff",
-                    border: "none",
-                    cursor: formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 ? "not-allowed" : "pointer",
-                    fontWeight: 600,
-                  }}
                 >
                   {formBusy ? "Menyimpan..." : "Simpan Faktur"}
                 </button>
-                </div>
               </div>
             </form>
-          ) : (
-            <div style={{ padding: 40, textAlign: "center", color: "#64748b" }}>
-              Silakan pilih Pesanan Penjualan pada bagian 1 di atas untuk memulai.
-            </div>
-          )}
+          ) : null}
         </div>
       )}
 
