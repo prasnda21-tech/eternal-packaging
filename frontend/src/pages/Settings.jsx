@@ -103,6 +103,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
 
   const [form, setForm] = useState(() => ({
     email: initial?.email || "",
+    notification_email: initial?.notification_email || "",
     name: initial?.name || "",
     nickname: initial?.nickname || "",
     phone: initial?.phone || "",
@@ -182,6 +183,18 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
         payload.role = form.role;
         payload.joined_at = form.joined_at || null;
         payload.notes = form.notes || null;
+        const notifyRaw = (form.notification_email || "").trim().toLowerCase();
+        if (notifyRaw) {
+          // Lightweight client check; backend re-validates strictly.
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyRaw)) {
+            setErr("Format email notifikasi tidak valid");
+            setBusy(false);
+            return;
+          }
+          payload.notification_email = notifyRaw;
+        } else {
+          payload.notification_email = "";
+        }
       }
       if (showPerms) {
         const confirmKeys = confirmPackageKeysForSave(
@@ -240,6 +253,33 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                 value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
                 data-testid="emp-email"/>
             </FormField>
+            <div className="emp-notify-email-block" data-testid="emp-notification-email-block">
+              <FormField
+                id="emp-notification-email-field"
+                label="Email Notifikasi"
+                isRequired={false}
+                value={form.notification_email}
+              >
+                <input
+                  type="text"
+                  inputMode="email"
+                  disabled={busy}
+                  value={form.notification_email}
+                  onChange={(e) => setForm((f) => ({ ...f, notification_email: e.target.value }))}
+                  placeholder="opsional — gmail / yahoo / outlook / dll"
+                  data-testid="emp-notification-email"
+                  autoComplete="off"
+                />
+              </FormField>
+              <p className="hint" style={{ margin: "2px 0 0" }} data-testid="emp-notification-email-hint">
+                Digunakan untuk menerima pemberitahuan operasional. Tidak mengubah email login.
+              </p>
+              {!String(form.notification_email || "").trim() && (
+                <p className="hint" style={{ margin: "2px 0 0" }} data-testid="emp-notification-email-empty-hint">
+                  Kosong = tidak ada notifikasi email yang dikirim ke pengguna ini.
+                </p>
+              )}
+            </div>
           <label>Role
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
               disabled={busy || !canManageRoles} data-testid="emp-role">

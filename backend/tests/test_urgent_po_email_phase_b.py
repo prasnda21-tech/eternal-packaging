@@ -55,13 +55,16 @@ async def bind_db():
 
 
 def _user(role, **extra):
-    return {
+    doc = {
         "id": extra.get("id", str(uuid.uuid4())),
         "email": extra.get("email", f"{role}-{uuid.uuid4().hex[:6]}@test.local"),
         "name": extra.get("name", role),
         "role": role,
         "permissions_override": extra.get("permissions_override") or {},
     }
+    if "notification_email" in extra:
+        doc["notification_email"] = extra["notification_email"]
+    return doc
 
 
 async def _seed_order(db, *, priority="normal"):
@@ -149,35 +152,74 @@ async def test_recipients_permission_inactive_director_sa_invalid_dedupe(bind_db
     on = _user(
         "crm",
         id="on1",
-        email="On.User@Test.Local",
+        email="login.on@test.local",  # login ≠ notification
+        notification_email="On.User@Test.Local",
         permissions_override={"urgent.email_notify": True},
     )
     on_dup = _user(
         "crm",
         id="on2",
-        email="on.user@test.local",  # same normalized email
+        email="login.on2@test.local",
+        notification_email="on.user@test.local",  # same normalized notification
         permissions_override={"urgent.email_notify": True},
     )
-    off = _user("crm", id="off1", email="off@test.local", permissions_override={})
+    # Permission ON but empty notification_email → not a recipient (no login fallback)
+    empty_notify = _user(
+        "crm",
+        id="empty1",
+        email="has-login@test.local",
+        notification_email="",
+        permissions_override={"urgent.email_notify": True},
+    )
+    # Old user without notification_email field → skip
+    legacy_no_field = _user(
+        "crm",
+        id="leg1",
+        email="legacy-login@test.local",
+        permissions_override={"urgent.email_notify": True},
+    )
+    off = _user(
+        "crm",
+        id="off1",
+        email="off@test.local",
+        notification_email="off-notify@test.local",
+        permissions_override={},
+    )
     inactive = _user(
         "crm",
         id="ina1",
         email="ina@test.local",
+        notification_email="ina-notify@test.local",
         permissions_override={"urgent.email_notify": True},
     )
     bad = _user(
         "crm",
         id="bad1",
-        email="not-an-email",
+        email="bad-login@test.local",
+        notification_email="not-an-email",
         permissions_override={"urgent.email_notify": True},
     )
-    director = _user("direktur_utama", id="dir1", email="dir@test.local", permissions_override={})
-    sa = _user("admin", id="sa1", email="sa@test.local", permissions_override={})
+    director = _user(
+        "direktur_utama",
+        id="dir1",
+        email="dir@test.local",
+        notification_email="dir-notify@test.local",
+        permissions_override={},
+    )
+    sa = _user(
+        "admin",
+        id="sa1",
+        email="sa@test.local",
+        notification_email="sa-notify@test.local",
+        permissions_override={},
+    )
     await bind_db.users.insert_many(
         [
             {**requester, "status": "active"},
             {**on, "status": "active"},
             {**on_dup, "status": "active"},
+            {**empty_notify, "status": "active"},
+            {**legacy_no_field, "status": "active"},
             {**off, "status": "active"},
             {**inactive, "status": "inactive"},
             {**bad, "status": "active"},
@@ -191,6 +233,8 @@ async def test_recipients_permission_inactive_director_sa_invalid_dedupe(bind_db
     recips = await outbox.resolve_email_notify_recipients(bind_db)
     emails = [r["email"] for r in recips]
     assert emails == ["on.user@test.local"]
+    assert "login.on@test.local" not in emails
+    assert "has-login@test.local" not in emails
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -207,7 +251,11 @@ async def test_recipients_permission_inactive_director_sa_invalid_dedupe(bind_db
 async def test_decision_email_and_smtp_failure_no_rollback(bind_db):
     order = await _seed_order(bind_db)
     requester = _user(
-        "crm", id="r-dec", email="pemohon@test.local", permissions_override={"urgent.request": True}
+        "crm",
+        id="r-dec",
+        email="pemohon@test.local",
+        notification_email="pemohon.notify@gmail.com",
+        permissions_override={"urgent.request": True},
     )
     approver = _user(
         "crm", id="a-dec", email="apr@test.local", permissions_override={"urgent.approve": True}
@@ -231,7 +279,8 @@ async def test_decision_email_and_smtp_failure_no_rollback(bind_db):
             {"request_id": req["id"], "event_type": urg.EVENT_APPROVED}, {"_id": 0}
         ).to_list(10)
         assert len(jobs) == 1
-        assert jobs[0]["recipient_email"] == "pemohon@test.local"
+        assert jobs[0]["recipient_email"] == "pemohon.notify@gmail.com"
+        assert jobs[0]["recipient_email"] != requester["email"]
 
         sender = RecordingSmtpSender(fail_forever=True)
         await outbox.process_due_outbox(bind_db, limit=10, sender=sender)
@@ -249,7 +298,11 @@ async def test_decision_email_and_smtp_failure_no_rollback(bind_db):
 async def test_reject_email_retry_idempotent_and_send_ok(bind_db):
     order = await _seed_order(bind_db)
     requester = _user(
-        "crm", id="r-rej", email="pemohon2@test.local", permissions_override={"urgent.request": True}
+        "crm",
+        id="r-rej",
+        email="pemohon2@test.local",
+        notification_email="pemohon2.notify@yahoo.com",
+        permissions_override={"urgent.request": True},
     )
     approver = _user(
         "crm", id="a-rej", email="apr2@test.local", permissions_override={"urgent.approve": True}
@@ -286,9 +339,90 @@ async def test_reject_email_retry_idempotent_and_send_ok(bind_db):
         stats = await outbox.process_due_outbox(bind_db, limit=5, sender=sender)
         assert stats["sent"] == 1
         assert len(sender.sent) == 1
-        assert sender.sent[0]["to"] == "pemohon2@test.local"
+        assert sender.sent[0]["to"] == "pemohon2.notify@yahoo.com"
         assert "Kapasitas penuh" in sender.sent[0]["text"]
         assert "produksi.eternalpackaging.id/po/" in sender.sent[0]["text"]
+
+
+@pytest.mark.anyio
+async def test_decision_empty_notification_email_skipped_no_login_fallback(bind_db):
+    order = await _seed_order(bind_db)
+    requester = _user(
+        "crm",
+        id="r-empty",
+        email="has-login-only@test.local",
+        notification_email="",
+        permissions_override={"urgent.request": True},
+    )
+    approver = _user(
+        "crm", id="a-empty", email="apr-empty@test.local", permissions_override={"urgent.approve": True}
+    )
+    await bind_db.users.insert_many(
+        [{**requester, "status": "active"}, {**approver, "status": "active"}]
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        req = await _submit(client, order["id"], requester)
+        app.dependency_overrides[current_user] = lambda: approver
+        r = await client.post(
+            f"/api/urgent-requests/{req['id']}/decide",
+            json={"decision": "approved", "decision_notes": "ok"},
+        )
+        assert r.status_code == 200
+        jobs = await bind_db[outbox.COLLECTION].find(
+            {"request_id": req["id"], "event_type": urg.EVENT_APPROVED}, {"_id": 0}
+        ).to_list(10)
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == outbox.STATUS_SKIPPED
+        assert jobs[0]["recipient_email"] == ""
+        assert "has-login-only@test.local" not in (jobs[0].get("recipient_email") or "")
+
+
+@pytest.mark.anyio
+async def test_outbox_snapshot_not_rewritten_when_user_notification_changes(bind_db):
+    """Pending outbox keeps recipient_email snapshot; user edit must not mutate it."""
+    now = datetime.now(timezone.utc).isoformat()
+    jid = str(uuid.uuid4())
+    await bind_db[outbox.COLLECTION].insert_one(
+        {
+            "id": jid,
+            "dedupe_key": "urgent_po.requested:snap:old@notify.local",
+            "event_type": urg.EVENT_REQUESTED,
+            "request_id": "snap-req",
+            "order_id": "o1",
+            "po_number": "P1",
+            "recipient_user_id": "u-snap",
+            "recipient_email": "old@notify.local",
+            "subject": "s",
+            "body_text": "t",
+            "body_html": "<p>h</p>",
+            "status": outbox.STATUS_PENDING,
+            "attempt_count": 0,
+            "last_error": "",
+            "next_retry_at": now,
+            "lease_token": None,
+            "lease_expires_at": None,
+            "sent_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    await bind_db.users.insert_one(
+        {
+            "id": "u-snap",
+            "email": "login@test.local",
+            "notification_email": "new@notify.local",
+            "status": "active",
+            "role": "crm",
+            "permissions_override": {"urgent.email_notify": True},
+        }
+    )
+    row = await bind_db[outbox.COLLECTION].find_one({"id": jid}, {"_id": 0})
+    assert row["recipient_email"] == "old@notify.local"
+    sender = RecordingSmtpSender()
+    job = await outbox.claim_next_job(bind_db)
+    assert await outbox.process_one_job(bind_db, job, sender=sender) == "sent"
+    assert sender.sent[0]["to"] == "old@notify.local"
 
 
 @pytest.mark.anyio

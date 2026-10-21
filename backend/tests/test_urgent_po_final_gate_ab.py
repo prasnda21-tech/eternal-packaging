@@ -56,13 +56,16 @@ async def bind_db():
 
 
 def _user(role, **extra):
-    return {
+    doc = {
         "id": extra.get("id", str(uuid.uuid4())),
         "email": extra.get("email", f"{role}-{uuid.uuid4().hex[:6]}@test.local"),
         "name": extra.get("name", role),
         "role": role,
         "permissions_override": extra.get("permissions_override") or {},
     }
+    if "notification_email" in extra:
+        doc["notification_email"] = extra["notification_email"]
+    return doc
 
 
 async def _seed_order(db, *, priority="normal"):
@@ -102,6 +105,7 @@ async def test_pending_email_only_after_durable_request(bind_db):
     mailer = _user(
         "crm",
         email="mailer@test.local",
+        notification_email="mailer.notify@test.local",
         permissions_override={"urgent.email_notify": True},
     )
     await bind_db.users.insert_many(
@@ -177,7 +181,11 @@ async def test_approve_then_reject_paths_email_after_final(bind_db):
     order_a = await _seed_order(bind_db)
     order_r = await _seed_order(bind_db)
     requester = _user(
-        "crm", id="rq", email="pemohon@test.local", permissions_override={"urgent.request": True}
+        "crm",
+        id="rq",
+        email="pemohon@test.local",
+        notification_email="pemohon.notify@test.local",
+        permissions_override={"urgent.request": True},
     )
     approver = _user(
         "crm", id="ap", email="apr@test.local", permissions_override={"urgent.approve": True}

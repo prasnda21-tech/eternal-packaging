@@ -9204,6 +9204,8 @@ class EmployeeCreate(BaseModel):
     joined_at: Optional[str] = None
     notes: Optional[str] = None
     permissions_override: Optional[Dict[str, bool]] = None
+    # Operational recipient only — never used for login/auth.
+    notification_email: Optional[str] = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -9216,6 +9218,8 @@ class EmployeeUpdate(BaseModel):
     permissions_override: Optional[Dict[str, bool]] = None
     # Explicit user-level package confirmation (independent of role stamp).
     confirm_package_keys: Optional[List[str]] = None
+    # Operational recipient only — never used for login/auth. Empty clears.
+    notification_email: Optional[str] = None
 
 
 class PasswordResetPayload(BaseModel):
@@ -9702,6 +9706,19 @@ async def get_user_admin(user_id: str, user=Depends(require_perm("users.view")))
     return {"user": u}
 
 
+def _normalize_notification_email(value: Optional[str]) -> str:
+    """Normalize operational notification email. Empty → no address (no login fallback)."""
+    from services.urgent_email_outbox import normalize_email, _validate_email_strict
+
+    raw = normalize_email(value)
+    if not raw:
+        return ""
+    ok, norm_or_reason = _validate_email_strict(raw)
+    if not ok:
+        raise HTTPException(400, f"Email notifikasi tidak valid ({norm_or_reason})")
+    return norm_or_reason
+
+
 @api_router.post("/admin/users")
 async def create_user_admin(payload: EmployeeCreate, user=Depends(require_perm("users.manage"))):
     saved = await create_canonical_user(
@@ -9714,6 +9731,7 @@ async def create_user_admin(payload: EmployeeCreate, user=Depends(require_perm("
         joined_at=payload.joined_at,
         notes=payload.notes,
         permissions_override=payload.permissions_override,
+        notification_email=payload.notification_email,
         actor=user,
         require_password=False,
     )
@@ -9731,6 +9749,7 @@ async def create_canonical_user(
     joined_at: Optional[str] = None,
     notes: Optional[str] = None,
     permissions_override: Optional[Dict[str, bool]] = None,
+    notification_email: Optional[str] = None,
     actor: dict,
     require_password: bool = False,
 ) -> dict:
@@ -9746,6 +9765,7 @@ async def create_canonical_user(
         raise HTTPException(400, f"Role '{role_slug}' tidak dikenal")
     if await db.users.find_one({"email": email_norm}):
         raise HTTPException(409, "Email sudah digunakan oleh akun Eternal lain.")
+    notify_norm = _normalize_notification_email(notification_email)
     if require_password:
         if not password or len(str(password)) < 6:
             raise HTTPException(400, "Password minimal 6 karakter")
@@ -9758,6 +9778,7 @@ async def create_canonical_user(
         "id": str(uuid.uuid4()),
         "employee_id": await _next_employee_id(),
         "email": email_norm,
+        "notification_email": notify_norm,
         "name": name_clean,
         "nickname": (nickname or "").strip() or None,
         "phone": (phone or "").strip() or None,
@@ -9798,6 +9819,9 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
     if payload.phone is not None: updates["phone"] = payload.phone.strip() or None
     if payload.joined_at is not None: updates["joined_at"] = payload.joined_at
     if payload.notes is not None: updates["notes"] = payload.notes
+    # Login email is never updated here. notification_email is optional ops recipient.
+    if "notification_email" in payload.model_fields_set:
+        updates["notification_email"] = _normalize_notification_email(payload.notification_email)
     if payload.role is not None:
         if not await _role_slug_is_valid(payload.role):
             raise HTTPException(400, "Role tidak dikenal")
