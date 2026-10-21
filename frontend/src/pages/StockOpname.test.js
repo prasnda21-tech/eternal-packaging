@@ -53,7 +53,7 @@ describe("Stock Opname operational workflow", () => {
     expect(src).toMatch(/physical_count_qty/);
     expect(src).toMatch(/physical_count_at/);
     expect(src).toMatch(/imported_at/);
-    expect(src).toMatch(/wibLocalInputToIso/);
+    expect(src).toMatch(/buildStockOpnameCountPayload/);
     expect(src).toMatch(/isoToWibLocalInput/);
     expect(src).toMatch(/STOCK_OPNAME_TZ_LABEL/);
     expect(src).toMatch(/data-testid="opname-apply-bulk-time"/);
@@ -74,10 +74,20 @@ describe("Stock Opname operational workflow", () => {
   });
 
   test("confirm guards double-submit and only shows success after CONFIRMED", () => {
-    expect(src).toMatch(/if \(busy \|\| session\?\.status === "CONFIRMED"\) return/);
+    expect(src).toMatch(/confirmInFlightRef/);
+    expect(src).toMatch(/if \(confirmInFlightRef\.current \|\| busy \|\| session\?\.status === "CONFIRMED"\) return/);
     expect(src).toMatch(/confirmed\?\.status !== "CONFIRMED"/);
     expect(src).toMatch(/Tidak menampilkan sukses/);
     expect(src).toMatch(/disabled=\{busy \|\| session\.status === "CONFIRMED"\}/);
+    expect(src).toMatch(/Do not auto-retry posting/);
+    expect(src).toMatch(/sessionStatusLabel/);
+  });
+
+  test("review flushes count drafts and datetime-local updates timeDrafts", () => {
+    expect(src).toMatch(/buildStockOpnameCountPayload/);
+    expect(src).toMatch(/Flush drafts first so physical_count_at/);
+    expect(src).toMatch(/onInput=\{\(event\) => setTimeDrafts/);
+    expect(src).toMatch(/onInput=\{\(event\) => setBulkCountAt/);
   });
 });
 
@@ -89,6 +99,13 @@ describe("stockOpnameErrorMessage", () => {
       .toMatch(/review ulang/);
     expect(stockOpnameErrorMessage({ response: { status: 409, data: { detail: "Backdated" } } }))
       .not.toMatch(/otomatis retry posting/i);
+    expect(stockOpnameErrorMessage({
+      response: { status: 409, data: { detail: "Konfirmasi stock opname gagal karena perubahan bersamaan." } },
+    }, { sessionStatusLabel: "Review" }))
+      .toMatch(/Status sesi saat ini: Review/);
+    expect(stockOpnameErrorMessage({
+      response: { status: 409, data: { detail: "Konfirmasi stock opname gagal karena perubahan bersamaan." } },
+    })).toMatch(/kunci sementara|Konfirmasi lain/i);
     expect(stockOpnameErrorMessage({ response: { status: 503, data: { detail: "Transaksi tidak tersedia" } } }))
       .toMatch(/R2/);
     expect(stockOpnameErrorMessage({ response: { status: 400, data: { detail: "r2 belum diaktifkan" } } }))

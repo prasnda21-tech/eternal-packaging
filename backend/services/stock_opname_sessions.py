@@ -187,10 +187,17 @@ async def _snapshot_order_buckets(
 ) -> None:
     """Snapshot Qty Pesanan / Belum Terkirim with Stock Saat Ini readiness (print/non_print).
 
-    Order demand is branch-scoped (never invent YGY↔SMG allocation). Unattributed
-    legacy orders are excluded. Delivered qty for Belum Terkirim is further scoped
-    to the session warehouse when provided.
+    Order demand is branch-scoped (never invent YGY↔SMG allocation). Branch
+    attribution matches Stock Saat Ini Standalone: Mode B legacy settings via
+    mongo_order_branch_clauses + _orders_for_branch (null-branch only when
+    enabled + include_null_branch + historical cutoff). Never rewrites
+    orders.branch_id. Delivered qty for Belum Terkirim is further scoped to the
+    session warehouse when provided.
     """
+    from services.mode_b_legacy_demand import (
+        get_mode_b_legacy_demand_settings,
+        mongo_order_branch_clauses,
+    )
     from services.physical_stock import (
         LEDGER_COLLECTION,
         MASTER_ITEMS_COLLECTION,
@@ -217,13 +224,18 @@ async def _snapshot_order_buckets(
         owner[accurate_id] = master_id
     owners = {accurate_id: master_id for accurate_id, master_id in owner.items() if counts[accurate_id] == 1}
     wanted_branch = str(branch_id or "").strip()
-    order_query: Dict[str, Any] = (
-        {"$or": [{"branch_id": wanted_branch}, {"cabang_id": wanted_branch}]}
-        if wanted_branch
-        else {"_id": {"$exists": False}}
-    )
+    # Same Mode B fetch + filter contract as list_physical_stock_catalog.
+    legacy_settings = await get_mode_b_legacy_demand_settings(db)
+    if wanted_branch:
+        order_query: Dict[str, Any] = {
+            "$or": mongo_order_branch_clauses(wanted_branch, legacy_settings),
+        }
+    else:
+        order_query = {"_id": {"$exists": False}}
     orders = await db.orders.find(order_query, {"_id": 0}, session=mongo_session).to_list(20000)
-    orders = _orders_for_branch(orders, wanted_branch)
+    orders = _orders_for_branch(
+        orders, wanted_branch, legacy_settings=legacy_settings,
+    )
     progress = aggregate_operational_orders(orders, owners)
     ids = [str(line.get("master_item_id") or "") for line in lines if line.get("master_item_id")]
     movements = []
