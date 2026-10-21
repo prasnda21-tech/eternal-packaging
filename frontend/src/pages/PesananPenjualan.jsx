@@ -673,9 +673,18 @@ export default function PesananPenjualan() {
   const loadOptions = useCallback(async ({ applySuggestedPo = false } = {}) => {
     setOptionsLoading(true);
     try {
+      // Guard: tests/mocks may omit salesMasterCatalog or return a non-thenable.
+      const catalogPromise = Promise.resolve()
+        .then(() => (
+          typeof api.salesMasterCatalog === "function"
+            ? api.salesMasterCatalog()
+            : { items: [] }
+        ))
+        .then((res) => res || { items: [] })
+        .catch(() => ({ items: [] }));
       const [data, catalogRes] = await Promise.all([
         api.salesOrderOptions(),
-        api.salesMasterCatalog().catch(() => ({ items: [] })),
+        catalogPromise,
       ]);
       const catalog = Array.isArray(catalogRes?.items) ? catalogRes.items : [];
       const catalogNames = catalog.map((s) => s.sales_name).filter(Boolean);
