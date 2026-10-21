@@ -19,6 +19,7 @@ import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
 import { FormSection, computeStatus } from "../components/form-standard";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import LookupSearchSelect from "../components/LookupSearchSelect";
+import { receiptBelumDibayarMeta } from "../lib/ux90RemainingMeta";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import "./ux90SalesCreate.css";
 import {
@@ -1587,7 +1588,7 @@ export default function PenerimaanPenjualan() {
                           getOptionLabel={(inv) => String(inv.invoice_number || inv.id || "")}
                           getOptionMeta={(inv) => [
                             inv.customer,
-                            `Sisa ${formatRupiah(inv.outstanding_amount || inv.grand_total)}`,
+                            receiptBelumDibayarMeta(inv, formatRupiah),
                           ].filter(Boolean).join(" · ")}
                           getSearchText={(inv) => [inv.invoice_number, inv.customer, inv.po_number].filter(Boolean).join(" ")}
                           placeholder={invoicesLoading ? "Memuat faktur…" : "Ketik nomor faktur atau customer…"}

@@ -38,12 +38,26 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect((pageSrc.match(/invoice-actions/g) || []).length).toBeGreaterThanOrEqual(2);
   });
 
-  test("PODetail -> Faktur Penjualan passes exact po_id and bypasses redundant PO chooser", () => {
+  test("PODetail -> Faktur Penjualan passes exact po_id; create keeps PO switcher after load", () => {
     expect(poDetailSrc).toMatch(/btn-buat-faktur-penjualan/);
     expect(poDetailSrc).toMatch(/\/penjualan\/faktur-penjualan\?po_id=\$\{order\.id\}&action=create/);
-    expect(pageSrc).toMatch(/!queryPoId/);
     expect(pageSrc).toMatch(/queryPoId/);
+    expect(pageSrc).toMatch(/fp-po-switch/);
     expect(pageSrc).toMatch(/loadPoPreview\(selectedPoId\)/);
+    expect(pageSrc).toMatch(/invoiceBelumDifakturMeta/);
+    expect(pageSrc).not.toMatch(/delivery_summary\?\.total_remaining \?\? p\?\.total_quantity/);
+  });
+
+  test("Faktur PO lookup searches list_tab=all via server q and disables fully-invoiced/cancelled", () => {
+    expect(pageSrc).toMatch(/list_tab:\s*"all"/);
+    expect(pageSrc).toMatch(/fetchInvoicePoOptions/);
+    expect(pageSrc).toMatch(/fetchOptions=\{fetchInvoicePoOptions\}/);
+    expect(pageSrc).toMatch(/isOptionDisabled=\{isInvoicePoDisabled\}/);
+    expect(pageSrc).toMatch(/PO sudah difaktur sepenuhnya/);
+    expect(pageSrc).toMatch(/PO dibatalkan/);
+    expect(pageSrc).toMatch(/PO tidak ditemukan/);
+    expect(pageSrc).not.toMatch(/listSalesOrders\(\{\s*status:\s*"aktif"\s*\}\)/);
+    expect(pageSrc).not.toMatch(/status:\s*"gabungan"/);
   });
 
   test("FakturPenjualan computes line total, discount, PPN, grand total, and remaining qty", () => {
