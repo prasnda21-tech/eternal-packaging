@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { formatDate } from "../lib/constants";
 import CustomerPricingSettings from "./CustomerPricingSettings";
@@ -224,7 +224,12 @@ export default function PricingCatalogSettings({
   canEditCatalog,
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
+  const pricingCatalogActive = (() => {
+    const path = String(location.pathname || "").replace(/\/$/, "") || "/";
+    return path === "/settings/pricing-catalog";
+  })();
   const section = useMemo(
     () => resolvePricingCatalogSection(
       searchParams.get("section"),
@@ -245,20 +250,24 @@ export default function PricingCatalogSettings({
   const [changeOpen, setChangeOpen] = useState(false);
   const [changeQuery, setChangeQuery] = useState("");
 
+  // Never rewrite away from other Settings tabs (e.g. sales-user-mapping) after leave.
   const writeUrl = useCallback((nextSection, nextGroup, { replace = false } = {}) => {
+    const path = String(location.pathname || "").replace(/\/$/, "") || "/";
+    if (path !== "/settings/pricing-catalog") return;
     const next = new URLSearchParams();
     next.set("section", nextSection);
     const gid = String(nextGroup || "").trim();
     if (gid) next.set("group", gid);
     navigate(`/settings/pricing-catalog?${next.toString()}`, { replace });
-  }, [navigate]);
+  }, [navigate, location.pathname]);
 
   useEffect(() => {
+    if (!pricingCatalogActive) return;
     const raw = searchParams.get("section");
     const rawGroup = String(searchParams.get("group") || "").trim();
     if (raw === section && rawGroup === groupParam) return;
     writeUrl(section, groupParam, { replace: true });
-  }, [section, groupParam, searchParams, writeUrl]);
+  }, [pricingCatalogActive, section, groupParam, searchParams, writeUrl]);
 
   const loadLists = useCallback(async () => {
     setListError("");
@@ -309,10 +318,11 @@ export default function PricingCatalogSettings({
   }, [groupParam, unifiedRows, listsLoaded]);
 
   useEffect(() => {
+    if (!pricingCatalogActive) return;
     if (!listsLoaded || !groupParam) return;
     if (selectedRow) return;
     writeUrl(section, "", { replace: true });
-  }, [listsLoaded, groupParam, selectedRow, section, writeUrl]);
+  }, [pricingCatalogActive, listsLoaded, groupParam, selectedRow, section, writeUrl]);
 
   const filteredRows = useMemo(
     () => filterUnifiedGroupRows(unifiedRows, {

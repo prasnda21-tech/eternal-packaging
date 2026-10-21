@@ -4,9 +4,14 @@ import { act } from "react-dom/test-utils";
 import { createRoot } from "react-dom/client";
 
 const mockPermissions = new Set(["reports.sales.view"]);
-jest.mock("react-router-dom", () => ({
-  Link: ({to,children}) => <a href={to}>{children}</a>,
-}), {virtual:true});
+jest.mock("react-router-dom", () => {
+  const mock = require("../test/reactRouterMock");
+  return {
+    ...mock,
+    useNavigate: () => jest.fn(),
+    Navigate: ({ to }) => <div data-testid="navigate" data-to={to} />,
+  };
+}, { virtual: true });
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({user:{id:"audit-user",email:"audit@example.test"},hasPerm:(key)=>mockPermissions.has(key)}),
 }));
@@ -47,6 +52,7 @@ describe("Laporan Penjualan integration UI",()=>{
   const flush=async()=>{await act(async()=>{await Promise.resolve();await Promise.resolve();});};
   beforeEach(()=>{
     globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+    require("../test/reactRouterMock").__reset("");
     window.localStorage.clear();mockPermissions.clear();mockPermissions.add("reports.sales.view");
     Object.values(api).forEach(fn=>fn.mockReset());
     api.salesReportCatalog.mockResolvedValue(meta);
