@@ -49,8 +49,12 @@ export function formatMasterItemLabel(item) {
   if (!item) return "";
   const name = String(item.item_name || item.name || "").trim();
   const code = String(item.item_code || "").trim();
-  if (name && code) return `${name} — ${code}`;
-  return name || code || String(item.accurate_item_id || item.id || "");
+  const isService = String(item.item_type || "").trim().toUpperCase() === "SERVICE";
+  let base = "";
+  if (name && code) base = `${name} — ${code}`;
+  else base = name || code || String(item.accurate_item_id || item.id || "");
+  if (isService && base) return `${base} · Jasa`;
+  return base;
 }
 
 export function masterItemOptionKey(item) {

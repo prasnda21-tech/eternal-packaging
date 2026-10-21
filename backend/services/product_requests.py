@@ -36,6 +36,8 @@ PRODUCT_PICKER_SAFE_FIELDS = (
     "is_active",
     # Needed by Pesanan Penjualan master picker; never stock/HPP/cost.
     "production_process",
+    # SERVICE vs INVENTORY label for Add On (Warna) selection — not stock/HPP.
+    "item_type",
 )
 ACTIVITY_COLLECTION = "product_request_activities"
 PREFIX_REQUEST = "PPR"

@@ -24,6 +24,7 @@ import {
   buildSalesOrderCreatePayload,
   salesOrderProgress,
   salesOrderRequiredChecks,
+  validateSalesOrderAddonParents,
   validateSalesOrderCreate,
 } from "../pages/PesananPenjualan";
 
@@ -340,6 +341,62 @@ describe("sales order create workspace contract", () => {
     expect(payload.line_items).toHaveLength(2);
     expect(payload.line_items[0].name).toBe("Sama");
     expect(payload.line_items[1].name).toBe("Sama");
+  });
+
+  test("SERVICE Cetak Add On requires valid non-SERVICE parent (A/B/C/D/E/F)", () => {
+    const indukA = {
+      line_id: "ln-a", rowKey: "rk-a", name: "Produk A", quantity: 1000, unit: "pcs",
+      production_process: "print", item_type: "INVENTORY", accurate_item_id: null, master_item_id: "inv-a",
+      item_code: "", color: "", notes: "",
+    };
+    const w2a = {
+      line_id: "ln-a2", rowKey: "rk-a2", name: "Warna 2 A", quantity: 1000, unit: "pcs",
+      production_process: "print", item_type: "SERVICE", parent_line_id: "ln-a",
+      accurate_item_id: null, master_item_id: "svc-w2", item_code: "", color: "", notes: "",
+    };
+    const w3a = {
+      ...w2a, line_id: "ln-a3", rowKey: "rk-a3", name: "Warna 3 A", parent_line_id: "ln-a",
+      master_item_id: "svc-w3",
+    };
+    // A
+    expect(validateSalesOrderAddonParents([indukA, w2a, w3a])).toBe("");
+    expect(validateSalesOrderCreate(baseForm({ line_items: [indukA, w2a, w3a] }))).toBe("");
+
+    // B multi-induk
+    const indukB = {
+      ...indukA, line_id: "ln-b", rowKey: "rk-b", name: "Produk B", quantity: 500, master_item_id: "inv-b",
+    };
+    const w2b = {
+      ...w2a, line_id: "ln-b2", rowKey: "rk-b2", name: "Warna 2 B", quantity: 500, parent_line_id: "ln-b",
+    };
+    expect(validateSalesOrderAddonParents([indukA, w2a, w3a, indukB, w2b])).toBe("");
+
+    // C orphan rejected
+    const orphan = { ...w2a, parent_line_id: "" };
+    expect(validateSalesOrderAddonParents([indukA, orphan])).toMatch(/wajib memilih barang induk/);
+    expect(validateSalesOrderCreate(baseForm({ line_items: [indukA, orphan] }))).toMatch(/wajib memilih/);
+
+    // D self / missing / SERVICE parent
+    expect(validateSalesOrderAddonParents([
+      { ...w2a, line_id: "ln-s", rowKey: "rk-s", parent_line_id: "ln-s" },
+    ])).toMatch(/dirinya sendiri/);
+    expect(validateSalesOrderAddonParents([indukA, { ...w2a, parent_line_id: "MISSING" }])).toMatch(/tidak ditemukan/);
+    expect(validateSalesOrderAddonParents([
+      { ...w2a, line_id: "ln-s1", rowKey: "rk-s1", parent_line_id: "" },
+      { ...w2a, line_id: "ln-s2", rowKey: "rk-s2", parent_line_id: "ln-s1" },
+    ])).toMatch(/SERVICE|wajib memilih/);
+
+    // E parent_line_id survives payload after reorder-style ids
+    const payload = buildSalesOrderCreatePayload(baseForm({
+      line_items: [indukA, w2a, w3a, indukB, w2b],
+    }));
+    expect(payload.line_items.map((l) => l.parent_line_id || null)).toEqual([
+      null, "ln-a", "ln-a", null, "ln-b",
+    ]);
+    expect(payload.line_items[1].item_type).toBe("SERVICE");
+
+    // F plain inventory still OK
+    expect(validateSalesOrderCreate(baseForm())).toBe("");
   });
 
   test("drawer errors are discoverable and main errors stay on the main page", () => {

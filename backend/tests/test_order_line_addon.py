@@ -146,6 +146,75 @@ def test_validate_rejects_cancelled_parent_cycle_and_duplicate_ids():
     assert "SERVICE" in (validate_parent_relation(service_parent[1], service_parent, idx=1) or "")
 
 
+def test_validate_service_print_requires_parent_create_path():
+    from services.order_line_addon import validate_service_print_requires_parent
+
+    # A: induk + Warna 2 + Warna 3
+    ok_a = [
+        {"line_id": "A", "item_type": "INVENTORY", "quantity": 1000, "production_process": "print"},
+        {
+            "line_id": "A2", "item_type": "SERVICE", "quantity": 1000,
+            "production_process": "print", "parent_line_id": "A",
+        },
+        {
+            "line_id": "A3", "item_type": "SERVICE", "quantity": 1000,
+            "production_process": "print", "parent_line_id": "A",
+        },
+    ]
+    assert validate_service_print_requires_parent(ok_a) is None
+
+    # B: two induk each with own Add On
+    ok_ab = ok_a + [
+        {"line_id": "B", "item_type": "INVENTORY", "quantity": 500, "production_process": "print"},
+        {
+            "line_id": "B2", "item_type": "SERVICE", "quantity": 500,
+            "production_process": "print", "parent_line_id": "B",
+        },
+    ]
+    assert validate_service_print_requires_parent(ok_ab) is None
+
+    orphan = [
+        {"line_id": "A", "item_type": "INVENTORY", "production_process": "print"},
+        {"line_id": "S", "item_type": "SERVICE", "production_process": "print"},
+    ]
+    err = validate_service_print_requires_parent(orphan) or ""
+    assert "wajib memilih barang induk" in err
+
+    self_parent = [
+        {"line_id": "S", "item_type": "SERVICE", "production_process": "print", "parent_line_id": "S"},
+    ]
+    assert validate_service_print_requires_parent(self_parent)
+
+    missing_parent = [
+        {"line_id": "A", "item_type": "INVENTORY", "production_process": "print"},
+        {
+            "line_id": "S", "item_type": "SERVICE", "production_process": "print",
+            "parent_line_id": "MISSING",
+        },
+    ]
+    assert validate_service_print_requires_parent(missing_parent)
+
+    service_parent = [
+        {"line_id": "S1", "item_type": "SERVICE", "production_process": "print"},
+        {
+            "line_id": "S2", "item_type": "SERVICE", "production_process": "print",
+            "parent_line_id": "S1",
+        },
+    ]
+    assert "SERVICE" in (validate_service_print_requires_parent(service_parent) or "")
+
+    # Plain inventory PO still OK
+    plain = [{"line_id": "A", "item_type": "INVENTORY", "quantity": 10, "production_process": "print"}]
+    assert validate_service_print_requires_parent(plain) is None
+
+    # SERVICE non_print without parent OK (not Cetak Add On)
+    non_print = [
+        {"line_id": "A", "item_type": "INVENTORY", "production_process": "print"},
+        {"line_id": "S", "item_type": "SERVICE", "production_process": "non_print"},
+    ]
+    assert validate_service_print_requires_parent(non_print) is None
+
+
 def test_aggregate_service_without_parent_fail_closed():
     orders = [{
         "id": "o1",
