@@ -152,6 +152,8 @@ const TILE_ICONS = {
   "route-optimizer": Route,
   "accurate-creators": Users,
   "sales-user-mapping": Users,
+  "sales-master": Users,
+  "crm-daily-report-options": ClipboardList,
   audit: ScrollText,
 };
 

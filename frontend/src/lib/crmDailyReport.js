@@ -2,6 +2,7 @@
 
 export const CRM_DAILY_REPORT_LIST_PATH = "/penjualan/laporan-harian-crm";
 export const CRM_DAILY_REPORT_NEW_PATH = "/penjualan/laporan-harian-crm/baru";
+export const CRM_OTHER_OPTION_ID = "__other__";
 
 export function canCreateCrmDailyReport(hasPerm) {
   return Boolean(hasPerm?.("crm.daily_report.create"));
@@ -65,23 +66,34 @@ export function emptyCrmDailyReportForm(todayWib = "") {
     whatsapp: "",
     order_id: "",
     po_number: "",
+    sales_master_id: "",
     sales_label: "",
     sales_user_id: "",
     status_order: "ORDER",
+    no_order_reason_id: "",
     no_order_reason: "",
     has_complaint: false,
+    complaint_category_id: "",
     complaint_description: "",
     has_issue: false,
+    issue_category_id: "",
     issue_description: "",
     notes: "",
   };
 }
 
-export function validateCrmDailyReportForm(form) {
+function isOtherId(id, otherId = CRM_OTHER_OPTION_ID) {
+  return String(id || "").trim() === String(otherId || CRM_OTHER_OPTION_ID);
+}
+
+export function validateCrmDailyReportForm(form, meta = {}) {
   const errors = {};
+  const otherId = meta.other_option_id || CRM_OTHER_OPTION_ID;
   if (!String(form.report_date || "").trim()) errors.report_date = "Tanggal wajib";
   if (!["New", "Repeat"].includes(form.status_customer)) errors.status_customer = "Status Customer wajib";
-  if (!String(form.sales_label || "").trim()) errors.sales_label = "Sales wajib";
+  if (!String(form.sales_master_id || "").trim() && !String(form.sales_label || "").trim()) {
+    errors.sales_label = "Sales wajib";
+  }
   if (!["ORDER", "TIDAK ORDER"].includes(form.status_order)) errors.status_order = "Status Order wajib";
 
   if (form.status_customer === "New") {
@@ -90,14 +102,26 @@ export function validateCrmDailyReportForm(form) {
     errors.customer_id = "Pilih customer dari master untuk Repeat";
   }
 
-  if (form.status_order === "TIDAK ORDER" && !String(form.no_order_reason || "").trim()) {
-    errors.no_order_reason = "Keterangan Tidak Order wajib";
+  if (form.status_order === "TIDAK ORDER") {
+    if (!String(form.no_order_reason_id || "").trim() && !String(form.no_order_reason || "").trim()) {
+      errors.no_order_reason = "Alasan Tidak Order wajib";
+    } else if (isOtherId(form.no_order_reason_id, otherId) && !String(form.no_order_reason || "").trim()) {
+      errors.no_order_reason = "Opsi Lainnya membutuhkan penjelasan";
+    }
   }
-  if (form.has_complaint && !String(form.complaint_description || "").trim()) {
-    errors.complaint_description = "Deskripsi Komplain wajib";
+  if (form.has_complaint) {
+    if (!String(form.complaint_category_id || "").trim() && !String(form.complaint_description || "").trim()) {
+      errors.complaint_description = "Kategori Komplain wajib";
+    } else if (isOtherId(form.complaint_category_id, otherId) && !String(form.complaint_description || "").trim()) {
+      errors.complaint_description = "Opsi Lainnya membutuhkan penjelasan";
+    }
   }
-  if (form.has_issue && !String(form.issue_description || "").trim()) {
-    errors.issue_description = "Deskripsi Kendala wajib";
+  if (form.has_issue) {
+    if (!String(form.issue_category_id || "").trim() && !String(form.issue_description || "").trim()) {
+      errors.issue_description = "Kategori Kendala wajib";
+    } else if (isOtherId(form.issue_category_id, otherId) && !String(form.issue_description || "").trim()) {
+      errors.issue_description = "Opsi Lainnya membutuhkan penjelasan";
+    }
   }
   return errors;
 }
@@ -111,13 +135,17 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
     whatsapp: form.status_customer === "New" ? String(form.whatsapp || "").trim() : "",
     order_id: String(form.order_id || "").trim() || null,
     po_number: String(form.po_number || "").trim(),
+    sales_master_id: String(form.sales_master_id || "").trim() || null,
     sales_label: String(form.sales_label || "").trim(),
     sales_user_id: String(form.sales_user_id || "").trim() || null,
     status_order: form.status_order,
+    no_order_reason_id: form.status_order === "TIDAK ORDER" ? (String(form.no_order_reason_id || "").trim() || null) : null,
     no_order_reason: form.status_order === "TIDAK ORDER" ? String(form.no_order_reason || "").trim() : "",
     has_complaint: Boolean(form.has_complaint),
+    complaint_category_id: form.has_complaint ? (String(form.complaint_category_id || "").trim() || null) : null,
     complaint_description: form.has_complaint ? String(form.complaint_description || "").trim() : "",
     has_issue: Boolean(form.has_issue),
+    issue_category_id: form.has_issue ? (String(form.issue_category_id || "").trim() || null) : null,
     issue_description: form.has_issue ? String(form.issue_description || "").trim() : "",
     notes: String(form.notes || "").trim(),
   };

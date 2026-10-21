@@ -1196,6 +1196,13 @@ export const api = {
 
   salesUserMapping: () => client.get("/settings/sales-user-mapping").then((r) => r.data),
   updateSalesUserMapping: (payload) => client.put("/settings/sales-user-mapping", payload).then((r) => r.data),
+  salesMasterList: (params = {}) => client.get("/settings/sales-master", { params }).then((r) => r.data),
+  salesMasterCreate: (payload) => client.post("/settings/sales-master", payload).then((r) => r.data),
+  salesMasterUpdate: (id, payload) => client.patch(`/settings/sales-master/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  salesMasterCatalog: (params = {}) => client.get("/sales-master/catalog", { params }).then((r) => r.data),
+  crmDailyReportOptionsSettings: () => client.get("/settings/crm-daily-report-options").then((r) => r.data),
+  updateCrmDailyReportOptionsSettings: (payload) => client.put("/settings/crm-daily-report-options", payload).then((r) => r.data),
+  crmDailyReportActiveOptions: () => client.get("/crm-daily-reports/options").then((r) => r.data),
   salesPwaMe: () => client.get("/sales-pwa/me").then((r) => r.data),
   salesPwaDashboard: (params = {}) => client.get("/sales-pwa/dashboard", { params }).then((r) => r.data),
   salesPwaDeliveriesToday: () => client.get("/sales-pwa/deliveries/today").then((r) => r.data),

@@ -54,6 +54,25 @@ describe("crmDailyReport helpers", () => {
     expect(errors.issue_description).toBeTruthy();
   });
 
+  test("Lainnya requires explanation", () => {
+    const form = {
+      ...emptyCrmDailyReportForm("2026-04-16"),
+      status_customer: "New",
+      whatsapp: "0812",
+      sales_master_id: "sm-1",
+      sales_label: "AYUB",
+      status_order: "TIDAK ORDER",
+      no_order_reason_id: "__other__",
+      no_order_reason: "",
+      has_complaint: true,
+      complaint_category_id: "__other__",
+      complaint_description: "",
+    };
+    const errors = validateCrmDailyReportForm(form);
+    expect(errors.no_order_reason).toMatch(/Lainnya/);
+    expect(errors.complaint_description).toMatch(/Lainnya/);
+  });
+
   test("payload clears inactive conditional fields", () => {
     const payload = toCrmDailyReportPayload({
       ...emptyCrmDailyReportForm("2026-04-16"),

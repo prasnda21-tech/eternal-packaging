@@ -70,6 +70,28 @@ function typeTextareaCharByChar(input, text) {
   }
 }
 
+const META = {
+  today_wib: "2026-04-16",
+  can_create: true,
+  can_view_all: false,
+  can_edit_own: true,
+  reporter: { id: "u1", name: "Andi Dharma" },
+  sales_catalog: [{ id: "sm-1", sales_name: "AYUB", user_id: null, active: true }],
+  no_order_reasons: [
+    { id: "r1", label: "Budget", active: true, sort_order: 1 },
+    { id: "__other__", label: "Lainnya", active: true, sort_order: 9999, is_other: true },
+  ],
+  complaint_categories: [
+    { id: "c1", label: "Kualitas", active: true, sort_order: 1 },
+    { id: "__other__", label: "Lainnya", active: true, sort_order: 9999, is_other: true },
+  ],
+  issue_categories: [
+    { id: "i1", label: "Harga", active: true, sort_order: 1 },
+    { id: "__other__", label: "Lainnya", active: true, sort_order: 9999, is_other: true },
+  ],
+  other_option_id: "__other__",
+};
+
 describe("CrmDailyReportForm interaction", () => {
   let container;
   let root;
@@ -77,13 +99,7 @@ describe("CrmDailyReportForm interaction", () => {
   beforeEach(() => {
     mockParams.id = undefined;
     mockNavigate.mockReset();
-    api.crmDailyReportMeta.mockResolvedValue({
-      today_wib: "2026-04-16",
-      can_create: true,
-      can_view_all: false,
-      can_edit_own: true,
-      reporter: { id: "u1", name: "Andi Dharma" },
-    });
+    api.crmDailyReportMeta.mockResolvedValue(META);
     api.crmDailyReportCustomers.mockResolvedValue({ customers: [] });
     api.crmDailyReportOrders.mockResolvedValue({ orders: [] });
     api.createCrmDailyReport.mockImplementation(async (payload) => ({ report: { id: "r1", ...payload } }));
@@ -110,27 +126,37 @@ describe("CrmDailyReportForm interaction", () => {
     const outlet = container.querySelector('[data-testid="cdr-outlet-name"]');
     expect(wa).toBeTruthy();
     expect(sales).toBeTruthy();
+    expect(sales.tagName).toBe("SELECT");
 
     wa.focus();
-    typeCharByChar(wa, "0812345");
-    expect(wa.value).toBe("0812345");
+    typeCharByChar(wa, "ABCDE123");
+    expect(wa.value).toBe("ABCDE123");
 
     outlet.focus();
-    typeCharByChar(outlet, "Toko");
-    expect(outlet.value).toBe("Toko");
+    typeCharByChar(outlet, "ABCDE123");
+    expect(outlet.value).toBe("ABCDE123");
 
-    sales.focus();
-    typeCharByChar(sales, "AYUB");
-    expect(sales.value).toBe("AYUB");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(sales, "sm-1");
+      sales.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(sales.value).toBe("sm-1");
 
     await act(async () => {
       container.querySelector('[data-testid="cdr-order-no"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    const reasonSelect = container.querySelector('[data-testid="cdr-no-order-reason-id"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(reasonSelect, "__other__");
+      reasonSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     const reason = container.querySelector('[data-testid="cdr-no-order-reason"]');
     expect(reason).toBeTruthy();
     reason.focus();
-    typeTextareaCharByChar(reason, "Budget");
-    expect(reason.value).toBe("Budget");
+    typeTextareaCharByChar(reason, "ABCDE123");
+    expect(reason.value).toBe("ABCDE123");
 
     expect(container.querySelector('[data-testid="cdr-whatsapp"]')).toBe(wa);
     expect(container.querySelector('[data-testid="cdr-sales"]')).toBe(sales);
@@ -155,6 +181,18 @@ describe("CrmDailyReportForm interaction", () => {
       container.querySelector('[data-testid="cdr-complaint-yes"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
       container.querySelector('[data-testid="cdr-issue-yes"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    expect(container.querySelector('[data-testid="cdr-complaint-category"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="cdr-issue-category"]')).toBeTruthy();
+
+    await act(async () => {
+      const c = container.querySelector('[data-testid="cdr-complaint-category"]');
+      const i = container.querySelector('[data-testid="cdr-issue-category"]');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setter.call(c, "__other__");
+      c.dispatchEvent(new Event("change", { bubbles: true }));
+      setter.call(i, "__other__");
+      i.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     expect(container.querySelector('[data-testid="cdr-complaint-desc"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="cdr-issue-desc"]')).toBeTruthy();
   });
@@ -173,8 +211,9 @@ describe("CrmDailyReportForm interaction", () => {
       const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
       setInput.call(wa, "081212345678");
       wa.dispatchEvent(new Event("input", { bubbles: true }));
-      setInput.call(sales, "AYUB");
-      sales.dispatchEvent(new Event("input", { bubbles: true }));
+      const setSelect = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
+      setSelect.call(sales, "sm-1");
+      sales.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
     await act(async () => {
@@ -186,6 +225,7 @@ describe("CrmDailyReportForm interaction", () => {
     expect(api.createCrmDailyReport).toHaveBeenCalled();
     const payload = api.createCrmDailyReport.mock.calls[0][0];
     expect(payload.whatsapp).toBe("081212345678");
+    expect(payload.sales_master_id).toBe("sm-1");
     expect(payload.sales_label).toBe("AYUB");
     expect(payload.status_customer).toBe("New");
   });

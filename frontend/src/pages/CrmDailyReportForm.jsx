@@ -86,13 +86,17 @@ export default function CrmDailyReportForm() {
           whatsapp: report.whatsapp || "",
           order_id: report.order_id || "",
           po_number: report.po_number || "",
+          sales_master_id: report.sales_master_id || "",
           sales_label: report.sales_label || "",
           sales_user_id: report.sales_user_id || "",
           status_order: report.status_order || "ORDER",
+          no_order_reason_id: report.no_order_reason_id || "",
           no_order_reason: report.no_order_reason || "",
           has_complaint: Boolean(report.has_complaint),
+          complaint_category_id: report.complaint_category_id || "",
           complaint_description: report.complaint_description || "",
           has_issue: Boolean(report.has_issue),
+          issue_category_id: report.issue_category_id || "",
           issue_description: report.issue_description || "",
           notes: report.notes || "",
         });
@@ -121,7 +125,7 @@ export default function CrmDailyReportForm() {
   const onSubmit = async (e) => {
     e.preventDefault();
     if (submitLock.current || saving) return;
-    const nextErrors = validateCrmDailyReportForm(form);
+    const nextErrors = validateCrmDailyReportForm(form, meta || {});
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
       setToast("Lengkapi field wajib terlebih dahulu");
@@ -247,6 +251,7 @@ export default function CrmDailyReportForm() {
               <button type="button" className={form.status_order === "ORDER" ? "is-on" : ""} data-testid="cdr-order-yes" onClick={() => {
                 patch("status_order", "ORDER");
                 patch("no_order_reason", "");
+                patch("no_order_reason_id", "");
               }}>ORDER</button>
               <button type="button" className={`is-danger ${form.status_order === "TIDAK ORDER" ? "is-on" : ""}`} data-testid="cdr-order-no" onClick={() => patch("status_order", "TIDAK ORDER")}>TIDAK ORDER</button>
             </div>
@@ -318,55 +323,171 @@ export default function CrmDailyReportForm() {
             />
           </Field>
           <Field label="Sales" required error={errors.sales_label}>
-            <input
-              value={form.sales_label}
-              onChange={(e) => patch("sales_label", e.target.value)}
-              data-testid="cdr-sales"
-            />
+            {(meta?.sales_catalog || []).length > 0 ? (
+              <select
+                value={form.sales_master_id || ""}
+                onChange={(e) => {
+                  const sid = e.target.value;
+                  const hit = (meta.sales_catalog || []).find((s) => s.id === sid);
+                  setForm((prev) => ({
+                    ...prev,
+                    sales_master_id: sid,
+                    sales_label: hit?.sales_name || "",
+                    sales_user_id: hit?.user_id || "",
+                  }));
+                  setErrors((prev) => {
+                    if (!prev.sales_label) return prev;
+                    const next = { ...prev };
+                    delete next.sales_label;
+                    return next;
+                  });
+                }}
+                data-testid="cdr-sales"
+              >
+                <option value="">— pilih Sales —</option>
+                {(meta.sales_catalog || []).map((s) => (
+                  <option key={s.id} value={s.id}>{s.sales_name}</option>
+                ))}
+              </select>
+            ) : (
+              <>
+                <input
+                  value={form.sales_label}
+                  onChange={(e) => patch("sales_label", e.target.value)}
+                  data-testid="cdr-sales"
+                  placeholder={isNew ? "Master Sales belum diisi — hubungi pengelola" : form.sales_label}
+                  disabled={isNew}
+                />
+                {isNew ? <p className="cdr-hint">Master Sales kosong. Isi di Pengaturan → Master Sales.</p> : null}
+              </>
+            )}
           </Field>
 
           <Field label="Komplain?" required>
             <div className="cdr-toggle">
               <button type="button" className={`is-danger ${form.has_complaint ? "is-on" : ""}`} data-testid="cdr-complaint-yes" onClick={() => patch("has_complaint", true)}>Ya</button>
-              <button type="button" className={!form.has_complaint ? "is-on" : ""} data-testid="cdr-complaint-no" onClick={() => { patch("has_complaint", false); patch("complaint_description", ""); }}>Tidak</button>
+              <button type="button" className={!form.has_complaint ? "is-on" : ""} data-testid="cdr-complaint-no" onClick={() => {
+                patch("has_complaint", false);
+                patch("complaint_description", "");
+                patch("complaint_category_id", "");
+              }}>Tidak</button>
             </div>
           </Field>
           <Field label="Kendala?" required>
             <div className="cdr-toggle">
               <button type="button" className={`is-danger ${form.has_issue ? "is-on" : ""}`} data-testid="cdr-issue-yes" onClick={() => patch("has_issue", true)}>Ya</button>
-              <button type="button" className={!form.has_issue ? "is-on" : ""} data-testid="cdr-issue-no" onClick={() => { patch("has_issue", false); patch("issue_description", ""); }}>Tidak</button>
+              <button type="button" className={!form.has_issue ? "is-on" : ""} data-testid="cdr-issue-no" onClick={() => {
+                patch("has_issue", false);
+                patch("issue_description", "");
+                patch("issue_category_id", "");
+              }}>Tidak</button>
             </div>
           </Field>
 
           {showNoOrder && (
-            <Field label="Keterangan Tidak Order" required wide error={errors.no_order_reason}>
-              <textarea
-                value={form.no_order_reason}
-                onChange={(e) => patch("no_order_reason", e.target.value)}
-                maxLength={500}
-                data-testid="cdr-no-order-reason"
-              />
-            </Field>
+            <>
+              <Field label="Alasan Tidak Order" required wide error={errors.no_order_reason}>
+                <select
+                  value={form.no_order_reason_id || ""}
+                  onChange={(e) => {
+                    const oid = e.target.value;
+                    const hit = (meta?.no_order_reasons || []).find((o) => o.id === oid);
+                    patch("no_order_reason_id", oid);
+                    if (oid && oid !== (meta?.other_option_id || "__other__")) {
+                      patch("no_order_reason", hit?.label || "");
+                    } else if (oid === (meta?.other_option_id || "__other__")) {
+                      patch("no_order_reason", "");
+                    }
+                  }}
+                  data-testid="cdr-no-order-reason-id"
+                >
+                  <option value="">— pilih alasan —</option>
+                  {(meta?.no_order_reasons || []).map((o) => (
+                    <option key={o.id} value={o.id}>{o.label}</option>
+                  ))}
+                </select>
+              </Field>
+              {(form.no_order_reason_id === (meta?.other_option_id || "__other__") || (!form.no_order_reason_id && form.no_order_reason)) && (
+                <Field label="Penjelasan Tidak Order" required wide error={errors.no_order_reason}>
+                  <textarea
+                    value={form.no_order_reason}
+                    onChange={(e) => patch("no_order_reason", e.target.value)}
+                    maxLength={500}
+                    data-testid="cdr-no-order-reason"
+                  />
+                </Field>
+              )}
+            </>
           )}
           {showComplaint && (
-            <Field label="Deskripsi Komplain" required wide error={errors.complaint_description}>
-              <textarea
-                value={form.complaint_description}
-                onChange={(e) => patch("complaint_description", e.target.value)}
-                maxLength={500}
-                data-testid="cdr-complaint-desc"
-              />
-            </Field>
+            <>
+              <Field label="Kategori Komplain" required wide error={errors.complaint_description}>
+                <select
+                  value={form.complaint_category_id || ""}
+                  onChange={(e) => {
+                    const oid = e.target.value;
+                    const hit = (meta?.complaint_categories || []).find((o) => o.id === oid);
+                    patch("complaint_category_id", oid);
+                    if (oid && oid !== (meta?.other_option_id || "__other__")) {
+                      patch("complaint_description", hit?.label || "");
+                    } else {
+                      patch("complaint_description", "");
+                    }
+                  }}
+                  data-testid="cdr-complaint-category"
+                >
+                  <option value="">— pilih kategori —</option>
+                  {(meta?.complaint_categories || []).map((o) => (
+                    <option key={o.id} value={o.id}>{o.label}</option>
+                  ))}
+                </select>
+              </Field>
+              {(form.complaint_category_id === (meta?.other_option_id || "__other__") || (!form.complaint_category_id && form.complaint_description)) && (
+                <Field label="Deskripsi Komplain" required wide error={errors.complaint_description}>
+                  <textarea
+                    value={form.complaint_description}
+                    onChange={(e) => patch("complaint_description", e.target.value)}
+                    maxLength={500}
+                    data-testid="cdr-complaint-desc"
+                  />
+                </Field>
+              )}
+            </>
           )}
           {showIssue && (
-            <Field label="Deskripsi Kendala" required wide error={errors.issue_description}>
-              <textarea
-                value={form.issue_description}
-                onChange={(e) => patch("issue_description", e.target.value)}
-                maxLength={500}
-                data-testid="cdr-issue-desc"
-              />
-            </Field>
+            <>
+              <Field label="Kategori Kendala" required wide error={errors.issue_description}>
+                <select
+                  value={form.issue_category_id || ""}
+                  onChange={(e) => {
+                    const oid = e.target.value;
+                    const hit = (meta?.issue_categories || []).find((o) => o.id === oid);
+                    patch("issue_category_id", oid);
+                    if (oid && oid !== (meta?.other_option_id || "__other__")) {
+                      patch("issue_description", hit?.label || "");
+                    } else {
+                      patch("issue_description", "");
+                    }
+                  }}
+                  data-testid="cdr-issue-category"
+                >
+                  <option value="">— pilih kategori —</option>
+                  {(meta?.issue_categories || []).map((o) => (
+                    <option key={o.id} value={o.id}>{o.label}</option>
+                  ))}
+                </select>
+              </Field>
+              {(form.issue_category_id === (meta?.other_option_id || "__other__") || (!form.issue_category_id && form.issue_description)) && (
+                <Field label="Deskripsi Kendala" required wide error={errors.issue_description}>
+                  <textarea
+                    value={form.issue_description}
+                    onChange={(e) => patch("issue_description", e.target.value)}
+                    maxLength={500}
+                    data-testid="cdr-issue-desc"
+                  />
+                </Field>
+              )}
+            </>
           )}
           <Field label="Catatan Tambahan" wide>
             <textarea
