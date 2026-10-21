@@ -41,6 +41,7 @@ export default function StockSaatIni() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [openingOpen, setOpeningOpen] = useState(false);
+  const [openingSeed, setOpeningSeed] = useState(null);
   const [adjustItem, setAdjustItem] = useState(null);
   const [inlineItemId, setInlineItemId] = useState(null);
   const [savingAdjust, setSavingAdjust] = useState(false);
@@ -133,12 +134,36 @@ export default function StockSaatIni() {
     ? `/persediaan/stock-opname?warehouse_id=${encodeURIComponent(warehouseId)}`
     : "/persediaan/stock-opname";
 
-  const beginAdjust = (item) => {
+  const beginAdjust = (item, { balancePresent = true } = {}) => {
     if (savingAdjust || saveLock.current) return;
     if (adjustWarehouses.length === 0) {
       setInlineItemId(null);
       setAdjustItem(null);
       setErr("Koreksi tidak tersedia: belum ada gudang aktif.");
+      return;
+    }
+    // No warehouse balance yet → Saldo Awal only. Do not let Adjustment invent a
+    // first baseline when the operator lacks opening permission.
+    if (!balancePresent) {
+      setInlineItemId(null);
+      setAdjustItem(null);
+      if (!canOpening) {
+        setErr(
+          "Belum ada saldo fisik. Saldo Awal memerlukan izin current_stock.update "
+          + "(atau permissions.manage). Koreksi tidak dapat menggantikan Saldo Awal.",
+        );
+        return;
+      }
+      const wh = singleWarehouse
+        || (warehouseId ? adjustWarehouses.find((row) => row.id === warehouseId) : null)
+        || (adjustWarehouses.length === 1 ? adjustWarehouses[0] : null);
+      setErr("");
+      setOpeningSeed({
+        itemId: item.master_item_id,
+        branchId: wh?.branch_id || effectiveBranchId || branchId || "",
+        warehouseId: wh?.id || warehouseId || "",
+      });
+      setOpeningOpen(true);
       return;
     }
     if (adjustWarehouses.length > 1) {
@@ -327,6 +352,7 @@ export default function StockSaatIni() {
         {flag}
       </span>
     ) : null;
+    // Inline koreksi hanya untuk saldo yang sudah ada. Tanpa balance → Saldo Awal.
     if (canAdjust && inlineItemId === it.master_item_id && singleWarehouse && book.present) {
       return (
         <InlinePhysicalEditor
@@ -344,7 +370,7 @@ export default function StockSaatIni() {
             type="button"
             className="stock-physical-btn"
             data-testid={`stock-adjust-${it.master_item_id}`}
-            onClick={() => beginAdjust(it)}
+            onClick={() => beginAdjust(it, { balancePresent: Boolean(book.present) })}
           >
             {chip}
           </button>
@@ -419,7 +445,7 @@ export default function StockSaatIni() {
           <button
             type="button"
             className="stock-btn-outline"
-            onClick={() => setOpeningOpen(true)}
+            onClick={() => { setOpeningSeed(null); setOpeningOpen(true); }}
             disabled={!canAdjust}
             title={!canAdjust ? (data?.adjust_blocked_reason || "Saldo Awal belum tersedia pada mode ini") : undefined}
             data-testid="saldo-awal-button"
@@ -883,7 +909,8 @@ export default function StockSaatIni() {
           branches={branches}
           warehouses={warehouses}
           catalogItems={items}
-          onClose={() => setOpeningOpen(false)}
+          initialSeed={openingSeed}
+          onClose={() => { setOpeningOpen(false); setOpeningSeed(null); }}
           onSaved={load}
         />
       )}
@@ -1106,15 +1133,23 @@ function catalogToPickerItems(rows) {
   return out;
 }
 
-function SaldoAwalModal({ canSubmit, branches, warehouses, catalogItems = [], onClose, onSaved }) {
+function SaldoAwalModal({
+  canSubmit,
+  branches,
+  warehouses,
+  catalogItems = [],
+  initialSeed = null,
+  onClose,
+  onSaved,
+}) {
   const [tab, setTab] = useState("manual"); // manual | import
   const [items, setItems] = useState(() => catalogToPickerItems(catalogItems));
   const [itemsLoading, setItemsLoading] = useState(true);
   const [itemsError, setItemsError] = useState("");
   const [itemsDenied, setItemsDenied] = useState(false);
-  const [itemId, setItemId] = useState("");
-  const [branchId, setBranchId] = useState("");
-  const [warehouseId, setWarehouseId] = useState("");
+  const [itemId, setItemId] = useState(() => String(initialSeed?.itemId || ""));
+  const [branchId, setBranchId] = useState(() => String(initialSeed?.branchId || ""));
+  const [warehouseId, setWarehouseId] = useState(() => String(initialSeed?.warehouseId || ""));
   const [qty, setQty] = useState("");
   const [reason, setReason] = useState("");
   const [status, setStatus] = useState(null);

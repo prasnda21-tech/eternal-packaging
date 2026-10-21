@@ -5,8 +5,10 @@ import StockSaatIni from "./StockSaatIni";
 
 jest.mock("react-router-dom", () => require("../test/reactRouterMock"), { virtual: true });
 
+const mockHasPerm = jest.fn(() => false);
+
 jest.mock("../lib/auth", () => ({
-  useAuth: () => ({ hasPerm: () => false }),
+  useAuth: () => ({ hasPerm: (p) => mockHasPerm(p) }),
 }));
 
 jest.mock("../lib/api", () => ({
@@ -16,6 +18,9 @@ jest.mock("../lib/api", () => ({
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
     createPhysicalAdjustment: jest.fn(),
+    masterItems: jest.fn(),
+    physicalOpeningBalance: jest.fn(),
+    createPhysicalOpeningBalance: jest.fn(),
   },
 }));
 
@@ -84,7 +89,147 @@ async function renderStock(warehouses) {
 describe("Stock Saat Ini inline physical correction", () => {
   afterEach(() => {
     jest.clearAllMocks();
+    mockHasPerm.mockImplementation(() => false);
     document.body.innerHTML = "";
+  });
+
+  test("Belum tersedia opens Saldo Awal (not a dead click) when opening permission exists", async () => {
+    mockHasPerm.mockImplementation((perm) => (
+      perm === "current_stock.update" || perm === "permissions.manage"
+    ));
+    api.masterItems.mockResolvedValue({ items: [] });
+    api.physicalOpeningBalance.mockResolvedValue({ established: false });
+    const missingItem = {
+      ...ITEM,
+      physical_qty: null,
+      balance_present: false,
+      baseline_status: "unreconciled",
+      warehouse_balances: [{
+        warehouse_id: "wh-main",
+        warehouse_code: "MAIN",
+        physical_qty: null,
+        balance_present: false,
+        baseline_status: "unreconciled",
+      }],
+    };
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      warehouse_stock_standalone: true,
+      items: [missingItem],
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
+    // Aggregate view: missing WH → "Belum lengkap"; filtered WH → "Belum tersedia".
+    expect(button?.textContent).toMatch(/Belum (tersedia|lengkap)/);
+    await act(async () => { button.click(); });
+    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="saldo-awal-item"]')?.value).toBe("item-1");
+    expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).toBeNull();
+    expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("Belum tersedia without opening permission does not open Adjustment", async () => {
+    mockHasPerm.mockReturnValue(false);
+    const missingItem = {
+      ...ITEM,
+      physical_qty: null,
+      balance_present: false,
+      warehouse_balances: [{
+        warehouse_id: "wh-main",
+        warehouse_code: "MAIN",
+        physical_qty: null,
+        balance_present: false,
+      }],
+    };
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      items: [missingItem],
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
+    expect(container.textContent).toMatch(/Saldo Awal memerlukan izin/);
+    expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("filtered warehouse Belum tersedia opens Saldo Awal with warehouse seed", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "current_stock.update");
+    api.masterItems.mockResolvedValue({ items: [] });
+    api.physicalOpeningBalance.mockResolvedValue({ established: false });
+    const uatBranch = { id: "ygy", code: "YGY", name: "Yogyakarta", active: true };
+    const whMain = warehouse("wh-main", "MAIN");
+    const whB = warehouse("wh-b", "WHB");
+    const missingItem = {
+      ...ITEM,
+      physical_qty: null,
+      baseline_status: "unreconciled",
+      warehouse_balances: [
+        {
+          warehouse_id: "wh-main",
+          warehouse_code: "MAIN",
+          physical_qty: null,
+          balance_present: false,
+          baseline_status: "unreconciled",
+        },
+        {
+          warehouse_id: "wh-b",
+          warehouse_code: "WHB",
+          physical_qty: 10,
+          balance_present: true,
+          baseline_status: "reconciled",
+        },
+      ],
+    };
+    api.branches.mockResolvedValue({ items: [uatBranch] });
+    api.warehouses.mockResolvedValue({ items: [whMain, whB] });
+    api.physicalStockCatalog.mockImplementation(async (params = {}) => ({
+      ...catalog(),
+      warehouse_stock_standalone: true,
+      can_switch_branches: true,
+      effective_branch_id: "ygy",
+      items: [missingItem],
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const whSelect = container.querySelector('[data-testid="stock-warehouse-select"]');
+    expect(whSelect).not.toBeNull();
+    await act(async () => {
+      whSelect.value = "wh-main";
+      whSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
+    expect(button?.textContent).toMatch(/Belum tersedia/);
+    await act(async () => { button.click(); });
+    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="saldo-awal-item"]')?.value).toBe("item-1");
+    expect(container.querySelector('[data-testid="saldo-awal-warehouse"]')?.value).toBe("wh-main");
+    act(() => root.unmount());
+    container.remove();
   });
 
   test("single warehouse edits inline and does not open the correction modal", async () => {
