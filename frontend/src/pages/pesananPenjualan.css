@@ -1135,8 +1135,8 @@ body.so-col-resizing * {
   color: #172126 !important;
   box-shadow: none !important;
   font-family: "IBM Plex Sans", sans-serif;
-  height: 34px;
-  min-height: 34px !important;
+  height: 36px;
+  min-height: 36px !important;
   padding: 0 10px;
   font-size: 14px;
 }
@@ -1431,8 +1431,12 @@ body.so-col-resizing * {
   gap: 6px;
   scroll-padding-bottom: 36px;
 }
-.so-create-workspace .so-create-form[data-create-tab="items"] .so-ship-only { display: none; }
-.so-create-workspace .so-create-form[data-create-tab="ship"] .so-items-only { display: none; }
+.so-create-workspace .so-create-form[data-create-tab="items"] .so-ship-only,
+.so-create-workspace .so-create-form[data-create-tab="items"] .so-info-only { display: none; }
+.so-create-workspace .so-create-form[data-create-tab="ship"] .so-items-only,
+.so-create-workspace .so-create-form[data-create-tab="ship"] .so-info-only { display: none; }
+.so-create-workspace .so-create-form[data-create-tab="info"] .so-items-only,
+.so-create-workspace .so-create-form[data-create-tab="info"] .so-ship-only { display: none; }
 .so-create-workspace .so-sum-row {
   display: flex;
   flex-wrap: wrap;
@@ -1721,7 +1725,8 @@ body.so-col-resizing * {
   flex: 1 1 110px;
   min-width: 0;
   width: auto;
-  height: 30px;
+  height: 36px;
+  min-height: 36px;
   box-sizing: border-box;
 }
 .so-create-workspace .so-sum-chip-date .fp-invoice-date input[type="date"] {
@@ -1729,7 +1734,8 @@ body.so-col-resizing * {
   min-width: 36px;
   flex: 0 0 36px;
   padding: 4px;
-  height: 30px;
+  height: 36px;
+  min-height: 36px;
 }
 .so-create-workspace .so-sum-chip-date .fp-invoice-date-error {
   flex: 1 0 100%;

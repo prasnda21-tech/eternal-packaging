@@ -60,10 +60,10 @@ import {
 } from "../lib/salesLifecycleUi";
 import "./salesSubmenuDensity.css";
 import "./ux90SalesCreate.css";
+import { getWibTodayString } from "../lib/wibCalendarDate";
 
 function getTodayString() {
-  const d = new Date();
-  return d.toISOString().split("T")[0];
+  return getWibTodayString();
 }
 
 function formatRupiah(num) {
@@ -2435,13 +2435,9 @@ export default function FakturPenjualan() {
         >
           {!previewData && !previewLoading && (
             <div className="ux90-gate" data-testid="fp-po-gate">
-              <h2>Langkah 1: Pilih Pesanan Penjualan</h2>
-              <p className="ux90-hint" data-testid="multi-invoice-hint">
-                Satu PO dapat difakturkan sebagian berkali-kali. Pilih Nomor PO, lalu sesuaikan qty faktur.
-              </p>
-              <div className="ux90-gate-row">
-                <div className="ux90-field">
-                  <span>Nomor PO <span className="ux90-req">*</span></span>
+              <div className="ux90-txn-header" style={{ marginBottom: 12 }}>
+                <div className="ux90-field" style={{ gridColumn: "1 / -1" }}>
+                  <span>Ambil dari PO <span className="ux90-req">*</span></span>
                   <LookupSearchSelect
                     options={availablePOs}
                     value={selectedPoId}
@@ -2459,9 +2455,28 @@ export default function FakturPenjualan() {
                     testId="po-selector"
                   />
                 </div>
-                <p className="ux90-hint" style={{ marginBottom: 6 }}>
-                  Form faktur muncul setelah PO dipilih. Tidak ada langkah kosong di bawah.
-                </p>
+              </div>
+              <p className="ux90-hint" data-testid="multi-invoice-hint" style={{ margin: "0 0 8px" }}>
+                Satu PO dapat difakturkan sebagian berkali-kali. Setelah PO dipilih, tabel qty dan ringkasan faktur muncul di sini.
+              </p>
+              <div className="ux90-table-wrap" style={{ opacity: 0.55, pointerEvents: "none" }} aria-hidden="true" data-testid="fp-gate-table-preview">
+                <div className="ux90-table-head"><h3>Daftar Barang</h3><span className="ux90-hint">Preview struktur — aktif setelah PO dipilih</span></div>
+                <table className="ux90-table">
+                  <thead>
+                    <tr>
+                      <th>Produk</th>
+                      <th className="is-num">Qty PO</th>
+                      <th className="is-num">Sudah Faktur</th>
+                      <th className="is-num">Sisa</th>
+                      <th className="is-num">Qty Faktur</th>
+                      <th className="is-num">Harga</th>
+                      <th className="is-num">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td colSpan={7} style={{ textAlign: "center", color: "#9ca3af", padding: 24 }}>Pilih PO untuk mengisi baris faktur</td></tr>
+                  </tbody>
+                </table>
               </div>
               {previewErr ? (
                 <div className="alert-box error" data-testid="create-error-alert" style={{ marginTop: 12 }}>
@@ -2505,12 +2520,16 @@ export default function FakturPenjualan() {
                     <h3>Informasi Faktur</h3>
                     <div className="ux90-field-grid ux90-invoice-essentials" data-testid="invoice-essential-terms">
                       <div className="ux90-field">
+                        <span>Ambil dari PO</span>
+                        <input className="ux90-input" readOnly value={previewData.po_number || ""} data-testid="snapshot-po-number" />
+                      </div>
+                      <div className="ux90-field">
                         <span>Pelanggan</span>
                         <input className="ux90-input" readOnly value={previewData.customer || ""} data-testid="snapshot-customer" />
                       </div>
-                      <div className="ux90-field">
-                        <span>Nomor PO</span>
-                        <input className="ux90-input" readOnly value={previewData.po_number || ""} data-testid="snapshot-po-number" />
+                      <div className="ux90-field is-span-2">
+                        <span>Alamat</span>
+                        <input className="ux90-input" readOnly value={previewData.address || "-"} data-testid="snapshot-address" />
                       </div>
                       <div className="ux90-field">
                         <span>Outlet / Cabang</span>
@@ -2578,7 +2597,7 @@ export default function FakturPenjualan() {
 
                   <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur" style={{ flex: "0 0 auto", margin: 0 }}>
                     <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Daftar Barang</button>
-                    <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Catatan & Biaya</button>
+                    <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Catatan & Biaya Lainnya</button>
                   </div>
 
                   <div className="fp-terms sd-pane-terms ux90-card ux90-invoice-terms">
@@ -2613,10 +2632,12 @@ export default function FakturPenjualan() {
                         <thead>
                           <tr>
                             <th>Produk</th>
+                            <th className="is-num">Qty PO</th>
+                            <th className="is-num">Sudah Faktur</th>
                             <th className="is-num">Sisa</th>
                             <th className="is-num">Qty Faktur</th>
                             <th className="is-num">Harga</th>
-                            <th className="is-num">Total</th>
+                            <th className="is-num">Subtotal</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2625,6 +2646,12 @@ export default function FakturPenjualan() {
                               <td>
                                 <div className="ux90-item-name">{li.item_name}</div>
                                 {li.color ? <div className="ux90-item-meta">Warna: {li.color}</div> : null}
+                              </td>
+                              <td className="is-num" data-testid={`create-line-ordered-${li.line_idx}`}>
+                                {Number(li.ordered_qty || 0).toLocaleString("id-ID")}
+                              </td>
+                              <td className="is-num" data-testid={`create-line-invoiced-${li.line_idx}`}>
+                                {Number(li.invoiced_cumulative || 0).toLocaleString("id-ID")}
                               </td>
                               <td className="is-num">
                                 <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
@@ -2685,79 +2712,74 @@ export default function FakturPenjualan() {
                       <span>{formErr}</span>
                     </div>
                   ) : null}
-                </div>
 
-                <aside className="ux90-side">
-                  <div className="ux90-card" data-testid="invoice-breakdown">
-                    <h3>Ringkasan Faktur</h3>
-                    <div className="ux90-summary-rows">
-                      <div>
-                        <span>Subtotal</span>
-                        <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
-                      </div>
-                      <div>
-                        <span>Diskon</span>
-                        <strong>{formatRupiah(createCalculations.discount)}</strong>
-                      </div>
-                      <div>
-                        <span>DPP</span>
-                        <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}</strong>
-                      </div>
-                      <div>
-                        <span>PPN ({createCalculations.ppnPercent}%)</span>
-                        <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}</strong>
-                      </div>
-                      <div>
-                        <span>Biaya lainnya</span>
-                        <strong data-testid="invoice-other-charges-total">
-                          {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
-                        </strong>
-                      </div>
-                      <div className="is-total">
-                        <span>Total Faktur</span>
-                        <strong data-testid="invoice-grand-total">
-                          {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
-                            ? formatRupiah(createCalculations.grandTotal)
-                            : "Belum lengkap"}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Sisa qty PO</span>
-                        <strong data-testid="invoice-remaining-qty-summary">
-                          {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
-                        </strong>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="ux90-card">
-                    <h3>Informasi PO</h3>
-                    <p className="ux90-card-muted" data-testid="multi-invoice-hint">
-                      PO {previewData.po_number} · Outlet {previewData.outlet || "—"}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
-                    </p>
-                  </div>
-                </aside>
+                  <p className="ux90-doc-hint" data-testid="multi-invoice-hint" style={{ margin: "8px 0 0" }}>
+                    Sisa qty PO: <strong data-testid="invoice-remaining-qty-summary">{Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs</strong>
+                    {" · "}PO {previewData.po_number}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
+                  </p>
+                </div>
               </div>
 
-              <div className="ux90-footer invoice-actions">
-                <button
-                  type="button"
-                  className="ux90-btn-ghost"
-                  onClick={() => {
-                    setSearchParams({});
-                    setViewMode("list");
-                  }}
-                  disabled={formBusy}
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="ux90-btn-primary primary"
-                  disabled={formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0}
-                  data-testid="save-invoice-btn"
-                >
-                  {formBusy ? "Menyimpan..." : "Simpan Faktur"}
-                </button>
+              <div className="ux90-footer invoice-actions ux90-doc-footer">
+                <div className="ux90-doc-summary is-inline" data-testid="invoice-breakdown">
+                  <div className="ux90-doc-summary-rows">
+                    <div>
+                      <span>Subtotal</span>
+                      <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                    </div>
+                    <div>
+                      <span>Diskon</span>
+                      <strong>{formatRupiah(createCalculations.discount)}</strong>
+                    </div>
+                    <div>
+                      <span>DPP</span>
+                      <strong data-testid="invoice-dpp">
+                        {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>PPN ({createCalculations.ppnPercent}%)</span>
+                      <strong data-testid="invoice-ppn">
+                        {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Biaya Lainnya</span>
+                      <strong data-testid="invoice-other-charges-total">
+                        {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
+                      </strong>
+                    </div>
+                    <div className="is-total">
+                      <span>Total Faktur</span>
+                      <strong data-testid="invoice-grand-total">
+                        {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
+                          ? formatRupiah(createCalculations.grandTotal)
+                          : "Belum lengkap"}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+                <div className="ux90-doc-footer-actions">
+                  <button
+                    type="button"
+                    className="ux90-btn-ghost"
+                    onClick={() => {
+                      setSearchParams({});
+                      setViewMode("list");
+                    }}
+                    disabled={formBusy}
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="ux90-btn-primary primary"
+                    disabled={formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0}
+                    data-testid="save-invoice-btn"
+                  >
+                    {formBusy ? "Menyimpan..." : "Simpan Faktur"}
+                  </button>
+                </div>
               </div>
             </form>
           ) : null}
