@@ -228,6 +228,7 @@ export const api = {
   crmDailyReportMeta: () => client.get(`/crm-daily-reports/meta`).then((r) => r.data),
   crmDailyReportCustomers: (params = {}) => client.get(`/crm-daily-reports/customers`, { params }).then((r) => r.data),
   crmDailyReportOrders: (params = {}) => client.get(`/crm-daily-reports/orders`, { params }).then((r) => r.data),
+  crmDailyReportSales: (params = {}) => client.get(`/crm-daily-reports/sales`, { params }).then((r) => r.data),
   listCrmDailyReports: (params = {}) => client.get(`/crm-daily-reports`, { params }).then((r) => r.data),
   getCrmDailyReport: (id) => client.get(`/crm-daily-reports/${encodeURIComponent(id)}`).then((r) => r.data),
   createCrmDailyReport: (payload) => client.post(`/crm-daily-reports`, payload).then((r) => r.data),
@@ -935,6 +936,7 @@ export const api = {
     }),
   orderTrackingLink: (id) => client.post(`/orders/${id}/tracking-link`).then((r) => r.data),
   deliverySchedule: (params = {}) => client.get(`/delivery/schedule`, { params }).then((r) => r.data),
+  deliveryPlan: (params = {}) => client.get(`/delivery/plan`, { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
   deliveryReschedules: (params = {}) => client.get(`/delivery/reschedules`, { params }).then((r) => r.data),
   requestDeliveryReschedule: (id, payload) => client.post(`/orders/${id}/delivery-reschedule`, payload).then((r) => r.data),
   setDeliveryRescheduleDate: (rescheduleId, payload) => client.patch(`/delivery/reschedules/${encodeURIComponent(rescheduleId)}`, payload).then((r) => r.data),
@@ -1019,6 +1021,21 @@ export const api = {
     (params = {}) => client.get(`/sales-receipts`, { params }).then((r) => r.data),
     (params = {}) => `listSalesReceipts:${JSON.stringify(params || {})}`,
   ),
+  salesReportCatalog: () => client.get("/laporan/penjualan/katalog").then((r) => r.data),
+  salesReportShow: (payload) => client.post("/laporan/penjualan/tampilkan", payload).then((r) => r.data),
+  salesReportExport: (payload) => client.post("/laporan/penjualan/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
+  salesReportMemorize: (payload) => client.post("/laporan/penjualan/memorize", payload).then((r) => r.data),
+  salesReportForget: (id) => client.delete(`/laporan/penjualan/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
+  purchaseReportCatalog: () => client.get("/laporan/pembelian/katalog").then((r) => r.data),
+  purchaseReportShow: (payload) => client.post("/laporan/pembelian/tampilkan", payload).then((r) => r.data),
+  purchaseReportExport: (payload) => client.post("/laporan/pembelian/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
+  purchaseReportMemorize: (payload) => client.post("/laporan/pembelian/memorize", payload).then((r) => r.data),
+  purchaseReportForget: (id) => client.delete(`/laporan/pembelian/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
+  stockReportCatalog: () => client.get("/laporan/persediaan/katalog").then((r) => r.data),
+  stockReportShow: (payload) => client.post("/laporan/persediaan/tampilkan", payload).then((r) => r.data),
+  stockReportExport: (payload) => client.post("/laporan/persediaan/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
+  stockReportMemorize: (payload) => client.post("/laporan/persediaan/memorize", payload).then((r) => r.data),
+  stockReportForget: (id) => client.delete(`/laporan/persediaan/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
   salesReceiptLifecycleCapability: () => client.get(`/sales-receipts/lifecycle-capability`).then((r) => r.data),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
@@ -1262,7 +1279,38 @@ export const api = {
     form.append("file", file);
     return client.post("/spk/uploads", form).then((r) => r.data);
   },
+
+  paintMaster: (params = {}) => client.get("/paint/master", { params }).then((r) => r.data),
+  paintMasterCreate: (payload) => client.post("/paint/master", payload).then((r) => r.data),
+  paintMasterUpdate: (id, payload) => client.patch(`/paint/master/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  paintBranches: () => client.get("/paint/branches").then((r) => r.data),
+  paintEligibleEmployees: (params = {}) => client.get("/paint/employees/eligible", { params }).then((r) => r.data),
+  paintSummary: (params = {}) => client.get("/paint/summary", { params }).then((r) => r.data),
+  paintStock: (params = {}) => client.get("/paint/stock", { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  paintTransactions: (params = {}) => client.get("/paint/transactions", { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  paintOpening: (payload) => client.post("/paint/transactions/opening", payload).then((r) => r.data),
+  paintAdd: (payload) => client.post("/paint/transactions/add", payload).then((r) => r.data),
+  paintTake: (payload) => client.post("/paint/transactions/take", payload).then((r) => r.data),
+  paintReturn: (payload) => client.post("/paint/transactions/return", payload).then((r) => r.data),
+  paintAdjust: (payload) => client.post("/paint/transactions/adjust", payload).then((r) => r.data),
+  paintUsageReport: (params = {}) => client.get("/paint/reports/usage", { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  paintUsageExport: (params = {}) => client.get("/paint/reports/usage/export", { params, responseType: "blob", paramsSerializer: paintParamsSerializer }).then((r) => r.data),
 };
+
+function paintParamsSerializer(params) {
+  const sp = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null && item !== "") sp.append(key, String(item));
+      });
+      return;
+    }
+    sp.append(key, String(value));
+  });
+  return sp.toString();
+}
 
 function spkKeyHeader(payload) {
   const key = payload?.idempotency_key;

@@ -57,6 +57,12 @@ from services.delivery_schedule import (
     reschedule_rows as _delivery_reschedule_rows,
     schedule_rows as _delivery_schedule_rows,
 )
+from services.delivery_plan import (
+    PLAN_PROJECTION as _DELIVERY_PLAN_PROJECTION,
+    build_plan_rows as _build_delivery_plan_rows,
+    mongo_match as _delivery_plan_mongo_match,
+    paginate_rows as _paginate_delivery_plan_rows,
+)
 from services.workflow_stage_status import role_status_from_order as _role_status_from_order
 from services.delivery_history import (
     append_confirmation as _append_delivery_confirmation,
@@ -190,6 +196,7 @@ from services.purchase_receipts import (
 )
 from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
+from services.paint_http import register_paint_routes
 from services.crm_daily_reports_http import register_crm_daily_report_routes
 from services.crm_daily_report_settings_http import register_crm_daily_report_settings_routes
 from services.spk_http import register_spk_routes
@@ -232,6 +239,9 @@ from services.trial_balance_http import register_trial_balance_routes
 from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.sales_dashboard_http import register_sales_dashboard_routes
+from services.sales_reports_http import register_sales_report_routes
+from services.purchase_reports_http import register_purchase_report_routes
+from services.stock_reports_http import register_stock_report_routes
 from services.owner_analytics_http import register_owner_analytics_routes
 from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
@@ -1986,13 +1996,21 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     """Predicate priority: overdue > h6 > h1 > normal. Kalau PO Terkirim →
     'terkirim' (warning aktif hilang; Tanggal Pengiriman tetap untuk audit).
 
-    Buffer Stock is not a customer SLA commitment: never return overdue.
+    Overdue uses WIB calendar dates (not seconds-past midnight). Due today is
+    never overdue. Buffer Stock is not a customer SLA — never overdue.
     Missing/None/false buffer_stock is treated as a normal PO.
     """
     if order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14:
         return "terkirim"
     if not deadline_iso:
         return "unknown"
+    from services.dashboard_today import wib_today
+    from services.tanggal_pengiriman import parse_calendar_date, wib_calendar_date
+
+    eff_key = wib_calendar_date(deadline_iso) or parse_calendar_date(deadline_iso)
+    today_key = wib_today().isoformat()
+    if eff_key and eff_key < today_key:
+        return "normal" if bool(order.get("buffer_stock")) else "overdue"
     try:
         dt = datetime.fromisoformat(str(deadline_iso).replace("Z", "+00:00"))
         if dt.tzinfo is None:
@@ -2002,6 +2020,9 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
     now = datetime.now(timezone.utc)
     delta = dt - now
     if delta.total_seconds() <= 0:
+        # Past stored timestamp but still on the WIB due calendar day → Hari Ini.
+        if eff_key == today_key:
+            return "normal"
         return "normal" if bool(order.get("buffer_stock")) else "overdue"
     hours = delta.total_seconds() / 3600.0
     if hours <= 6:
@@ -6641,14 +6662,57 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
     from services.physical_stock import order_has_r2_balance as _order_has_r2_balance
     from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active as _is_warehouse_stock_standalone_active,
+    )
     r2_authority_on = await _is_r2_authority_active(db)
+    standalone_stock_on = (not r2_authority_on) and await _is_warehouse_stock_standalone_active(db)
     # R2 ON: always R2 path — never fall back to PSS because balances are missing.
-    # R2 OFF: keep existing optional R2 path when balances already exist.
+    # Standalone ON (R2 OFF): warehouse pending-event path — never dual-write PSS/R2 txn.
+    # Else: keep existing optional R2 path when balances already exist, else PSS.
     if r2_authority_on:
         uses_r2_stock = bool(existing_order)
+        uses_standalone_stock = False
+    elif standalone_stock_on:
+        uses_r2_stock = False
+        uses_standalone_stock = bool(existing_order)
     else:
         uses_r2_stock = bool(existing_order) and await _order_has_r2_balance(db, existing_order)
+        uses_standalone_stock = False
     r2_request = {}
+    standalone_request = {}
+
+    def _plan_delivery_stock_lines(order, shipment, increment_qty):
+        from services.physical_stock_engine import plan_confirmed_sj_stock
+        if isinstance(shipment, dict):
+            plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
+            if plan.get("error") or not plan.get("lines"):
+                from services.physical_stock import PhysicalStockValidationError
+                raise PhysicalStockValidationError(
+                    plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
+                )
+            return [
+                {
+                    "line_idx": int(ln["line_idx"]),
+                    "qty": int(ln["qty"]),
+                    "master_item_id": ln.get("master_item_id"),
+                    "line_id": ln.get("line_id"),
+                }
+                for ln in plan["lines"]
+            ]
+        items = [
+            (idx, line) for idx, line in enumerate(order.get("line_items") or [])
+            if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
+        ]
+        if len(items) == 1 and int(increment_qty or 0) > 0:
+            idx, line = items[0]
+            return [{
+                "line_idx": idx,
+                "qty": int(increment_qty),
+                "master_item_id": line.get("master_item_id"),
+                "line_id": line.get("line_id"),
+            }]
+        return None
 
     try:
         if r2_authority_on and existing_order and op.get("ready"):
@@ -6708,7 +6772,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 except PhysicalStockNotFoundError as exc:
                     raise HTTPException(404, str(exc)) from exc
 
-        if existing_order and op.get("ready") and not uses_r2_stock:
+        if existing_order and op.get("ready") and not uses_r2_stock and not uses_standalone_stock:
             claimed_stock = await claim_selected_delivery_stock(
                 db, existing_order, selected_shipment_id, action_id, user, claim_plan_holder,
             )
@@ -6810,6 +6874,12 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 r2_request["confirmation_id"] = action_id or conf_holder["conf"].get("id")
                 r2_request["shipment"] = selected_sh
                 r2_request["increment"] = increment
+            if uses_standalone_stock and conf_holder.get("conf"):
+                standalone_request["confirmation_id"] = (
+                    action_id or conf_holder["conf"].get("id")
+                )
+                standalone_request["shipment"] = selected_sh
+                standalone_request["increment"] = increment
 
         async def _post_r2_delivery(session, order):
             if not r2_request.get("confirmation_id"):
@@ -6818,38 +6888,10 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 PhysicalStockValidationError,
                 apply_confirmed_sales_delivery,
             )
-            from services.physical_stock_engine import plan_confirmed_sj_stock
             shipment = r2_request.get("shipment")
-            lines = None
-            if isinstance(shipment, dict):
-                plan = plan_confirmed_sj_stock(order, shipment, allow_delivered=True)
-                if plan.get("error") or not plan.get("lines"):
-                    raise PhysicalStockValidationError(
-                        plan.get("error") or "Baris pengiriman tidak dapat dipetakan ke master item"
-                    )
-                lines = [
-                    {
-                        "line_idx": int(ln["line_idx"]),
-                        "qty": int(ln["qty"]),
-                        "master_item_id": ln.get("master_item_id"),
-                        "line_id": ln.get("line_id"),
-                    }
-                    for ln in plan["lines"]
-                ]
-            else:
-                items = [
-                    (idx, line) for idx, line in enumerate(order.get("line_items") or [])
-                    if isinstance(line, dict) and str(line.get("master_item_id") or "").strip()
-                ]
-                increment_qty = int(r2_request.get("increment") or 0)
-                if len(items) == 1 and increment_qty > 0:
-                    idx, line = items[0]
-                    lines = [{
-                        "line_idx": idx,
-                        "qty": increment_qty,
-                        "master_item_id": line.get("master_item_id"),
-                        "line_id": line.get("line_id"),
-                    }]
+            lines = _plan_delivery_stock_lines(
+                order, shipment, r2_request.get("increment"),
+            )
             if not lines:
                 raise PhysicalStockValidationError(
                     "Baris pengiriman tidak dapat dipetakan ke master item"
@@ -6874,6 +6916,7 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
 
         try:
             await prepare_delivery_commit(db, op, claimed_stock)
+            # Standalone posts AFTER order persist (no multi-doc txn). R2 keeps in-txn hook.
             token = _r2_delivery_hook.set(_post_r2_delivery if uses_r2_stock else None)
             try:
                 order = await _with_quantity_lock(
@@ -6949,11 +6992,85 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         logging.getLogger(__name__).warning("sales_delivery SJ reconcile sync failed", exc_info=True)
 
     recorded = bool(action_id and action_id in list((order or {}).get("delivery_confirm_action_ids") or []))
+    # Crash/retry: mutate early-returns when action_id already recorded, which
+    # clears the chance to populate standalone_request. Rebuild from persisted
+    # confirmation so missing warehouse movements can still complete.
+    if (
+        uses_standalone_stock
+        and recorded
+        and not standalone_request.get("confirmation_id")
+        and isinstance(order, dict)
+    ):
+        selected_sh, _resolve_err = _qr_resolve_delivery_shipment(
+            order, selected_shipment_id,
+        )
+        matched_conf = None
+        for rec in (order.get("delivery_confirmations") or []):
+            if not isinstance(rec, dict):
+                continue
+            if action_id and (
+                str(rec.get("action_id") or "").strip() == action_id
+                or str(rec.get("id") or "").strip() == action_id
+            ):
+                matched_conf = rec
+                break
+        if matched_conf is None and conf_holder.get("conf"):
+            matched_conf = conf_holder.get("conf")
+        if matched_conf:
+            increment = int(matched_conf.get("qty") or 0)
+            if increment > 0:
+                standalone_request["confirmation_id"] = (
+                    action_id
+                    or str(matched_conf.get("id") or "").strip()
+                )
+                standalone_request["shipment"] = selected_sh
+                standalone_request["increment"] = increment
     if claim_plan_holder.get("active"):
         if claimed_stock and (conf_holder.get("conf") or recorded):
             from services.physical_stock_engine import finalize_delivery_confirmed_stock
             await finalize_delivery_confirmed_stock(db, claimed_stock, user)
-    elif conf_holder.get("conf") and not uses_r2_stock:
+    elif uses_standalone_stock and (conf_holder.get("conf") or recorded) and standalone_request.get("confirmation_id"):
+        # Durable delivery flow after order confirmation is persisted (no multi-doc txn).
+        from services.physical_stock import (
+            PhysicalStockConflictError,
+            PhysicalStockUnavailableError,
+            PhysicalStockValidationError,
+        )
+        from services.warehouse_stock_standalone import (
+            apply_confirmed_sales_delivery_standalone,
+        )
+        shipment = standalone_request.get("shipment")
+        lines = _plan_delivery_stock_lines(
+            order, shipment, standalone_request.get("increment"),
+        )
+        if not lines:
+            raise HTTPException(400, "Baris pengiriman tidak dapat dipetakan ke master item")
+        sj_src = shipment if isinstance(shipment, dict) else {}
+        sj_link = str(sj_src.get("sales_delivery_id") or sj_src.get("id") or "").strip()
+        try:
+            stock_result = await apply_confirmed_sales_delivery_standalone(
+                db,
+                order=order,
+                confirmation_id=standalone_request["confirmation_id"],
+                lines=lines,
+                actor_id=str(user.get("id") or user.get("email") or "user"),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+                reason="Konfirmasi terkirim",
+                sales_delivery_id=sj_link or None,
+            )
+            r2_stock_warnings_holder["warnings"] = list(
+                stock_result.get("stock_warnings") or []
+            )
+            r2_stock_warnings_holder["warehouse_id"] = stock_result.get("warehouse_id")
+            r2_stock_warnings_holder["branch_id"] = stock_result.get("branch_id")
+        except PhysicalStockValidationError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except PhysicalStockConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except PhysicalStockUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
+    elif conf_holder.get("conf") and not uses_r2_stock and not uses_standalone_stock:
         # R2 path already posted SALES_DELIVERY in-txn; never dual-write PSS.
         from services.physical_stock_engine import handle_delivery_confirmed
         await handle_delivery_confirmed(db, order, conf_holder["conf"], user)
@@ -7003,13 +7120,15 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
     if isinstance(order, dict):
         order.pop("delivery_confirm_fence", None)
     result = {"order": _public_saved_order(order, view)}
-    if r2_authority_on:
+    if r2_authority_on or uses_standalone_stock:
         result["stock_warnings"] = list(r2_stock_warnings_holder.get("warnings") or [])
         result["has_shortage_warning"] = any(
             w.get("has_shortage") for w in result["stock_warnings"]
         )
         result["warehouse_id"] = r2_stock_warnings_holder.get("warehouse_id")
         result["branch_id"] = r2_stock_warnings_holder.get("branch_id")
+        if uses_standalone_stock:
+            result["stock_engine"] = "warehouse_standalone"
     return result
 
 
@@ -7451,6 +7570,55 @@ async def list_delivery_schedule(user=Depends(current_user)):
             r.setdefault("optimization_status_label", "Belum Dioptimasi")
             r.setdefault("route_id", None)
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+
+
+@api_router.get("/delivery/plan")
+async def list_delivery_plan(
+    q: Optional[str] = None,
+    source: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    hf: Optional[list[str]] = Query(None),
+    page: Optional[int] = 1,
+    page_size: Optional[int] = 50,
+    user=Depends(current_user),
+):
+    """Rencana Jadwal Kirim — read-only PO list with valid Tanggal Pengiriman.
+
+    Reuses tanggal_pengiriman resolver. No writes. Buffer Stock / cancelled /
+    fully delivered / missing date excluded. SJ not required.
+    Filter/sort (incl. header hf) run before pagination; totals cover full set.
+    """
+    await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
+    scope = sales_owner_match(user)
+    match = _delivery_plan_mongo_match(scope)
+    docs = await db.orders.find(match, _DELIVERY_PLAN_PROJECTION).to_list(None)
+    dd_settings = await _get_delivery_deadline_settings()
+    lead_days = dd_settings["lead_time_days"]
+    filters = {
+        "q": q,
+        "source": source,
+        "status": status,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+    rows = _build_delivery_plan_rows(
+        docs,
+        lead_time_days=lead_days,
+        filters=filters,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        hf=hf,
+    )
+    page_rows, meta = _paginate_delivery_plan_rows(rows, page=page or 1, page_size=page_size or 50)
+    return {
+        "rows": page_rows,
+        "generated_at": now_iso(),
+        **meta,
+    }
 
 
 @api_router.get("/delivery/reschedules")
@@ -13486,8 +13654,15 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
         PhysicalStockUnavailableError,
         PhysicalStockValidationError,
         _r2_confirmation_ids_for_sales_delivery,
+        assess_sales_delivery_cancel_stock,
         cancel_sales_delivery_document,
+        cancel_sales_delivery_document_operational,
         reverse_r2_deliveries_for_sales_delivery,
+    )
+    from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active_cancel
+    from services.warehouse_stock_standalone import (
+        cancel_sales_delivery_document_standalone,
+        is_warehouse_stock_standalone_active as _is_standalone_for_cancel,
     )
     blocker = await _sales_delivery_delete_blocker(delivery)
     already_cancelled = bool(
@@ -13497,15 +13672,52 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     r2_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
     needs_soft_cancel = bool(blocker or already_cancelled or r2_ids)
     actor_id = str(user.get("id") or user.get("email") or "user")
+    r2_on_cancel = await _is_r2_authority_active_cancel(db)
+    standalone_cancel = (not r2_on_cancel) and await _is_standalone_for_cancel(db)
 
-    if needs_soft_cancel:
+    try:
+        stock_assessment = await assess_sales_delivery_cancel_stock(db, delivery)
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    stock_mode = str(stock_assessment.get("mode") or "")
+    # Fail-closed only on first cancel. Idempotent replay of an already-cancelled
+    # SJ must return 200 without creating new stock reversals.
+    if stock_mode in {"ambiguous", "unsupported_stock"} and not already_cancelled:
+        raise HTTPException(400, str(stock_assessment.get("reason") or "Pembatalan ditolak."))
+
+    # Loading / delivery evidence without stock mutations → operational soft-cancel
+    # (no Mongo transaction / no stock reversal). Active R2 stock still uses
+    # the transactional or standalone reversal engines.
+    if needs_soft_cancel or stock_mode == "requires_stock_reversal":
         try:
-            result = await cancel_sales_delivery_document(
-                db,
-                delivery,
-                actor_id=actor_id,
-                reason="Pembatalan Surat Jalan",
+            # Replay after a completed cancel has no active stock work left
+            # (assessment → operational_only). Ambiguous/unsupported on an
+            # already-cancelled SJ also heals via operational replay only.
+            use_operational = (
+                stock_mode == "operational_only"
+                or (already_cancelled and stock_mode in {"ambiguous", "unsupported_stock"})
             )
+            if use_operational:
+                result = await cancel_sales_delivery_document_operational(
+                    db,
+                    delivery,
+                    actor_id=actor_id,
+                    reason="Pembatalan Surat Jalan",
+                )
+            elif standalone_cancel:
+                result = await cancel_sales_delivery_document_standalone(
+                    db,
+                    delivery,
+                    actor_id=actor_id,
+                    reason="Pembatalan Surat Jalan",
+                )
+            else:
+                result = await cancel_sales_delivery_document(
+                    db,
+                    delivery,
+                    actor_id=actor_id,
+                    reason="Pembatalan Surat Jalan",
+                )
         except PhysicalStockNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
         except PhysicalStockAbortError as exc:
@@ -13525,8 +13737,11 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
                 "r2_reversal": result.get("r2_reversal"),
                 "qty_delivered": result.get("qty_delivered"),
                 "delivery_status": result.get("delivery_status"),
+                "engine": result.get("engine"),
+                "stock_mode": stock_mode,
             },
         )
+        no_stock = str(result.get("engine") or "") == "operational_no_stock"
         return {
             "deleted": False,
             "soft_cancelled": True,
@@ -13540,7 +13755,13 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
             "qty_delivered": result.get("qty_delivered"),
             "delivery_status": result.get("delivery_status"),
             "current_stage": result.get("current_stage"),
-            "message": "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi.",
+            "stock_engine": result.get("engine"),
+            "stock_mode": stock_mode,
+            "message": (
+                "Surat Jalan dibatalkan. Loading terkait tetap aktif — hapus manual melalui Workflow bila perlu."
+                if no_stock
+                else "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi."
+            ),
         }
 
     # Draft SJ — no delivery evidence: hard delete (legacy).
@@ -14180,11 +14401,20 @@ async def master_item_physical_opening_balance_post(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Create one R2 OPENING_BALANCE through the physical stock transaction engine."""
+    """Create one OPENING_BALANCE per warehouse.
+
+    Prefers R2 transactional engine when r2_authority_active. Otherwise uses
+    warehouse_stock_standalone (pending-event, no multi-doc txn) when that flag
+    is enabled. Never bypasses either gate.
+    """
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
     from services.branch_access import authorize_stock_location
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active,
+        post_opening_balance_standalone,
+        require_warehouse_stock_standalone,
+    )
     body = payload or {}
     await authorize_stock_location(
         db,
@@ -14203,7 +14433,12 @@ async def master_item_physical_opening_balance_post(
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+            return await post_opening_balance_standalone(db, item_id, body, actor_id=actor_id)
+        await require_r2_authority_active(db)
         return await post_opening_balance(db, item_id, body, actor_id=actor_id)
     except PhysicalStockNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -14234,10 +14469,14 @@ async def master_item_physical_adjustment_post(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Correct one warehouse to a target physical qty through an R2 MANUAL_ADJUSTMENT."""
+    """Correct one warehouse to a target physical qty (R2 txn or standalone CAS)."""
     from services.branch_access import authorize_stock_location
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        adjust_to_target_standalone,
+        is_warehouse_stock_standalone_active,
+        require_warehouse_stock_standalone,
+    )
     from services.product_stock_state import require_physical_stock_correction_access
 
     if not _adjustment_allowed(user):
@@ -14262,7 +14501,12 @@ async def master_item_physical_adjustment_post(
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+            return await adjust_to_target_standalone(db, item_id, body, actor_id=actor_id)
+        await require_r2_authority_active(db)
         return await adjust_physical_stock_to_target(db, item_id, body, actor_id=actor_id)
     except PhysicalStockValidationError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -14417,8 +14661,25 @@ async def physical_stock_catalog_get(
         if "r2_authority_active" not in result:
             r2_on = await is_r2_authority_active(db)
             result["r2_authority_active"] = r2_on
-        # R2 physical adjust only when R2 authority is active
-        result["can_adjust_physical_stock"] = bool(r2_on and _adjustment_allowed(user))
+        standalone_on = bool(result.get("warehouse_stock_standalone"))
+        warehouse_engine_on = bool(r2_on or standalone_on)
+        # Adjust/Saldo Awal when R2 authority OR explicit warehouse standalone is active.
+        result["can_adjust_physical_stock"] = bool(warehouse_engine_on and _adjustment_allowed(user))
+        if not warehouse_engine_on:
+            result["adjust_blocked_reason"] = (
+                "Koreksi/Saldo Awal/Opname gudang memerlukan r2_authority_active "
+                "atau flag warehouse_stock_standalone (default OFF)."
+            )
+        if standalone_on and not r2_on:
+            result["stock_read_mode_label"] = (
+                "Mode warehouse standalone — stok fisik per cabang/gudang "
+                "(tanpa Replica Set / tanpa R2 authority)."
+            )
+            result["physical_qty_note"] = (
+                "Saldo buku gudang terpilih (boleh negatif sebagai peringatan)."
+                if result.get("effective_warehouse_id")
+                else "Saldo buku agregat cabang; rincian per gudang ada di warehouse_balances."
+            )
         result["effective_branch_id"] = effective_branch_id
         result["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
         result["branch_scope"] = access.get("scope")
@@ -15789,6 +16050,14 @@ register_product_request_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_paint_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_crm_daily_report_routes(
     api_router,
     get_db=lambda: db,
@@ -15995,6 +16264,26 @@ register_sales_dashboard_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=require_perm,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
+register_sales_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_purchase_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_stock_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    current_user=current_user,
     user_permissions=user_permissions,
     Depends=Depends,
 )
@@ -17640,6 +17929,8 @@ async def seed():
     await db.purchase_requests.create_index("created_at")
     from services.product_requests import ensure_indexes as _product_request_ensure_indexes
     await _product_request_ensure_indexes(db)
+    from services.paint_stock import ensure_indexes as _paint_stock_ensure_indexes
+    await _paint_stock_ensure_indexes(db)
     from services.spk import ensure_indexes as _spk_ensure_indexes
     await _spk_ensure_indexes(db)
     await db.purchase_orders.create_index("id", unique=True)

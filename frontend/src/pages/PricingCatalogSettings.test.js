@@ -25,6 +25,7 @@ import {
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
+  useLocation: () => ({ pathname: "/settings/pricing-catalog", search: "?section=kelompok" }),
   useSearchParams: () => [new URLSearchParams("section=kelompok")],
 }), { virtual: true });
 
@@ -168,6 +169,13 @@ describe("PricingCatalogSettings Phase 2+3 shared context + landing", () => {
     expect(defaultGroupSection(true, true, "varian")).toBe("varian");
     expect(shellSrc).toMatch(/kelolaGroup/);
     expect(shellSrc).toMatch(/defaultKelolaSection/);
+  });
+
+  test("writeUrl refuses to rewrite after leaving pricing-catalog", () => {
+    expect(shellSrc).toMatch(/useLocation/);
+    expect(shellSrc).toMatch(/path !== "\/settings\/pricing-catalog"/);
+    expect(shellSrc).toMatch(/if \(!pricingCatalogActive\) return/);
+    expect(shellSrc).toMatch(/location\.pathname/);
   });
 
   test("URL & SEO placement is group-scoped utility not global", () => {

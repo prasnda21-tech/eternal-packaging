@@ -2,6 +2,7 @@
 
 import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
 import { canAccessOwnerDashboard } from "./ownerAnalytics";
+import { userHasReportCatalogAccess } from "./reportCatalog";
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
@@ -10,6 +11,7 @@ export const NAV_KEYS = {
   dashboardFinance: "nav.dashboard.finance",
   production: "nav.production",
   schedule: "nav.production_schedule",
+  paintSentralisasi: "nav.production.paint",
   deliverySchedule: "nav.delivery_schedule",
   deliveryReschedule: "nav.delivery_reschedule",
   driverRoute: "nav.driver_route",
@@ -53,6 +55,9 @@ export const NAV_KEYS = {
   statusPo: "nav.reports.status_po",
   gajiOperator: "nav.reports.gaji_operator",
   orderPrediction: "nav.reports.order_prediction",
+  salesReports: "nav.reports.sales",
+  reportCatalog: "nav.reports.catalog",
+  reportSaved: "nav.reports.saved",
   employeeAdmin: "nav.employee_administration",
   employeeAdminMine: "nav.employee_administration.mine",
   employeeAdminCreate: "nav.employee_administration.create",
@@ -100,6 +105,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.chat, label: "Chat", parent: null },
   { key: NAV_KEYS.production, label: "Produksi", parent: null },
   { key: NAV_KEYS.schedule, label: "Jadwal Produksi", parent: NAV_KEYS.production },
+  { key: NAV_KEYS.paintSentralisasi, label: "Sentralisasi Cat", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliverySchedule, label: "Jadwal Pengiriman", parent: NAV_KEYS.production },
   { key: NAV_KEYS.deliveryReschedule, label: "Jadwal Pengiriman Ulang", parent: NAV_KEYS.production },
   { key: NAV_KEYS.tasks, label: "Tugas Produksi", parent: NAV_KEYS.production },
@@ -139,8 +145,8 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.inventoryValue, label: "Nilai Persediaan", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
-  { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
-  { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.reportCatalog, label: "Daftar Laporan", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.reportSaved, label: "Laporan Tersimpan", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.employeeAdmin, label: "Administrasi Karyawan", parent: null },
   { key: NAV_KEYS.employeeAdminMine, label: "Pengajuan Saya", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.employeeAdminCreate, label: "Buat Pengajuan", parent: NAV_KEYS.employeeAdmin },
@@ -499,32 +505,23 @@ export function inventoryMenuItems(hasPerm) {
 }
 
 export const REPORTS_NAV_ROUTES = {
-  [NAV_KEYS.analytics]: "/laporan/analitik-output",
-  [NAV_KEYS.statusPo]: "/laporan/status-po",
-  // Status Pengiriman consolidated into Jadwal Pengiriman — no standalone menu route.
-  [NAV_KEYS.gajiOperator]: "/laporan/gaji-operator",
-  [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
+  [NAV_KEYS.reportCatalog]: "/laporan",
+  [NAV_KEYS.reportSaved]: "/laporan?view=saved",
 };
 
 const REPORTS_VIS_FIELD = {
-  [NAV_KEYS.analytics]: "analytics",
-  [NAV_KEYS.statusPo]: "statusPo",
-  [NAV_KEYS.gajiOperator]: "gajiOperator",
-  [NAV_KEYS.orderPrediction]: "orderPrediction",
+  [NAV_KEYS.reportCatalog]: "catalogList",
+  [NAV_KEYS.reportSaved]: "catalogSaved",
 };
 
 export const REPORTS_TILE_TONES = {
-  [NAV_KEYS.analytics]: "green",
-  [NAV_KEYS.statusPo]: "blue",
-  [NAV_KEYS.gajiOperator]: "purple",
-  [NAV_KEYS.orderPrediction]: "green",
+  [NAV_KEYS.reportCatalog]: "green",
+  [NAV_KEYS.reportSaved]: "teal",
 };
 
 export const REPORTS_TILE_TESTIDS = {
-  [NAV_KEYS.analytics]: "top-nav-analitik-output",
-  [NAV_KEYS.statusPo]: "top-nav-status-po",
-  [NAV_KEYS.gajiOperator]: "top-nav-gaji-operator",
-  [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
+  [NAV_KEYS.reportCatalog]: "top-nav-daftar-laporan",
+  [NAV_KEYS.reportSaved]: "top-nav-laporan-tersimpan",
 };
 
 export function reportsMenuItems(hasPerm) {
@@ -541,24 +538,28 @@ export function reportsMenuItems(hasPerm) {
 
 export const PRODUCTION_NAV_ROUTES = {
   [NAV_KEYS.schedule]: "/produksi",
+  [NAV_KEYS.paintSentralisasi]: "/produksi/sentralisasi-cat",
   [NAV_KEYS.deliverySchedule]: "/produksi/jadwal-pengiriman",
   [NAV_KEYS.deliveryReschedule]: "/produksi/jadwal-pengiriman-ulang",
 };
 
 const PRODUCTION_VIS_FIELD = {
   [NAV_KEYS.schedule]: "schedule",
+  [NAV_KEYS.paintSentralisasi]: "paintSentralisasi",
   [NAV_KEYS.deliverySchedule]: "deliverySchedule",
   [NAV_KEYS.deliveryReschedule]: "deliveryReschedule",
 };
 
 export const PRODUCTION_TILE_TONES = {
   [NAV_KEYS.schedule]: "green",
+  [NAV_KEYS.paintSentralisasi]: "teal",
   [NAV_KEYS.deliverySchedule]: "blue",
   [NAV_KEYS.deliveryReschedule]: "orange",
 };
 
 export const PRODUCTION_TILE_TESTIDS = {
   [NAV_KEYS.schedule]: "top-nav-jadwal-produksi",
+  [NAV_KEYS.paintSentralisasi]: "top-nav-sentralisasi-cat",
   [NAV_KEYS.deliverySchedule]: "top-nav-jadwal-pengiriman",
   [NAV_KEYS.deliveryReschedule]: "top-nav-jadwal-pengiriman-ulang",
 };
@@ -581,20 +582,53 @@ export function productionMenuItems(hasPerm) {
       [NAV_KEYS.deliverySchedule]: { end: true },
     },
   );
+  // Rencana Jadwal Kirim reuses Jadwal Pengiriman access (no new permission key).
+  if (visible.deliverySchedule || hasPerm("delivery.schedule.view") || hasPerm("schedule.view")) {
+    const insertAt = items.findIndex((it) => it.key === NAV_KEYS.deliverySchedule);
+    const planItem = {
+      key: "delivery-plan",
+      label: "Rencana Jadwal Kirim",
+      to: "/produksi/rencana-jadwal-kirim",
+      tone: "teal",
+      testid: "top-nav-rencana-jadwal-kirim",
+      end: true,
+    };
+    if (insertAt >= 0) items.splice(insertAt + 1, 0, planItem);
+    else items.push(planItem);
+  }
   return items;
 }
 
 export function reportsNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
-  const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
-  const statusPo = parent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
+  const parentNav = canSeeNav(hasPerm, NAV_KEYS.reports);
+  const configured = canSeeNav(hasPerm, "nav.configured");
+  const analytics = parentNav && canSeeNav(hasPerm, NAV_KEYS.analytics);
+  const statusPo = parentNav && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   // Standalone Status Pengiriman menu removed — consolidated into Jadwal Pengiriman.
   const shipmentStatus = false;
-  const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
-  const orderPrediction = parent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
-  // Status PO and Prediksi Order are still exposed for route/index decisions,
-  // but no longer make the Laporan sidebar group visible.
-  return { parent: !!(analytics || gajiOperator), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction };
+  const gajiOperator = parentNav && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
+  const orderPrediction = parentNav && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
+  const salesReports = (
+    (parentNav || canSeeNav(hasPerm, NAV_KEYS.salesReports))
+    && canSeeNav(hasPerm, "reports.sales.view")
+  );
+  // Hub opens when at least one deep-linkable report is permitted.
+  // With nav.configured, explicit nav.reports is still required.
+  const hasCatalog = userHasReportCatalogAccess(hasPerm);
+  const catalogList = !!(hasCatalog && (parentNav || !configured));
+  const catalogSaved = catalogList;
+  // Status PO / Prediksi Order stay under Penjualan; they do not open Laporan.
+  return {
+    parent: !!catalogList,
+    catalogList,
+    catalogSaved,
+    analytics,
+    statusPo,
+    shipmentStatus,
+    gajiOperator,
+    orderPrediction,
+    salesReports,
+  };
 }
 
 /** When nav is configured, module fallback must not defeat explicit nav deny. */
@@ -785,15 +819,28 @@ export function taskMenuItems(hasPerm) {
   }));
 }
 
+export function paintNavVisible(hasPerm) {
+  // Menu when nav key OR any paint read capability is granted (report-only OK).
+  return !!(
+    canSeeNav(hasPerm, NAV_KEYS.paintSentralisasi)
+    || canSeeNav(hasPerm, "paint.view")
+    || canSeeNav(hasPerm, "paint.stock.view")
+    || canSeeNav(hasPerm, "paint.report.view")
+    || canSeeNav(hasPerm, "paint.settings.manage")
+  );
+}
+
 export function productionNavVisible(hasPerm) {
   const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
+  const paintSentralisasi = paintNavVisible(hasPerm);
   const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
   const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
   const deliveryToday = false; // Pengiriman Hari Ini menu removed — use Jadwal Pengiriman filter.
   const tasks = tasksNavVisible(hasPerm);
   return {
-    parent: !!(schedule || deliverySchedule || deliveryReschedule || tasks.parent),
+    parent: !!(schedule || paintSentralisasi || deliverySchedule || deliveryReschedule || tasks.parent),
     schedule,
+    paintSentralisasi,
     deliverySchedule,
     deliveryReschedule,
     deliveryToday,

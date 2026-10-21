@@ -62,6 +62,20 @@ def register_crm_daily_report_routes(
             )
         }
 
+    @api_router.get("/crm-daily-reports/sales")
+    async def crm_daily_report_sales(
+        q: Optional[str] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(
+            user,
+            svc.PERM_CREATE,
+            svc.PERM_EDIT_OWN,
+            svc.PERM_VIEW_OWN,
+            svc.PERM_VIEW_ALL,
+        )
+        return {"sales": await svc.list_sales_for_report(get_db(), q=q or "")}
+
     @api_router.get("/crm-daily-reports/options")
     async def crm_daily_report_active_options(user=Depends(current_user)):
         """Active dropdown options for CRM form operators (registered before {report_id})."""
@@ -114,6 +128,7 @@ def register_crm_daily_report_routes(
             "complaint_categories": opt_svc.active_options(options, "complaint_categories"),
             "issue_categories": opt_svc.active_options(options, "issue_categories"),
             "other_option_id": opt_svc.OTHER_OPTION_ID,
+            **svc.excel_dropdown_meta(),
         }
 
     @api_router.get("/crm-daily-reports")

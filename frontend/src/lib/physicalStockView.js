@@ -140,6 +140,99 @@ export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
   return { present: true, qty: item?.physical_qty, text: null };
 }
 
+/**
+ * Single primary Stock Fisik cell for the catalog table.
+ *
+ * OWNER rules (no dual badges):
+ * - Semua Gudang + any missing/unreconciled WH → "Belum lengkap" only
+ * - Selected WH + no balance → "Belum tersedia" only
+ * - Valid book → numeric qty
+ * - Negative book (or WH deficit in aggregate) → numeric qty + compact "Defisit"
+ * Never invent 0 for unknown balances.
+ */
+export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggregate = false } = {}) {
+  const wid = String(warehouseId || "").trim();
+  const book = bookPhysicalDisplay(item, { warehouseId: wid });
+  const balances = Array.isArray(item?.warehouse_balances) ? item.warehouse_balances : [];
+  const hasWhMissing = balances.some((wb) => wb?.balance_present === false);
+  const hasWhUnreconciled = balances.some((wb) => wb?.baseline_status === "unreconciled");
+  const hasWhDeficit = balances.some((wb) => wb?.saldo_buku_negatif);
+  const rowBaselineUnreconciled = String(item?.baseline_status || "") === "unreconciled";
+  const aggregateIncomplete = Boolean(
+    branchAggregate && (hasWhMissing || hasWhUnreconciled || rowBaselineUnreconciled),
+  );
+
+  if (wid) {
+    // Selected warehouse — never show "Belum lengkap" (that is aggregate-only).
+    if (!book.present) {
+      return {
+        present: false,
+        qty: null,
+        text: "Belum tersedia",
+        flag: null,
+        negative: false,
+        hints: [item?.baseline_label, "Saldo gudang belum ada"].filter(Boolean),
+      };
+    }
+    const qty = book.qty;
+    const negative = Boolean(item?.saldo_buku_negatif) || (qty != null && Number(qty) < 0);
+    return {
+      present: true,
+      qty,
+      text: null,
+      flag: negative ? "Defisit" : null,
+      negative,
+      hints: [
+        item?.baseline_label,
+        negative ? "Saldo negatif" : null,
+      ].filter(Boolean),
+    };
+  }
+
+  if (aggregateIncomplete) {
+    // One primary status — never "Belum tersedia" + "Belum lengkap", never qty + "Belum lengkap".
+    return {
+      present: false,
+      qty: null,
+      text: "Belum lengkap",
+      flag: null,
+      negative: false,
+      hints: [
+        item?.baseline_label,
+        hasWhMissing ? "Ada gudang belum saldo" : null,
+        hasWhUnreconciled || rowBaselineUnreconciled ? "Ada gudang belum valid" : null,
+        hasWhDeficit ? "Ada gudang defisit" : null,
+      ].filter(Boolean),
+    };
+  }
+
+  if (!book.present) {
+    return {
+      present: false,
+      qty: null,
+      text: "Belum tersedia",
+      flag: null,
+      negative: false,
+      hints: [item?.baseline_label].filter(Boolean),
+    };
+  }
+
+  const qty = book.qty;
+  const rowNegative = Boolean(item?.saldo_buku_negatif) || (qty != null && Number(qty) < 0);
+  const showDeficit = rowNegative || hasWhDeficit;
+  return {
+    present: true,
+    qty,
+    text: null,
+    flag: showDeficit ? "Defisit" : null,
+    negative: showDeficit,
+    hints: [
+      rowNegative ? "Saldo negatif" : null,
+      hasWhDeficit ? "Ada gudang defisit" : null,
+    ].filter(Boolean),
+  };
+}
+
 export function openingReady({ itemId, branchId, warehouseId, qty }) {
   if (!itemId || !branchId || !warehouseId) return false;
   if (qty === "" || qty === null || qty === undefined) return false;

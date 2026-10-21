@@ -192,6 +192,205 @@ def aggregate_legacy_delivered_qty(
     return delivered, provenance
 
 
+def _expand_inflight_exclude_tokens(
+    order: dict,
+    *,
+    exclude_confirmation_ids: Optional[Iterable[str]] = None,
+    exclude_shipment_ids: Optional[Iterable[str]] = None,
+) -> set:
+    """Build identity tokens for the in-flight confirmation/shipment to omit.
+
+    Retry/crash paths stamp delivery_confirmations + shipments before the
+    warehouse ledger exists. Ready-qty checks must treat those stamps as the
+    current confirm, not prior Compatibility history.
+    """
+    from services.r2_go_live import _delivery_identity_tokens
+
+    tokens: set = set()
+    for raw in list(exclude_confirmation_ids or []) + list(exclude_shipment_ids or []):
+        t = str(raw or "").strip()
+        if t:
+            tokens.add(t)
+    if not tokens:
+        return tokens
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict) or bool(rec.get("is_cancelled")):
+            continue
+        rid = str(rec.get("id") or "").strip()
+        aid = str(rec.get("action_id") or "").strip()
+        sid = str(rec.get("shipment_id") or "").strip()
+        if rid in tokens or aid in tokens or sid in tokens:
+            for t in (rid, aid, sid, *_delivery_identity_tokens(rec)):
+                if t:
+                    tokens.add(str(t).strip())
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        sh_tokens = _delivery_identity_tokens(sh)
+        if any(t in tokens for t in sh_tokens):
+            for t in sh_tokens:
+                if t:
+                    tokens.add(str(t).strip())
+    return {t for t in tokens if t}
+
+
+def proven_delivered_qty_by_order_line(
+    order: dict,
+    accurate_owners: Optional[Dict[str, str]] = None,
+    *,
+    exclude_confirmation_ids: Optional[Iterable[str]] = None,
+    exclude_shipment_ids: Optional[Iterable[str]] = None,
+) -> Tuple[Dict[int, float], bool]:
+    """Compatibility-proven delivered qty per line_idx for one order.
+
+    Returns (by_line_idx, has_unproven_shipment). Uses the same confirmation /
+    Terkirim / single-line qty_delivered rules as aggregate_legacy_delivered_qty.
+    sales_deliveries.status alone never counts.
+
+    exclude_confirmation_ids / exclude_shipment_ids: omit in-flight (or retry)
+    confirmation / shipment identities already stamped on the order so ready-qty
+    validation does not treat the current confirm as prior history. Catalog /
+    Compatibility demand callers leave these empty.
+    """
+    from services.r2_go_live import (
+        _confirmation_line_qtys,
+        _delivery_identity_tokens,
+        _proven_shipped_qty_for_shipment,
+        _resolve_proven_line_attribution,
+    )
+
+    if not isinstance(order, dict) or _order_cancelled(order):
+        return {}, False
+    owners = accurate_owners or {}
+    order_id = str(order.get("id") or "").strip()
+    order_lines = list(order.get("line_items") or [])
+    if not order_lines:
+        return {}, False
+
+    exclude_tokens = _expand_inflight_exclude_tokens(
+        order,
+        exclude_confirmation_ids=exclude_confirmation_ids,
+        exclude_shipment_ids=exclude_shipment_ids,
+    )
+
+    by_line: Dict[int, float] = {}
+    unproven = False
+    seen_identities: set = set()
+    confirmed_any = False
+    skipped_inflight = False
+
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        proven = _proven_shipped_qty_for_shipment(order, sh)
+        if proven <= 0:
+            continue
+        tokens = _delivery_identity_tokens(sh)
+        if exclude_tokens and tokens and any(t in exclude_tokens for t in tokens):
+            skipped_inflight = True
+            continue
+        if tokens and any(t in seen_identities for t in tokens):
+            continue
+        for t in tokens:
+            seen_identities.add(t)
+
+        confirmation_lines = _confirmation_line_qtys(
+            order, sh, order_line_count=len(order_lines),
+        )
+        shipment_lines: Dict[int, float] = {}
+        if not confirmation_lines:
+            line_rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+            unresolved = False
+            for ln in line_rows:
+                if not isinstance(ln, dict):
+                    continue
+                qty = _delivery_line_qty(ln)
+                if qty <= 0:
+                    continue
+                try:
+                    idx = int(ln.get("line_idx"))
+                except (TypeError, ValueError):
+                    unresolved = True
+                    continue
+                if idx < 0 or idx >= len(order_lines):
+                    unresolved = True
+                    continue
+                shipment_lines[idx] = float(shipment_lines.get(idx, 0.0)) + qty
+            if unresolved and len(order_lines) > 1:
+                unproven = True
+                continue
+        sh_tokens = _delivery_identity_tokens(sh)
+        attributed, resolve_issues = _resolve_proven_line_attribution(
+            order_id=order_id or "(missing-order)",
+            identity=sh_tokens[0] if sh_tokens else "(missing-id)",
+            proven=proven,
+            order_line_count=len(order_lines),
+            confirmation_lines=confirmation_lines,
+            shipment_lines=shipment_lines,
+        )
+        if resolve_issues or not attributed:
+            unproven = True
+            continue
+        for idx, qty in attributed.items():
+            if idx < 0 or idx >= len(order_lines):
+                continue
+            by_line[idx] = float(by_line.get(idx, 0.0)) + float(qty)
+            confirmed_any = True
+
+    if not confirmed_any and len(order_lines) == 1:
+        # qty_delivered fallback is Compatibility history only when no proven
+        # shipment remained. Skip it when the only proof was the in-flight
+        # confirmation/shipment we intentionally excluded.
+        if skipped_inflight or exclude_tokens:
+            # exclude_tokens alone is not enough: a brand-new confirm may pass
+            # ids that are not yet on the order. Only skip when we actually
+            # omitted a stamped shipment, or when an exclude id is already on
+            # the order (retry after business confirm).
+            if skipped_inflight or _order_has_excluded_delivery_stamp(
+                order, exclude_tokens
+            ):
+                pass
+            else:
+                qd = _qty_num(order.get("qty_delivered"))
+                if qd > 0:
+                    by_line[0] = float(by_line.get(0, 0.0)) + qd
+        else:
+            qd = _qty_num(order.get("qty_delivered"))
+            if qd > 0:
+                by_line[0] = float(by_line.get(0, 0.0)) + qd
+
+    return by_line, unproven
+
+
+def _order_has_excluded_delivery_stamp(order: dict, exclude_tokens: set) -> bool:
+    """True when order already carries a confirmation/shipment in exclude_tokens."""
+    from services.r2_go_live import _delivery_identity_tokens
+
+    if not exclude_tokens:
+        return False
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict) or bool(rec.get("is_cancelled")):
+            continue
+        for t in (
+            str(rec.get("id") or "").strip(),
+            str(rec.get("action_id") or "").strip(),
+            str(rec.get("shipment_id") or "").strip(),
+            *_delivery_identity_tokens(rec),
+        ):
+            if t and t in exclude_tokens:
+                return True
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        if any(t in exclude_tokens for t in _delivery_identity_tokens(sh)):
+            return True
+    return False
+
+
+# Honest fallback — never invent actor from master_items.updated_by.
+LAST_STOCK_ACTOR_UNKNOWN = "Tidak tercatat"
+
+
 def _compatibility_flags() -> dict:
     """Legacy company stock is informational only — never warehouse-valid."""
     return {
@@ -241,6 +440,8 @@ def compatibility_row(
             "qty_belum_terkirim": None,
             "qty_tersedia": buckets["physical_qty"] - qty_pesanan,
             "updated_at": updated_at,
+            # Legacy company stamp is not a posted warehouse movement identity.
+            "updated_by_name": LAST_STOCK_ACTOR_UNKNOWN if updated_at else None,
             "belum_terkirim_status": BELUM_STATUS_UNVERIFIED,
             **flags,
         }
@@ -262,6 +463,7 @@ def compatibility_row(
         "qty_belum_terkirim": buckets["qty_belum_terkirim"],
         "qty_tersedia": buckets["qty_tersedia"],
         "updated_at": updated_at,
+        "updated_by_name": LAST_STOCK_ACTOR_UNKNOWN if updated_at else None,
         "belum_terkirim_status": BELUM_STATUS_READY,
         **flags,
     }

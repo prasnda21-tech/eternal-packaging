@@ -319,10 +319,10 @@ describe("purchasingNavVisible", () => {
 });
 
 describe("reportsNavVisible", () => {
-  test("hides parent when no child is granted", () => {
+  test("hides parent when no catalog report is granted", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports));
     expect(v.parent).toBe(false);
-    expect(v.analytics).toBe(false);
+    expect(v.catalogList).toBe(false);
     expect(v.statusPo).toBe(false);
     expect(v.shipmentStatus).toBe(false);
   });
@@ -332,31 +332,41 @@ describe("reportsNavVisible", () => {
     expect(v.parent).toBe(false);
     expect(v.shipmentStatus).toBe(false);
     expect(v.statusPo).toBe(false);
-    expect(v.analytics).toBe(false);
   });
 
-  test("shows parent for analytics only", () => {
-    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.analytics));
+  test("shows parent when analytics catalog card is accessible", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.analytics, "schedule.view"));
     expect(v.parent).toBe(true);
+    expect(v.catalogList).toBe(true);
     expect(v.analytics).toBe(true);
-    expect(v.shipmentStatus).toBe(false);
     expect(v.statusPo).toBe(false);
   });
 
-    test("keeps status po authorization without opening Laporan", () => {
+  test("keeps status po authorization without opening Laporan", () => {
     const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.statusPo));
     expect(v.parent).toBe(false);
     expect(v.statusPo).toBe(true);
-    expect(v.analytics).toBe(false);
+    expect(v.catalogList).toBe(false);
     expect(v.shipmentStatus).toBe(false);
   });
 
-  test("shows parent for gaji operator only", () => {
-    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.gajiOperator));
+  test("shows parent for gaji operator catalog access", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.gajiOperator, "reports.gaji_operator.view"));
     expect(v.parent).toBe(true);
     expect(v.gajiOperator).toBe(true);
-    expect(v.shipmentStatus).toBe(false);
+    expect(v.catalogList).toBe(true);
     expect(v.orderPrediction).toBe(false);
+  });
+
+  test("shows parent for sales reports without orphan leaf", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.reports, NAV_KEYS.salesReports, "reports.sales.view"));
+    expect(v.parent).toBe(true);
+    expect(v.salesReports).toBe(true);
+    expect(v.catalogList).toBe(true);
+    expect(reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.salesReports, "reports.sales.view")).map((i) => i.label)).toEqual([
+      "Daftar Laporan",
+      "Laporan Tersimpan",
+    ]);
   });
 
   test("keeps prediction authorization without opening Laporan", () => {
@@ -365,6 +375,41 @@ describe("reportsNavVisible", () => {
     expect(v.orderPrediction).toBe(true);
     expect(v.gajiOperator).toBe(false);
     expect(v.statusPo).toBe(false);
+  });
+
+  test("holding-like sales view opens hub without orphan leaf", () => {
+    const perms = has(NAV_KEYS.reports, NAV_KEYS.salesReports, "reports.sales.view");
+    const v = reportsNavVisible(perms);
+    expect(v.parent).toBe(true);
+    expect(reportsMenuItems(perms).map((i) => i.to)).toEqual(["/laporan", "/laporan?view=saved"]);
+    expect(reportsMenuItems(perms).some((i) => i.label === "Laporan Penjualan")).toBe(false);
+  });
+
+  test("finance-only report opens hub with Daftar/Tersimpan leaves", () => {
+    const perms = has(NAV_KEYS.reports, "profit_loss.view");
+    const v = reportsNavVisible(perms);
+    expect(v.parent).toBe(true);
+    expect(v.salesReports).toBe(false);
+    expect(reportsMenuItems(perms)).toHaveLength(2);
+  });
+
+  test("nav.configured without nav.reports hides hub even with module report access", () => {
+    const v = reportsNavVisible(has("nav.configured", "reports.sales.view", "profit_loss.view"));
+    expect(v.parent).toBe(false);
+    expect(v.catalogList).toBe(false);
+    expect(reportsMenuItems(has("nav.configured", "reports.sales.view"))).toEqual([]);
+  });
+
+  test("role with no report access keeps Laporan hidden", () => {
+    const v = reportsNavVisible(has(NAV_KEYS.sales, "po.view"));
+    expect(v.parent).toBe(false);
+    expect(reportsMenuItems(has(NAV_KEYS.sales, "po.view"))).toEqual([]);
+  });
+
+  test("sales_eternal style sales.pwa keys do not open Report Center", () => {
+    const v = reportsNavVisible(has("sales.pwa.view", "sales.pwa.visit.create"));
+    expect(v.parent).toBe(false);
+    expect(v.salesReports).toBe(false);
   });
 });
 
@@ -538,9 +583,18 @@ describe("inventoryMenuItems", () => {
 });
 
 describe("reportsMenuItems", () => {
-  test("keeps only report children that remain under Laporan", () => {
-    const items = reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.gajiOperator, NAV_KEYS.orderPrediction));
-    expect(items.map((item) => item.label)).toEqual(["Gaji Operator"]);
+  test("exposes Daftar Laporan and Laporan Tersimpan under Laporan", () => {
+    const items = reportsMenuItems(has(
+      NAV_KEYS.reports,
+      NAV_KEYS.gajiOperator,
+      "reports.gaji_operator.view",
+      NAV_KEYS.statusPo,
+      NAV_KEYS.orderPrediction,
+    ));
+    expect(items.map((item) => [item.label, item.to, item.testid])).toEqual([
+      ["Daftar Laporan", "/laporan", "top-nav-daftar-laporan"],
+      ["Laporan Tersimpan", "/laporan?view=saved", "top-nav-laporan-tersimpan"],
+    ]);
     expect(reportsMenuItems(has(NAV_KEYS.reports, NAV_KEYS.statusPo, NAV_KEYS.orderPrediction))).toEqual([]);
   });
 
@@ -561,6 +615,7 @@ describe("productionMenuItems", () => {
     expect(items.map((item) => [item.label, item.to])).toEqual([
       ["Jadwal Produksi", "/produksi"],
       ["Jadwal Pengiriman", "/produksi/jadwal-pengiriman"],
+      ["Rencana Jadwal Kirim", "/produksi/rencana-jadwal-kirim"],
       ["Jadwal Pengiriman Ulang", "/produksi/jadwal-pengiriman-ulang"],
     ]);
     expect(items.some((item) => item.label === "Pengiriman Hari Ini")).toBe(false);

@@ -30,6 +30,8 @@ WAREHOUSES_COLLECTION = "warehouses"
 BASELINE_RECONCILED = "reconciled"
 BASELINE_UNRECONCILED = "unreconciled"
 BASELINE_UNRECONCILED_LABEL = "Saldo awal belum direkonsiliasi"
+# Honest fallback when a posted movement has no resolvable user identity.
+LAST_STOCK_ACTOR_UNKNOWN = "Tidak tercatat"
 
 MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
 MOVEMENT_PURCHASE_RECEIPT = "PURCHASE_RECEIPT"
@@ -1129,6 +1131,23 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
     }
 
 
+async def receipt_line_posts_physical_stock(db, line: dict) -> bool:
+    """True when a GR line should mutate warehouse physical stock / HPP layers.
+
+    Explicit SERVICE (process Add On) never posts physical qty. Legacy masters
+    with missing/blank item_type still post (inventory default). Document lines
+    may still exist on the GR either way.
+    """
+    from services.inventory_accounting import ITEM_TYPE_SERVICE
+
+    mid = str((line or {}).get("master_item_id") or "").strip()
+    if not mid:
+        return False
+    master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0, "item_type": 1})
+    raw = str((master or {}).get("item_type") or "").strip().upper()
+    return raw != ITEM_TYPE_SERVICE
+
+
 async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: str) -> List[dict]:
     """Post every PURCHASE_RECEIPT line inside the caller's transaction."""
     lines = receipt.get("lines") if isinstance(receipt.get("lines"), list) else []
@@ -1136,6 +1155,8 @@ async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: 
         raise PhysicalStockValidationError("Minimal satu baris penerimaan")
     movements = []
     for line in lines:
+        if not await receipt_line_posts_physical_stock(db, line):
+            continue
         movements.append(await _apply_movement_in_session(
             db,
             _purchase_receipt_request(receipt, line, actor_id=actor_id),
@@ -1606,7 +1627,13 @@ def _sales_delivery_identity_tokens(delivery: dict) -> set:
 
 
 async def _r2_confirmation_ids_for_sales_delivery(db, delivery: dict, *, session=None) -> list:
-    """Resolve physical R2 confirmation ids linked to one SJ document."""
+    """Resolve physical R2 confirmation ids linked to one SJ document.
+
+    Only identity-attributed confirmations are returned. PO-level
+    ``r2_confirmed_delivery_ids`` without a matching ``sales_delivery_id``
+    are intentionally excluded — callers that need fail-closed semantics
+    must use ``assess_sales_delivery_cancel_stock``.
+    """
     if not isinstance(delivery, dict):
         return []
     identity = _sales_delivery_identity_tokens(delivery)
@@ -1640,18 +1667,411 @@ async def _r2_confirmation_ids_for_sales_delivery(db, delivery: dict, *, session
                 confirmation_ids.add(cid)
 
     po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
-    if po_id and not confirmation_ids:
-        # Fallback: only explicit R2 confirmation ids on the order.
+    if po_id and identity:
+        # Attribute PO-listed confirmations only when sales_delivery_id matches
+        # this SJ. Never inherit sibling-SJ confirmations.
         order = await db.orders.find_one(
             {"id": po_id},
             {"_id": 0, "r2_confirmed_delivery_ids": 1},
             **find_kwargs,
         )
         if order:
-            for cid in order.get("r2_confirmed_delivery_ids") or []:
-                if cid:
-                    confirmation_ids.add(str(cid))
+            listed = [
+                str(cid).strip()
+                for cid in (order.get("r2_confirmed_delivery_ids") or [])
+                if str(cid or "").strip()
+            ]
+            if listed:
+                rows = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+                    {"id": {"$in": listed}},
+                    {"_id": 0, "id": 1, "sales_delivery_id": 1},
+                    **find_kwargs,
+                ).to_list(200)
+                for row in rows:
+                    sj = str(row.get("sales_delivery_id") or "").strip()
+                    if sj and sj in identity and row.get("id"):
+                        confirmation_ids.add(str(row["id"]))
     return sorted(confirmation_ids)
+
+
+async def _ledger_row_is_reversed(db, movement_id: str, *, session=None) -> bool:
+    mid = str(movement_id or "").strip()
+    if not mid:
+        return True
+    find_kwargs = {"session": session} if session is not None else {}
+    rev = await db[LEDGER_COLLECTION].find_one(
+        {"movement_type": MOVEMENT_REVERSAL, "reference_id": mid},
+        {"_id": 1},
+        **find_kwargs,
+    )
+    return bool(rev)
+
+
+async def assess_sales_delivery_cancel_stock(db, delivery: dict) -> dict:
+    """Classify whether SJ cancel needs stock reversal, is operational-only, or must fail closed.
+
+    Modes:
+    - operational_only: no SJ-attributed stock mutation that must be reversed
+    - requires_stock_reversal: R2/standalone ledger confirmations exist for this SJ
+    - ambiguous: PO-level / unattributable delivery stock evidence
+    - unsupported_stock: PSS/durable mutations attributed to this SJ (no safe cancel reversal here)
+    """
+    if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
+        raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")
+    identity = _sales_delivery_identity_tokens(delivery)
+    delivery_id = str(delivery["id"])
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    evidence: Dict[str, Any] = {
+        "confirmation_ids": [],
+        "active_ledger_ids": [],
+        "pss_movement_ids": [],
+        "pending_event_ids": [],
+        "ambiguous_confirmation_ids": [],
+        "orphan_ledger_ids": [],
+    }
+
+    confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
+    active_confirmation_ids: List[str] = []
+    for cid in confirmation_ids:
+        conf = await db[SALES_DELIVERY_CONFIRMATIONS].find_one({"id": cid}, {"_id": 0, "reversed": 1})
+        if conf and conf.get("reversed") is True:
+            continue
+        active_confirmation_ids.append(cid)
+    evidence["confirmation_ids"] = list(active_confirmation_ids)
+
+    if identity:
+        ledger_rows = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_SALES_DELIVERY,
+                "metadata.sales_delivery_id": {"$in": list(identity)},
+            },
+            {"_id": 0, "id": 1},
+        ).to_list(500)
+        for row in ledger_rows:
+            mid = str(row.get("id") or "").strip()
+            if mid and not await _ledger_row_is_reversed(db, mid):
+                evidence["active_ledger_ids"].append(mid)
+
+    # Unattributable PO-listed R2 confirmations → fail closed (never reverse sibling SJ).
+    if po_id:
+        order = await db.orders.find_one(
+            {"id": po_id},
+            {
+                "_id": 0,
+                "r2_confirmed_delivery_ids": 1,
+                "delivery_confirmations": 1,
+            },
+        ) or {}
+        listed = [
+            str(cid).strip()
+            for cid in (order.get("r2_confirmed_delivery_ids") or [])
+            if str(cid or "").strip()
+        ]
+        if listed:
+            # Include reversed docs so a completed cancel is not treated as
+            # "listed but missing" (that falsely fails closed on idempotent replay).
+            rows = await db[SALES_DELIVERY_CONFIRMATIONS].find(
+                {"id": {"$in": listed}},
+                {"_id": 0, "id": 1, "sales_delivery_id": 1, "reversed": 1},
+            ).to_list(200)
+            known = {str(r.get("id")): r for r in rows if r.get("id")}
+            for cid in listed:
+                row = known.get(cid)
+                if not row:
+                    # Listed but missing doc — cannot prove attribution.
+                    evidence["ambiguous_confirmation_ids"].append(cid)
+                    continue
+                if row.get("reversed") is True:
+                    continue  # already reversed — not an active cancel blocker
+                sj = str(row.get("sales_delivery_id") or "").strip()
+                if not sj:
+                    evidence["ambiguous_confirmation_ids"].append(cid)
+                elif identity and sj not in identity:
+                    continue  # sibling SJ — independent
+                elif identity and sj in identity and cid not in evidence["confirmation_ids"]:
+                    evidence["confirmation_ids"].append(cid)
+                    if cid not in active_confirmation_ids:
+                        active_confirmation_ids.append(cid)
+
+        # Orphan R2 ledger on this PO without sales_delivery_id attribution.
+        orphan_rows = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_SALES_DELIVERY,
+                "metadata.order_id": po_id,
+                "$or": [
+                    {"metadata.sales_delivery_id": {"$exists": False}},
+                    {"metadata.sales_delivery_id": None},
+                    {"metadata.sales_delivery_id": ""},
+                ],
+            },
+            {"_id": 0, "id": 1, "metadata.confirmation_id": 1},
+        ).to_list(500)
+        for row in orphan_rows:
+            mid = str(row.get("id") or "").strip()
+            if not mid or await _ledger_row_is_reversed(db, mid):
+                continue
+            evidence["orphan_ledger_ids"].append(mid)
+
+        # Delivery-confirmed operational rows linked to this SJ may have PSS stock-out.
+        linked_conf_ids = []
+        for rec in order.get("delivery_confirmations") or []:
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("is_deleted") or rec.get("deleted") or rec.get("is_cancelled") or rec.get("cancelled"):
+                continue
+            linked = False
+            for field in ("shipment_id", "surat_jalan_id", "sj_number", "sales_delivery_id", "delivery_id"):
+                token = str(rec.get(field) or "").strip()
+                if token and token in identity:
+                    linked = True
+                    break
+            if linked:
+                cid = str(rec.get("id") or rec.get("action_id") or "").strip()
+                if cid:
+                    linked_conf_ids.append(cid)
+
+        pss_query_or = [
+            {"reference_type": "sales_delivery", "reference_id": {"$in": list(identity)}},
+            {"event_key": {"$regex": f"^stock_out:sales_delivery:{re.escape(delivery_id)}:"}},
+        ]
+        for cid in linked_conf_ids:
+            pss_query_or.append(
+                {"event_key": {"$regex": f"^stock_out:delivery:{re.escape(po_id)}:{re.escape(cid)}:"}}
+            )
+        pss_rows = await db.stock_movements.find(
+            {
+                "$or": pss_query_or,
+                "status": {"$nin": ["VOID", "REVERSED", "CANCELLED", "void", "reversed", "cancelled"]},
+            },
+            {"_id": 0, "id": 1, "event_key": 1, "status": 1},
+        ).to_list(500)
+        for row in pss_rows:
+            evidence["pss_movement_ids"].append(str(row.get("id") or row.get("event_key") or ""))
+
+        # In-flight durable claims attributed to this SJ.
+        try:
+            from services.product_stock_state import COLLECTION as STATE_COLLECTION
+        except Exception:  # pragma: no cover - import isolation
+            STATE_COLLECTION = "product_stock_state"
+        pending_or = [
+            {"pending_event.event_id": {"$regex": f"^stock_out:sales_delivery:{re.escape(delivery_id)}:"}},
+            {"pending_event.reference_type": "sales_delivery", "pending_event.reference_id": {"$in": list(identity)}},
+        ]
+        for cid in linked_conf_ids:
+            pending_or.append({
+                "pending_event.event_id": {
+                    "$regex": f"^stock_out:delivery:{re.escape(po_id)}:{re.escape(cid)}:"
+                },
+            })
+        pending_rows = await db[STATE_COLLECTION].find(
+            {"$or": pending_or},
+            {"_id": 0, "pending_event.event_id": 1},
+        ).to_list(200)
+        for row in pending_rows:
+            ev = str(((row.get("pending_event") or {}).get("event_id")) or "").strip()
+            if ev:
+                evidence["pending_event_ids"].append(ev)
+
+    if evidence["ambiguous_confirmation_ids"] or evidence["orphan_ledger_ids"]:
+        return {
+            "mode": "ambiguous",
+            "reason": (
+                "Mutasi stok pengiriman pada PO tidak dapat diatribusikan ke Surat Jalan ini "
+                "secara unik. Pembatalan ditolak (fail closed)."
+            ),
+            "evidence": evidence,
+        }
+    if evidence["pss_movement_ids"] or evidence["pending_event_ids"]:
+        return {
+            "mode": "unsupported_stock",
+            "reason": (
+                "Surat Jalan memiliki mutasi stok PSS/durable aktif yang belum dapat "
+                "dibalikkan secara aman melalui pembatalan ini."
+            ),
+            "evidence": evidence,
+        }
+    if evidence["active_ledger_ids"] and not evidence["confirmation_ids"]:
+        return {
+            "mode": "unsupported_stock",
+            "reason": (
+                "Surat Jalan memiliki mutasi ledger stok aktif tanpa konfirmasi R2 "
+                "yang dapat di-reversal secara aman. Pembatalan ditolak."
+            ),
+            "evidence": evidence,
+        }
+    if evidence["confirmation_ids"]:
+        return {
+            "mode": "requires_stock_reversal",
+            "reason": "Surat Jalan memiliki mutasi stok R2/warehouse yang harus di-reversal.",
+            "evidence": evidence,
+            "confirmation_ids": list(evidence["confirmation_ids"]),
+        }
+    return {
+        "mode": "operational_only",
+        "reason": "Tidak ada mutasi stok yang perlu dibalik untuk Surat Jalan ini.",
+        "evidence": evidence,
+        "confirmation_ids": [],
+    }
+
+
+def _order_soft_cancel_patch_for_delivery(
+    order: dict,
+    *,
+    identity: set,
+    delivery_id: str,
+    cancelled_at: str,
+) -> dict:
+    """Build order $set patch for soft-cancelling one SJ. Loading is never touched."""
+    shipments = []
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        row = dict(sh)
+        if _shipment_matches_delivery(row, identity):
+            row["is_cancelled"] = True
+            row["cancelled"] = True
+            row["status"] = "cancelled"
+            row["sj_status"] = "cancelled"
+            row["cancelled_at"] = cancelled_at
+        shipments.append(row)
+    confirmations = []
+    for rec in order.get("delivery_confirmations") or []:
+        if not isinstance(rec, dict):
+            continue
+        row = dict(rec)
+        linked = False
+        for field in (
+            "shipment_id", "surat_jalan_id", "sj_number",
+            "sales_delivery_id", "delivery_id",
+        ):
+            token = str(row.get(field) or "").strip()
+            if token and token in identity:
+                linked = True
+                break
+        if linked:
+            row["is_cancelled"] = True
+            row["cancelled"] = True
+            row["cancelled_at"] = cancelled_at
+        confirmations.append(row)
+    files = []
+    for entry in order.get("surat_jalan_files") or []:
+        if not isinstance(entry, dict):
+            continue
+        file_row = dict(entry)
+        if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
+            str(file_row.get("id") or "") == delivery_id
+            or str(file_row.get("shipment_id") or "") == delivery_id
+        ):
+            file_row["cancelled"] = True
+            file_row["status"] = "cancelled"
+            file_row["cancelled_at"] = cancelled_at
+        files.append(file_row)
+    order_view = dict(order)
+    order_view["shipments"] = shipments
+    order_view["surat_jalan_files"] = files
+    order_view["delivery_confirmations"] = confirmations
+    recomputed = _recompute_order_delivery_after_cancel(order_view)
+    return {
+        "shipments": shipments,
+        "surat_jalan_files": files,
+        "delivery_confirmations": confirmations,
+        "qty_delivered": recomputed["qty_delivered"],
+        "delivery_status": recomputed["delivery_status"],
+        "current_stage": recomputed["current_stage"],
+        "updated_at": cancelled_at,
+    }
+
+
+async def cancel_sales_delivery_document_operational(
+    db,
+    delivery: dict,
+    *,
+    actor_id: str,
+    reason: str = "",
+) -> dict:
+    """Soft-cancel SJ + reconcile order without stock writes or multi-doc transactions.
+
+    Safe on MongoDB standalone when assess_sales_delivery_cancel_stock reports
+    operational_only. Loading confirmations are never auto-cancelled.
+
+    Recovery / idempotency: SJ cancel is written first (conditional). Replays
+    always re-apply the order patch so a crash between the two writes heals.
+    """
+    if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
+        raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")
+    delivery_id = str(delivery["id"])
+    actor = _as_text(actor_id, "actor_id")
+    note = str(reason or "").strip() or "Pembatalan Surat Jalan"
+    identity = _sales_delivery_identity_tokens(delivery)
+    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+
+    fresh = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0})
+    if not fresh:
+        raise PhysicalStockNotFoundError("Pengiriman Pesanan tidak ditemukan.")
+
+    already = bool(
+        fresh.get("is_cancelled") is True
+        or str(fresh.get("status") or "").lower() in {"cancelled", "dibatalkan", "deleted"}
+    )
+    cancelled_at = str(fresh.get("cancelled_at") or "").strip() or now_iso()
+    replayed = already
+
+    if not already:
+        cancelled_at = now_iso()
+        result = await db.sales_deliveries.update_one(
+            {
+                "id": delivery_id,
+                "is_cancelled": {"$ne": True},
+                "status": {"$nin": ["DIBATALKAN", "CANCELLED", "DELETED", "cancelled", "dibatalkan", "deleted"]},
+            },
+            {"$set": {
+                "is_cancelled": True,
+                "cancelled": True,
+                "status": "DIBATALKAN",
+                "cancelled_at": cancelled_at,
+                "cancel_reason": note,
+                "cancelled_by": actor,
+                "r2_reversal": {
+                    "reversed_confirmations": [],
+                    "confirmation_ids": [],
+                    "engine": "operational_no_stock",
+                },
+                "updated_at": cancelled_at,
+            }},
+        )
+        if result.matched_count == 0:
+            # Concurrent cancel won — treat as replay and heal order.
+            replayed = True
+            fresh = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0}) or fresh
+            cancelled_at = str(fresh.get("cancelled_at") or cancelled_at)
+        else:
+            replayed = False
+
+    order_patch: Dict[str, Any] = {}
+    if po_id:
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+        if order:
+            order_patch = _order_soft_cancel_patch_for_delivery(
+                order,
+                identity=identity,
+                delivery_id=delivery_id,
+                cancelled_at=cancelled_at,
+            )
+            await db.orders.update_one({"id": po_id}, {"$set": order_patch})
+
+    return {
+        "id": delivery_id,
+        "sj_number": fresh.get("sj_number", delivery_id),
+        "soft_cancelled": True,
+        "deleted": False,
+        "replayed": replayed,
+        "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
+        "order_id": po_id or None,
+        "qty_delivered": order_patch.get("qty_delivered"),
+        "delivery_status": order_patch.get("delivery_status"),
+        "current_stage": order_patch.get("current_stage"),
+        "engine": "operational_no_stock",
+    }
 
 
 def _shipment_matches_delivery(shipment: dict, identity: set) -> bool:
@@ -1912,11 +2332,27 @@ async def cancel_sales_delivery_document(
                                     row["cancelled"] = True
                                     row["cancelled_at"] = cancelled_at
                                 confirmations.append(row)
+                            files = []
+                            for entry in order.get("surat_jalan_files") or []:
+                                if not isinstance(entry, dict):
+                                    continue
+                                file_row = dict(entry)
+                                # Keep the document for audit, but stop treating the cancelled SJ as live.
+                                if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
+                                    str(file_row.get("id") or "") == delivery_id
+                                    or str(file_row.get("shipment_id") or "") == delivery_id
+                                ):
+                                    file_row["cancelled"] = True
+                                    file_row["status"] = "cancelled"
+                                    file_row["cancelled_at"] = cancelled_at
+                                files.append(file_row)
                             order["shipments"] = shipments
+                            order["surat_jalan_files"] = files
                             order["delivery_confirmations"] = confirmations
                             recomputed = _recompute_order_delivery_after_cancel(order)
                             order_patch = {
                                 "shipments": shipments,
+                                "surat_jalan_files": files,
                                 "delivery_confirmations": confirmations,
                                 "qty_delivered": recomputed["qty_delivered"],
                                 "delivery_status": recomputed["delivery_status"],
@@ -2907,21 +3343,66 @@ async def _unique_accurate_owners(db) -> Dict[str, str]:
     return {accurate_id: master_id for accurate_id, master_id in owner.items() if counts[accurate_id] == 1}
 
 
-async def _r2_confirmed_delivery_qty(db, master_ids: List[str]) -> Dict[str, float]:
+def _order_branch_id(order: Optional[dict]) -> str:
+    """Proven branch on an order. Empty when legacy attribution is missing."""
+    if not isinstance(order, dict):
+        return ""
+    return str(order.get("branch_id") or order.get("cabang_id") or "").strip()
+
+
+def _orders_for_branch(
+    orders: Iterable[dict],
+    branch_id: Optional[str],
+    *,
+    legacy_settings: Optional[dict] = None,
+) -> List[dict]:
+    """Keep only orders attributed to this branch.
+
+    Default: exact branch_id/cabang_id match (fail-closed for missing ids).
+    When Mode B legacy demand settings are present, attribution (historical
+    Accurate/null cutoff rules and optional Accurate Live branch map) runs via
+    services.mode_b_legacy_demand — never rewrites documents.
+    """
+    wanted = str(branch_id or "").strip()
+    if not wanted:
+        return []
+    if legacy_settings is not None:
+        from services.mode_b_legacy_demand import filter_orders_for_branch
+
+        return filter_orders_for_branch(orders, wanted, legacy_settings)
+    return [
+        order for order in orders
+        if _order_branch_id(order) == wanted
+    ]
+
+
+async def _r2_confirmed_delivery_qty(
+    db,
+    master_ids: List[str],
+    *,
+    branch_id: Optional[str] = None,
+) -> Dict[str, float]:
     """Delivered qty that already left R2 physical stock (net of reversals).
 
     The SALES_DELIVERY ledger movement is the proof. A legacy sales_deliveries
     row, surat jalan, or loading record does not reduce Qty Belum Terkirim.
     Reversed SALES_DELIVERY rows are excluded.
+
+    When branch_id is set, only ledger rows for that branch count — never mix
+    Yogyakarta deliveries into Semarang Belum Terkirim (or the reverse).
     """
     if not master_ids:
         return {}
+    query: Dict[str, Any] = {
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "master_item_id": {"$in": master_ids},
+    }
+    wanted_branch = str(branch_id or "").strip()
+    if wanted_branch:
+        query["branch_id"] = wanted_branch
     movements = await db[LEDGER_COLLECTION].find(
-        {
-            "movement_type": MOVEMENT_SALES_DELIVERY,
-            "master_item_id": {"$in": master_ids},
-        },
-        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1},
+        query,
+        {"_id": 0, "id": 1, "master_item_id": 1, "qty_delta": 1, "branch_id": 1},
     ).to_list(20000)
     movement_ids = [str(row.get("id") or "") for row in movements if row.get("id")]
     reversed_ids = set()
@@ -2999,6 +3480,65 @@ async def operational_physical_qty_by_item(
     return totals
 
 
+def _warehouse_engine_catalog_envelope(
+    *,
+    items: List[dict],
+    total: int,
+    page: int,
+    limit: int,
+    page_count: int,
+    master_item_count: int,
+    warehouse_count: int,
+    catalog_mode: str,
+    r2_on: bool,
+    standalone_on: bool,
+    selected_warehouse: Optional[dict],
+) -> dict:
+    """Shared Stock Saat Ini envelope for warehouse-engine reads (R2 or standalone).
+
+    Empty catalogs (no BARANG masters / no search hits) MUST still carry mode
+    flags so the UI does not fall back to compatibility chrome.
+    """
+    from services.warehouse_stock_standalone import MODE_WAREHOUSE_STANDALONE
+
+    selected = selected_warehouse or None
+    if selected_warehouse:
+        note = (
+            "Saldo buku gudang terpilih (boleh negatif)."
+            if catalog_mode == MODE_WAREHOUSE_STANDALONE
+            else "Saldo buku R2 gudang terpilih (boleh negatif)."
+        )
+    else:
+        note = (
+            "Saldo buku agregat cabang; rincian per gudang ada di warehouse_balances."
+            if catalog_mode == MODE_WAREHOUSE_STANDALONE
+            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
+        )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "page_count": page_count,
+        "master_item_count": master_item_count,
+        "warehouse_count": warehouse_count,
+        "stock_read_mode": catalog_mode,
+        "r2_authority_active": bool(r2_on),
+        "warehouse_stock_standalone": bool(standalone_on),
+        "physical_qty_scope": "WAREHOUSE" if selected else "BRANCH",
+        "branch_filter_affects_physical_qty": True,
+        "warehouse_filter_affects_physical_qty": bool(selected),
+        "effective_warehouse_id": (
+            str(selected.get("id") or "") if selected else None
+        ),
+        "effective_warehouse_code": (
+            (selected.get("code") or None) if selected else None
+        ),
+        "demand_scope": "BRANCH",
+        "physical_qty_note": note,
+    }
+
+
 async def list_physical_stock_catalog(
     db,
     *,
@@ -3010,18 +3550,29 @@ async def list_physical_stock_catalog(
 ) -> dict:
     """Operational Stock Saat Ini.
 
-    When r2_authority_active is FALSE: read-only compatibility adapter
-    (legacy physical state + orders + sales deliveries). No R2 writes.
+    When r2_authority_active is FALSE and warehouse_stock_standalone is OFF:
+    read-only compatibility adapter (legacy company physical + orders).
 
-    When r2_authority_active is TRUE: Stock fisik is the sum of R2 balances on
+    When r2_authority_active is TRUE, OR warehouse_stock_standalone is ON
+    (R2 still OFF): Stock fisik is the sum of physical_stock_balances on
     operational warehouses for ONE branch (default YGY). Never aggregates all
     branches. Optional warehouse_id further narrows within that branch.
+
+    Standalone mode reuses the same balance documents as R2 reads but never
+    activates R2 authority or multi-document transactions.
     """
     from services.r2_go_live import is_r2_authority_active
     from services.stock_compatibility_read import list_compatibility_stock_catalog
+    from services.warehouse_stock_standalone import (
+        MODE_WAREHOUSE_STANDALONE,
+        is_warehouse_stock_standalone_active,
+    )
 
-    if not await is_r2_authority_active(db):
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = False if r2_on else await is_warehouse_stock_standalone_active(db)
+    if not r2_on and not standalone_on:
         return await list_compatibility_stock_catalog(db, q=q, page=page, limit=limit)
+    catalog_mode = "r2" if r2_on else MODE_WAREHOUSE_STANDALONE
 
     all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
     requested = str(branch_id or "").strip()
@@ -3068,34 +3619,76 @@ async def list_physical_stock_catalog(
         if str(row.get("id") or "").strip() not in service_master_ids
     ]
     safe_page, safe_limit = _catalog_page(page, limit)
+    selected_warehouse_id = str(warehouse_id or "").strip()
+    selected_warehouse = next(
+        (
+            row for row in warehouses
+            if str(row.get("id") or "") == selected_warehouse_id
+        ),
+        None,
+    ) if selected_warehouse_id else None
     if not masters:
-        return {
-            "items": [],
-            "total": 0,
-            "page": safe_page,
-            "limit": safe_limit,
-            "page_count": 0,
-            "master_item_count": 0,
-            "warehouse_count": len(warehouses),
-        }
+        # Keep mode metadata identical to a non-empty catalog so the FE does not
+        # collapse warehouse chrome to compatibility when search/SERVICE yields 0.
+        return _warehouse_engine_catalog_envelope(
+            items=[],
+            total=0,
+            page=safe_page,
+            limit=safe_limit,
+            page_count=0,
+            master_item_count=0,
+            warehouse_count=len(warehouses),
+            catalog_mode=catalog_mode,
+            r2_on=r2_on,
+            standalone_on=standalone_on,
+            selected_warehouse=selected_warehouse,
+        )
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
-    orders = await db.orders.find({}, {"_id": 0}).to_list(20000)
+    from services.mode_b_legacy_demand import (
+        get_mode_b_legacy_demand_settings,
+        mongo_order_branch_clauses,
+    )
+    from services.stock_compatibility_read import (
+        BELUM_STATUS_UNVERIFIED,
+        aggregate_legacy_delivered_qty,
+    )
+
+    legacy_settings = await get_mode_b_legacy_demand_settings(db)
+    # Demand is branch-scoped. Default excludes unattributed orders; optional
+    # Mode B legacy policy may attribute historical Accurate/null ids to one
+    # configured org branch without rewriting documents.
+    order_query: Dict[str, Any] = {}
+    if operational_id:
+        order_query["$or"] = mongo_order_branch_clauses(operational_id, legacy_settings)
+    else:
+        # No resolvable branch → no inventable demand.
+        order_query = {"_id": {"$exists": False}}
+    orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
+    # Defense in depth: filter again in Python (cabang_id / stray docs / cutoff).
+    orders = _orders_for_branch(
+        orders, operational_id, legacy_settings=legacy_settings,
+    )
     progress = aggregate_operational_orders(
         orders, owners, exclude_master_ids=service_master_ids,
     )
     master_ids = [master["id"] for master in masters if master.get("id")]
-    delivered = await _r2_confirmed_delivery_qty(db, master_ids)
-    from services.r2_go_live import get_delivery_cutover_baseline
-
-    cutover = await get_delivery_cutover_baseline(db)
-    baseline_by_item = cutover.get("baseline_by_master_item_id") or {} if cutover.get("initialized") else {}
+    # Qty Belum Terkirim delivery proof = Compatibility live rules (confirmed
+    # shipment / qty_delivered fallback). Do NOT also add SALES_DELIVERY ledger
+    # here — ledger is Stock Fisik authority only (avoids double-count once Mode B
+    # confirmations also stamp order.shipments). R2 ledger path remains for R2.
+    if catalog_mode == "r2":
+        delivered = await _r2_confirmed_delivery_qty(
+            db, master_ids, branch_id=operational_id,
+        )
+        delivery_provenance: Dict[str, str] = {
+            mid: "r2_ledger" for mid in delivered
+        }
+    else:
+        delivered, delivery_provenance = aggregate_legacy_delivered_qty(
+            orders, [], owners,
+        )
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
-    warehouse_by_id = {
-        str(row.get("id")): row for row in warehouses if row.get("id")
-    }
-    selected_warehouse_id = str(warehouse_id or "").strip()
-    selected_warehouse = warehouse_by_id.get(selected_warehouse_id) if selected_warehouse_id else None
     balance_docs = []
     if warehouse_ids and master_ids:
         balance_docs = await db[BALANCE_COLLECTION].find(
@@ -3119,8 +3712,11 @@ async def list_physical_stock_catalog(
             "completion_unproven": False,
         }
         mid = master.get("id")
-        effective_delivered = _qty_num(delivered.get(mid, 0)) + _qty_num(baseline_by_item.get(str(mid), 0))
+        # Compatibility parity: delivered from proven shipments / qty_delivered only
+        # (standalone Mode B). R2 still uses ledger map above.
+        effective_delivered = _qty_num(delivered.get(mid, 0))
         completion_unproven = bool(demand.get("completion_unproven"))
+        delivery_unproven = str(delivery_provenance.get(str(mid) or mid, "") or "") == "unproven"
         completed_for_buckets = demand["completed_qty"]
         buckets = operational_availability(
             physical_qty=physical,
@@ -3128,9 +3724,11 @@ async def list_physical_stock_catalog(
             completed_qty=completed_for_buckets,
             r2_delivered_qty=effective_delivered,
         )
-        # Fail-closed siap kirim when process Add On completion cannot be proven.
+        # Fail-closed siap kirim when process Add On completion cannot be proven
+        # OR Compatibility delivery attribution is unproven for this master.
         belum_unverified = bool(
-            completion_unproven and _qty_num(completed_for_buckets) > 0
+            (completion_unproven and _qty_num(completed_for_buckets) > 0)
+            or (delivery_unproven and _qty_num(completed_for_buckets) > 0)
         )
         if belum_unverified:
             buckets = dict(buckets)
@@ -3148,6 +3746,7 @@ async def list_physical_stock_catalog(
         # independently of the branch aggregate. Missing balance ≠ verified zero.
         warehouse_balances = []
         scope_baselines: List[str] = []
+        candidate_movement_ids: List[str] = []
         for wh in warehouses:
             wid = str(wh.get("id") or "")
             if not wid:
@@ -3157,6 +3756,8 @@ async def list_physical_stock_catalog(
                 wh_qty = None
                 wh_baseline = BASELINE_UNRECONCILED
                 wh_label = BASELINE_UNRECONCILED_LABEL
+                wh_movement_id = None
+                wh_updated_at = None
             else:
                 wh_qty = _qty_num(doc.get("physical_qty"))
                 wh_baseline = (
@@ -3168,6 +3769,10 @@ async def list_physical_stock_catalog(
                     if wh_baseline == BASELINE_UNRECONCILED
                     else None
                 )
+                wh_movement_id = str(doc.get("last_movement_id") or "").strip() or None
+                wh_updated_at = doc.get("updated_at")
+                if wh_movement_id:
+                    candidate_movement_ids.append(wh_movement_id)
             scope_baselines.append(wh_baseline)
             warehouse_balances.append({
                 "warehouse_id": wid,
@@ -3179,6 +3784,9 @@ async def list_physical_stock_catalog(
                 "saldo_buku_negatif": bool(wh_qty is not None and wh_qty < 0),
                 "balance_present": doc is not None,
                 "physical_qty_is_book": True,
+                "updated_at": wh_updated_at,
+                "updated_by_name": None,
+                "_last_movement_id": wh_movement_id,
             })
         # Branch summary valid only when EVERY operational warehouse in scope has
         # a RECONCILED balance. Selected-warehouse view uses that gudang alone
@@ -3189,10 +3797,25 @@ async def list_physical_stock_catalog(
             baseline_status = BASELINE_UNRECONCILED
         else:
             baseline_status = BASELINE_RECONCILED
-        # Reconciled book is not enough when Belum Terkirim itself is unverified.
+        # Reconciled warehouse book + proven Belum (Compatibility rules).
         qty_tersedia_valid = (
             baseline_status == BASELINE_RECONCILED and not belum_unverified
         )
+        if belum_unverified:
+            if delivery_unproven:
+                tersedia_note = (
+                    "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
+                    "(bukti pengiriman ambigu / BELUM_TERVERIFIKASI)."
+                )
+            else:
+                tersedia_note = (
+                    "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
+                    "(proses Add On / completion tidak dapat dibuktikan)."
+                )
+        elif baseline_status != BASELINE_RECONCILED:
+            tersedia_note = "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi"
+        else:
+            tersedia_note = None
         row = {
             "master_item_id": master.get("id"),
             "item_code": master.get("item_code") or "",
@@ -3206,21 +3829,17 @@ async def list_physical_stock_catalog(
             # and Belum Terkirim is verified.
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
-            "qty_tersedia_note": (
-                "Qty Tersedia belum valid — Qty Belum Terkirim belum terverifikasi "
-                "(proses Add On / completion tidak dapat dibuktikan)."
-                if belum_unverified
-                else (
-                    "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi"
-                    if not qty_tersedia_valid
-                    else None
-                )
-            ),
+            "qty_tersedia_note": tersedia_note,
+            "delivery_provenance": delivery_provenance.get(str(mid) or mid),
+            # Provisional from balance stamps; replaced by the same final movement
+            # used for updated_by_name during page enrich (never master_items.updated_by).
             "updated_at": max(updated) if updated else None,
+            "updated_by_name": None,
+            "_candidate_movement_ids": candidate_movement_ids,
             "belum_terkirim_status": (
-                "BELUM_TERVERIFIKASI" if belum_unverified else "READY"
+                BELUM_STATUS_UNVERIFIED if belum_unverified else "READY"
             ),
-            "stock_read_mode": "r2",
+            "stock_read_mode": catalog_mode,
             "baseline_status": baseline_status,
             "baseline_label": (
                 BASELINE_UNRECONCILED_LABEL if baseline_status == BASELINE_UNRECONCILED else None
@@ -3243,48 +3862,170 @@ async def list_physical_stock_catalog(
                 "Qty Pesanan / Belum Terkirim adalah lingkup cabang; "
                 "bukan alokasi per gudang."
             )
-            row["qty_tersedia_note"] = (
+            scope_note = (
                 "Qty Tersedia memakai permintaan cabang terhadap saldo buku gudang ini "
                 "— bukan ketersediaan yang dialokasikan per gudang."
             )
+            if row.get("qty_tersedia_note"):
+                row["qty_tersedia_note"] = (
+                    f"{row['qty_tersedia_note']} {scope_note}"
+                ).strip()
+            else:
+                row["qty_tersedia_note"] = scope_note
         else:
             row["physical_qty_scope"] = "BRANCH"
-        if not qty_tersedia_valid:
-            row["qty_tersedia_note"] = (
-                (str(row.get("qty_tersedia_note") or "").strip() + " ").lstrip()
-                + "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi "
+        if not qty_tersedia_valid and baseline_status != BASELINE_RECONCILED:
+            existing_note = str(row.get("qty_tersedia_note") or "").strip()
+            recon_note = (
+                "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi "
                 "(Saldo Awal / Stock Opname)."
-            ).strip()
+            )
+            if recon_note not in existing_note:
+                row["qty_tersedia_note"] = (
+                    f"{existing_note} {recon_note}".strip()
+                )
         rows.append(row)
     total = len(rows)
     start = (safe_page - 1) * safe_limit
     page_count = (total + safe_limit - 1) // safe_limit if total else 0
-    return {
-        "items": rows[start:start + safe_limit],
-        "total": total,
-        "page": safe_page,
-        "limit": safe_limit,
-        "page_count": page_count,
-        "master_item_count": len(masters),
-        "warehouse_count": len(warehouses),
-        "stock_read_mode": "r2",
-        "r2_authority_active": True,
-        "physical_qty_scope": "WAREHOUSE" if selected_warehouse else "BRANCH",
-        "branch_filter_affects_physical_qty": True,
-        "warehouse_filter_affects_physical_qty": bool(selected_warehouse),
-        "effective_warehouse_id": (
-            str(selected_warehouse.get("id") or "") if selected_warehouse else None
-        ),
-        "effective_warehouse_code": (
-            (selected_warehouse.get("code") or None) if selected_warehouse else None
-        ),
-        "demand_scope": "BRANCH",
-        "physical_qty_note": (
-            "Saldo buku R2 gudang terpilih (boleh negatif)."
-            if selected_warehouse
-            else "Saldo buku R2 agregat cabang; rincian per gudang ada di warehouse_balances."
-        ),
-    }
+    page_items = rows[start:start + safe_limit]
+    # Batch enrich only the current page — avoid N+1 on the full catalog.
+    await _attach_last_stock_actors(db, page_items)
+    return _warehouse_engine_catalog_envelope(
+        items=page_items,
+        total=total,
+        page=safe_page,
+        limit=safe_limit,
+        page_count=page_count,
+        master_item_count=len(masters),
+        warehouse_count=len(warehouses),
+        catalog_mode=catalog_mode,
+        r2_on=r2_on,
+        standalone_on=standalone_on,
+        selected_warehouse=selected_warehouse,
+    )
+
+
+def _movement_sort_key(movement: dict) -> Tuple[str, str]:
+    """Newest posted movement wins; occurred_at then created_at, then id."""
+    return (
+        str(movement.get("occurred_at") or ""),
+        str(movement.get("created_at") or ""),
+        str(movement.get("id") or ""),
+    )
+
+
+def _actor_display_name(user: Optional[dict]) -> Optional[str]:
+    """Public display only — never password, token, or other private fields."""
+    if not user:
+        return None
+    name = str(user.get("name") or "").strip()
+    if name:
+        return name
+    email = str(user.get("email") or "").strip()
+    return email or None
+
+
+async def _attach_last_stock_actors(db, page_items: List[dict]) -> None:
+    """Attach updated_at + updated_by_name from the same final posted movement.
+
+    Uses balance.last_movement_id → ledger.actor_id → users display name.
+    Pending claims are never consulted. Unknown / missing identity → Tidak tercatat.
+    Mutates page_items in place and strips internal enrichment keys.
+    """
+    movement_ids: List[str] = []
+    for row in page_items:
+        for mid in row.get("_candidate_movement_ids") or []:
+            text = str(mid or "").strip()
+            if text:
+                movement_ids.append(text)
+        for wb in row.get("warehouse_balances") or []:
+            text = str(wb.get("_last_movement_id") or "").strip()
+            if text:
+                movement_ids.append(text)
+    unique_ids = list(dict.fromkeys(movement_ids))
+    movements_by_id: Dict[str, dict] = {}
+    if unique_ids:
+        found = await db[LEDGER_COLLECTION].find(
+            {"id": {"$in": unique_ids}},
+            {
+                "_id": 0,
+                "id": 1,
+                "actor_id": 1,
+                "occurred_at": 1,
+                "created_at": 1,
+                "warehouse_id": 1,
+                "master_item_id": 1,
+            },
+        ).to_list(len(unique_ids))
+        movements_by_id = {
+            str(doc.get("id")): doc for doc in found if doc.get("id")
+        }
+
+    actor_keys: List[str] = []
+    for doc in movements_by_id.values():
+        actor = str(doc.get("actor_id") or "").strip()
+        if actor:
+            actor_keys.append(actor)
+    unique_actors = list(dict.fromkeys(actor_keys))
+    users_by_key: Dict[str, dict] = {}
+    if unique_actors:
+        user_rows = await db.users.find(
+            {"$or": [
+                {"id": {"$in": unique_actors}},
+                {"email": {"$in": unique_actors}},
+            ]},
+            {"_id": 0, "id": 1, "name": 1, "email": 1},
+        ).to_list(max(len(unique_actors) * 2, 1))
+        for user in user_rows:
+            uid = str(user.get("id") or "").strip()
+            email = str(user.get("email") or "").strip()
+            if uid:
+                users_by_key[uid] = user
+            if email:
+                users_by_key[email] = user
+
+    for row in page_items:
+        candidate_ids = [
+            str(mid).strip()
+            for mid in (row.get("_candidate_movement_ids") or [])
+            if str(mid or "").strip()
+        ]
+        candidates = [
+            movements_by_id[mid] for mid in candidate_ids if mid in movements_by_id
+        ]
+        if candidates:
+            best = max(candidates, key=_movement_sort_key)
+            row["updated_at"] = (
+                best.get("occurred_at") or best.get("created_at") or row.get("updated_at")
+            )
+            actor_id = str(best.get("actor_id") or "").strip()
+            display = _actor_display_name(users_by_key.get(actor_id)) if actor_id else None
+            row["updated_by_name"] = display or LAST_STOCK_ACTOR_UNKNOWN
+        elif row.get("updated_at"):
+            # Legacy balance stamp without a provable posted movement actor.
+            row["updated_by_name"] = LAST_STOCK_ACTOR_UNKNOWN
+        else:
+            row["updated_by_name"] = None
+
+        for wb in row.get("warehouse_balances") or []:
+            wh_mid = str(wb.pop("_last_movement_id", None) or "").strip()
+            movement = movements_by_id.get(wh_mid) if wh_mid else None
+            if movement:
+                wb["updated_at"] = (
+                    movement.get("occurred_at")
+                    or movement.get("created_at")
+                    or wb.get("updated_at")
+                )
+                actor_id = str(movement.get("actor_id") or "").strip()
+                display = _actor_display_name(users_by_key.get(actor_id)) if actor_id else None
+                wb["updated_by_name"] = display or LAST_STOCK_ACTOR_UNKNOWN
+            elif wb.get("updated_at"):
+                wb["updated_by_name"] = LAST_STOCK_ACTOR_UNKNOWN
+            else:
+                wb["updated_by_name"] = None
+
+        row.pop("_candidate_movement_ids", None)
 
 
 async def _catalog_units(db, masters) -> dict:

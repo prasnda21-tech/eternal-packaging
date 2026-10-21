@@ -77,38 +77,111 @@ jobs:
       # Screen regressions stay in this job. The live orders comparison is
       # collected here and skips unless LIVE_ORDERS_SUMMARY=1. Finance modules
       # and the two pre-existing finance tests stay enabled.
+      #
+      # Isolation note (PR #606 CI hang at ~85%): combining modules that set
+      # DB_NAME / import server at collection time with the large
+      # test_financial_inventory_opening + confirm_delivered_sj_stock suites
+      # can stall xdist with no further output (same class of hang previously
+      # fixed for sales_invoice_edit_revision). Keep coverage; split suites
+      # into measured, fail-closed timeout steps. Never raise job timeout only.
       - name: Run compatibility and Sales PWA tests
         working-directory: backend
-        run: >-
-          python -m pytest -q
-          tests/test_stock_engine_v2.py
-          tests/test_stock_v2_off_state_compat.py
-          tests/test_line_product_replacement_concurrency.py
-          tests/test_sales_pwa_scope.py
-          tests/test_financial_inventory_opening.py
-          tests/test_inventory_issue_posting.py
-          tests/test_financial_dashboard.py
-          tests/test_nav_permissions.py
-          tests/test_sales_order_line_prices.py
-          tests/test_sales_order_item_images.py
-          tests/test_sales_order_list_read.py
-          tests/test_customer_tracking.py
-          tests/test_live_tracking_url.py
-          tests/test_customer_tracking_invoices.py
-          tests/test_tracking_delivery_signature.py
-          tests/test_sales_customer_credit.py
-          tests/test_sales_receipt_posting.py
-          tests/test_sales_receipt_payment_proof.py
-          tests/test_sales_invoices_and_receipts.py
-          tests/test_physical_stock_engine.py
-          tests/test_confirm_delivered_sj_stock.py
-          tests/test_operator_schedule.py
-          tests/test_division_tasks.py::test_line_tasks_copy_exact_line_screen_size
-          tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen
-          tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty
-          tests/test_production_dashboard_summary.py
-          tests/test_master_items.py
-          tests/test_quantity_invariants.py
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          echo "Starting compatibility/Sales PWA suite (xdist loadscope)"
+          set +e
+          timeout --signal=TERM --kill-after=15s 420s \
+            python -m pytest -q \
+            tests/test_stock_engine_v2.py \
+            tests/test_stock_v2_off_state_compat.py \
+            tests/test_line_product_replacement_concurrency.py \
+            tests/test_sales_pwa_scope.py \
+            tests/test_inventory_issue_posting.py \
+            tests/test_financial_dashboard.py \
+            tests/test_nav_permissions.py \
+            tests/test_sales_order_line_prices.py \
+            tests/test_sales_order_item_images.py \
+            tests/test_sales_order_list_read.py \
+            tests/test_customer_tracking.py \
+            tests/test_live_tracking_url.py \
+            tests/test_customer_tracking_invoices.py \
+            tests/test_tracking_delivery_signature.py \
+            tests/test_sales_customer_credit.py \
+            tests/test_sales_receipt_posting.py \
+            tests/test_sales_receipt_payment_proof.py \
+            tests/test_sales_invoices_and_receipts.py \
+            tests/test_physical_stock_engine.py \
+            tests/test_operator_schedule.py \
+            tests/test_division_tasks.py::test_line_tasks_copy_exact_line_screen_size \
+            tests/test_division_tasks.py::test_operator_task_keeps_each_allocation_screen \
+            tests/test_division_tasks.py::test_operator_task_keeps_screen_when_line_mirror_empty \
+            tests/test_production_dashboard_summary.py \
+            tests/test_master_items.py \
+            tests/test_quantity_invariants.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::compatibility/Sales PWA tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
+      # Pins DB_NAME at import and imports server; run serial + dedicated DB so
+      # it cannot stall the combined xdist job after ~85% with no output.
+      - name: Run financial inventory opening tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_financial_inventory_opening
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting isolated financial inventory opening suite (serial, dedicated DB_NAME)"
+          set +e
+          timeout --signal=TERM --kill-after=15s 240s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_financial_inventory_opening.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::financial inventory opening tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
+      # Imports server + pins DB_NAME; isolate so confirm-delivered HTTP paths
+      # cannot deadlock the shared xdist worker pool.
+      - name: Run confirm-delivered SJ stock tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_confirm_sj_stock_test
+          JWT_SECRET: ci-only-secret
+          APP_ENV: test
+        run: |
+          set -euo pipefail
+          echo "Starting isolated confirm-delivered SJ stock suite (serial, dedicated DB_NAME)"
+          set +e
+          timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_confirm_delivered_sj_stock.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::confirm-delivered SJ stock tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
       # Phase 2.2C revision suite must run alone: it sets DB_NAME at import and
       # previously hung the combined xdist job after ~87% with no further output.
       # Capture status AFTER timeout/pytest (never inside `if ! …; status=$?`).
@@ -455,6 +528,76 @@ jobs:
           python -m pytest -vv -n 0 --tb=short
           tests/test_r2_inventory_e2e.py
 
+  # Warehouse standalone engine must run on mongod WITHOUT --replSet (no multi-doc txn).
+  backend-warehouse-standalone:
+    name: Backend warehouse stock standalone
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      STANDALONE_MONGO_URL: mongodb://127.0.0.1:27018
+      APP_ENV: test
+      JWT_SECRET: ci-only-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Start MongoDB 7 standalone (no replica set)
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name mongo-eternal-standalone \
+            -p 27018:27017 \
+            mongo:7 --bind_ip_all
+          echo "Waiting for standalone mongod ping..."
+          for i in $(seq 1 60); do
+            if docker exec mongo-eternal-standalone mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' 2>/dev/null | grep -q 1; then
+              echo "mongod up"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "timeout waiting for mongod"
+              docker logs mongo-eternal-standalone || true
+              exit 1
+            fi
+            sleep 1
+          done
+          setName="$(docker exec mongo-eternal-standalone mongosh --quiet --eval 'db.hello().setName' 2>/dev/null || true)"
+          if [ -n "${setName}" ] && [ "${setName}" != "null" ] && [ "${setName}" != "undefined" ]; then
+            echo "Refusing RS topology for standalone suite: setName=${setName}"
+            exit 1
+          fi
+          echo "standalone topology confirmed (setName empty/null)"
+      - name: Install standalone-test dependencies
+        run: >-
+          python -m pip install
+          pytest==9.1.1
+          pytest-xdist==3.8.0
+          anyio==4.14.2
+          fastapi==0.110.1
+          httpx==0.28.1
+          pymongo==4.6.3
+          python-dotenv==1.2.2
+          motor==3.3.1
+          bcrypt==4.1.3
+          PyJWT==2.13.0
+          python-multipart==0.0.32
+          boto3==1.43.74
+          reportlab==4.1.0
+          requests==2.34.2
+          openpyxl==3.1.5
+          pdfplumber==0.11.10
+      - name: Run warehouse stock standalone suite
+        working-directory: backend
+        env:
+          STANDALONE_MONGO_URL: mongodb://127.0.0.1:27018
+          APP_ENV: test
+          JWT_SECRET: ci-only-secret
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_warehouse_stock_standalone.py
+          tests/test_confirm_delivered_standalone_retry.py
+
   backend-live-orders:
     name: Backend live orders summary
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live_orders }}
@@ -612,6 +755,14 @@ jobs:
           src/components/OperatorSplitPanel.screenSize.test.js
           src/mobile/workspaces/MobilePrintWorkspace.test.js
           src/mobile/components/MobileDesignFile.test.js
+          src/pages/ReportCatalog.test.js
+          src/lib/reportCatalog.test.js
+          src/pages/LaporanPenjualan.integration.test.js
+          src/pages/LaporanPembelian.wave2Polish.test.js
+          src/pages/LaporanPersediaan.test.js
+          src/pages/PricingCatalogSettings.test.js
+          src/lib/sidebarPresentation.test.js
+          src/components/AppShell.chatUnread.test.js
       - name: Build production frontend
         if: ${{ always() }}
         env:

@@ -157,6 +157,10 @@ PERMISSION_CATALOG = [
     ("Laporan", "reports.gaji_operator.view", "Lihat Gaji Operator"),
     ("Laporan", "reports.gaji_operator.repair_work_date", "Koreksi tanggal kerja output Gaji Operator"),
     ("Laporan", "reports.gaji_operator.repair_rate", "Koreksi snapshot tarif output Gaji Operator"),
+    ("Laporan", "reports.sales.view", "Lihat Laporan Penjualan"),
+    ("Laporan", "reports.sales.export", "Ekspor Laporan Penjualan"),
+    ("Laporan", "reports.purchase.view", "Lihat Laporan Pembelian"),
+    ("Laporan", "reports.purchase.export", "Ekspor Laporan Pembelian"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
@@ -188,6 +192,15 @@ PERMISSION_CATALOG = [
     ("Pengiriman", "delivery.deadline.edit", "Edit Deadline Pengiriman"),
     ("Pengiriman", "delivery.deadline.settings", "Atur Perhitungan Deadline Pengiriman"),
     ("Produksi", "production.route.edit", "Atur Proses Cetak / Non-Cetak per Line Item"),
+    ("Sentralisasi Cat", "paint.view", "Lihat Sentralisasi Cat"),
+    ("Sentralisasi Cat", "paint.stock.view", "Lihat Stok Cat"),
+    ("Sentralisasi Cat", "paint.stock.opening", "Input Stok Awal Cat"),
+    ("Sentralisasi Cat", "paint.stock.add", "Tambah Stok Cat"),
+    ("Sentralisasi Cat", "paint.transaction.create", "Catat Ambil/Kembali Cat"),
+    ("Sentralisasi Cat", "paint.transaction.correct", "Koreksi / Adjust Stok Cat"),
+    ("Sentralisasi Cat", "paint.report.view", "Lihat Laporan Penggunaan Cat"),
+    ("Sentralisasi Cat", "paint.report.export", "Ekspor Laporan Penggunaan Cat"),
+    ("Sentralisasi Cat", "paint.settings.manage", "Kelola Master Cat"),
     ("Catatan Produksi", "production_note.view", "Lihat Catatan Produksi"),
     ("Catatan Produksi", "production_note.create", "Tambah Catatan Produksi"),
     ("Catatan Produksi", "production_note.edit", "Edit Catatan Produksi"),
@@ -284,6 +297,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.dashboard.finance", "Menu Dashboard Keuangan"),
     ("Akses Menu", "nav.production", "Menu Produksi"),
     ("Akses Menu", "nav.production_schedule", "Menu Jadwal Produksi"),
+    ("Akses Menu", "nav.production.paint", "Menu Sentralisasi Cat"),
     ("Akses Menu", "nav.delivery_schedule", "Menu Jadwal Pengiriman"),
     ("Akses Menu", "nav.delivery_reschedule", "Menu Jadwal Pengiriman Ulang"),
     ("Akses Menu", "nav.driver_route", "Menu Rute Saya (legacy)"),
@@ -410,6 +424,21 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "sales.receipt.edit",
     # Destructive unmatched statement purge — never in admin/operator defaults.
     "cash_bank.reconcile.purge_unmatched",
+    # Sentralisasi Cat V1 — never auto-granted; assign via Hak Akses & Role.
+    "paint.view",
+    "paint.stock.view",
+    "paint.stock.opening",
+    "paint.stock.add",
+    "paint.transaction.create",
+    "paint.transaction.correct",
+    "paint.report.view",
+    "paint.report.export",
+    "paint.settings.manage",
+    "nav.production.paint",
+    # Report Center pembelian Wave 1 — default OFF; assign via Hak Akses & Role.
+    # Never implied by purchase_invoices.view.
+    "reports.purchase.view",
+    "reports.purchase.export",
 })
 
 DEFAULT_GRANT_PERMISSIONS = tuple(
@@ -455,6 +484,7 @@ NAV_MENU_ITEMS = (
     ("nav.spk", "SPK Antar Divisi", None),
     ("nav.production", "Produksi", None),
     ("nav.production_schedule", "Jadwal Produksi", "nav.production"),
+    ("nav.production.paint", "Sentralisasi Cat", "nav.production"),
     ("nav.delivery_schedule", "Jadwal Pengiriman", "nav.production"),
     ("nav.delivery_reschedule", "Jadwal Pengiriman Ulang", "nav.production"),
     ("nav.tasks", "Tugas Produksi", "nav.production"),
@@ -497,6 +527,7 @@ NAV_MENU_ITEMS = (
     ("nav.reports.shipment_status", "Status Pengiriman", "nav.reports"),
     ("nav.reports.gaji_operator", "Gaji Operator", "nav.reports"),
     ("nav.reports.order_prediction", "Prediksi Order", "nav.reports"),
+    ("nav.reports.sales", "Laporan Penjualan", "nav.reports"),
     ("nav.employee_administration", "Administrasi Karyawan", None),
     ("nav.employee_administration.mine", "Pengajuan Saya", "nav.employee_administration"),
     ("nav.employee_administration.create", "Buat Pengajuan", "nav.employee_administration"),
@@ -561,6 +592,9 @@ def derived_nav_permissions(existing: set) -> set:
     if "reports.order_prediction.view" in existing:
         nav.add("nav.reports")
         nav.add("nav.reports.order_prediction")
+    if "reports.sales.view" in existing:
+        nav.add("nav.reports")
+        nav.add("nav.reports.sales")
     if "delivery.schedule.view" in existing:
         nav.add("nav.production")
         nav.add("nav.delivery_schedule")
@@ -892,6 +926,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "product_request.feedback",
         "product_request.update_status",
         "crm.daily_report.view_all",
+        "reports.sales.view", "reports.sales.export",
         "dashboard.owner.view",
         # Recovered Purchasing + Inventory + HPP package (production-only role).
         # Local admin still uses ALL_PERMISSIONS; production non-holding roles

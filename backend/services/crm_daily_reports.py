@@ -24,6 +24,42 @@ STATUS_CUSTOMER_NEW = "New"
 STATUS_CUSTOMER_REPEAT = "Repeat"
 STATUS_ORDER_ORDER = "ORDER"
 STATUS_ORDER_NO = "TIDAK ORDER"
+STATUS_ORDER_PENGAJUAN_PO = "PENGAJUAN PO"
+STATUS_ORDER_PENGAJUAN_DITOLAK = "PENGAJUAN DITOLAK"
+STATUS_ORDER_FOLLOW_UP = "FOLLOW UP"
+
+STATUS_ORDER_OPTIONS = (
+    STATUS_ORDER_ORDER,
+    STATUS_ORDER_NO,
+    STATUS_ORDER_PENGAJUAN_PO,
+    STATUS_ORDER_PENGAJUAN_DITOLAK,
+    STATUS_ORDER_FOLLOW_UP,
+)
+
+# Exact Excel texts for Keterangan Tidak Order (plus UI-only Lainnya → free text).
+NO_ORDER_REASON_PRESETS = (
+    "Harga terlalu mahal",
+    "Slow Respon Customer",
+    "Deadline tidak cocok",
+    "Customer hanya tanya tanya",
+    "Desain belum selesai",
+    "Produk tidak ada di perusahaan",
+)
+NO_ORDER_REASON_LAINNYA = "Lainnya"
+
+COMPLAINT_CATEGORY_OPTIONS = (
+    "CUP CACAT",
+    "SABLON CACAT",
+    "SALAH DESIGN",
+    "SALAH CUP",
+    "KESALAHAN DEALING HARGA",
+    "Lainnya",
+)
+
+SALES_SOURCE_EXISTING = "existing"
+SALES_SOURCE_MANUAL = "manual"
+SALES_SOURCE_LEGACY = "legacy"
+MANUAL_SALES_MAX_LEN = 80
 
 _PUBLIC_FIELDS = (
     "id",
@@ -38,13 +74,17 @@ _PUBLIC_FIELDS = (
     "order_id",
     "po_number",
     "sales_master_id",
+    "sales_master_unmapped",
     "sales_label",
     "sales_user_id",
+    "sales_source",
+    "sales_note",
     "status_order",
     "no_order_reason_id",
     "no_order_reason",
     "has_complaint",
     "complaint_category_id",
+    "complaint_category",
     "complaint_description",
     "has_issue",
     "issue_category_id",
@@ -66,11 +106,13 @@ _EDITABLE = (
     "sales_master_id",
     "sales_label",
     "sales_user_id",
+    "sales_source",
     "status_order",
     "no_order_reason_id",
     "no_order_reason",
     "has_complaint",
     "complaint_category_id",
+    "complaint_category",
     "complaint_description",
     "has_issue",
     "issue_category_id",
@@ -118,10 +160,44 @@ def can_read_any(perms: set) -> bool:
 def public_doc(doc: Optional[dict]) -> Optional[dict]:
     if not doc:
         return None
-    return {k: doc.get(k) for k in _PUBLIC_FIELDS if k in doc or k in (
+    out = {k: doc.get(k) for k in _PUBLIC_FIELDS if k in doc or k in (
         "id", "report_date", "created_by_id", "created_by_name", "status_customer",
         "status_order", "has_complaint", "has_issue", "created_at", "updated_at",
     )}
+    # Legacy rows may omit complaint_category — expose empty string for readers.
+    if "complaint_category" not in out:
+        out["complaint_category"] = _text(doc.get("complaint_category"))
+    # Legacy free-text sales are not treated as verified existing users.
+    if "sales_source" not in out or not _text(out.get("sales_source")):
+        if _text(doc.get("sales_user_id")):
+            out["sales_source"] = SALES_SOURCE_EXISTING
+        elif _text(doc.get("sales_label")):
+            out["sales_source"] = SALES_SOURCE_LEGACY
+        else:
+            out["sales_source"] = ""
+    if "sales_note" not in out:
+        out["sales_note"] = _text(doc.get("sales_note"))
+    if "sales_master_id" not in out:
+        out["sales_master_id"] = _text(doc.get("sales_master_id")) or None
+    if "sales_master_unmapped" not in out:
+        out["sales_master_unmapped"] = bool(doc.get("sales_master_unmapped"))
+    if "no_order_reason_id" not in out:
+        out["no_order_reason_id"] = _text(doc.get("no_order_reason_id")) or None
+    if "complaint_category_id" not in out:
+        out["complaint_category_id"] = _text(doc.get("complaint_category_id")) or None
+    if "issue_category_id" not in out:
+        out["issue_category_id"] = _text(doc.get("issue_category_id")) or None
+    return out
+
+
+def excel_dropdown_meta() -> dict:
+    """Static Excel-aligned option lists for CRM Daily Report forms/filters."""
+    return {
+        "status_order_options": list(STATUS_ORDER_OPTIONS),
+        "no_order_reason_presets": list(NO_ORDER_REASON_PRESETS),
+        "no_order_reason_lainnya": NO_ORDER_REASON_LAINNYA,
+        "complaint_category_options": list(COMPLAINT_CATEGORY_OPTIONS),
+    }
 
 
 def _text(value: Any) -> str:
@@ -150,11 +226,60 @@ def _normalize_status_customer(value: Any) -> str:
 
 def _normalize_status_order(value: Any) -> str:
     raw = _text(value).upper().replace("_", " ")
-    if raw in ("ORDER", "YA ORDER"):
-        return STATUS_ORDER_ORDER
-    if raw in ("TIDAK ORDER", "NO ORDER", "TIDAK"):
-        return STATUS_ORDER_NO
-    raise HTTPException(400, "Status Order harus ORDER atau TIDAK ORDER")
+    aliases = {
+        "ORDER": STATUS_ORDER_ORDER,
+        "YA ORDER": STATUS_ORDER_ORDER,
+        "TIDAK ORDER": STATUS_ORDER_NO,
+        "NO ORDER": STATUS_ORDER_NO,
+        "TIDAK": STATUS_ORDER_NO,
+        "PENGAJUAN PO": STATUS_ORDER_PENGAJUAN_PO,
+        "PENGAJUAN DITOLAK": STATUS_ORDER_PENGAJUAN_DITOLAK,
+        "FOLLOW UP": STATUS_ORDER_FOLLOW_UP,
+        "FOLLOWUP": STATUS_ORDER_FOLLOW_UP,
+    }
+    if raw in aliases:
+        return aliases[raw]
+    raise HTTPException(
+        400,
+        "Status Order harus salah satu dari: ORDER, TIDAK ORDER, PENGAJUAN PO, "
+        "PENGAJUAN DITOLAK, FOLLOW UP",
+    )
+
+
+def _normalize_no_order_reason(value: Any, *, status_order: str) -> str:
+    """Store preset Excel text as-is, or free text for Lainnya / legacy."""
+    if status_order != STATUS_ORDER_NO:
+        return ""
+    reason = _text(value)
+    if not reason:
+        raise HTTPException(400, "Keterangan Tidak Order wajib diisi")
+    if reason == NO_ORDER_REASON_LAINNYA:
+        raise HTTPException(400, "Isi keterangan manual untuk pilihan Lainnya")
+    # Presets and free-text (Lainnya / legacy) are both accepted when non-empty.
+    return reason
+
+
+def _normalize_complaint_category(
+    value: Any,
+    *,
+    has_complaint: bool,
+    require_category: bool,
+) -> str:
+    if not has_complaint:
+        return ""
+    category = _text(value)
+    if not category:
+        if require_category:
+            raise HTTPException(400, "Jenis Komplain wajib dipilih")
+        return ""
+    # Exact match first; allow case-insensitive match to canonical labels.
+    if category in COMPLAINT_CATEGORY_OPTIONS:
+        return category
+    upper_map = {opt.upper(): opt for opt in COMPLAINT_CATEGORY_OPTIONS}
+    hit = upper_map.get(category.upper())
+    if hit:
+        return hit
+    raise HTTPException(400, "Jenis Komplain tidak valid")
 
 
 def _normalize_report_date(value: Any) -> str:
@@ -262,6 +387,88 @@ async def _wa_match_warning(db, whatsapp_norm: str, *, exclude_customer_id: str 
     return f"Nomor WhatsApp mirip pelanggan existing: {hit.get('name') or hit.get('id')}"
 
 
+async def list_sales_for_report(db, q: str = "") -> List[dict]:
+    """Canonical Sales options from sales_user_mapping → active sales_eternal users.
+
+    Falls back to active sales_eternal users when mapping is empty.
+    Does not invent labels or create users.
+    """
+    from services.sales_user_mapping import SALES_PWA_ROLE, exact_sales_label, load_mapping_doc
+
+    mapping = await load_mapping_doc(db)
+    entries = [row for row in (mapping.get("entries") or []) if isinstance(row, dict)]
+    uids = [
+        str(row.get("user_id") or "").strip()
+        for row in entries
+        if str(row.get("user_id") or "").strip()
+    ]
+    users_by_id: Dict[str, dict] = {}
+    if uids:
+        rows = await db.users.find(
+            {"id": {"$in": uids}},
+            {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "status": 1},
+        ).to_list(len(uids))
+        users_by_id = {str(row.get("id") or "").strip(): row for row in rows}
+
+    out: List[dict] = []
+    seen: set = set()
+    for row in entries:
+        label = exact_sales_label(row.get("label"))
+        uid = str(row.get("user_id") or "").strip()
+        if not label or not uid or uid in seen:
+            continue
+        user = users_by_id.get(uid)
+        if not user:
+            continue
+        if _text(user.get("status") or "active").lower() == "inactive":
+            continue
+        if _text(user.get("role")) != SALES_PWA_ROLE:
+            continue
+        seen.add(uid)
+        out.append({
+            "user_id": uid,
+            "label": label,
+            "name": _text(user.get("name")) or label,
+            "email": _text(user.get("email")),
+        })
+
+    if not out:
+        rows = await db.users.find(
+            {"role": SALES_PWA_ROLE, "status": {"$ne": "inactive"}},
+            {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "status": 1},
+        ).sort("name", 1).to_list(100)
+        for user in rows:
+            uid = str(user.get("id") or "").strip()
+            if not uid or uid in seen:
+                continue
+            name = _text(user.get("name")) or _text(user.get("email"))
+            if not name:
+                continue
+            seen.add(uid)
+            out.append({
+                "user_id": uid,
+                "label": name,
+                "name": name,
+                "email": _text(user.get("email")),
+            })
+
+    needle = _text(q).casefold()
+    if needle:
+        out = [
+            row for row in out
+            if needle in row["label"].casefold()
+            or needle in row["name"].casefold()
+            or needle in row["email"].casefold()
+        ]
+    out.sort(key=lambda row: row["label"].casefold())
+    return out
+
+
+async def _canonical_sales_map(db) -> Dict[str, dict]:
+    rows = await list_sales_for_report(db)
+    return {row["user_id"]: row for row in rows}
+
+
 async def _resolve_po(
     db,
     *,
@@ -270,11 +477,11 @@ async def _resolve_po(
     customer_id: str,
     user: dict,
     perms: set,
-) -> Tuple[Optional[str], Optional[str]]:
+) -> Optional[dict]:
     oid = _text(order_id)
     po = _text(po_number)
     if not oid and not po:
-        return None, None
+        return None
     if "po.view" not in perms and "sales_order.view" not in perms:
         raise HTTPException(403, "Tidak berwenang mereferensikan PO")
     query: Dict[str, Any] = {"cancelled": {"$ne": True}}
@@ -282,38 +489,187 @@ async def _resolve_po(
         query["id"] = oid
     elif po:
         query["po_number"] = po
-    order = await db.orders.find_one(query, {"_id": 0, "id": 1, "po_number": 1, "customer_id": 1, "customer": 1})
+    order = await db.orders.find_one(
+        query,
+        {
+            "_id": 0,
+            "id": 1,
+            "po_number": 1,
+            "customer_id": 1,
+            "customer": 1,
+            "sales": 1,
+            "sales_user_id": 1,
+        },
+    )
     if not order:
         raise HTTPException(400, "PO tidak ditemukan atau tidak valid")
     order_cid = _text(order.get("customer_id"))
     if customer_id and order_cid and order_cid != customer_id:
         raise HTTPException(400, "PO tidak sesuai dengan customer laporan")
-    return _text(order.get("id")) or None, _text(order.get("po_number")) or po or None
+    return order
 
 
-def _assert_payload_core(payload: dict) -> dict:
+async def _po_verified_sales(db, order: Optional[dict], canon: Dict[str, dict]) -> Tuple[Optional[str], Optional[str]]:
+    """Return (sales_user_id, sales_label) when PO sales can be verified canonically."""
+    if not order:
+        return None, None
+    uid = _text(order.get("sales_user_id"))
+    if uid and uid in canon:
+        return uid, canon[uid]["label"]
+    from services.sales_user_mapping import resolve_sales_user_id
+
+    mapped_uid, status = await resolve_sales_user_id(db, order.get("sales"))
+    if status == "matched" and mapped_uid and mapped_uid in canon:
+        return mapped_uid, canon[mapped_uid]["label"]
+    return None, None
+
+
+async def _resolve_sales_assignment(
+    db,
+    *,
+    status_order: str,
+    order: Optional[dict],
+    sales_user_id: Any,
+    sales_label: Any,
+    sales_source: Any,
+    existing: Optional[dict] = None,
+) -> Tuple[str, Optional[str], str, str]:
+    """Validate and normalize Sales for a CRM daily report.
+
+    Returns (sales_label, sales_user_id, sales_source, sales_note).
+    """
+    canon = await _canonical_sales_map(db)
+    payload_uid = _text(sales_user_id) or None
+    payload_label = _text(sales_label or "")
+    source = _text(sales_source).lower()
+    has_po = bool(order)
+    po_uid, po_label = await _po_verified_sales(db, order, canon)
+
+    if has_po and po_uid:
+        if source == SALES_SOURCE_MANUAL:
+            raise HTTPException(400, "Input Manual Sales tidak diizinkan ketika PO dipilih")
+        if payload_uid and payload_uid != po_uid:
+            raise HTTPException(400, "Sales laporan harus sesuai Sales pada PO yang dipilih")
+        return po_label or canon[po_uid]["label"], po_uid, SALES_SOURCE_EXISTING, ""
+
+    if has_po and not po_uid:
+        if source == SALES_SOURCE_MANUAL:
+            raise HTTPException(400, "Input Manual Sales tidak diizinkan ketika PO dipilih")
+        from services.sales_user_mapping import exact_sales_label
+
+        po_raw_label = exact_sales_label(order.get("sales"))
+        po_raw_uid = _text(order.get("sales_user_id")) or None
+        if po_raw_label:
+            # Unmapped PO sales: keep Accurate label; never silently substitute another Sales.
+            if payload_uid and payload_uid in canon and canon[payload_uid]["label"] != po_raw_label:
+                raise HTTPException(400, "Sales laporan harus sesuai Sales pada PO yang dipilih")
+            kept_uid = po_raw_uid if po_raw_uid and po_raw_uid in canon else None
+            kept_source = SALES_SOURCE_EXISTING if kept_uid else SALES_SOURCE_LEGACY
+            return (
+                po_raw_label,
+                kept_uid,
+                kept_source,
+                "Sales PO belum terpetakan ke daftar terverifikasi / Master Sales",
+            )
+        if not payload_uid or payload_uid not in canon:
+            raise HTTPException(
+                400,
+                "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar Eternal",
+            )
+        return (
+            canon[payload_uid]["label"],
+            payload_uid,
+            SALES_SOURCE_EXISTING,
+            "PO tidak memiliki Sales terverifikasi; Sales dipilih dari daftar",
+        )
+
+    # No PO — explicit manual only for TIDAK ORDER.
+    if source == SALES_SOURCE_MANUAL:
+        if status_order != STATUS_ORDER_NO:
+            raise HTTPException(400, "Input Manual Sales hanya untuk status TIDAK ORDER tanpa PO")
+        if payload_uid:
+            raise HTTPException(400, "Sales manual tidak boleh menyertakan sales_user_id")
+        if not payload_label:
+            raise HTTPException(400, "Nama Sales wajib diisi")
+        if len(payload_label) > MANUAL_SALES_MAX_LEN:
+            raise HTTPException(400, f"Nama Sales maksimal {MANUAL_SALES_MAX_LEN} karakter")
+        return payload_label, None, SALES_SOURCE_MANUAL, ""
+
+    if payload_uid:
+        if payload_uid not in canon:
+            raise HTTPException(400, "Sales tidak valid atau tidak ada dalam daftar Eternal")
+        return canon[payload_uid]["label"], payload_uid, SALES_SOURCE_EXISTING, ""
+
+    # Legacy preserve on edit: free-text snapshot without verified user id.
+    if existing is not None:
+        prev_label = _text(existing.get("sales_label"))
+        prev_uid = _text(existing.get("sales_user_id")) or None
+        prev_source = _text(existing.get("sales_source")).lower()
+        if not prev_source:
+            prev_source = SALES_SOURCE_LEGACY if prev_label and not prev_uid else (
+                SALES_SOURCE_EXISTING if prev_uid else ""
+            )
+        same_label = payload_label == prev_label or (not payload_label and prev_label)
+        if prev_label and not prev_uid and same_label and prev_source in (
+            SALES_SOURCE_LEGACY, SALES_SOURCE_MANUAL, "",
+        ):
+            if status_order != STATUS_ORDER_NO and prev_source == SALES_SOURCE_MANUAL:
+                raise HTTPException(
+                    400,
+                    "Sales manual lama tidak berlaku untuk status ini; pilih Sales dari daftar",
+                )
+            kept_source = prev_source or SALES_SOURCE_LEGACY
+            if status_order != STATUS_ORDER_NO and kept_source == SALES_SOURCE_MANUAL:
+                kept_source = SALES_SOURCE_LEGACY
+            return prev_label, None, kept_source, ""
+
+    if status_order == STATUS_ORDER_NO and payload_label and not payload_uid:
+        # Treat as manual when UI forgot sales_source but label is free text.
+        if len(payload_label) > MANUAL_SALES_MAX_LEN:
+            raise HTTPException(400, f"Nama Sales maksimal {MANUAL_SALES_MAX_LEN} karakter")
+        # Reject if label coincidentally matches a canonical label without user_id —
+        # force picking from dropdown to get sales_user_id.
+        matched = next((row for row in canon.values() if row["label"] == payload_label), None)
+        if matched:
+            raise HTTPException(400, "Pilih Sales dari daftar agar terverifikasi")
+        return payload_label, None, SALES_SOURCE_MANUAL, ""
+
+    raise HTTPException(400, "Sales / Siapa yang Menjual wajib dipilih dari daftar")
+
+
+def _assert_payload_core(payload: dict, *, require_complaint_category: bool = True) -> dict:
     status_customer = _normalize_status_customer(payload.get("status_customer"))
     status_order = _normalize_status_order(payload.get("status_order"))
     report_date = _normalize_report_date(payload.get("report_date"))
-    sales_master_id = _text(payload.get("sales_master_id")) or None
-    sales_label = _text(payload.get("sales_label") or payload.get("sales"))
     has_complaint = _boolish(payload.get("has_complaint"))
     has_issue = _boolish(payload.get("has_issue"))
-    complaint_category_id = _text(payload.get("complaint_category_id")) or None
-    issue_category_id = _text(payload.get("issue_category_id")) or None
-    no_order_reason_id = _text(payload.get("no_order_reason_id")) or None
     complaint_description = _text(payload.get("complaint_description"))
     issue_description = _text(payload.get("issue_description"))
-    no_order_reason = _text(payload.get("no_order_reason"))
     notes = _text(payload.get("notes"))
 
+    # Option ids + free-text snapshots resolved async (dynamic settings + legacy presets).
+    no_order_reason = _text(payload.get("no_order_reason"))
+    no_order_reason_id = _text(payload.get("no_order_reason_id")) or None
     if status_order != STATUS_ORDER_NO:
         no_order_reason = ""
         no_order_reason_id = None
-    if not has_complaint:
+
+    complaint_category = _text(payload.get("complaint_category"))
+    complaint_category_id = _text(payload.get("complaint_category_id")) or None
+    issue_category_id = _text(payload.get("issue_category_id")) or None
+
+    if has_complaint:
+        if not complaint_description:
+            raise HTTPException(400, "Deskripsi Komplain wajib diisi")
+    else:
         complaint_description = ""
+        complaint_category = ""
         complaint_category_id = None
-    if not has_issue:
+
+    if has_issue:
+        if not issue_description:
+            raise HTTPException(400, "Deskripsi Kendala wajib diisi")
+    else:
         issue_description = ""
         issue_category_id = None
 
@@ -321,17 +677,20 @@ def _assert_payload_core(payload: dict) -> dict:
         "report_date": report_date,
         "status_customer": status_customer,
         "status_order": status_order,
-        "sales_master_id": sales_master_id,
-        "sales_label": sales_label,
+        "sales_master_id": _text(payload.get("sales_master_id")) or None,
+        "sales_label": _text(payload.get("sales_label") or payload.get("sales")),
         "sales_user_id": _text(payload.get("sales_user_id")) or None,
+        "sales_source": _text(payload.get("sales_source")).lower(),
         "has_complaint": has_complaint,
+        "complaint_category": complaint_category,
         "complaint_category_id": complaint_category_id,
         "complaint_description": complaint_description,
+        "require_complaint_category": bool(require_complaint_category),
         "has_issue": has_issue,
         "issue_category_id": issue_category_id,
         "issue_description": issue_description,
-        "no_order_reason_id": no_order_reason_id,
         "no_order_reason": no_order_reason,
+        "no_order_reason_id": no_order_reason_id,
         "notes": notes,
         "order_id": _text(payload.get("order_id")),
         "po_number": _text(payload.get("po_number")),
@@ -342,65 +701,184 @@ def _assert_payload_core(payload: dict) -> dict:
     }
 
 
-async def _resolve_sales_for_report(db, payload_core: dict, user: dict) -> tuple:
-    """Return (sales_master_id, sales_label, sales_user_id). Dual-read legacy free text."""
+async def _payload_master_sales(db, payload_master_id: Optional[str], user: dict) -> Optional[dict]:
+    """Resolve active Master Sales for write input. Exact id only."""
+    mid = _text(payload_master_id)
+    if not mid:
+        return None
     from services import sales_master as sm
-    from services.sales_user_mapping import exact_sales_label, load_mapping_doc, mapping_dict_from_entries
+    from services.sales_user_mapping import exact_sales_label
 
-    mid = payload_core.get("sales_master_id")
-    legacy_label = exact_sales_label(payload_core.get("sales_label"))
-    if mid:
-        master = await sm.require_active_sales(db, mid, user=user)
-        label = exact_sales_label(master.get("sales_name"))
-        uid = str(master.get("user_id") or "").strip() or None
-        if not uid and label:
-            mapping = mapping_dict_from_entries((await load_mapping_doc(db)).get("entries"))
-            uid = str(mapping.get(label) or "").strip() or None
-        return master["id"], label, uid
-    # Legacy edit path: keep snapshot text when master id absent
-    if legacy_label:
-        return None, legacy_label, payload_core.get("sales_user_id")
-    raise HTTPException(400, "Sales wajib dipilih dari Master Sales")
+    master = await sm.require_active_sales(db, mid, user=user)
+    return {
+        "id": master["id"],
+        "label": exact_sales_label(master.get("sales_name")),
+        "user_id": _text(master.get("user_id")) or None,
+    }
 
 
-async def _resolve_crm_option(
+async def _attach_sales_master_ref(
     db,
     *,
-    category_key: str,
+    sales_label: str,
+    sales_user_id: Optional[str],
+    preferred_id: Optional[str] = None,
+) -> Tuple[Optional[str], bool]:
+    """Exact-only Master Sales attach. Returns (sales_master_id, unmapped)."""
+    from services import sales_master as sm
+    from services.sales_user_mapping import exact_sales_label
+
+    label = exact_sales_label(sales_label)
+    preferred = _text(preferred_id) or None
+    if preferred:
+        doc = await db[sm.COLLECTION].find_one({"id": preferred}, {"_id": 0})
+        if doc:
+            pub = sm.public_sales(doc)
+            pub_label = exact_sales_label(pub.get("sales_name"))
+            pub_uid = _text(pub.get("user_id")) or None
+            same_label = bool(label) and pub_label == label
+            same_uid = bool(sales_user_id) and pub_uid == sales_user_id
+            if same_label or same_uid or (not label and not sales_user_id):
+                # Inactive master still attaches for identity continuity on write only when
+                # preferred id matches the assigned sales; active preferred preferred.
+                if pub.get("active") or same_label or same_uid:
+                    return pub["id"], False
+    if sales_user_id:
+        doc = await db[sm.COLLECTION].find_one(
+            {"user_id": sales_user_id, "active": True}, {"_id": 0},
+        )
+        if doc:
+            return doc["id"], False
+    if label:
+        doc = await db[sm.COLLECTION].find_one(
+            {"name_key": sm.name_key(label), "active": True}, {"_id": 0},
+        )
+        if doc:
+            return doc["id"], False
+        return None, True
+    return None, False
+
+
+async def _resolve_no_order_fields(
+    db,
+    *,
+    status_order: str,
     option_id: Optional[str],
     free_text: str,
-    required: bool,
-    other_requires_text: bool,
-    legacy_ok: bool,
-) -> tuple:
-    """Return (option_id, snapshot_label_or_text)."""
+) -> Tuple[Optional[str], str]:
+    if status_order != STATUS_ORDER_NO:
+        return None, ""
     from services import crm_daily_report_settings as opts
 
     settings = await opts.load_settings(db)
     oid = _text(option_id) or None
     text = _text(free_text)
-    if not required:
-        return None, ""
     if oid:
-        opt = opts.option_by_id(settings, category_key, oid)
+        opt = opts.option_by_id(settings, "no_order_reasons", oid)
         if not opt:
-            raise HTTPException(400, f"Opsi {category_key} tidak ditemukan")
+            raise HTTPException(400, "Opsi alasan tidak order tidak ditemukan")
         if not opt.get("active"):
-            raise HTTPException(400, f"Opsi {category_key} nonaktif tidak dapat dipilih")
+            raise HTTPException(400, "Opsi alasan tidak order nonaktif tidak dapat dipilih")
         label = _text(opt.get("label"))
         if opt.get("is_other") or oid == opts.OTHER_OPTION_ID:
-            if other_requires_text and not text:
-                raise HTTPException(400, "Opsi Lainnya membutuhkan penjelasan")
-            return opts.OTHER_OPTION_ID, text or label
-        # Non-other: prefer free text if provided (extra note), else option label
+            if not text:
+                raise HTTPException(400, "Isi keterangan manual untuk pilihan Lainnya")
+            if text == NO_ORDER_REASON_LAINNYA:
+                raise HTTPException(400, "Isi keterangan manual untuk pilihan Lainnya")
+            return opts.OTHER_OPTION_ID, text
         return oid, text or label
-    if legacy_ok and text:
-        return None, text
-    raise HTTPException(400, f"Pilihan {category_key} wajib diisi")
+    # Legacy / main presets + free-text path
+    return None, _normalize_no_order_reason(text, status_order=status_order)
 
 
-async def build_normalized_doc(db, payload: dict, user: dict, perms: set) -> dict:
-    core = _assert_payload_core(payload)
+async def _resolve_complaint_fields(
+    db,
+    *,
+    has_complaint: bool,
+    option_id: Optional[str],
+    category_text: str,
+    description: str,
+    require_category: bool,
+) -> Tuple[Optional[str], str, str]:
+    if not has_complaint:
+        return None, "", ""
+    if not description:
+        raise HTTPException(400, "Deskripsi Komplain wajib diisi")
+    from services import crm_daily_report_settings as opts
+
+    settings = await opts.load_settings(db)
+    oid = _text(option_id) or None
+    category = _text(category_text)
+    if oid:
+        opt = opts.option_by_id(settings, "complaint_categories", oid)
+        if not opt:
+            raise HTTPException(400, "Opsi kategori komplain tidak ditemukan")
+        if not opt.get("active"):
+            raise HTTPException(400, "Opsi kategori komplain nonaktif tidak dapat dipilih")
+        label = _text(opt.get("label"))
+        if opt.get("is_other") or oid == opts.OTHER_OPTION_ID:
+            # Snapshot category keeps option label; detail stays in description.
+            return opts.OTHER_OPTION_ID, label or NO_ORDER_REASON_LAINNYA, description
+        return oid, label, description
+    if category:
+        # Fixed Excel presets (main) remain valid.
+        try:
+            normalized = _normalize_complaint_category(
+                category, has_complaint=True, require_category=True,
+            )
+            # Soft-link settings id when label matches an active option.
+            for opt in opts.active_options(settings, "complaint_categories"):
+                if _text(opt.get("label")) == normalized and not opt.get("is_other"):
+                    return opt["id"], normalized, description
+            return None, normalized, description
+        except HTTPException:
+            # Dynamic settings label (exact) beyond fixed presets.
+            for opt in opts.active_options(settings, "complaint_categories"):
+                if _text(opt.get("label")) == category and not opt.get("is_other"):
+                    return opt["id"], category, description
+            raise
+    if require_category:
+        raise HTTPException(400, "Jenis Komplain wajib dipilih")
+    return None, "", description
+
+
+async def _resolve_issue_fields(
+    db,
+    *,
+    has_issue: bool,
+    option_id: Optional[str],
+    description: str,
+) -> Tuple[Optional[str], str]:
+    if not has_issue:
+        return None, ""
+    if not description:
+        raise HTTPException(400, "Deskripsi Kendala wajib diisi")
+    from services import crm_daily_report_settings as opts
+
+    settings = await opts.load_settings(db)
+    oid = _text(option_id) or None
+    if not oid:
+        return None, description
+    opt = opts.option_by_id(settings, "issue_categories", oid)
+    if not opt:
+        raise HTTPException(400, "Opsi kategori kendala tidak ditemukan")
+    if not opt.get("active"):
+        raise HTTPException(400, "Opsi kategori kendala nonaktif tidak dapat dipilih")
+    if opt.get("is_other") or oid == opts.OTHER_OPTION_ID:
+        return opts.OTHER_OPTION_ID, description
+    return oid, description
+
+
+async def build_normalized_doc(
+    db,
+    payload: dict,
+    user: dict,
+    perms: set,
+    *,
+    require_complaint_category: bool = True,
+    existing: Optional[dict] = None,
+) -> dict:
+    core = _assert_payload_core(payload, require_complaint_category=require_complaint_category)
     uid = actor_user_id(user)
     if not uid:
         raise HTTPException(400, "User tidak memiliki id")
@@ -426,7 +904,7 @@ async def build_normalized_doc(db, payload: dict, user: dict, perms: set) -> dic
         if not whatsapp:
             raise HTTPException(400, "Customer master tidak memiliki nomor WhatsApp")
 
-    order_id, po_number = await _resolve_po(
+    order = await _resolve_po(
         db,
         order_id=core["order_id"],
         po_number=core["po_number"],
@@ -435,34 +913,77 @@ async def build_normalized_doc(db, payload: dict, user: dict, perms: set) -> dic
         perms=perms,
     )
 
-    sales_master_id, sales_label, sales_user_id = await _resolve_sales_for_report(db, core, user)
+    sales_label = core["sales_label"]
+    sales_user_id = core["sales_user_id"]
+    sales_source = core["sales_source"]
+    preferred_master_id = core["sales_master_id"]
+    master_in = await _payload_master_sales(db, preferred_master_id, user)
+    if master_in and not order:
+        # Master Sales feeds label/uid; sales_source rules remain those from main.
+        if sales_source == SALES_SOURCE_MANUAL:
+            sales_label = master_in["label"]
+            sales_user_id = None
+            sales_source = SALES_SOURCE_MANUAL
+            preferred_master_id = master_in["id"]
+        elif master_in["user_id"]:
+            sales_label = master_in["label"]
+            sales_user_id = master_in["user_id"]
+            sales_source = sales_source or SALES_SOURCE_EXISTING
+            preferred_master_id = master_in["id"]
+        elif core["status_order"] == STATUS_ORDER_NO and sales_source in ("", SALES_SOURCE_MANUAL):
+            # Active Master Sales without user mapping → manual-allowed snapshot.
+            sales_label = master_in["label"]
+            sales_user_id = None
+            sales_source = SALES_SOURCE_MANUAL
+            preferred_master_id = master_in["id"]
+        else:
+            sales_label = master_in["label"]
+            preferred_master_id = master_in["id"]
 
-    no_order_reason_id, no_order_reason = await _resolve_crm_option(
+    sales_label, sales_user_id, sales_source, sales_note = await _resolve_sales_assignment(
         db,
-        category_key="no_order_reasons",
+        status_order=core["status_order"],
+        order=order,
+        sales_user_id=sales_user_id,
+        sales_label=sales_label,
+        sales_source=sales_source,
+        existing=existing,
+    )
+    # PO wins identity; Master Sales attach is exact-only and never changes sales_source.
+    sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
+        db,
+        sales_label=sales_label,
+        sales_user_id=sales_user_id,
+        preferred_id=None if order else preferred_master_id,
+    )
+    if order:
+        # Still try exact attach from PO-resolved label/uid (including preferred if exact).
+        sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
+            db,
+            sales_label=sales_label,
+            sales_user_id=sales_user_id,
+            preferred_id=preferred_master_id,
+        )
+
+    no_order_reason_id, no_order_reason = await _resolve_no_order_fields(
+        db,
+        status_order=core["status_order"],
         option_id=core["no_order_reason_id"],
         free_text=core["no_order_reason"],
-        required=core["status_order"] == STATUS_ORDER_NO,
-        other_requires_text=True,
-        legacy_ok=True,
     )
-    complaint_category_id, complaint_description = await _resolve_crm_option(
+    complaint_category_id, complaint_category, complaint_description = await _resolve_complaint_fields(
         db,
-        category_key="complaint_categories",
+        has_complaint=core["has_complaint"],
         option_id=core["complaint_category_id"],
-        free_text=core["complaint_description"],
-        required=core["has_complaint"],
-        other_requires_text=True,
-        legacy_ok=True,
+        category_text=core["complaint_category"],
+        description=core["complaint_description"],
+        require_category=core["require_complaint_category"],
     )
-    issue_category_id, issue_description = await _resolve_crm_option(
+    issue_category_id, issue_description = await _resolve_issue_fields(
         db,
-        category_key="issue_categories",
+        has_issue=core["has_issue"],
         option_id=core["issue_category_id"],
-        free_text=core["issue_description"],
-        required=core["has_issue"],
-        other_requires_text=True,
-        legacy_ok=True,
+        description=core["issue_description"],
     )
 
     return {
@@ -474,16 +995,20 @@ async def build_normalized_doc(db, payload: dict, user: dict, perms: set) -> dic
         "outlet_name": outlet_name,
         "whatsapp": whatsapp,
         "whatsapp_norm": whatsapp_norm,
-        "order_id": order_id,
-        "po_number": po_number or "",
+        "order_id": _text((order or {}).get("id")) or None,
+        "po_number": _text((order or {}).get("po_number")) or "",
         "sales_master_id": sales_master_id,
+        "sales_master_unmapped": bool(sales_master_unmapped),
         "sales_label": sales_label,
         "sales_user_id": sales_user_id,
+        "sales_source": sales_source,
+        "sales_note": sales_note,
         "status_order": core["status_order"],
         "no_order_reason_id": no_order_reason_id,
         "no_order_reason": no_order_reason,
         "has_complaint": core["has_complaint"],
         "complaint_category_id": complaint_category_id,
+        "complaint_category": complaint_category,
         "complaint_description": complaint_description,
         "has_issue": core["has_issue"],
         "issue_category_id": issue_category_id,
@@ -607,7 +1132,7 @@ async def list_reports(
         .to_list(page_size)
     )
 
-    # Summary consistent with same filter scope
+    # Summary: ORDER / TIDAK ORDER only for those literals; other statuses counted separately.
     pipeline = [
         {"$match": query},
         {"$group": {
@@ -615,13 +1140,29 @@ async def list_reports(
             "total": {"$sum": 1},
             "order_count": {"$sum": {"$cond": [{"$eq": ["$status_order", STATUS_ORDER_ORDER]}, 1, 0]}},
             "no_order_count": {"$sum": {"$cond": [{"$eq": ["$status_order", STATUS_ORDER_NO]}, 1, 0]}},
+            "pengajuan_po_count": {
+                "$sum": {"$cond": [{"$eq": ["$status_order", STATUS_ORDER_PENGAJUAN_PO]}, 1, 0]}
+            },
+            "pengajuan_ditolak_count": {
+                "$sum": {"$cond": [{"$eq": ["$status_order", STATUS_ORDER_PENGAJUAN_DITOLAK]}, 1, 0]}
+            },
+            "follow_up_count": {
+                "$sum": {"$cond": [{"$eq": ["$status_order", STATUS_ORDER_FOLLOW_UP]}, 1, 0]}
+            },
             "issue_count": {"$sum": {"$cond": ["$has_issue", 1, 0]}},
             "complaint_count": {"$sum": {"$cond": ["$has_complaint", 1, 0]}},
         }},
     ]
     agg = await db[COLLECTION].aggregate(pipeline).to_list(1)
     summary = agg[0] if agg else {
-        "total": 0, "order_count": 0, "no_order_count": 0, "issue_count": 0, "complaint_count": 0,
+        "total": 0,
+        "order_count": 0,
+        "no_order_count": 0,
+        "pengajuan_po_count": 0,
+        "pengajuan_ditolak_count": 0,
+        "follow_up_count": 0,
+        "issue_count": 0,
+        "complaint_count": 0,
     }
     summary.pop("_id", None)
 
@@ -687,14 +1228,12 @@ async def update_report(db, report_id: str, payload: dict, user: dict, perms: se
         if key in payload:
             merged[key] = payload.get(key)
     # Preserve status_customer/customer linkage keys from payload when present
-    for key in (
-        "status_customer", "customer_id", "outlet_name", "whatsapp", "order_id", "po_number",
-        "sales_master_id", "sales_label", "sales", "sales_user_id", "status_order",
-        "no_order_reason_id", "no_order_reason",
-        "has_complaint", "complaint_category_id", "complaint_description",
-        "has_issue", "issue_category_id", "issue_description", "notes",
-        "report_date",
-    ):
+    for key in ("status_customer", "customer_id", "outlet_name", "whatsapp", "order_id", "po_number",
+                "sales_master_id", "sales_label", "sales", "sales_user_id", "sales_source",
+                "status_order", "no_order_reason_id", "no_order_reason",
+                "has_complaint", "complaint_category_id", "complaint_category", "complaint_description",
+                "has_issue", "issue_category_id", "issue_description", "notes",
+                "report_date"):
         if key in payload:
             merged[key] = payload.get(key)
 
@@ -704,7 +1243,19 @@ async def update_report(db, report_id: str, payload: dict, user: dict, perms: se
         raise HTTPException(403, "Tanggal laporan tidak boleh diubah ke hari lain saat edit same-day")
     merged["report_date"] = new_date
 
-    fields = await build_normalized_doc(db, merged, user, perms)
+    # Legacy complaint rows without category remain editable without forcing a category
+    # until the CRM supplies one. New complaints still require a category.
+    legacy_complaint = bool(doc.get("has_complaint")) and not _text(doc.get("complaint_category"))
+    will_complaint = _boolish(merged.get("has_complaint"))
+    require_cat = True
+    if will_complaint and legacy_complaint and not _text(merged.get("complaint_category")):
+        require_cat = False
+
+    fields = await build_normalized_doc(
+        db, merged, user, perms,
+        require_complaint_category=require_cat,
+        existing=doc,
+    )
     # Keep original creator snapshots
     fields["created_by_id"] = doc["created_by_id"]
     fields["created_by_name"] = doc.get("created_by_name") or actor_name(user)
@@ -767,6 +1318,31 @@ async def search_orders_for_report(
         ]
     rows = await db.orders.find(
         query,
-        {"_id": 0, "id": 1, "po_number": 1, "customer": 1, "customer_id": 1, "sales": 1, "order_date": 1},
+        {
+            "_id": 0,
+            "id": 1,
+            "po_number": 1,
+            "customer": 1,
+            "customer_id": 1,
+            "sales": 1,
+            "sales_user_id": 1,
+            "order_date": 1,
+        },
     ).sort([("order_date", -1), ("created_at", -1)]).to_list(max(1, min(int(limit or 20), 50)))
-    return rows
+    canon = await _canonical_sales_map(db)
+    out = []
+    for row in rows:
+        uid, label = await _po_verified_sales(db, row, canon)
+        item = {
+            "id": row.get("id"),
+            "po_number": row.get("po_number"),
+            "customer": row.get("customer"),
+            "customer_id": row.get("customer_id"),
+            "sales": row.get("sales") or "",
+            "sales_user_id": row.get("sales_user_id"),
+            "order_date": row.get("order_date"),
+            "sales_verified": bool(uid),
+            "sales_label_resolved": label or "",
+        }
+        out.append(item)
+    return out

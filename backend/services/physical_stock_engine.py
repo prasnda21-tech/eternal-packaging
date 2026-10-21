@@ -45,6 +45,7 @@ from services.product_stock_state import (
     STATUS_INITIALIZED,
     get_product_stock_state,
     require_product_stock_initialized,
+    require_product_stock_ready_for_receipt,
 )
 from services.product_unit_conversion import (
     get_product_unit_setting,
@@ -67,16 +68,36 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def legacy_pss_stock_out_writes_enabled(db) -> bool:
-    """PSS physical stock-out (PENGIRIMAN) writers run only while R2 authority is OFF.
+async def legacy_pss_company_stock_writes_enabled(db) -> bool:
+    """Company PSS product_stock_state writers run only in legacy mode.
 
-    When r2_authority_active is True, packing/loading/SJ/delivery-confirmed must not
-    claim or finalize product_stock_state. Business docs and STATUS_CETAK (Δ0) stay
-    on their existing gates; this helper only blocks legacy physical stock-out writes.
+    Exclusive ownership:
+    - R2 ON → R2 warehouse path only (no PSS dual-write).
+    - R2 OFF + warehouse_stock_standalone ON → standalone warehouse path only.
+    - Both OFF → legacy PSS remains authoritative for physical stock mutations.
+
+    STATUS_CETAK keeps a separate gate (is_operator_cetak_physical_stock_active)
+    so R2 ON can still convert Belum Dicetak → Sudah Dicetak on company PSS.
     """
     from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
 
-    return not await is_r2_authority_active(db)
+    if await is_r2_authority_active(db):
+        return False
+    if await is_warehouse_stock_standalone_active(db):
+        return False
+    return True
+
+
+async def legacy_pss_stock_out_writes_enabled(db) -> bool:
+    """PSS physical stock-out (PENGIRIMAN) writers: legacy only (not R2 / standalone).
+
+    When r2_authority_active or warehouse_stock_standalone is True, packing /
+    loading / SJ / delivery-confirmed must not claim or finalize
+    product_stock_state. Snapshot-enabled=True on old orders still respects
+    this exclusivity gate.
+    """
+    return await legacy_pss_company_stock_writes_enabled(db)
 
 
 async def attach_po_stock_snapshot(db, po_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -418,13 +439,19 @@ async def claim_durable_stock_event(
             raise HTTPException(404, f"Produk dengan ID '{mid}' tidak ditemukan.")
 
     aid = master.get("accurate_item_id")
-    await require_product_stock_initialized(db, mid)
+    m_type_early = str(movement_type or "").strip().upper()
+    # First stock-in may durable-bootstrap proven-new masters; outbound still
+    # requires an established initialized state (fail-closed for unknown legacy).
+    if m_type_early in (MOVEMENT_PENERIMAAN, "STOK_MASUK"):
+        await require_product_stock_ready_for_receipt(db, mid, user)
+    else:
+        await require_product_stock_initialized(db, mid)
 
     base_qty, factor, base_uom, tx_uom = await resolve_transaction_conversion(
         db, mid, transaction_qty, transaction_uom
     )
 
-    m_type = str(movement_type or "").strip().upper()
+    m_type = m_type_early
     is_p = bool(is_print) if is_print is not None else (
         str(production_process).strip().lower() != "non_print" if production_process else True
     )
@@ -944,15 +971,21 @@ async def handle_purchase_order_created(
     snapshot = po.get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_in_trigger") != "purchase_order":
         return []
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return []
 
     po_id = str(po.get("id") or "").strip()
     po_num = str(po.get("po_number") or "").strip()
     supplier = str(po.get("supplier") or "SUPPLIER").strip()
 
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     movements = []
     for line in po.get("lines") or []:
         mid = line.get("master_item_id")
         if not mid:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         line_id = line.get("line_id") or str(line.get("line_idx", 0))
         event_id = f"stock_in:purchase_order:{po_id}:{line_id}"
@@ -994,16 +1027,22 @@ async def handle_goods_receipt_created(
     snapshot = (po or {}).get("physical_stock_snapshot") or {}
     if not snapshot.get("enabled") or snapshot.get("stock_in_trigger") != "goods_receipt":
         return []
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return []
 
     rc_id = str(receipt.get("id") or "").strip()
     rc_num = str(receipt.get("receipt_number") or "").strip()
     po_num = str(receipt.get("po_number") or (po or {}).get("po_number") or "").strip()
     supplier = str(receipt.get("supplier") or (po or {}).get("supplier") or "SUPPLIER").strip()
 
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     movements = []
     for line in receipt.get("lines") or []:
         mid = line.get("master_item_id")
         if not mid:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         line_id = line.get("line_id") or str(line.get("line_idx", 0))
         event_id = f"stock_in:goods_receipt:{rc_id}:{line_id}"
@@ -1047,6 +1086,8 @@ async def handle_manual_receipt_created(
     settings = await get_physical_stock_settings(db)
     if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
         return []
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return []
 
     rc_id = str(
         receipt.get("accurate_receipt_id")
@@ -1058,10 +1099,14 @@ async def handle_manual_receipt_created(
     rc_num = str(receipt.get("receipt_number") or "").strip()
     supplier = str(receipt.get("supplier") or "SUPPLIER").strip() or "SUPPLIER"
 
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     movements: List[Dict[str, Any]] = []
     for line in receipt.get("lines") or []:
         mid = line.get("master_item_id")
         if not mid:
+            continue
+        if not await receipt_line_posts_physical_stock(db, line):
             continue
         line_id = line.get("line_id") or line.get("accurate_line_id") or str(line.get("line_idx", 0))
         event_id = f"stock_in:goods_receipt:{rc_id}:{line_id}"
@@ -1094,15 +1139,20 @@ async def handle_manual_receipt_created(
 async def precheck_manual_receipt_lines(
     db,
     lines: List[Dict[str, Any]],
+    user: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Fail-fast before persisting MANUAL receipt when Stock V2 goods_receipt is live."""
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     settings = await get_physical_stock_settings(db)
     if not settings.get("enabled") or settings.get("stock_in_trigger") != "goods_receipt":
         return
+    if not await legacy_pss_company_stock_writes_enabled(db):
+        return
     for line in lines or []:
         mid = line.get("master_item_id")
-        if mid:
-            await require_product_stock_initialized(db, mid)
+        if mid and await receipt_line_posts_physical_stock(db, line):
+            await require_product_stock_ready_for_receipt(db, mid, user)
 
 
 async def is_operator_cetak_physical_stock_active(
@@ -1115,9 +1165,17 @@ async def is_operator_cetak_physical_stock_active(
 
     Snapshot short-circuits first. When live_enabled is provided by the request
     path, settings are not re-read. When omitted, live settings are loaded once.
+
+    Warehouse-standalone owns physical stock when active (R2 still OFF) — skip
+    company PSS STATUS_CETAK dual-write. R2 ON leaves this gate unchanged
+    because is_warehouse_stock_standalone_active is False under R2.
     """
     snap = order.get("physical_stock_snapshot") or {}
     if not snap.get("enabled"):
+        return False
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
+    if await is_warehouse_stock_standalone_active(db):
         return False
     if live_enabled is None:
         settings = await get_physical_stock_settings(db)
@@ -1483,15 +1541,21 @@ async def precheck_goods_receipt_lines(
     db,
     lines: List[Dict[str, Any]],
     po_snapshot: Optional[Dict[str, Any]],
+    user: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Pre-checks that all master items in Receipt lines are initialized if physical stock is enabled with goods_receipt trigger."""
+    """Pre-checks BARANG lines are stock-ready when PO snapshot enables goods_receipt stock-in.
+
+    Proven brand-new masters may durable-bootstrap; unknown legacy fails closed.
+    """
+    from services.physical_stock import receipt_line_posts_physical_stock
+
     snap = po_snapshot or {}
     if not snap.get("enabled") or snap.get("stock_in_trigger") != "goods_receipt":
         return
     for line in lines:
         mid = line.get("master_item_id")
-        if mid:
-            await require_product_stock_initialized(db, mid)
+        if mid and await receipt_line_posts_physical_stock(db, line):
+            await require_product_stock_ready_for_receipt(db, mid, user)
 
 
 async def precheck_operator_progress(

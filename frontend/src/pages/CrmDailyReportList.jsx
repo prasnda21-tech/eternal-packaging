@@ -4,11 +4,13 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
   CRM_DAILY_REPORT_NEW_PATH,
+  STATUS_ORDER_OPTIONS,
   canAccessCrmDailyReport,
   canCreateCrmDailyReport,
   canViewAllCrmDailyReports,
   complaintLabel,
   issueLabel,
+  statusOrderBadgeClass,
   truncateText,
 } from "../lib/crmDailyReport";
 import {
@@ -74,7 +76,7 @@ function renderCell(key, row, idx, start) {
       return row.sales_label || "—";
     case "status_order":
       return (
-        <span className={`cdr-badge ${row.status_order === "ORDER" ? "is-order" : "is-no-order"}`}>
+        <span className={`cdr-badge ${statusOrderBadgeClass(row.status_order)}`}>
           {row.status_order}
         </span>
       );
@@ -319,8 +321,9 @@ export default function CrmDailyReportList() {
           <label>Status Order
             <select value={filters.status_order} onChange={(e) => { setPage(1); setFilters((f) => ({ ...f, status_order: e.target.value })); }} data-testid="cdr-filter-status-order">
               <option value="">Semua</option>
-              <option value="ORDER">ORDER</option>
-              <option value="TIDAK ORDER">TIDAK ORDER</option>
+              {STATUS_ORDER_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
             </select>
           </label>
           <label>Status Customer
@@ -361,6 +364,9 @@ export default function CrmDailyReportList() {
         <span>Total <strong>{summary.total ?? data.total ?? 0}</strong></span>
         <span>ORDER <strong>{summary.order_count ?? 0}</strong></span>
         <span>TIDAK ORDER <strong>{summary.no_order_count ?? 0}</strong></span>
+        <span>PENGAJUAN PO <strong>{summary.pengajuan_po_count ?? 0}</strong></span>
+        <span>PENGAJUAN DITOLAK <strong>{summary.pengajuan_ditolak_count ?? 0}</strong></span>
+        <span>FOLLOW UP <strong>{summary.follow_up_count ?? 0}</strong></span>
         <span>Kendala <strong>{summary.issue_count ?? 0}</strong></span>
       </div>
 
