@@ -155,13 +155,16 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       .forEach((id) => {
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
       });
+    expect(main.querySelector('[data-testid="input-sales"]')).toBeTruthy();
     const extra = container.querySelector('[data-testid="so-extra-fields"]');
     expect(extra).toBeTruthy();
-    ["input-sales", "input-created-by-user", "input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition"]
+    expect(extra.querySelector('[data-testid="input-sales"]')).toBeNull();
+    ["input-created-by-user", "input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition"]
       .forEach((id) => {
         expect(extra.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeNull();
       });
+    expect(container.querySelector('[data-testid="so-create-side-panel"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-order-summary"]').querySelector('[data-testid="input-notes"]')).toBeTruthy();
     expect(extra.querySelector('[data-testid="input-customer-phone"]')).toBeNull();
     expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();

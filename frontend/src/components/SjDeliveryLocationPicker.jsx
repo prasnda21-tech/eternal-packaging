@@ -46,6 +46,8 @@ export default function SjDeliveryLocationPicker({
   override = null,
   onOverrideChange,
   disabled = false,
+  /** Create form: hide large map / "Alamat Terpilih" panel; keep Maps link + apply. */
+  compact = false,
 }) {
   const poPicked = toPicked(poLocation);
   const overridePicked = toPicked(override);
@@ -205,7 +207,12 @@ export default function SjDeliveryLocationPicker({
   };
 
   return (
-    <div className="outlet-loc-form" data-testid="sj-titik-lokasi" style={{ marginTop: 16 }}>
+    <div
+      className={`outlet-loc-form${compact ? " is-compact" : ""}`}
+      data-testid="sj-titik-lokasi"
+      data-compact={compact ? "true" : "false"}
+      style={{ marginTop: compact ? 8 : 16 }}
+    >
       <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
         Titik Lokasi Pengiriman
       </label>
@@ -275,27 +282,42 @@ export default function SjDeliveryLocationPicker({
           {mapsMessage}
         </p>
       )}
-      <div>
-        <span className="muted small">Alamat Terpilih</span>
-        <p data-testid="sj-loc-selected">{displayed?.formatted_address || "Belum dipilih"}</p>
-      </div>
-      <OutletLocationMap
-        lat={displayed?.lat}
-        lng={displayed?.lng}
-        placeKey={displayed?.selection_key || displayed?.place_id || ""}
-        canEdit={canEdit}
-        onMove={(nextLat, nextLng) => {
-          if (!canEdit) return;
-          commitOverride({
-            ...(displayed || {}),
-            lat: nextLat,
-            lng: nextLng,
-            selection_key: `maps-link:${nextLat},${nextLng}`,
-          });
-        }}
-      />
-      {displayed?.lat != null && canEdit && (
-        <p className="muted small">Klik peta atau geser marker untuk set titik Surat Jalan. Koordinat terisi otomatis.</p>
+      {compact ? (
+        <p
+          className="muted small"
+          data-testid="sj-loc-selected"
+          style={{ margin: "6px 0 0", lineHeight: 1.35 }}
+          title={displayed?.formatted_address || ""}
+        >
+          {displayed
+            ? `${displayed.formatted_address}${Number.isFinite(displayed.lat) ? ` · ${displayed.lat.toFixed(5)}, ${displayed.lng.toFixed(5)}` : ""}`
+            : "Belum ada koordinat — tempel link lalu Gunakan Lokasi."}
+        </p>
+      ) : (
+        <>
+          <div>
+            <span className="muted small">Alamat Terpilih</span>
+            <p data-testid="sj-loc-selected">{displayed?.formatted_address || "Belum dipilih"}</p>
+          </div>
+          <OutletLocationMap
+            lat={displayed?.lat}
+            lng={displayed?.lng}
+            placeKey={displayed?.selection_key || displayed?.place_id || ""}
+            canEdit={canEdit}
+            onMove={(nextLat, nextLng) => {
+              if (!canEdit) return;
+              commitOverride({
+                ...(displayed || {}),
+                lat: nextLat,
+                lng: nextLng,
+                selection_key: `maps-link:${nextLat},${nextLng}`,
+              });
+            }}
+          />
+          {displayed?.lat != null && canEdit && (
+            <p className="muted small">Klik peta atau geser marker untuk set titik Surat Jalan. Koordinat terisi otomatis.</p>
+          )}
+        </>
       )}
       {overrideActive && (
         <button
