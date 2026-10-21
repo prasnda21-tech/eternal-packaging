@@ -825,8 +825,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       container.querySelector('[data-testid="so-tab-items"]').click();
     });
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
-    expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
-    expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
+    expect(container.querySelector('[data-testid="so-side-ship-plan"]').textContent).toContain("Ekspedisi Uji Draf");
+    expect(container.querySelector('[data-testid="input-address"]').value).toBe("Jl. Malioboro 10");
     expect(container.querySelector('[data-testid="input-customer"]').value).toBe("GOHO COFFEE");
     expect(container.querySelector('[data-testid="line-qty-0"]').value).toBe("1000");
     expect(container.querySelector('[data-testid="line-price-0"]').value).toBe("700");
@@ -836,9 +836,69 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     });
     expect(container.querySelector('[data-testid="input-expedition"]').value).toBe("Ekspedisi Uji Draf");
     expect(container.querySelector('[data-testid="input-address"]').value).toBe("Jl. Malioboro 10");
-    expect(container.querySelector(".so-ship-card").textContent).toContain("Ekspedisi Uji Draf");
-    expect(container.querySelector(".so-ship-card").textContent).toContain("Jl. Malioboro 10");
+    expect(container.querySelector('[data-testid="so-side-ship-plan"]').textContent).toContain("Ekspedisi Uji Draf");
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe(poBefore);
+  });
+
+  test("F-05 ship-tab phone/address keep focus across continuous character typing", async () => {
+    await openCreate();
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-ship"]').click();
+    });
+    const phone = container.querySelector('[data-testid="input-customer-phone"]');
+    const address = container.querySelector('[data-testid="input-address"]');
+    expect(phone).toBeTruthy();
+    expect(address).toBeTruthy();
+
+    await act(async () => {
+      phone.focus();
+    });
+    expect(document.activeElement).toBe(phone);
+
+    let built = "";
+    for (const ch of "ABCDE123") {
+      built += ch;
+      await act(async () => {
+        setNativeValue(phone, built);
+      });
+      expect(document.activeElement).toBe(phone);
+      expect(phone.value).toBe(built);
+      expect(container.querySelector('[data-testid="input-customer-phone"]')).toBe(phone);
+    }
+
+    await act(async () => {
+      address.focus();
+    });
+    expect(document.activeElement).toBe(address);
+    built = "";
+    for (const ch of "ABCDE123") {
+      built += ch;
+      await act(async () => {
+        setNativeValue(address, built);
+      });
+      expect(document.activeElement).toBe(address);
+      expect(address.value).toBe(built);
+      expect(container.querySelector('[data-testid="input-address"]')).toBe(address);
+    }
+
+    expect(container.querySelector('[data-testid="so-side-customer-phone"]').textContent).toContain("ABCDE123");
+    expect(container.querySelector('[data-testid="so-side-customer-address"]').textContent).toContain("ABCDE123");
+  });
+
+  test("side ringkasan shows empty-price warning and order value", async () => {
+    await openCreate();
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-qty-0"]'), "10");
+      setNativeValue(container.querySelector('[data-testid="line-price-0"]'), "");
+    });
+    expect(container.querySelector('[data-testid="so-side-price-warning"]')).toBeTruthy();
+    // Empty price → nilai pesanan belum dihitung (em dash), warning tetap tampil.
+    expect(container.querySelector('[data-testid="so-side-order-total"]').textContent).toMatch(/—|Rp/);
+    await act(async () => {
+      setNativeValue(container.querySelector('[data-testid="line-price-0"]'), "500");
+    });
+    expect(container.querySelector('[data-testid="so-side-price-warning"]')).toBeNull();
+    expect(container.querySelector('[data-testid="so-side-order-total"]').textContent).toContain("5.000");
   });
 });
 

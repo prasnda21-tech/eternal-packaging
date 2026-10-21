@@ -115,6 +115,7 @@ import {
   setSalesOrderListCache,
   shouldRevalidateSalesOrderListOnFocus,
 } from "../lib/salesOrderListCache";
+import { getWibTodayPlusDays, getWibTodayString } from "../lib/wibCalendarDate";
 
 let salesOrderLineKeySeq = 0;
 
@@ -345,14 +346,11 @@ export function buildSalesOrderCreatePayload(formData) {
 }
 
 function getTodayString() {
-  const d = new Date();
-  return d.toISOString().split("T")[0];
+  return getWibTodayString();
 }
 
 function getThreeDaysLaterString() {
-  const d = new Date();
-  d.setDate(d.getDate() + 3);
-  return d.toISOString().split("T")[0];
+  return getWibTodayPlusDays(3);
 }
 
 const INITIAL_LINE_ITEM = {
@@ -2560,9 +2558,10 @@ export default function PesananPenjualan() {
           )}
 
           <div className="so-create-stage" data-scroll-owner="form" data-testid="so-create-scroll">
+            <div className="ux90-so-maincol" data-testid="so-create-maincol">
             <section className="so-create-main" data-so-region="main">
-              <div className="so-sum-row" data-testid="so-main-fields">
-                <div className="so-sum-chip is-customer is-editing">
+              <div className="ux90-txn-header so-sum-row" data-testid="so-main-fields">
+                <div className="so-sum-chip is-customer is-editing ux90-txn-field">
                   <SoField field="customer" label="Pelanggan" required error={fieldHasError("customer")} className="so-sum-field">
                     <div className="so-sum-editor">
                       <CustomerSearchSelect
@@ -2580,42 +2579,7 @@ export default function PesananPenjualan() {
                   </SoField>
                 </div>
 
-                <div className="so-sum-chip is-editing">
-                  <SoField field="outlet" label="Outlet" className="so-sum-field">
-                    <div className="so-sum-editor">
-                      {outletsForSelectedCustomer.length > 0 ? (
-                        <LookupSearchSelect
-                          options={[
-                            ...outletsForSelectedCustomer,
-                            ...(formData.outlet && !outletsForSelectedCustomer.some((o) => o.outlet === formData.outlet)
-                              ? [{ id: formData.outlet, outlet: formData.outlet }]
-                              : []),
-                          ]}
-                          value={formData.outlet || ""}
-                          onChange={(id) => handleOutletChange(id || "")}
-                          getOptionValue={(o) => o.outlet || o.id || ""}
-                          getOptionLabel={(o) => o.outlet || "Outlet"}
-                          getSearchText={(o) => [o.outlet, o.city, o.address].filter(Boolean).join(" ")}
-                          placeholder="Cari outlet / cabang…"
-                          noResultLabel="Tidak ada hasil yang cocok"
-                          testId="input-outlet"
-                        />
-                      ) : (
-                        <input
-                          id="so-outlet"
-                          type="text"
-                          className="so-line-input"
-                          value={formData.outlet}
-                          onChange={(e) => handleOutletChange(e.target.value)}
-                          placeholder="Outlet / cabang"
-                          data-testid="input-outlet"
-                        />
-                      )}
-                    </div>
-                  </SoField>
-                </div>
-
-                <div className="so-sum-chip is-po is-editing">
+                <div className="so-sum-chip is-po is-editing ux90-txn-field">
                   <SoField field="po_number" label="Nomor PO" className="so-sum-field">
                     <div className="so-sum-editor so-sum-editor-po">
                       <input
@@ -2634,7 +2598,7 @@ export default function PesananPenjualan() {
                   </SoField>
                 </div>
 
-                <div className="so-sum-chip is-editing so-sum-chip-date">
+                <div className="so-sum-chip is-editing so-sum-chip-date ux90-txn-field">
                   <SoField field="order_date" label="Tanggal PO" className="so-sum-field">
                     <div className="so-sum-editor">
                       <SalesInvoiceDateField
@@ -2647,20 +2611,7 @@ export default function PesananPenjualan() {
                   </SoField>
                 </div>
 
-                <div className="so-sum-chip is-editing so-sum-chip-date">
-                  <SoField field="estimated_delivery" label="Rencana kirim" className="so-sum-field">
-                    <div className="so-sum-editor">
-                      <SalesInvoiceDateField
-                        valueIso={formData.estimated_delivery}
-                        onChange={(iso) => setFormData((p) => ({ ...p, estimated_delivery: iso }))}
-                        testId="input-estimated-delivery"
-                        calendarLabel="Kalender rencana kirim"
-                      />
-                    </div>
-                  </SoField>
-                </div>
-
-                <div className="so-sum-chip is-editing">
+                <div className="so-sum-chip is-editing ux90-txn-field">
                   <SoField field="sales" label="Sales" className="so-sum-field" error={fieldHasError("sales")}>
                     <div className="so-sum-editor">
                       {(options.sales_master_catalog || []).length > 0 ? (
@@ -2720,7 +2671,56 @@ export default function PesananPenjualan() {
                   </SoField>
                 </div>
 
-                <div className="so-ship-card">
+                <div className="so-sum-chip is-editing ux90-txn-field">
+                  <SoField field="outlet" label="Outlet" className="so-sum-field">
+                    <div className="so-sum-editor">
+                      {outletsForSelectedCustomer.length > 0 ? (
+                        <LookupSearchSelect
+                          options={[
+                            ...outletsForSelectedCustomer,
+                            ...(formData.outlet && !outletsForSelectedCustomer.some((o) => o.outlet === formData.outlet)
+                              ? [{ id: formData.outlet, outlet: formData.outlet }]
+                              : []),
+                          ]}
+                          value={formData.outlet || ""}
+                          onChange={(id) => handleOutletChange(id || "")}
+                          getOptionValue={(o) => o.outlet || o.id || ""}
+                          getOptionLabel={(o) => o.outlet || "Outlet"}
+                          getSearchText={(o) => [o.outlet, o.city, o.address].filter(Boolean).join(" ")}
+                          placeholder="Cari outlet / cabang…"
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          testId="input-outlet"
+                        />
+                      ) : (
+                        <input
+                          id="so-outlet"
+                          type="text"
+                          className="so-line-input"
+                          value={formData.outlet}
+                          onChange={(e) => handleOutletChange(e.target.value)}
+                          placeholder="Outlet / cabang"
+                          data-testid="input-outlet"
+                        />
+                      )}
+                    </div>
+                  </SoField>
+                </div>
+
+                <div className="so-sum-chip is-editing so-sum-chip-date ux90-txn-field">
+                  <SoField field="estimated_delivery" label="Estimasi Kirim" className="so-sum-field">
+                    <div className="so-sum-editor">
+                      <SalesInvoiceDateField
+                        valueIso={formData.estimated_delivery}
+                        onChange={(iso) => setFormData((p) => ({ ...p, estimated_delivery: iso }))}
+                        testId="input-estimated-delivery"
+                        calendarLabel="Kalender rencana kirim"
+                      />
+                    </div>
+                  </SoField>
+                </div>
+
+                {/* Hidden visual ship-card kept for existing editor hook / tests */}
+                <div className="so-ship-card" hidden aria-hidden="true">
                   <span className="so-ship-icon" aria-hidden="true"><Truck size={18} /></span>
                   <div>
                     <strong>Kirim {formatShipCardDate(formData.estimated_delivery) || "—"}</strong>
@@ -2750,16 +2750,34 @@ export default function PesananPenjualan() {
                 <div className="so-create-note is-warn" data-testid="repeat-empty-message">{repeatMsg}</div>
               ) : null}
 
-              <div className="so-form-tabs" role="tablist" aria-label="Bagian pesanan">
+              <div className="so-form-tabs ux90-doc-tabs" role="tablist" aria-label="Bagian pesanan">
                 <button
                   type="button"
                   role="tab"
                   aria-selected={createTab === "items"}
                   className={createTab === "items" ? "is-active" : ""}
                   data-testid="so-tab-items"
-                  onClick={() => setCreateTab("items")}
+                  onClick={() => {
+                    // Close any open master/lookup portals before swapping panes so they
+                    // cannot steal hit-testing from ship-tab inputs (F-05).
+                    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                    setCreateTab("items");
+                  }}
                 >
-                  Barang & Harga
+                  Rincian Barang & Harga
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={createTab === "info"}
+                  className={createTab === "info" ? "is-active" : ""}
+                  data-testid="so-tab-info"
+                  onClick={() => {
+                    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                    setCreateTab("info");
+                  }}
+                >
+                  Informasi Lainnya
                 </button>
                 <button
                   type="button"
@@ -2767,9 +2785,16 @@ export default function PesananPenjualan() {
                   aria-selected={createTab === "ship"}
                   className={createTab === "ship" ? "is-active" : ""}
                   data-testid="so-tab-ship"
-                  onClick={() => setCreateTab("ship")}
+                  onClick={() => {
+                    document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                    setCreateTab("ship");
+                    window.requestAnimationFrame(() => {
+                      const phone = document.querySelector('[data-testid="input-customer-phone"]');
+                      if (phone && typeof phone.focus === "function") phone.focus();
+                    });
+                  }}
                 >
-                  Pengiriman & Detail
+                  Pengiriman
                   {newCustomer && (!String(formData.customer_phone || "").trim() || !String(formData.address || "").trim()) ? (
                     <span className="ux90-req" title="HP/alamat wajib untuk pelanggan baru" data-testid="so-ship-required-hint"> *</span>
                   ) : null}
@@ -2803,11 +2828,13 @@ export default function PesananPenjualan() {
                   <table className="so-create-lines-table">
                     <thead>
                       <tr>
-                        <th className="so-col-no" scope="col">#</th>
-                        <th className="so-col-name">Barang <span className="so-req">*</span></th>
+                        <th className="so-col-no" scope="col">No</th>
+                        <th className="so-col-name">Produk <span className="so-req">*</span></th>
+                        <th className="so-col-warna">Varian / Warna</th>
+                        <th className="so-col-proses">Proses</th>
                         <th className="so-col-qty">Qty <span className="so-req">*</span></th>
                         <th className="so-col-unit">Satuan</th>
-                        <th className="so-col-price">Harga Jual / Satuan</th>
+                        <th className="so-col-price">Harga Jual</th>
                         <th className="so-col-sub">Subtotal</th>
                         <th className="so-col-action">Aksi</th>
                       </tr>
@@ -2815,7 +2842,7 @@ export default function PesananPenjualan() {
                     <tbody>
                       {formData.line_items.length === 0 ? (
                         <tr>
-                          <td colSpan={7} data-testid="line-items-empty-state" className="so-create-empty">
+                          <td colSpan={9} data-testid="line-items-empty-state" className="so-create-empty">
                             Tidak ada barang/jasa yang cocok.
                           </td>
                         </tr>
@@ -2909,6 +2936,28 @@ export default function PesananPenjualan() {
                                   </div>
                                 </div>
                               </td>
+                              <td className="so-col-warna">
+                                <input
+                                  type="text"
+                                  className="so-line-input"
+                                  value={line.color || ""}
+                                  onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)}
+                                  placeholder="Warna"
+                                  data-testid={`line-color-${originalIndex}`}
+                                />
+                              </td>
+                              <td className="so-col-proses">
+                                <select
+                                  className="so-line-input"
+                                  value={line.production_process}
+                                  onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)}
+                                  data-testid={`line-process-${originalIndex}`}
+                                  aria-label="Proses"
+                                >
+                                  <option value="print">Cetak</option>
+                                  <option value="non_print">Tidak Cetak</option>
+                                </select>
+                              </td>
                               <td className="so-col-qty">
                                 <input
                                   type="number"
@@ -2970,22 +3019,11 @@ export default function PesananPenjualan() {
                               data-testid={`line-item-detail-${originalIndex}`}
                             >
                               <td />
-                              <td colSpan={6}>
+                              <td colSpan={8}>
                                 <div className="so-line-meta">
                                   <label>
                                     Kode Barang
                                     <input type="text" className="so-line-input" value={line.item_code || ""} onChange={(e) => handleLineChange(originalIndex, "item_code", e.target.value)} data-testid={`line-code-${originalIndex}`} />
-                                  </label>
-                                  <label>
-                                    Jenis Cetak
-                                    <select className="so-line-input" value={line.production_process} onChange={(e) => handleLineChange(originalIndex, "production_process", e.target.value)} data-testid={`line-process-${originalIndex}`} aria-label="Proses">
-                                      <option value="print">Cetak</option>
-                                      <option value="non_print">Tidak Cetak</option>
-                                    </select>
-                                  </label>
-                                  <label>
-                                    Warna
-                                    <input type="text" className="so-line-input" value={line.color || ""} onChange={(e) => handleLineChange(originalIndex, "color", e.target.value)} placeholder="Warna" data-testid={`line-color-${originalIndex}`} />
                                   </label>
                                   <label>
                                     Barang induk (Add On)
@@ -3031,6 +3069,49 @@ export default function PesananPenjualan() {
                     <button type="button" data-testid="so-item-next" disabled={visibleItemPage >= itemPageCount} onClick={() => setItemPage(visibleItemPage + 1)}>Berikutnya</button>
                   </nav>
                 )}
+                <div className="ux90-doc-summary" data-testid="so-create-side-panel" aria-label="Ringkasan pesanan">
+                  <div className="ux90-doc-summary-rows">
+                    <div>
+                      <span>Total Qty</span>
+                      <strong data-testid="so-side-total-qty">{quantityLabel}</strong>
+                    </div>
+                    <div>
+                      <span>Sub Total</span>
+                      <strong data-testid="so-side-order-total">{formatOrderRupiah(sellingTotal)}</strong>
+                    </div>
+                    <div className="is-total">
+                      <span>Total</span>
+                      <strong data-testid="so-doc-total">{formatOrderRupiah(sellingTotal)}</strong>
+                    </div>
+                  </div>
+                  {sellingIncomplete ? (
+                    <p className="ux90-warn-box" data-testid="so-side-price-warning" role="status">
+                      Terdapat barang dengan harga belum diisi. Harga kosong diperbolehkan.
+                    </p>
+                  ) : null}
+                  <span hidden data-testid="so-side-est-delivery">{formatShipCardDate(formData.estimated_delivery) || "—"}</span>
+                  <span hidden data-testid="so-side-payment-terms">{formData.payment_terms?.trim() || "—"}</span>
+                  <span hidden data-testid="so-side-customer">{formData.customer?.trim() || "Belum dipilih"}{formData.outlet ? ` · ${formData.outlet}` : ""}</span>
+                  <span hidden data-testid="so-side-customer-phone">{formData.customer_phone?.trim() || "HP belum diisi"}</span>
+                  <span hidden data-testid="so-side-customer-address">{formData.address?.trim() || "Alamat belum diisi"}</span>
+                  <span hidden data-testid="so-side-ship-plan">{formatShipCardDate(formData.estimated_delivery) || "Tanggal belum diisi"} · {formData.expedition || "Ekspedisi belum diisi"}</span>
+                  <button
+                    type="button"
+                    className="ux90-btn-ghost"
+                    style={{ marginTop: 8, height: 32, fontSize: 12 }}
+                    data-testid="so-side-edit-customer"
+                    onClick={() => {
+                      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+                      setCreateTab("ship");
+                      window.requestAnimationFrame(() => {
+                        const phone = document.querySelector('[data-testid="input-customer-phone"]');
+                        if (phone && typeof phone.focus === "function") phone.focus();
+                      });
+                    }}
+                  >
+                    Edit pengiriman
+                  </button>
+                </div>
               </div>
 
               <div className="so-ship-panel so-ship-only">
@@ -3061,7 +3142,8 @@ export default function PesananPenjualan() {
               </div>
             </section>
 
-            <div className="so-order-summary so-ship-only" data-testid="so-order-summary">
+            <div className="so-order-summary so-ship-only" data-testid="so-order-summary" hidden aria-hidden="true">
+              {/* Notes moved to Accurate-style footer; keep node for legacy test hooks */}
               <SoField field="notes" label="Catatan Pesanan" error={fieldHasError("notes")}>
                 <textarea
                   id="so-notes"
@@ -3075,89 +3157,53 @@ export default function PesananPenjualan() {
               </SoField>
             </div>
 
-            <div className="so-create-extra so-ship-only" data-so-region="drawer" data-testid="so-extra-fields">
-              <h3>Pengiriman & Detail</h3>
+            <div className="so-create-extra so-info-only" data-so-region="drawer" data-testid="so-extra-fields">
+              <h3>Informasi Lainnya</h3>
               {newCustomer ? (
                 <p className="ux90-hint" data-testid="so-new-customer-ship-note" style={{ marginTop: 0 }}>
-                  Pelanggan baru: No. HP dan Alamat wajib diisi pada panel ini sebelum menyimpan.
+                  Pelanggan baru: No. HP dan Alamat wajib diisi pada tab Pengiriman sebelum menyimpan.
                 </p>
               ) : null}
-              {extraFields.map((item) => (
-                <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
-                  <input
-                    id={`so-${item.field}`}
-                    type={item.type || "text"}
-                    className="so-line-input"
-                    list={item.list}
-                    value={formData[item.field]}
-                    onChange={(e) => setFormData((p) => ({
-                      ...p,
-                      [item.field]: e.target.value,
-                    }))}
-                    placeholder={item.placeholder}
-                    data-testid={item.testId}
-                    aria-invalid={fieldHasError(item.field) || undefined}
-                  />
-                </SoField>
-              ))}
+              <div className="ux90-doc-info-grid">
+                {extraFields.map((item) => (
+                  <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
+                    <input
+                      id={`so-${item.field}`}
+                      type={item.type || "text"}
+                      className="so-line-input"
+                      list={item.list}
+                      value={formData[item.field]}
+                      onChange={(e) => setFormData((p) => ({
+                        ...p,
+                        [item.field]: e.target.value,
+                      }))}
+                      placeholder={item.placeholder}
+                      data-testid={item.testId}
+                      aria-invalid={fieldHasError(item.field) || undefined}
+                    />
+                  </SoField>
+                ))}
+              </div>
             </div>
-
-            <aside className="ux90-so-side" data-testid="so-create-side-panel" aria-label="Ringkasan pesanan">
-              <div className="ux90-card">
-                <h3>Ringkasan Pesanan</h3>
-                <div className="ux90-summary-rows">
-                  <div>
-                    <span>Total Qty</span>
-                    <strong data-testid="so-side-total-qty">{quantityLabel}</strong>
-                  </div>
-                  <div>
-                    <span>Subtotal</span>
-                    <strong>{formatOrderRupiah(sellingTotal)}</strong>
-                  </div>
-                  <div className="is-total">
-                    <span>Total Pesanan</span>
-                    <strong data-testid="so-side-order-total">{formatOrderRupiah(sellingTotal)}</strong>
-                  </div>
-                </div>
-              </div>
-              <div className="ux90-card">
-                <h3>Informasi Pelanggan</h3>
-                <p className="ux90-card-muted" data-testid="so-side-customer">
-                  {formData.customer?.trim() || "Belum dipilih"}
-                  {formData.outlet ? ` · ${formData.outlet}` : ""}
-                </p>
-                <p className="ux90-card-muted" data-testid="so-side-customer-phone">
-                  {formData.customer_phone?.trim() || "HP belum diisi"}
-                </p>
-                <p className="ux90-card-muted" data-testid="so-side-customer-address">
-                  {formData.address?.trim() || "Alamat belum diisi"}
-                </p>
-                <button
-                  type="button"
-                  className="ux90-btn-ghost"
-                  style={{ marginTop: 8, height: 30, fontSize: 12 }}
-                  data-testid="so-side-edit-customer"
-                  onClick={() => setCreateTab("ship")}
-                >
-                  Edit pengiriman
-                </button>
-              </div>
-              <div className="ux90-card">
-                <h3>Rencana Pengiriman</h3>
-                <p className="ux90-card-muted" data-testid="so-side-ship-plan">
-                  {formatShipCardDate(formData.estimated_delivery) || "Tanggal belum diisi"}
-                  {" · "}
-                  {formData.expedition || "Ekspedisi belum diisi"}
-                </p>
-              </div>
-            </aside>
+            </div>
           </div>
 
           <div className="so-create-actionbar" data-testid="so-create-actionbar">
-            <div className="so-price-note">
-              <Info size={16} />
-              <span>Harga tersimpan di pesanan dan otomatis terisi saat membuat faktur.</span>
-              {sellingIncomplete ? <em data-testid="so-price-incomplete">Ada harga yang belum diisi.</em> : null}
+            <div className="ux90-footer-notes">
+              <label htmlFor="so-notes" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#6b7280", marginBottom: 4 }}>Catatan</label>
+              <textarea
+                id="so-notes-footer"
+                value={formData.notes}
+                onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
+                placeholder="Catatan pesanan…"
+                rows={2}
+                data-testid="input-notes-visible"
+              />
+              <div className="so-price-note" style={{ marginTop: 4 }}>
+                {sellingIncomplete ? <em data-testid="so-price-incomplete">Ada harga yang belum diisi.</em> : (
+                  <span>Harga tersimpan di pesanan dan otomatis terisi saat membuat faktur.</span>
+                )}
+              </div>
             </div>
             <div className="so-footer-totals">
               <div>

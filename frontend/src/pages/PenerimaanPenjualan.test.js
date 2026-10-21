@@ -127,17 +127,18 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Soft-cancel only/);
   });
 
-  test("PenerimaanPenjualan modal has accessible close controls, testids, escape listener, and backdrop close", () => {
+  test("PenerimaanPenjualan create is full-page with close controls and escape listener", () => {
     expect(pageSrc).toMatch(/btn-close-receipt-modal/);
     expect(pageSrc).toMatch(/btn-cancel-receipt-modal/);
-    expect(pageSrc).toMatch(/receipt-create-modal/);
-    expect(pageSrc).toMatch(/overflowY:\s*"auto"/);
-    expect(pageSrc).toMatch(/minHeight:\s*0/);
-    expect(pageSrc).toMatch(/flex:\s*"0 0 auto"/);
+    expect(pageSrc).toMatch(/receipt-create-page/);
+    expect(pageSrc).toMatch(/data-create-mode=\{isModalOpen \? "full-page" : "list"\}/);
+    expect(pageSrc).toMatch(/ux90-sr-page/);
+    expect(pageSrc).not.toMatch(/aria-modal="true"/);
     expect(pageSrc).toMatch(/className="fs-section-scroll-safe"/);
     expect(pageSrc).toMatch(/handleCloseCreateModal/);
     expect(pageSrc).toMatch(/Escape/);
     expect(pageSrc).toMatch(/no-eligible-invoices-hint/);
+    expect(pageSrc).toMatch(/Buat Penerimaan Penjualan/);
   });
 
   describe("Critical Penerimaan Invoice Selector Eligibility Tests", () => {
