@@ -45,7 +45,7 @@ const RAIL_LABELS = {
   keuangan: "Keuangan",
   employeeAdmin: "Administrasi Karyawan",
   hrPayroll: "HR & Payroll",
-  reports: "Laporan Operasional",
+  reports: "Laporan",
   settings: "Pengaturan",
 };
 
@@ -152,6 +152,8 @@ const TILE_ICONS = {
   "route-optimizer": Route,
   "accurate-creators": Users,
   "sales-user-mapping": Users,
+  "sales-master": Users,
+  "crm-daily-report-options": ClipboardList,
   audit: ScrollText,
 };
 
@@ -356,8 +358,10 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => {
+    // Close on path or query change so same-path leaves (e.g. /laporan?view=saved)
+    // cannot leave a flyout/scrim overlay covering content.
     setActiveSidebarMenu(null);
-  }, [location.pathname]);
+  }, [location.pathname, location.search]);
 
   useEffect(() => {
     setMenuSearchOpen(false);

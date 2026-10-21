@@ -20,7 +20,7 @@ export const MENU_SEARCH_GROUP_LABELS = Object.freeze({
   keuangan: "Keuangan",
   employeeAdmin: "Administrasi Karyawan",
   hrPayroll: "HR & Payroll",
-  reports: "Laporan Operasional",
+  reports: "Laporan",
   settings: "Pengaturan",
 });
 

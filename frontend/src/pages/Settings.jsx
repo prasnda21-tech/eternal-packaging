@@ -43,6 +43,8 @@ import HrPayrollSettings from "../components/HrPayrollSettings";
 import SalesActivitySettings from "../components/SalesActivitySettings";
 import RouteOptimizerSettings from "../components/RouteOptimizerSettings";
 import SalesUserMappingSettings from "../components/SalesUserMappingSettings";
+import SalesMasterSettings from "../components/SalesMasterSettings";
+import CrmDailyReportOptionsSettings from "../components/CrmDailyReportOptionsSettings";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
@@ -101,6 +103,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
 
   const [form, setForm] = useState(() => ({
     email: initial?.email || "",
+    notification_email: initial?.notification_email || "",
     name: initial?.name || "",
     nickname: initial?.nickname || "",
     phone: initial?.phone || "",
@@ -180,6 +183,18 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
         payload.role = form.role;
         payload.joined_at = form.joined_at || null;
         payload.notes = form.notes || null;
+        const notifyRaw = (form.notification_email || "").trim().toLowerCase();
+        if (notifyRaw) {
+          // Lightweight client check; backend re-validates strictly.
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyRaw)) {
+            setErr("Format email notifikasi tidak valid");
+            setBusy(false);
+            return;
+          }
+          payload.notification_email = notifyRaw;
+        } else {
+          payload.notification_email = "";
+        }
       }
       if (showPerms) {
         const confirmKeys = confirmPackageKeysForSave(
@@ -238,6 +253,33 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                 value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
                 data-testid="emp-email"/>
             </FormField>
+            <div className="emp-notify-email-block" data-testid="emp-notification-email-block">
+              <FormField
+                id="emp-notification-email-field"
+                label="Email Notifikasi"
+                isRequired={false}
+                value={form.notification_email}
+              >
+                <input
+                  type="text"
+                  inputMode="email"
+                  disabled={busy}
+                  value={form.notification_email}
+                  onChange={(e) => setForm((f) => ({ ...f, notification_email: e.target.value }))}
+                  placeholder="opsional — gmail / yahoo / outlook / dll"
+                  data-testid="emp-notification-email"
+                  autoComplete="off"
+                />
+              </FormField>
+              <p className="hint" style={{ margin: "2px 0 0" }} data-testid="emp-notification-email-hint">
+                Digunakan untuk menerima pemberitahuan operasional. Tidak mengubah email login.
+              </p>
+              {!String(form.notification_email || "").trim() && (
+                <p className="hint" style={{ margin: "2px 0 0" }} data-testid="emp-notification-email-empty-hint">
+                  Kosong = tidak ada notifikasi email yang dikirim ke pengguna ini.
+                </p>
+              )}
+            </div>
           <label>Role
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
               disabled={busy || !canManageRoles} data-testid="emp-role">
@@ -2396,6 +2438,8 @@ const SETTINGS_NAV_ITEMS = [
   { id: "route-optimizer", label: "Optimasi Rute", description: "Pengaturan rute", Icon: Route, tone: "blue", testid: "settings-tab-route-optimizer" },
   { id: "accurate-creators", label: "Pembuat PO Accurate", description: "Mapping createdBy", Icon: Users, tone: "sky", testid: "settings-tab-accurate-creators" },
   { id: "sales-user-mapping", label: "Mapping Sales Accurate", description: "Label Accurate → users.id", Icon: Users, tone: "teal", testid: "settings-tab-sales-user-mapping" },
+  { id: "sales-master", label: "Master Sales", description: "Katalog Sales operasional multi-cabang", Icon: Users, tone: "teal", testid: "settings-tab-sales-master" },
+  { id: "crm-daily-report-options", label: "Dropdown Laporan Harian CRM", description: "Alasan / komplain / kendala", Icon: ClipboardList, tone: "cyan", testid: "settings-tab-crm-daily-report-options" },
   { id: "audit", label: "Audit Log", description: "Riwayat perubahan", Icon: ScrollText, tone: "slate", testid: "settings-tab-audit" },
 ];
 
@@ -2462,6 +2506,10 @@ export default function Settings() {
   const canEditAccurateCreators = canManageUsers || hasPerm("accurate.import") || hasPerm("permissions.manage");
   const canViewSalesUserMapping = hasPerm("settings.sales_user_mapping.view") || hasPerm("settings.sales_user_mapping.manage") || hasPerm("permissions.manage");
   const canEditSalesUserMapping = hasPerm("settings.sales_user_mapping.manage") || hasPerm("permissions.manage");
+  const canViewSalesMaster = hasPerm("settings.sales_master.view") || hasPerm("settings.sales_master.manage") || hasPerm("permissions.manage");
+  const canEditSalesMaster = hasPerm("settings.sales_master.manage") || hasPerm("permissions.manage");
+  const canViewCrmDailyReportOptions = hasPerm("settings.crm_daily_report.view") || hasPerm("settings.crm_daily_report.manage") || hasPerm("permissions.manage");
+  const canEditCrmDailyReportOptions = hasPerm("settings.crm_daily_report.manage") || hasPerm("permissions.manage");
   const canViewSidebarAccess = canManagePerms;
   const canViewWage = hasPerm("settings.operator_wage.view") || hasPerm("settings.operator_wage.manage") || hasPerm("reports.gaji_operator.view");
   const canEditWage = hasPerm("settings.operator_wage.manage");
@@ -2513,6 +2561,8 @@ export default function Settings() {
     "route-optimizer": canViewRouteOptimizer,
     "accurate-creators": canViewAccurateCreators,
     "sales-user-mapping": canViewSalesUserMapping,
+    "sales-master": canViewSalesMaster,
+    "crm-daily-report-options": canViewCrmDailyReportOptions,
     audit: canViewAudit,
   };
 
@@ -2680,6 +2730,12 @@ export default function Settings() {
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
       {tab === "sales-user-mapping" && canViewSalesUserMapping && (
         <SalesUserMappingSettings notify={notify} canEdit={canEditSalesUserMapping}/>
+      )}
+      {tab === "sales-master" && canViewSalesMaster && (
+        <SalesMasterSettings notify={notify} canEdit={canEditSalesMaster}/>
+      )}
+      {tab === "crm-daily-report-options" && canViewCrmDailyReportOptions && (
+        <CrmDailyReportOptionsSettings notify={notify} canEdit={canEditCrmDailyReportOptions}/>
       )}
       {tab === "audit" && canViewAudit && <AuditTab/>}
       </div>

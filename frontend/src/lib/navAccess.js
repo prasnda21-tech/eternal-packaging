@@ -2,6 +2,7 @@
 
 import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
 import { canAccessOwnerDashboard } from "./ownerAnalytics";
+import { userHasReportCatalogAccess } from "./reportCatalog";
 
 export const NAV_KEYS = {
   dashboard: "nav.dashboard",
@@ -55,6 +56,8 @@ export const NAV_KEYS = {
   gajiOperator: "nav.reports.gaji_operator",
   orderPrediction: "nav.reports.order_prediction",
   salesReports: "nav.reports.sales",
+  reportCatalog: "nav.reports.catalog",
+  reportSaved: "nav.reports.saved",
   employeeAdmin: "nav.employee_administration",
   employeeAdminMine: "nav.employee_administration.mine",
   employeeAdminCreate: "nav.employee_administration.create",
@@ -142,9 +145,8 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.inventoryValue, label: "Nilai Persediaan", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.branchesWarehouses, label: "Cabang & Gudang", parent: NAV_KEYS.inventory },
   { key: NAV_KEYS.reports, label: "Laporan", parent: null },
-  { key: NAV_KEYS.analytics, label: "Analitik Output", parent: NAV_KEYS.reports },
-  { key: NAV_KEYS.gajiOperator, label: "Gaji Operator", parent: NAV_KEYS.reports },
-  { key: NAV_KEYS.salesReports, label: "Laporan Penjualan", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.reportCatalog, label: "Daftar Laporan", parent: NAV_KEYS.reports },
+  { key: NAV_KEYS.reportSaved, label: "Laporan Tersimpan", parent: NAV_KEYS.reports },
   { key: NAV_KEYS.employeeAdmin, label: "Administrasi Karyawan", parent: null },
   { key: NAV_KEYS.employeeAdminMine, label: "Pengajuan Saya", parent: NAV_KEYS.employeeAdmin },
   { key: NAV_KEYS.employeeAdminCreate, label: "Buat Pengajuan", parent: NAV_KEYS.employeeAdmin },
@@ -329,7 +331,6 @@ export const SALES_NAV_ROUTES = {
   // Keep legacy report URLs stable for bookmarks and direct links.
   [NAV_KEYS.statusPo]: "/laporan/status-po",
   [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
-  [NAV_KEYS.salesReports]: "/laporan/penjualan",
 };
 
 const SALES_VIS_FIELD = {
@@ -344,7 +345,6 @@ const SALES_VIS_FIELD = {
   [NAV_KEYS.crmDailyReport]: "crmDailyReport",
   [NAV_KEYS.statusPo]: "statusPo",
   [NAV_KEYS.orderPrediction]: "orderPrediction",
-  [NAV_KEYS.salesReports]: "salesReports",
 };
 
 /** Stable tile tones keyed by existing nav.* — not randomized per render. */
@@ -360,7 +360,6 @@ export const SALES_TILE_TONES = {
   [NAV_KEYS.crmDailyReport]: "teal",
   [NAV_KEYS.statusPo]: "blue",
   [NAV_KEYS.orderPrediction]: "green",
-  [NAV_KEYS.salesReports]: "green",
 };
 
 export const SALES_TILE_TESTIDS = {
@@ -375,7 +374,6 @@ export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.crmDailyReport]: "top-nav-crm-daily-report",
   [NAV_KEYS.statusPo]: "top-nav-status-po",
   [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
-  [NAV_KEYS.salesReports]: "top-nav-laporan-penjualan",
 };
 
 function menuItemsFromFallback(hasPerm, parentKey, visible, fieldMap, routes, tones, testids, extras = {}) {
@@ -507,32 +505,23 @@ export function inventoryMenuItems(hasPerm) {
 }
 
 export const REPORTS_NAV_ROUTES = {
-  [NAV_KEYS.analytics]: "/laporan/analitik-output",
-  [NAV_KEYS.statusPo]: "/laporan/status-po",
-  // Status Pengiriman consolidated into Jadwal Pengiriman — no standalone menu route.
-  [NAV_KEYS.gajiOperator]: "/laporan/gaji-operator",
-  [NAV_KEYS.orderPrediction]: "/laporan/prediksi-order",
+  [NAV_KEYS.reportCatalog]: "/laporan",
+  [NAV_KEYS.reportSaved]: "/laporan?view=saved",
 };
 
 const REPORTS_VIS_FIELD = {
-  [NAV_KEYS.analytics]: "analytics",
-  [NAV_KEYS.statusPo]: "statusPo",
-  [NAV_KEYS.gajiOperator]: "gajiOperator",
-  [NAV_KEYS.orderPrediction]: "orderPrediction",
+  [NAV_KEYS.reportCatalog]: "catalogList",
+  [NAV_KEYS.reportSaved]: "catalogSaved",
 };
 
 export const REPORTS_TILE_TONES = {
-  [NAV_KEYS.analytics]: "green",
-  [NAV_KEYS.statusPo]: "blue",
-  [NAV_KEYS.gajiOperator]: "purple",
-  [NAV_KEYS.orderPrediction]: "green",
+  [NAV_KEYS.reportCatalog]: "green",
+  [NAV_KEYS.reportSaved]: "teal",
 };
 
 export const REPORTS_TILE_TESTIDS = {
-  [NAV_KEYS.analytics]: "top-nav-analitik-output",
-  [NAV_KEYS.statusPo]: "top-nav-status-po",
-  [NAV_KEYS.gajiOperator]: "top-nav-gaji-operator",
-  [NAV_KEYS.orderPrediction]: "top-nav-prediksi-order",
+  [NAV_KEYS.reportCatalog]: "top-nav-daftar-laporan",
+  [NAV_KEYS.reportSaved]: "top-nav-laporan-tersimpan",
 };
 
 export function reportsMenuItems(hasPerm) {
@@ -611,17 +600,35 @@ export function productionMenuItems(hasPerm) {
 }
 
 export function reportsNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.reports);
-  const analytics = parent && canSeeNav(hasPerm, NAV_KEYS.analytics);
-  const statusPo = parent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
+  const parentNav = canSeeNav(hasPerm, NAV_KEYS.reports);
+  const configured = canSeeNav(hasPerm, "nav.configured");
+  const analytics = parentNav && canSeeNav(hasPerm, NAV_KEYS.analytics);
+  const statusPo = parentNav && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   // Standalone Status Pengiriman menu removed — consolidated into Jadwal Pengiriman.
   const shipmentStatus = false;
-  const gajiOperator = parent && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
-  const orderPrediction = parent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
-  const salesReports = parent && canSeeNav(hasPerm, NAV_KEYS.salesReports) && canSeeNav(hasPerm, "reports.sales.view");
-  // Status PO and Prediksi Order are still exposed for route/index decisions,
-  // but no longer make the Laporan sidebar group visible.
-  return { parent: !!(analytics || gajiOperator || salesReports), analytics, statusPo, shipmentStatus, gajiOperator, orderPrediction, salesReports };
+  const gajiOperator = parentNav && canSeeNav(hasPerm, NAV_KEYS.gajiOperator);
+  const orderPrediction = parentNav && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
+  const salesReports = (
+    (parentNav || canSeeNav(hasPerm, NAV_KEYS.salesReports))
+    && canSeeNav(hasPerm, "reports.sales.view")
+  );
+  // Hub opens when at least one deep-linkable report is permitted.
+  // With nav.configured, explicit nav.reports is still required.
+  const hasCatalog = userHasReportCatalogAccess(hasPerm);
+  const catalogList = !!(hasCatalog && (parentNav || !configured));
+  const catalogSaved = catalogList;
+  // Status PO / Prediksi Order stay under Penjualan; they do not open Laporan.
+  return {
+    parent: !!catalogList,
+    catalogList,
+    catalogSaved,
+    analytics,
+    statusPo,
+    shipmentStatus,
+    gajiOperator,
+    orderPrediction,
+    salesReports,
+  };
 }
 
 /** When nav is configured, module fallback must not defeat explicit nav deny. */
@@ -1229,6 +1236,8 @@ export const SETTINGS_TAB_IDS = [
   "route-optimizer",
   "accurate-creators",
   "sales-user-mapping",
+  "sales-master",
+  "crm-daily-report-options",
   "audit",
 ];
 
@@ -1261,6 +1270,8 @@ export const SETTINGS_TILE_TONES = {
   "route-optimizer": "blue",
   "accurate-creators": "purple",
   "sales-user-mapping": "teal",
+  "sales-master": "teal",
+  "crm-daily-report-options": "cyan",
   audit: "orange",
 };
 
@@ -1291,6 +1302,8 @@ export const SETTINGS_TILE_LABELS = {
   "route-optimizer": "Optimasi Rute",
   "accurate-creators": "Pembuat PO Accurate",
   "sales-user-mapping": "Mapping Sales Accurate",
+  "sales-master": "Master Sales",
+  "crm-daily-report-options": "Dropdown Laporan Harian CRM",
   audit: "Audit Log",
 };
 
@@ -1380,6 +1393,12 @@ export function settingsNavVisible(hasPerm) {
   const salesUserMapping = canSeeNav(hasPerm, "settings.sales_user_mapping.view")
     || canSeeNav(hasPerm, "settings.sales_user_mapping.manage")
     || canSeeNav(hasPerm, "permissions.manage");
+  const salesMaster = canSeeNav(hasPerm, "settings.sales_master.view")
+    || canSeeNav(hasPerm, "settings.sales_master.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
+  const crmDailyReportOptions = canSeeNav(hasPerm, "settings.crm_daily_report.view")
+    || canSeeNav(hasPerm, "settings.crm_daily_report.manage")
+    || canSeeNav(hasPerm, "permissions.manage");
   const audit = canSeeNav(hasPerm, "audit.view");
   const children = {
     employees: Boolean(parentGranted && employees),
@@ -1404,6 +1423,8 @@ export function settingsNavVisible(hasPerm) {
     "route-optimizer": Boolean(parentGranted && routeOptimizer),
     "accurate-creators": Boolean(parentGranted && accurateCreators),
     "sales-user-mapping": Boolean(parentGranted && salesUserMapping),
+    "sales-master": Boolean(parentGranted && salesMaster),
+    "crm-daily-report-options": Boolean(parentGranted && crmDailyReportOptions),
     audit: Boolean(parentGranted && audit),
   };
   return {

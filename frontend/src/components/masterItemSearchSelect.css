@@ -68,6 +68,11 @@
   z-index: 90;
 }
 
+/* Penerimaan create modal overlay is z-index 1000 — list must float above it. */
+.mis-list.mis-list-over-modal.mis-list-over-receipt {
+  z-index: 1100;
+}
+
 .mis-status {
   padding: 10px 12px;
   color: #64748b;

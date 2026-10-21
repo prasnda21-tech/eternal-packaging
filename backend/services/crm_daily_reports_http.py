@@ -76,6 +76,27 @@ def register_crm_daily_report_routes(
         )
         return {"sales": await svc.list_sales_for_report(get_db(), q=q or "")}
 
+    @api_router.get("/crm-daily-reports/options")
+    async def crm_daily_report_active_options(user=Depends(current_user)):
+        """Active dropdown options for CRM form operators (registered before {report_id})."""
+        from services import crm_daily_report_settings as opt_svc
+        await require_any_perm(
+            user,
+            svc.PERM_CREATE,
+            svc.PERM_EDIT_OWN,
+            svc.PERM_VIEW_OWN,
+            svc.PERM_VIEW_ALL,
+            opt_svc.PERM_VIEW,
+            opt_svc.PERM_MANAGE,
+        )
+        doc = await opt_svc.load_settings(get_db())
+        return {
+            "no_order_reasons": opt_svc.active_options(doc, "no_order_reasons"),
+            "complaint_categories": opt_svc.active_options(doc, "complaint_categories"),
+            "issue_categories": opt_svc.active_options(doc, "issue_categories"),
+            "other_option_id": opt_svc.OTHER_OPTION_ID,
+        }
+
     @api_router.get("/crm-daily-reports/meta")
     async def crm_daily_report_meta(user=Depends(current_user)):
         perms = await _perms(user)
@@ -86,6 +107,13 @@ def register_crm_daily_report_routes(
             svc.PERM_EDIT_OWN,
             svc.PERM_VIEW_ALL,
         )
+        from services import crm_daily_report_settings as opt_svc
+        from services import sales_master as sm
+        await sm.ensure_indexes(get_db())
+        sales_catalog = await sm.list_sales_master(
+            get_db(), user=user, active_only=True, for_catalog=True,
+        )
+        options = await opt_svc.load_settings(get_db())
         return {
             "today_wib": svc.today_wib_date(),
             "can_create": svc.can_create(perms),
@@ -95,6 +123,11 @@ def register_crm_daily_report_routes(
                 "id": svc.actor_user_id(user),
                 "name": svc.actor_name(user),
             },
+            "sales_catalog": sales_catalog,
+            "no_order_reasons": opt_svc.active_options(options, "no_order_reasons"),
+            "complaint_categories": opt_svc.active_options(options, "complaint_categories"),
+            "issue_categories": opt_svc.active_options(options, "issue_categories"),
+            "other_option_id": opt_svc.OTHER_OPTION_ID,
             **svc.excel_dropdown_meta(),
         }
 

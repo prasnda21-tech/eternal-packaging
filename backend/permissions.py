@@ -59,6 +59,10 @@ PERMISSION_CATALOG = [
     ("Pengaturan", "settings.sales_activity.manage", "Ubah pengaturan Sales Activity & Ownership"),
     ("Pengaturan", "settings.sales_user_mapping.view", "Lihat mapping Sales Accurate"),
     ("Pengaturan", "settings.sales_user_mapping.manage", "Kelola mapping Sales Accurate"),
+    ("Pengaturan", "settings.sales_master.view", "Lihat Master Sales"),
+    ("Pengaturan", "settings.sales_master.manage", "Kelola Master Sales"),
+    ("Pengaturan", "settings.crm_daily_report.view", "Lihat pengaturan Laporan Harian CRM"),
+    ("Pengaturan", "settings.crm_daily_report.manage", "Kelola pengaturan Laporan Harian CRM"),
     ("Penjualan", "sales.pwa.view", "Buka PWA Sales terisolasi"),
     ("Penjualan", "sales.pwa.visit.create", "Catat visit milik sendiri dari PWA Sales"),
     ("Optimasi Rute", "route_optimizer.view", "Lihat Optimasi Rute"),
@@ -155,6 +159,8 @@ PERMISSION_CATALOG = [
     ("Laporan", "reports.gaji_operator.repair_rate", "Koreksi snapshot tarif output Gaji Operator"),
     ("Laporan", "reports.sales.view", "Lihat Laporan Penjualan"),
     ("Laporan", "reports.sales.export", "Ekspor Laporan Penjualan"),
+    ("Laporan", "reports.purchase.view", "Lihat Laporan Pembelian"),
+    ("Laporan", "reports.purchase.export", "Ekspor Laporan Pembelian"),
     ("Laporan", "reports.order_prediction.view", "Lihat Prediksi Order"),
     ("Laporan", "reports.order_prediction.import", "Impor Histori Prediksi Order"),
     ("Pengaturan", "settings.operator_wage.view", "Lihat Upah Operator"),
@@ -198,7 +204,12 @@ PERMISSION_CATALOG = [
     ("Catatan Produksi", "production_note.view", "Lihat Catatan Produksi"),
     ("Catatan Produksi", "production_note.create", "Tambah Catatan Produksi"),
     ("Catatan Produksi", "production_note.edit", "Edit Catatan Produksi"),
-    ("Prioritas", "urgent.manage", "Set/hapus urgent"),
+    ("Prioritas", "urgent.manage", "Set/hapus urgent (legacy — tidak lagi mengubah prioritas)"),
+    ("Prioritas", "urgent.request", "Ajukan Urgent PO"),
+    ("Prioritas", "urgent.review", "Lihat daftar/detail pengajuan Urgent"),
+    ("Prioritas", "urgent.approve", "Setujui / tolak pengajuan Urgent"),
+    ("Prioritas", "urgent.notify", "Terima notifikasi pengajuan Urgent (aplikasi)"),
+    ("Prioritas", "urgent.email_notify", "Terima email pengajuan Urgent (Phase B)"),
     ("PO", "buffer_stock.manage", "Set/hapus Buffer Stock"),
     ("User & Karyawan", "users.view", "Lihat data karyawan"),
     ("User & Karyawan", "users.manage", "Kelola karyawan"),
@@ -429,6 +440,27 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "paint.report.export",
     "paint.settings.manage",
     "nav.production.paint",
+    # Report Center pembelian Wave 1 — default OFF; assign via Hak Akses & Role.
+    # Never implied by purchase_invoices.view.
+    "reports.purchase.view",
+    "reports.purchase.export",
+    # Urgent PO approval workflow — default OFF; never implied by urgent.manage.
+    "urgent.request",
+    "urgent.review",
+    "urgent.approve",
+    "urgent.notify",
+    "urgent.email_notify",
+})
+
+# Opt-in even for Direktur full-access /auth/me — must be explicit override or
+# role_permissions entry. API already uses _require_opt_in_perm for these.
+# All Phase A urgent.* keys stay OFF for Direktur/SA until explicitly granted.
+DIRECTOR_MUST_OPT_IN_PERMISSIONS = frozenset({
+    "urgent.request",
+    "urgent.review",
+    "urgent.approve",
+    "urgent.notify",
+    "urgent.email_notify",
 })
 
 DEFAULT_GRANT_PERMISSIONS = tuple(
@@ -1032,8 +1064,33 @@ DIRECTOR_FULL_ACCESS_ROLE = "direktur_utama"
 
 
 def director_full_permission_set() -> set:
-    """Every registered permission, including OPT_IN_ONLY and owner nav keys."""
-    return set(ALL_PERMISSIONS)
+    """Every registered permission except keys that remain true opt-in for Direktur.
+
+    All Phase A ``urgent.*`` keys stay out until explicitly granted via
+    permissions_override or an audited role_permissions document.
+    """
+    return set(ALL_PERMISSIONS) - DIRECTOR_MUST_OPT_IN_PERMISSIONS
+
+
+def merge_director_must_opt_in(
+    base: set,
+    role: str,
+    override: dict | None,
+    role_defaults_override: dict | None = None,
+) -> set:
+    """Add DIRECTOR_MUST_OPT_IN keys only when explicitly granted."""
+    out = set(base or [])
+    override = override or {}
+    for perm in DIRECTOR_MUST_OPT_IN_PERMISSIONS:
+        if override.get(perm) is False:
+            out.discard(perm)
+            continue
+        if override.get(perm) is True:
+            out.add(perm)
+            continue
+        if role_defaults_override and perm in set(role_defaults_override.get(role) or []):
+            out.add(perm)
+    return out
 
 
 def is_director_full_access_role(role: str | None) -> bool:

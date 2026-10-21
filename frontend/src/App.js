@@ -54,6 +54,9 @@ const StatusPO = lazy(() => import("./pages/StatusPO"));
 const GajiOperator = lazy(() => import("./pages/GajiOperator"));
 const PrediksiOrder = lazy(() => import("./pages/PrediksiOrder"));
 const LaporanPenjualan = lazy(() => import("./pages/LaporanPenjualan"));
+const LaporanPembelian = lazy(() => import("./pages/LaporanPembelian"));
+const LaporanPersediaan = lazy(() => import("./pages/LaporanPersediaan"));
+const ReportCatalog = lazy(() => import("./pages/ReportCatalog"));
 const OptimasiRute = lazy(() => import("./pages/OptimasiRute"));
 const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -94,6 +97,7 @@ const DeliveryPlanPage = lazy(() => import("./pages/DeliveryPlanPage"));
 const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage"));
 const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
 const FormShowcase = lazy(() => import("./pages/FormShowcase"));
+const UrgentPoApprovalPreview = lazy(() => import("./pages/UrgentPoApprovalPreview"));
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const SpkDashboard = lazy(() => import("./pages/SpkDashboard"));
 const SpkCreate = lazy(() => import("./pages/SpkCreate"));
@@ -123,7 +127,7 @@ const SalesPwaReceivablesPage = lazy(() => import("./sales/SalesPwaReceivablesPa
 const SalesPwaPredictionsPage = lazy(() => import("./sales/SalesPwaPredictionsPage"));
 const SalesPwaProfilePage = lazy(() => import("./sales/SalesPwaProfilePage"));
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "settings.public_catalog.view", "settings.public_catalog.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage", "settings.sales_user_mapping.view", "settings.sales_user_mapping.manage"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "settings.public_catalog.view", "settings.public_catalog.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage", "settings.sales_user_mapping.view", "settings.sales_user_mapping.manage", "settings.sales_master.view", "settings.sales_master.manage", "settings.crm_daily_report.view", "settings.crm_daily_report.manage"];
 const PHYSICAL_STOCK_SETTINGS_PERMS = ["current_stock.view", "current_stock.update", "permissions.manage"];
 const SETTINGS_HUB_PERMS = [...SETTINGS_PERMS, "current_stock.view", "current_stock.update"];
 const PhysicalStockSettingsRoute = Settings;
@@ -222,11 +226,7 @@ function PembelianIndex() {
 function LaporanIndex() {
   const { hasPerm } = useAuth();
   const r = reportsNavVisible(hasPerm);
-  if (r.analytics) return <Navigate to="/laporan/analitik-output" replace />;
-  if (r.statusPo) return <Navigate to="/laporan/status-po" replace />;
-  if (r.gajiOperator) return <Navigate to="/laporan/gaji-operator" replace />;
-  if (r.orderPrediction) return <Navigate to="/laporan/prediksi-order" replace />;
-  if (r.salesReports) return <Navigate to="/laporan/penjualan" replace />;
+  if (r.parent || r.catalogList) return <ReportCatalog />;
   return <Navigate to="/" replace />;
 }
 
@@ -422,6 +422,8 @@ export default function App() {
             <Route path="/laporan/gaji-operator" element={<PermGate anyOf={[NAV_KEYS.gajiOperator]} alsoAnyOf={["reports.gaji_operator.view", "schedule.view"]}><GajiOperator /></PermGate>} />
             <Route path="/laporan/prediksi-order" element={<PermGate anyOf={[NAV_KEYS.orderPrediction]} alsoAnyOf={["reports.order_prediction.view"]}><PrediksiOrder /></PermGate>} />
             <Route path="/laporan/penjualan" element={<PermGate anyOf={["reports.sales.view"]}><LaporanPenjualan /></PermGate>} />
+            <Route path="/laporan/pembelian" element={<PermGate anyOf={["reports.purchase.view"]}><LaporanPembelian /></PermGate>} />
+            <Route path="/laporan/persediaan" element={<PermGate anyOf={["current_stock.view"]} alsoAnyOf={["master_items.view", "permissions.manage"]}><LaporanPersediaan /></PermGate>} />
             <Route path="/laporan" element={<LaporanIndex />} />
             <Route path="/administrasi-karyawan" element={<AdministrasiIndex />} />
             <Route path="/administrasi-karyawan/pengajuan-saya" element={<PermGate anyOf={[NAV_KEYS.employeeAdminMine, NAV_KEYS.employeeAdmin, "employee_admin.view_own", "employee_admin.submit"]}><EmployeeAdmin mode="mine" /></PermGate>} />
@@ -446,6 +448,9 @@ export default function App() {
           </Route>
           {/* Dev-only showcase (no auth needed for dev preview) */}
           <Route path="/dev/form-showcase" element={<FormShowcase />} />
+          {process.env.NODE_ENV !== "production" ? (
+            <Route path="/dev/urgent-po-approval-preview" element={<UrgentPoApprovalPreview />} />
+          ) : null}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </Suspense>

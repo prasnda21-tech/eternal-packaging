@@ -73,16 +73,21 @@ _PUBLIC_FIELDS = (
     "whatsapp_norm",
     "order_id",
     "po_number",
+    "sales_master_id",
+    "sales_master_unmapped",
     "sales_label",
     "sales_user_id",
     "sales_source",
     "sales_note",
     "status_order",
+    "no_order_reason_id",
     "no_order_reason",
     "has_complaint",
+    "complaint_category_id",
     "complaint_category",
     "complaint_description",
     "has_issue",
+    "issue_category_id",
     "issue_description",
     "notes",
     "wa_match_warning",
@@ -98,15 +103,19 @@ _EDITABLE = (
     "whatsapp",
     "order_id",
     "po_number",
+    "sales_master_id",
     "sales_label",
     "sales_user_id",
     "sales_source",
     "status_order",
+    "no_order_reason_id",
     "no_order_reason",
     "has_complaint",
+    "complaint_category_id",
     "complaint_category",
     "complaint_description",
     "has_issue",
+    "issue_category_id",
     "issue_description",
     "notes",
 )
@@ -168,6 +177,16 @@ def public_doc(doc: Optional[dict]) -> Optional[dict]:
             out["sales_source"] = ""
     if "sales_note" not in out:
         out["sales_note"] = _text(doc.get("sales_note"))
+    if "sales_master_id" not in out:
+        out["sales_master_id"] = _text(doc.get("sales_master_id")) or None
+    if "sales_master_unmapped" not in out:
+        out["sales_master_unmapped"] = bool(doc.get("sales_master_unmapped"))
+    if "no_order_reason_id" not in out:
+        out["no_order_reason_id"] = _text(doc.get("no_order_reason_id")) or None
+    if "complaint_category_id" not in out:
+        out["complaint_category_id"] = _text(doc.get("complaint_category_id")) or None
+    if "issue_category_id" not in out:
+        out["issue_category_id"] = _text(doc.get("issue_category_id")) or None
     return out
 
 
@@ -536,6 +555,22 @@ async def _resolve_sales_assignment(
     if has_po and not po_uid:
         if source == SALES_SOURCE_MANUAL:
             raise HTTPException(400, "Input Manual Sales tidak diizinkan ketika PO dipilih")
+        from services.sales_user_mapping import exact_sales_label
+
+        po_raw_label = exact_sales_label(order.get("sales"))
+        po_raw_uid = _text(order.get("sales_user_id")) or None
+        if po_raw_label:
+            # Unmapped PO sales: keep Accurate label; never silently substitute another Sales.
+            if payload_uid and payload_uid in canon and canon[payload_uid]["label"] != po_raw_label:
+                raise HTTPException(400, "Sales laporan harus sesuai Sales pada PO yang dipilih")
+            kept_uid = po_raw_uid if po_raw_uid and po_raw_uid in canon else None
+            kept_source = SALES_SOURCE_EXISTING if kept_uid else SALES_SOURCE_LEGACY
+            return (
+                po_raw_label,
+                kept_uid,
+                kept_source,
+                "Sales PO belum terpetakan ke daftar terverifikasi / Master Sales",
+            )
         if not payload_uid or payload_uid not in canon:
             raise HTTPException(
                 400,
@@ -612,41 +647,50 @@ def _assert_payload_core(payload: dict, *, require_complaint_category: bool = Tr
     issue_description = _text(payload.get("issue_description"))
     notes = _text(payload.get("notes"))
 
-    no_order_reason = _normalize_no_order_reason(
-        payload.get("no_order_reason"),
-        status_order=status_order,
-    )
-    complaint_category = _normalize_complaint_category(
-        payload.get("complaint_category"),
-        has_complaint=has_complaint,
-        require_category=require_complaint_category,
-    )
+    # Option ids + free-text snapshots resolved async (dynamic settings + legacy presets).
+    no_order_reason = _text(payload.get("no_order_reason"))
+    no_order_reason_id = _text(payload.get("no_order_reason_id")) or None
+    if status_order != STATUS_ORDER_NO:
+        no_order_reason = ""
+        no_order_reason_id = None
+
+    complaint_category = _text(payload.get("complaint_category"))
+    complaint_category_id = _text(payload.get("complaint_category_id")) or None
+    issue_category_id = _text(payload.get("issue_category_id")) or None
 
     if has_complaint:
         if not complaint_description:
             raise HTTPException(400, "Deskripsi Komplain wajib diisi")
     else:
         complaint_description = ""
+        complaint_category = ""
+        complaint_category_id = None
 
     if has_issue:
         if not issue_description:
             raise HTTPException(400, "Deskripsi Kendala wajib diisi")
     else:
         issue_description = ""
+        issue_category_id = None
 
     return {
         "report_date": report_date,
         "status_customer": status_customer,
         "status_order": status_order,
+        "sales_master_id": _text(payload.get("sales_master_id")) or None,
         "sales_label": _text(payload.get("sales_label") or payload.get("sales")),
         "sales_user_id": _text(payload.get("sales_user_id")) or None,
         "sales_source": _text(payload.get("sales_source")).lower(),
         "has_complaint": has_complaint,
         "complaint_category": complaint_category,
+        "complaint_category_id": complaint_category_id,
         "complaint_description": complaint_description,
+        "require_complaint_category": bool(require_complaint_category),
         "has_issue": has_issue,
+        "issue_category_id": issue_category_id,
         "issue_description": issue_description,
         "no_order_reason": no_order_reason,
+        "no_order_reason_id": no_order_reason_id,
         "notes": notes,
         "order_id": _text(payload.get("order_id")),
         "po_number": _text(payload.get("po_number")),
@@ -655,6 +699,174 @@ def _assert_payload_core(payload: dict, *, require_complaint_category: bool = Tr
         "whatsapp": _text(payload.get("whatsapp")),
         "client_submit_id": _text(payload.get("client_submit_id")),
     }
+
+
+async def _payload_master_sales(db, payload_master_id: Optional[str], user: dict) -> Optional[dict]:
+    """Resolve active Master Sales for write input. Exact id only."""
+    mid = _text(payload_master_id)
+    if not mid:
+        return None
+    from services import sales_master as sm
+    from services.sales_user_mapping import exact_sales_label
+
+    master = await sm.require_active_sales(db, mid, user=user)
+    return {
+        "id": master["id"],
+        "label": exact_sales_label(master.get("sales_name")),
+        "user_id": _text(master.get("user_id")) or None,
+    }
+
+
+async def _attach_sales_master_ref(
+    db,
+    *,
+    sales_label: str,
+    sales_user_id: Optional[str],
+    preferred_id: Optional[str] = None,
+) -> Tuple[Optional[str], bool]:
+    """Exact-only Master Sales attach. Returns (sales_master_id, unmapped)."""
+    from services import sales_master as sm
+    from services.sales_user_mapping import exact_sales_label
+
+    label = exact_sales_label(sales_label)
+    preferred = _text(preferred_id) or None
+    if preferred:
+        doc = await db[sm.COLLECTION].find_one({"id": preferred}, {"_id": 0})
+        if doc:
+            pub = sm.public_sales(doc)
+            pub_label = exact_sales_label(pub.get("sales_name"))
+            pub_uid = _text(pub.get("user_id")) or None
+            same_label = bool(label) and pub_label == label
+            same_uid = bool(sales_user_id) and pub_uid == sales_user_id
+            if same_label or same_uid or (not label and not sales_user_id):
+                # Inactive master still attaches for identity continuity on write only when
+                # preferred id matches the assigned sales; active preferred preferred.
+                if pub.get("active") or same_label or same_uid:
+                    return pub["id"], False
+    if sales_user_id:
+        doc = await db[sm.COLLECTION].find_one(
+            {"user_id": sales_user_id, "active": True}, {"_id": 0},
+        )
+        if doc:
+            return doc["id"], False
+    if label:
+        doc = await db[sm.COLLECTION].find_one(
+            {"name_key": sm.name_key(label), "active": True}, {"_id": 0},
+        )
+        if doc:
+            return doc["id"], False
+        return None, True
+    return None, False
+
+
+async def _resolve_no_order_fields(
+    db,
+    *,
+    status_order: str,
+    option_id: Optional[str],
+    free_text: str,
+) -> Tuple[Optional[str], str]:
+    if status_order != STATUS_ORDER_NO:
+        return None, ""
+    from services import crm_daily_report_settings as opts
+
+    settings = await opts.load_settings(db)
+    oid = _text(option_id) or None
+    text = _text(free_text)
+    if oid:
+        opt = opts.option_by_id(settings, "no_order_reasons", oid)
+        if not opt:
+            raise HTTPException(400, "Opsi alasan tidak order tidak ditemukan")
+        if not opt.get("active"):
+            raise HTTPException(400, "Opsi alasan tidak order nonaktif tidak dapat dipilih")
+        label = _text(opt.get("label"))
+        if opt.get("is_other") or oid == opts.OTHER_OPTION_ID:
+            if not text:
+                raise HTTPException(400, "Isi keterangan manual untuk pilihan Lainnya")
+            if text == NO_ORDER_REASON_LAINNYA:
+                raise HTTPException(400, "Isi keterangan manual untuk pilihan Lainnya")
+            return opts.OTHER_OPTION_ID, text
+        return oid, text or label
+    # Legacy / main presets + free-text path
+    return None, _normalize_no_order_reason(text, status_order=status_order)
+
+
+async def _resolve_complaint_fields(
+    db,
+    *,
+    has_complaint: bool,
+    option_id: Optional[str],
+    category_text: str,
+    description: str,
+    require_category: bool,
+) -> Tuple[Optional[str], str, str]:
+    if not has_complaint:
+        return None, "", ""
+    if not description:
+        raise HTTPException(400, "Deskripsi Komplain wajib diisi")
+    from services import crm_daily_report_settings as opts
+
+    settings = await opts.load_settings(db)
+    oid = _text(option_id) or None
+    category = _text(category_text)
+    if oid:
+        opt = opts.option_by_id(settings, "complaint_categories", oid)
+        if not opt:
+            raise HTTPException(400, "Opsi kategori komplain tidak ditemukan")
+        if not opt.get("active"):
+            raise HTTPException(400, "Opsi kategori komplain nonaktif tidak dapat dipilih")
+        label = _text(opt.get("label"))
+        if opt.get("is_other") or oid == opts.OTHER_OPTION_ID:
+            # Snapshot category keeps option label; detail stays in description.
+            return opts.OTHER_OPTION_ID, label or NO_ORDER_REASON_LAINNYA, description
+        return oid, label, description
+    if category:
+        # Fixed Excel presets (main) remain valid.
+        try:
+            normalized = _normalize_complaint_category(
+                category, has_complaint=True, require_category=True,
+            )
+            # Soft-link settings id when label matches an active option.
+            for opt in opts.active_options(settings, "complaint_categories"):
+                if _text(opt.get("label")) == normalized and not opt.get("is_other"):
+                    return opt["id"], normalized, description
+            return None, normalized, description
+        except HTTPException:
+            # Dynamic settings label (exact) beyond fixed presets.
+            for opt in opts.active_options(settings, "complaint_categories"):
+                if _text(opt.get("label")) == category and not opt.get("is_other"):
+                    return opt["id"], category, description
+            raise
+    if require_category:
+        raise HTTPException(400, "Jenis Komplain wajib dipilih")
+    return None, "", description
+
+
+async def _resolve_issue_fields(
+    db,
+    *,
+    has_issue: bool,
+    option_id: Optional[str],
+    description: str,
+) -> Tuple[Optional[str], str]:
+    if not has_issue:
+        return None, ""
+    if not description:
+        raise HTTPException(400, "Deskripsi Kendala wajib diisi")
+    from services import crm_daily_report_settings as opts
+
+    settings = await opts.load_settings(db)
+    oid = _text(option_id) or None
+    if not oid:
+        return None, description
+    opt = opts.option_by_id(settings, "issue_categories", oid)
+    if not opt:
+        raise HTTPException(400, "Opsi kategori kendala tidak ditemukan")
+    if not opt.get("active"):
+        raise HTTPException(400, "Opsi kategori kendala nonaktif tidak dapat dipilih")
+    if opt.get("is_other") or oid == opts.OTHER_OPTION_ID:
+        return opts.OTHER_OPTION_ID, description
+    return oid, description
 
 
 async def build_normalized_doc(
@@ -700,14 +912,78 @@ async def build_normalized_doc(
         user=user,
         perms=perms,
     )
+
+    sales_label = core["sales_label"]
+    sales_user_id = core["sales_user_id"]
+    sales_source = core["sales_source"]
+    preferred_master_id = core["sales_master_id"]
+    master_in = await _payload_master_sales(db, preferred_master_id, user)
+    if master_in and not order:
+        # Master Sales feeds label/uid; sales_source rules remain those from main.
+        if sales_source == SALES_SOURCE_MANUAL:
+            sales_label = master_in["label"]
+            sales_user_id = None
+            sales_source = SALES_SOURCE_MANUAL
+            preferred_master_id = master_in["id"]
+        elif master_in["user_id"]:
+            sales_label = master_in["label"]
+            sales_user_id = master_in["user_id"]
+            sales_source = sales_source or SALES_SOURCE_EXISTING
+            preferred_master_id = master_in["id"]
+        elif core["status_order"] == STATUS_ORDER_NO and sales_source in ("", SALES_SOURCE_MANUAL):
+            # Active Master Sales without user mapping → manual-allowed snapshot.
+            sales_label = master_in["label"]
+            sales_user_id = None
+            sales_source = SALES_SOURCE_MANUAL
+            preferred_master_id = master_in["id"]
+        else:
+            sales_label = master_in["label"]
+            preferred_master_id = master_in["id"]
+
     sales_label, sales_user_id, sales_source, sales_note = await _resolve_sales_assignment(
         db,
         status_order=core["status_order"],
         order=order,
-        sales_user_id=core["sales_user_id"],
-        sales_label=core["sales_label"],
-        sales_source=core["sales_source"],
+        sales_user_id=sales_user_id,
+        sales_label=sales_label,
+        sales_source=sales_source,
         existing=existing,
+    )
+    # PO wins identity; Master Sales attach is exact-only and never changes sales_source.
+    sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
+        db,
+        sales_label=sales_label,
+        sales_user_id=sales_user_id,
+        preferred_id=None if order else preferred_master_id,
+    )
+    if order:
+        # Still try exact attach from PO-resolved label/uid (including preferred if exact).
+        sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
+            db,
+            sales_label=sales_label,
+            sales_user_id=sales_user_id,
+            preferred_id=preferred_master_id,
+        )
+
+    no_order_reason_id, no_order_reason = await _resolve_no_order_fields(
+        db,
+        status_order=core["status_order"],
+        option_id=core["no_order_reason_id"],
+        free_text=core["no_order_reason"],
+    )
+    complaint_category_id, complaint_category, complaint_description = await _resolve_complaint_fields(
+        db,
+        has_complaint=core["has_complaint"],
+        option_id=core["complaint_category_id"],
+        category_text=core["complaint_category"],
+        description=core["complaint_description"],
+        require_category=core["require_complaint_category"],
+    )
+    issue_category_id, issue_description = await _resolve_issue_fields(
+        db,
+        has_issue=core["has_issue"],
+        option_id=core["issue_category_id"],
+        description=core["issue_description"],
     )
 
     return {
@@ -721,17 +997,22 @@ async def build_normalized_doc(
         "whatsapp_norm": whatsapp_norm,
         "order_id": _text((order or {}).get("id")) or None,
         "po_number": _text((order or {}).get("po_number")) or "",
+        "sales_master_id": sales_master_id,
+        "sales_master_unmapped": bool(sales_master_unmapped),
         "sales_label": sales_label,
         "sales_user_id": sales_user_id,
         "sales_source": sales_source,
         "sales_note": sales_note,
         "status_order": core["status_order"],
-        "no_order_reason": core["no_order_reason"],
+        "no_order_reason_id": no_order_reason_id,
+        "no_order_reason": no_order_reason,
         "has_complaint": core["has_complaint"],
-        "complaint_category": core["complaint_category"],
-        "complaint_description": core["complaint_description"],
+        "complaint_category_id": complaint_category_id,
+        "complaint_category": complaint_category,
+        "complaint_description": complaint_description,
         "has_issue": core["has_issue"],
-        "issue_description": core["issue_description"],
+        "issue_category_id": issue_category_id,
+        "issue_description": issue_description,
         "notes": core["notes"],
         "wa_match_warning": wa_warning,
         "client_submit_id": core["client_submit_id"] or None,
@@ -948,9 +1229,10 @@ async def update_report(db, report_id: str, payload: dict, user: dict, perms: se
             merged[key] = payload.get(key)
     # Preserve status_customer/customer linkage keys from payload when present
     for key in ("status_customer", "customer_id", "outlet_name", "whatsapp", "order_id", "po_number",
-                "sales_label", "sales", "sales_user_id", "sales_source", "status_order", "no_order_reason",
-                "has_complaint", "complaint_category", "complaint_description",
-                "has_issue", "issue_description", "notes",
+                "sales_master_id", "sales_label", "sales", "sales_user_id", "sales_source",
+                "status_order", "no_order_reason_id", "no_order_reason",
+                "has_complaint", "complaint_category_id", "complaint_category", "complaint_description",
+                "has_issue", "issue_category_id", "issue_description", "notes",
                 "report_date"):
         if key in payload:
             merged[key] = payload.get(key)

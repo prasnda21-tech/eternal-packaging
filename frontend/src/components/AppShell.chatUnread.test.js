@@ -24,7 +24,7 @@ describe("AppShell chat unread polling", () => {
     const body = chatUnreadEffectBody();
     expect(body).not.toMatch(/location\.pathname/);
     expect(body).toMatch(/\}, \[\]\);/);
-    expect(shell).toMatch(/setActiveSidebarMenu\(null\)[\s\S]*\}, \[location\.pathname\]\)/);
+    expect(shell).toMatch(/setActiveSidebarMenu\(null\)[\s\S]*\}, \[location\.pathname, location\.search\]\)/);
   });
 
   test("pauses periodic polling while the document is hidden and refreshes when visible", () => {

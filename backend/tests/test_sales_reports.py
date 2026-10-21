@@ -172,14 +172,17 @@ async def test_catalog_uses_verified_names_and_admin_branches():
         "Penjualan per Barang",
         "Rincian Penjualan per Barang",
         "Daftar Faktur Penjualan",
+        "Penjualan per Pelanggan",
+        "Penjualan per Sales",
     ]
-    assert "Penjualan per Pelanggan" not in names
     assert "Retur Penjualan per Barang" not in names
     implemented = {row["id"] for row in body["reports"] if row["implemented"]}
     assert implemented == {
         "penjualan-per-barang",
         "rincian-penjualan-per-barang",
         "daftar-faktur-penjualan",
+        "penjualan-per-pelanggan",
+        "penjualan-per-sales",
     }
     assert [row["id"] for row in body["branches"]] == ["jogja", "semarang", "semua"]
 
@@ -1215,3 +1218,328 @@ async def test_incomplete_snapshot_does_not_use_current_master_for_pcs():
     assert dbody["totals"]["kuantitas"] is None
     assert dbody["totals"]["qty_complete"] is False
     assert Decimal(dbody["totals"]["penjualan"]) == Decimal("6000.00")
+
+
+async def test_penjualan_per_pelanggan_stable_id_grouping_and_no_id_bucket():
+    await server.db.orders.insert_many([
+        {"id": "po-a", "customer": "Toko A Lama", "customer_id": "CUST-A", "outlet": "Cabang Jogja"},
+        {"id": "po-a2", "customer": "Toko A Baru", "customer_id": "CUST-A", "outlet": "Cabang Jogja"},
+        {"id": "po-b", "customer": "Toko A Lama", "customer_id": "CUST-B", "outlet": "Cabang Jogja"},
+        {"id": "po-x", "customer": "Anonim", "outlet": "Cabang Jogja"},
+    ])
+    await _invoice(
+        number="SI.CUST.1", date="2026-03-05",
+        lines=[_line_pcs("Item", 2, 1000, code="X", factor=1, base_qty=2)],
+        customer="Toko A Lama", po_id="po-a",
+    )
+    await _invoice(
+        number="SI.CUST.2", date="2026-03-06",
+        lines=[_line_pcs("Item", 1, 1000, code="X", line_id="L2", factor=1, base_qty=1)],
+        customer="Toko A Baru", po_id="po-a2",
+    )
+    await _invoice(
+        number="SI.CUST.3", date="2026-03-07",
+        lines=[_line_pcs("Item", 1, 500, code="Y", line_id="L3", factor=1, base_qty=1)],
+        customer="Toko A Lama", po_id="po-b",
+    )
+    await _invoice(
+        number="SI.CUST.4", date="2026-03-08",
+        lines=[_line_pcs("Item", 1, 250, code="Z", line_id="L4", factor=1, base_qty=1)],
+        customer="Anonim", po_id="po-x",
+    )
+    await _invoice(
+        number="SI.CUST.DRAFT", date="2026-03-09",
+        lines=[_line_pcs("Item", 9, 1000, code="D", line_id="LD", factor=1, base_qty=9)],
+        customer="Toko A Lama", po_id="po-a", status="draft",
+    )
+
+    async with await client_for(_user()) as client:
+        shown = await _show(client, "penjualan-per-pelanggan", layout={
+            "columns": ["pelanggan", "customer_id", "jumlah_faktur", "kuantitas", "penjualan"],
+        })
+        denied = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-pelanggan",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "include_all": True,
+        })
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    rows = [r["values"] for r in body["rows"] if r["kind"] == "line"]
+    by_id = {r["customer_id"]: r for r in rows if r.get("customer_id")}
+    assert set(by_id) == {"CUST-A", "CUST-B"}
+    assert by_id["CUST-A"]["jumlah_faktur"] == 2
+    assert Decimal(by_id["CUST-A"]["penjualan"]) == Decimal("3000.00")
+    assert by_id["CUST-A"]["kuantitas"] in {"3", "3,00", 3, "3.00"} or str(by_id["CUST-A"]["kuantitas"]).startswith("3")
+    assert by_id["CUST-B"]["jumlah_faktur"] == 1
+    # Same display name must not merge unrelated IDs.
+    assert by_id["CUST-B"]["pelanggan"]
+    no_id = [r for r in rows if not r.get("customer_id")]
+    assert len(no_id) == 1
+    assert no_id[0]["pelanggan"] == "Tanpa ID Pelanggan"
+    assert Decimal(no_id[0]["penjualan"]) == Decimal("250.00")
+    assert Decimal(body["totals"]["penjualan"]) == Decimal("3750.00")
+    # Export requires reports.sales.export — admin has it via defaults.
+    assert denied.status_code == 200
+
+
+async def test_penjualan_per_pelanggan_rbac_and_pagination():
+    limited = _user(
+        role="designer",
+        permissions_override={"reports.sales.view": True, "reports.sales.export": False},
+    )
+    await server.db.users.insert_one(limited)
+    await server.db.orders.insert_one({"id": "po-p", "customer": "Paginate", "customer_id": "CUST-P"})
+    for i in range(3):
+        await _invoice(
+            number=f"SI.PAGE.{i}",
+            date="2026-03-1%d" % (i + 1),
+            lines=[_line_pcs("Item", 1, 100, code="P", line_id=f"LP{i}", factor=1, base_qty=1)],
+            customer="Paginate",
+            po_id="po-p",
+        )
+    async with await client_for(limited) as client:
+        page1 = await _show(client, "penjualan-per-pelanggan", page=1, page_size=1)
+        export = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-pelanggan",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "include_all": True,
+        })
+    assert page1.status_code == 200
+    # One customer group → one row; filtered_count is group count.
+    assert page1.json()["filtered_count"] == 1
+    assert len(page1.json()["rows"]) == 1
+    assert export.status_code == 403
+
+
+async def test_penjualan_per_pelanggan_rename_reconcile_export_pagination():
+    """DoD B: two IDs, rename same ID, duplicate name different ID, no-ID; reconcile; export; page totals."""
+    await server.db.orders.insert_many([
+        {"id": "po-a1", "customer": "Nama Lama A", "customer_id": "CUST-A", "outlet": "Cabang Jogja"},
+        {"id": "po-a2", "customer": "Nama Baru A", "customer_id": "CUST-A", "outlet": "Cabang Jogja"},
+        {"id": "po-b", "customer": "Nama Lama A", "customer_id": "CUST-B", "outlet": "Cabang Jogja"},
+        {"id": "po-x", "customer": "Tanpa Canonical", "outlet": "Cabang Jogja"},
+    ])
+    await _invoice(number="SI.A1", date="2026-03-05", lines=[_line_pcs("X", 2, 1000, code="X", factor=1, base_qty=2)], customer="Nama Lama A", po_id="po-a1")
+    await _invoice(number="SI.A2", date="2026-03-06", lines=[_line_pcs("X", 1, 1000, code="X", line_id="L2", factor=1, base_qty=1)], customer="Nama Baru A", po_id="po-a2")
+    await _invoice(number="SI.B1", date="2026-03-07", lines=[_line_pcs("Y", 1, 500, code="Y", line_id="L3", factor=1, base_qty=1)], customer="Nama Lama A", po_id="po-b")
+    await _invoice(number="SI.X1", date="2026-03-08", lines=[_line_pcs("Z", 1, 250, code="Z", line_id="L4", factor=1, base_qty=1)], customer="Tanpa Canonical", po_id="po-x")
+
+    layout = {"columns": ["pelanggan", "customer_id", "jumlah_faktur", "kuantitas", "penjualan"]}
+    async with await client_for(_user()) as client:
+        cust = await _show(client, "penjualan-per-pelanggan", layout=layout)
+        barang = await _show(client, "penjualan-per-barang", layout={"columns": ["nama_barang", "kuantitas", "penjualan"]})
+        p1 = await _show(client, "penjualan-per-pelanggan", layout=layout, page=1, page_size=1)
+        p2 = await _show(client, "penjualan-per-pelanggan", layout=layout, page=2, page_size=1)
+        exported = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-pelanggan",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "include_all": True,
+            "layout": layout,
+        })
+
+    assert cust.status_code == 200
+    rows = {r["values"].get("customer_id") or "__none__": r["values"] for r in cust.json()["rows"] if r["kind"] == "line"}
+    assert set(rows) >= {"CUST-A", "CUST-B", "__none__"}
+    assert rows["CUST-A"]["jumlah_faktur"] == 2
+    assert Decimal(rows["CUST-A"]["penjualan"]) == Decimal("3000.00")
+    assert rows["CUST-B"]["jumlah_faktur"] == 1
+    assert rows["__none__"]["pelanggan"] == "Tanpa ID Pelanggan"
+    # Reconcile net penjualan with existing sales summary engine
+    assert cust.json()["totals"]["penjualan"] == barang.json()["totals"]["penjualan"]
+    assert Decimal(cust.json()["totals"]["penjualan"]) == Decimal("3750.00")
+    # Pagination does not split a customer group; totals unchanged
+    assert p1.json()["filtered_count"] == 3
+    assert p1.json()["totals"]["penjualan"] == p2.json()["totals"]["penjualan"]
+    assert len(p1.json()["rows"]) == 1
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content))
+    assert book.active["A2"].value == "Penjualan per Pelanggan"
+
+
+async def _seed_sales_mapping(entries):
+    await server.db.app_settings.update_one(
+        {"key": "sales_user_mapping"},
+        {"$set": {"key": "sales_user_mapping", "entries": entries, "updated_at": "2026-03-01T00:00:00+00:00"}},
+        upsert=True,
+    )
+
+
+async def test_penjualan_per_sales_mapping_inactive_multi_label_unverified_reconcile():
+    ayub = _user(id="u-ayub", role="sales_eternal", name="Ayub", status="active", email="ayub@eternal.com")
+    euis = _user(id="u-euis", role="sales_eternal", name="Euis", status="inactive", email="euis@eternal.com")
+    bad_role = _user(id="u-ops", role="head_operations", name="Ops", status="active")
+    await server.db.users.insert_many([ayub, euis, bad_role])
+    # Two Accurate labels → one user (multi-label merge)
+    await _seed_sales_mapping([
+        {"label": "Sholahudin Al - Ayubi", "user_id": "u-ayub"},
+        {"label": "Ayub Alias", "user_id": "u-ayub"},
+        {"label": "Euis Risnawati", "user_id": "u-euis"},
+        {"label": "Ops Label", "user_id": "u-ops"},
+    ])
+    await server.db.orders.insert_many([
+        {"id": "po-s1", "customer": "C1", "customer_id": "C1", "outlet": "Cabang Jogja", "sales_user_id": "SHOULD-NOT-USE"},
+        {"id": "po-s2", "customer": "C2", "customer_id": "C2", "outlet": "Cabang Jogja"},
+    ])
+    await _invoice(
+        number="SI.S.AYUB1", date="2026-03-05",
+        lines=[_line_pcs("Item", 2, 1000, code="X", factor=1, base_qty=2)],
+        customer="C1", po_id="po-s1",
+    )
+    # Inject sales label on invoice (snapshot Accurate)
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.AYUB1"}, {"$set": {"sales": "Sholahudin Al - Ayubi"}})
+    await _invoice(
+        number="SI.S.AYUB2", date="2026-03-06",
+        lines=[_line_pcs("Item", 1, 500, code="Y", line_id="L2", factor=1, base_qty=1)],
+        customer="C1", po_id="po-s1",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.AYUB2"}, {"$set": {"sales": "Ayub Alias"}})
+    await _invoice(
+        number="SI.S.EUIS", date="2026-03-07",
+        lines=[_line_pcs("Item", 1, 800, code="Z", line_id="L3", factor=1, base_qty=1)],
+        customer="C2", po_id="po-s2",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.EUIS"}, {"$set": {"sales": "Euis Risnawati"}})
+    # Unmatched label
+    await _invoice(
+        number="SI.S.UNK", date="2026-03-08",
+        lines=[_line_pcs("Item", 1, 200, code="U", line_id="L4", factor=1, base_qty=1)],
+        customer="C2", po_id="po-s2",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.UNK"}, {"$set": {"sales": "Unknown Sales"}})
+    # Empty label
+    await _invoice(
+        number="SI.S.EMPTY", date="2026-03-09",
+        lines=[_line_pcs("Item", 1, 100, code="E", line_id="L5", factor=1, base_qty=1)],
+        customer="C2", po_id="po-s2",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.EMPTY"}, {"$set": {"sales": ""}})
+    # Invalid role target
+    await _invoice(
+        number="SI.S.BADROLE", date="2026-03-10",
+        lines=[_line_pcs("Item", 1, 50, code="B", line_id="L6", factor=1, base_qty=1)],
+        customer="C2", po_id="po-s2",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.BADROLE"}, {"$set": {"sales": "Ops Label"}})
+    # Draft excluded
+    await _invoice(
+        number="SI.S.DRAFT", date="2026-03-11",
+        lines=[_line_pcs("Item", 9, 1000, code="D", line_id="LD", factor=1, base_qty=9)],
+        customer="C1", po_id="po-s1", status="draft",
+    )
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.S.DRAFT"}, {"$set": {"sales": "Sholahudin Al - Ayubi"}})
+
+    layout = {"columns": ["sales", "sales_user_id", "attribution_status", "status_user", "jumlah_faktur", "kuantitas", "penjualan", "label_mapping"]}
+    async with await client_for(_user()) as client:
+        shown = await _show(client, "penjualan-per-sales", layout=layout)
+        barang = await _show(client, "penjualan-per-barang", layout={"columns": ["nama_barang", "kuantitas", "penjualan"]})
+        p1 = await _show(client, "penjualan-per-sales", layout=layout, page=1, page_size=1)
+        p2 = await _show(client, "penjualan-per-sales", layout=layout, page=2, page_size=1)
+        filtered = await _show(client, "penjualan-per-sales", layout=layout, attribution_status="mapped_current")
+        exported = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-sales",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "branch": "semua",
+            "include_all": True,
+            "layout": layout,
+        })
+        # Mapping change must not mutate invoices
+        before = await server.db.sales_invoices.find_one({"invoice_number": "SI.S.AYUB1"}, {"_id": 0, "sales": 1, "sales_user_id": 1})
+
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    assert "Mapping Saat Ini" in (body.get("gap") or "")
+    rows = {r["values"].get("sales_user_id") or "__none__": r["values"] for r in body["rows"] if r["kind"] == "line"}
+    assert "u-ayub" in rows
+    assert rows["u-ayub"]["jumlah_faktur"] == 2
+    assert Decimal(rows["u-ayub"]["penjualan"]) == Decimal("2500.00")
+    assert "Ayub Alias" in (rows["u-ayub"].get("label_mapping") or "")
+    assert "Berdasarkan Mapping Saat Ini" in (rows["u-ayub"].get("attribution_status") or "")
+    assert rows["u-ayub"].get("status_user") == "Aktif"
+    assert "u-euis" in rows
+    assert rows["u-euis"].get("status_user") == "Nonaktif"
+    assert Decimal(rows["u-euis"]["penjualan"]) == Decimal("800.00")
+    unverified = rows["__none__"]
+    assert unverified["sales"] == "Belum Terverifikasi"
+    assert unverified["jumlah_faktur"] == 3  # unk + empty + bad role
+    assert Decimal(unverified["penjualan"]) == Decimal("350.00")
+    # Reconcile with penjualan-per-barang
+    assert body["totals"]["penjualan"] == barang.json()["totals"]["penjualan"]
+    assert Decimal(body["totals"]["penjualan"]) == Decimal("3650.00")
+    assert p1.json()["totals"]["penjualan"] == p2.json()["totals"]["penjualan"]
+    assert filtered.status_code == 200
+    assert all("Belum Terverifikasi" not in (r["values"].get("sales") or "") for r in filtered.json()["rows"])
+    assert exported.status_code == 200
+    from openpyxl import load_workbook
+    from io import BytesIO
+    book = load_workbook(BytesIO(exported.content))
+    assert book.active["A2"].value == "Penjualan per Sales"
+    assert before.get("sales") == "Sholahudin Al - Ayubi"
+    assert "sales_user_id" not in before or before.get("sales_user_id") in (None, "")
+
+
+async def test_penjualan_per_sales_ambiguous_and_rbac_no_write():
+    ayub = _user(id="u-ayub", role="sales_eternal", name="Ayub", status="active")
+    other = _user(id="u-other", role="sales_eternal", name="Other", status="active")
+    await server.db.users.insert_many([ayub, other])
+    # Ambiguous duplicate labels in stored doc (legacy) → UNVERIFIED
+    await server.db.app_settings.update_one(
+        {"key": "sales_user_mapping"},
+        {"$set": {"key": "sales_user_mapping", "entries": [
+            {"label": "Dup Label", "user_id": "u-ayub"},
+            {"label": "Dup Label", "user_id": "u-other"},
+        ]}},
+        upsert=True,
+    )
+    await server.db.orders.insert_one({"id": "po-a", "customer": "C", "outlet": "Cabang Jogja"})
+    await _invoice(number="SI.AMB", date="2026-03-05", lines=[_line_pcs("X", 1, 1000, factor=1, base_qty=1)], po_id="po-a")
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.AMB"}, {"$set": {"sales": "Dup Label"}})
+
+    limited = _user(role="designer", permissions_override={"reports.sales.view": True, "reports.sales.export": False})
+    await server.db.users.insert_one(limited)
+    async with await client_for(limited) as client:
+        shown = await _show(client, "penjualan-per-sales")
+        export = await client.post("/api/laporan/penjualan/ekspor", json={
+            "report_id": "penjualan-per-sales",
+            "date_from": "01/03/2026",
+            "date_to": "31/03/2026",
+            "include_all": True,
+        })
+    assert shown.status_code == 200
+    rows = [r["values"] for r in shown.json()["rows"] if r["kind"] == "line"]
+    assert len(rows) == 1
+    assert rows[0]["sales"] == "Belum Terverifikasi"
+    assert export.status_code == 403
+    # No business writes
+    mapping = await server.db.app_settings.find_one({"key": "sales_user_mapping"}, {"_id": 0})
+    assert len(mapping["entries"]) == 2
+    inv = await server.db.sales_invoices.find_one({"invoice_number": "SI.AMB"}, {"_id": 0})
+    assert inv.get("sales") == "Dup Label"
+    assert not inv.get("sales_user_id")
+
+
+async def test_penjualan_per_sales_branch_scope():
+    locked = _user(
+        role="holding_team",
+        permissions_override={"reports.sales.view": True, "reports.sales.export": True},
+        branch="Jogja",
+    )
+    await server.db.users.insert_one(locked)
+    ayub = _user(id="u-ayub", role="sales_eternal", name="Ayub", status="active")
+    await server.db.users.insert_one(ayub)
+    await _seed_sales_mapping([{"label": "Ayub", "user_id": "u-ayub"}])
+    await server.db.orders.insert_one({"id": "po-j", "customer": "C", "outlet": "Cabang Jogja", "branch_id": "jogja"})
+    await _invoice(number="SI.BR", date="2026-03-05", lines=[_line_pcs("X", 1, 100, factor=1, base_qty=1)], outlet="Cabang Jogja", po_id="po-j")
+    await server.db.sales_invoices.update_one({"invoice_number": "SI.BR"}, {"$set": {"sales": "Ayub", "branch_id": "jogja"}})
+    async with await client_for(locked) as client:
+        denied = await _show(client, "penjualan-per-sales", branch="semarang")
+        denied_all = await _show(client, "penjualan-per-sales", branch="semua")
+        ok = await _show(client, "penjualan-per-sales", branch="jogja")
+    assert denied.status_code == 403
+    assert denied_all.status_code == 403
+    assert ok.status_code == 200

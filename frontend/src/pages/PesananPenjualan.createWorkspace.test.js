@@ -28,6 +28,7 @@ jest.mock("../lib/api", () => ({
   default: {
     listSalesOrders: jest.fn(),
     salesOrderOptions: jest.fn(),
+    salesMasterCatalog: jest.fn(),
     createSalesOrder: jest.fn(),
     salesOrderRepeatSource: jest.fn(),
     salesCatalogProducts: jest.fn(),
@@ -88,6 +89,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       outlets_by_customer: { "PT Maju": [{ outlet: "Pusat", address: "Jl. Master", recipient: "Rina" }] },
       sales_options: ["Vira"],
     });
+    api.salesMasterCatalog.mockReset();
+    api.salesMasterCatalog.mockResolvedValue({ items: [] });
     api.createSalesOrder.mockReset();
     api.createSalesOrder.mockResolvedValue({ message: "Pesanan Penjualan berhasil dibuat!", order: { id: "po-1" } });
     api.salesOrderRepeatSource.mockReset();
@@ -152,13 +155,16 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       .forEach((id) => {
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
       });
+    expect(main.querySelector('[data-testid="input-sales"]')).toBeTruthy();
     const extra = container.querySelector('[data-testid="so-extra-fields"]');
     expect(extra).toBeTruthy();
-    ["input-sales", "input-created-by-user", "input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition"]
+    expect(extra.querySelector('[data-testid="input-sales"]')).toBeNull();
+    ["input-created-by-user", "input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition"]
       .forEach((id) => {
         expect(extra.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeNull();
       });
+    expect(container.querySelector('[data-testid="so-create-side-panel"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-order-summary"]').querySelector('[data-testid="input-notes"]')).toBeTruthy();
     expect(extra.querySelector('[data-testid="input-customer-phone"]')).toBeNull();
     expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();

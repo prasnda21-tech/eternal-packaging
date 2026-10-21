@@ -50,7 +50,19 @@ import { MAX_PAYMENT_PROOFS, canAddPaymentProof, paymentProofCount } from "../li
 import InAppDocumentViewer from "../components/InAppDocumentViewer";
 import { canViewSalesReceiptPaymentProof, orderReceiptProofStamp, paymentEvidenceBadge, receiptHasPaymentProof, receiptProofStatusLabel } from "../lib/salesReceiptPaymentProof";
 import { dataUrlToBlob, paymentProofIsImage, paymentProofIsPdf, paymentProofSource } from "../lib/paymentProofOpen";
-import { canManageUrgent as canManageUrgentPerm } from "../lib/poUrgent";
+import {
+  canShowUrgentRequestButton,
+  canApproveUrgent as canApproveUrgentPerm,
+  canRequestUrgent as canRequestUrgentPerm,
+} from "../lib/poUrgent";
+import {
+  UrgentPoStatusBanner,
+  UrgentRequestSubmitModal,
+  UrgentRequestPendingModal,
+  UrgentRequestReviewModal,
+  UrgentRequestResultModal,
+} from "../components/urgent/UrgentPoApprovalUi";
+import { REQUEST_STATUS } from "../lib/urgentPoUi";
 import { formatApiError } from "../lib/errors";
 import { schedulePoHref } from "../lib/workPanel";
 import { resolvePoBackTarget, storageUserKey } from "../lib/poListReturn";
@@ -123,6 +135,13 @@ export default function PODetail() {
   const [proformaTarget, setProformaTarget] = useState(null);
   const [proformaBusy, setProformaBusy] = useState(false);
   const [colorEditIdx, setColorEditIdx] = useState(null);
+  const [urgentRequest, setUrgentRequest] = useState(null);
+  const [urgentSubmitOpen, setUrgentSubmitOpen] = useState(false);
+  const [urgentPendingOpen, setUrgentPendingOpen] = useState(false);
+  const [urgentReviewOpen, setUrgentReviewOpen] = useState(false);
+  const [urgentHistoryOpen, setUrgentHistoryOpen] = useState(false);
+  const [urgentBusy, setUrgentBusy] = useState(false);
+  const [urgentErr, setUrgentErr] = useState("");
   const selectedForOrderRef = useRef(null);
   const screenerServerNotesRef = useRef("");
 
@@ -180,6 +199,20 @@ export default function PODetail() {
     // hasPerm is stable for the current AuthProvider principal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, user?.id, user?.email, user?.sub]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!id) {
+      setUrgentRequest(null);
+      return undefined;
+    }
+    api.getLatestUrgentRequest(id).then((d) => {
+      if (!cancelled) setUrgentRequest(d?.request || null);
+    }).catch(() => {
+      if (!cancelled) setUrgentRequest(null);
+    });
+    return () => { cancelled = true; };
+  }, [id, order?.priority, order?.updated_at]);
 
   // Enrich the EXISTING dynamic PO tab label in place after order load.
   // Do NOT navigate/replace — that previously raced the workspace tab lifecycle
@@ -452,7 +485,65 @@ export default function PODetail() {
       setPayUploading(false);
     }
   };
-  const toggleUrgent = () => run(() => api.setUrgent(order.id, order.priority !== "urgent"), "Prioritas diperbarui");
+  const openUrgentSubmit = () => {
+    setUrgentErr("");
+    setUrgentSubmitOpen(true);
+    setMoreOpen(false);
+  };
+  const refreshUrgentRequest = async () => {
+    try {
+      const d = await api.getLatestUrgentRequest(order.id);
+      setUrgentRequest(d?.request || null);
+    } catch {
+      /* keep prior */
+    }
+  };
+  const submitUrgentRequest = async (values) => {
+    setUrgentBusy(true);
+    setUrgentErr("");
+    try {
+      const res = await api.submitUrgentRequest(order.id, {
+        reason: values.reason,
+        target_completion_date: values.targetDate,
+        notes: values.notes || "",
+      });
+      if (res?.order) commitOrder(res.order);
+      setUrgentRequest(res?.request || null);
+      setUrgentSubmitOpen(false);
+      setUrgentPendingOpen(true);
+      showToast(res?.message || "Pengajuan Urgent terkirim");
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      const msg = typeof d === "string" ? d : (d?.message || formatApiError(e, "Gagal mengajukan Urgent"));
+      setUrgentErr(msg);
+      throw new Error(msg);
+    } finally {
+      setUrgentBusy(false);
+    }
+  };
+  const decideUrgentRequest = async (values) => {
+    if (!urgentRequest?.id) return;
+    setUrgentBusy(true);
+    setUrgentErr("");
+    try {
+      const res = await api.decideUrgentRequest(urgentRequest.id, {
+        decision: values.decision,
+        decision_notes: values.decisionNotes || "",
+      });
+      if (res?.order) commitOrder(res.order);
+      setUrgentRequest(res?.request || null);
+      setUrgentReviewOpen(false);
+      setUrgentHistoryOpen(true);
+      showToast(res?.message || "Keputusan disimpan");
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      const msg = typeof d === "string" ? d : (d?.message || formatApiError(e, "Gagal menyimpan keputusan"));
+      setUrgentErr(msg);
+      throw new Error(msg);
+    } finally {
+      setUrgentBusy(false);
+    }
+  };
   const toggleBufferStock = () => run(
     () => api.setBufferStock(order.id, !order.buffer_stock),
     order.buffer_stock ? "Buffer Stock dibatalkan" : "Ditandai Buffer Stock"
@@ -511,7 +602,13 @@ export default function PODetail() {
   const canViewReceiptProof = canViewSalesReceiptPaymentProof(hasPerm);
   const canUploadDesign = hasPerm("design.upload");
   const canUploadSample = hasPerm("operator.sample_upload");
-  const canManageUrgent = canManageUrgentPerm(hasPerm);
+  const canRequestUrgent = canRequestUrgentPerm(hasPerm);
+  const canApproveUrgent = canApproveUrgentPerm(hasPerm);
+  const showUrgentRequestBtn = canShowUrgentRequestButton({
+    hasPerm,
+    order,
+    request: urgentRequest,
+  });
   const canManageBufferStock = hasPerm("buffer_stock.manage");
   const canEditSchedule = hasPerm("schedule.edit");
   const canMarkPacked = hasPerm("packing.update");
@@ -611,7 +708,7 @@ export default function PODetail() {
   // di halaman ini — Effective Permission based, bukan role-based.
   const hasAnyActionPerm = (
     canApproveDesign || canApprovePayment || canUploadPayment || canUploadDesign ||
-    canManageUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
+    showUrgentRequestBtn || canApproveUrgent || canManageBufferStock || canEditSchedule || canMarkPacked || canMarkDelivered ||
     canBypassDesign || canBypassPayment || canRollback || canCancel || canDelete ||
     canHelperPrep || canScreenerUpdate || canAdvanceNow || canApproveSample ||
     canManageSuratJalan || canCreateDelivery || canEditPoInfo || canReplaceLineProduct || canRepeatOrder
@@ -823,9 +920,21 @@ export default function PODetail() {
                     Repeat Order
                   </Link>
                 )}
-                {canManageUrgent && (
-                  <button type="button" className="ghost sm" role="menuitem" onClick={toggleUrgent} disabled={busy} data-testid="toggle-urgent-button">
-                    <Zap size={14} /> {order.priority === "urgent" ? "Set normal" : "Set urgent"}
+                {showUrgentRequestBtn && (
+                  <button type="button" className="ghost sm" role="menuitem" onClick={openUrgentSubmit} disabled={busy || urgentBusy} data-testid="toggle-urgent-button">
+                    <Zap size={14} /> Urgent
+                  </button>
+                )}
+                {canApproveUrgent && (urgentRequest?.status === REQUEST_STATUS.PENDING || urgentRequest?.status === "approving") && (
+                  <button
+                    type="button"
+                    className="ghost sm"
+                    role="menuitem"
+                    onClick={() => { setUrgentReviewOpen(true); setMoreOpen(false); }}
+                    disabled={busy || urgentBusy}
+                    data-testid="urgent-review-menu-button"
+                  >
+                    Review Urgent
                   </button>
                 )}
                 {canManageBufferStock && (
@@ -833,7 +942,7 @@ export default function PODetail() {
                     {order.buffer_stock ? "Unset Buffer Stock" : "Set Buffer Stock"}
                   </button>
                 )}
-                {!canRepeatOrder && !canManageUrgent && !canManageBufferStock && (
+                {!canRepeatOrder && !showUrgentRequestBtn && !(canApproveUrgent && urgentRequest?.status === REQUEST_STATUS.PENDING) && !canManageBufferStock && (
                   <p className="muted small" data-testid="po-more-actions-empty">Tidak ada aksi lain untuk peran ini.</p>
                 )}
               </div>
@@ -866,6 +975,16 @@ export default function PODetail() {
           </span>
         </div>
       </div>
+
+      <UrgentPoStatusBanner
+        order={order}
+        request={urgentRequest}
+        canApprove={canApproveUrgent}
+        onViewDetail={() => setUrgentPendingOpen(true)}
+        onReview={() => setUrgentReviewOpen(true)}
+        onViewHistory={() => setUrgentHistoryOpen(true)}
+      />
+      {urgentErr ? <p className="error" data-testid="urgent-action-error">{urgentErr}</p> : null}
 
       <div className="po-mobile-stage-chrome" data-testid="po-mobile-stage-chrome">
         <div>
@@ -2101,6 +2220,30 @@ export default function PODetail() {
           testId="po-receipt-proof-viewer"
         />
       )}
+      <UrgentRequestSubmitModal
+        open={urgentSubmitOpen}
+        poNumber={order.po_number}
+        busy={urgentBusy}
+        onCancel={() => setUrgentSubmitOpen(false)}
+        onSubmit={submitUrgentRequest}
+      />
+      <UrgentRequestPendingModal
+        open={urgentPendingOpen}
+        request={urgentRequest}
+        onClose={() => setUrgentPendingOpen(false)}
+      />
+      <UrgentRequestReviewModal
+        open={urgentReviewOpen}
+        request={urgentRequest}
+        busy={urgentBusy}
+        onCancel={() => setUrgentReviewOpen(false)}
+        onConfirm={decideUrgentRequest}
+      />
+      <UrgentRequestResultModal
+        open={urgentHistoryOpen}
+        request={urgentRequest}
+        onClose={() => setUrgentHistoryOpen(false)}
+      />
     </div>
   );
 }

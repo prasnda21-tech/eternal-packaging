@@ -229,7 +229,7 @@ export function buildDesktopSidebar({
   if (reports.length) {
     rails.push({
       id: "reports",
-      label: "Laporan Operasional",
+      label: "Laporan",
       kind: "menu",
       testid: "top-nav-laporan",
       flyoutId: "sidebar-flyout-reports",

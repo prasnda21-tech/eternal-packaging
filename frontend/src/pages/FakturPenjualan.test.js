@@ -32,8 +32,10 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Harga kosong tidak dijadikan Rp0/);
     expect(pageSrc).not.toMatch(/initialPrices\[l\.line_idx\] = l\.unit_price \|\| ""/);
     expect(pageSrc).toMatch(/save-invoice-btn/);
-    expect(pageSrc).toMatch(/className="invoice-actions"[\s\S]{0,180}paddingRight:\s*96/);
-    expect(pageSrc.match(/className="invoice-actions"/g)).toHaveLength(2);
+    expect(pageSrc).toMatch(/invoice-actions/);
+    expect(pageSrc).toMatch(/ux90-fp-create/);
+    expect(pageSrc).toMatch(/fp-po-gate/);
+    expect((pageSrc.match(/invoice-actions/g) || []).length).toBeGreaterThanOrEqual(2);
   });
 
   test("PODetail -> Faktur Penjualan passes exact po_id and bypasses redundant PO chooser", () => {
@@ -143,11 +145,12 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).not.toMatch(/\binvoiceLines\b/);
     expect(pageSrc).toMatch(/createCalculations\?\.lines/);
     expect(pageSrc).toMatch(/FormProgress/);
-    expect(pageSrc).toMatch(/Barang & Harga/);
-    expect(pageSrc).toMatch(/Tanggal & Ketentuan/);
+    expect(pageSrc).toMatch(/Daftar Barang/);
+    expect(pageSrc).toMatch(/Catatan & Biaya/);
     expect(pageSrc).toMatch(/Belum lengkap/);
     expect(pageSrc).toMatch(/priceMissingAny/);
-    expect(pageSrc).toMatch(/FormSection/);
+    expect(pageSrc).toMatch(/ux90-create-shell/);
+    expect(pageSrc).toMatch(/Mengganti Nomor PO akan menghapus perubahan/);
   });
 
   test("draft invoice qty is an input and finalized or cancelled qty stays display-only", () => {

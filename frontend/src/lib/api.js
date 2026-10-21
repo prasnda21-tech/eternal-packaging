@@ -83,7 +83,16 @@ export const api = {
   assignOperators: (id, splits) => client.post(`/orders/${id}/assign-operators`, { splits }).then((r) => r.data),
   cancelOperatorSplit: (id, splitId, qty, reason = "") =>
     client.post(`/orders/${id}/operator-splits/${splitId}/cancel`, { qty, reason }).then((r) => r.data),
+  /** @deprecated Legacy direct toggle — server returns 410. Use urgent-requests. */
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
+  submitUrgentRequest: (id, payload, config) =>
+    client.post(`/orders/${id}/urgent-requests`, payload, config).then((r) => r.data),
+  getLatestUrgentRequest: (id) =>
+    client.get(`/orders/${id}/urgent-requests/latest`).then((r) => r.data),
+  decideUrgentRequest: (requestId, payload) =>
+    client.post(`/urgent-requests/${requestId}/decide`, payload).then((r) => r.data),
+  cancelUrgentRequest: (requestId) =>
+    client.post(`/urgent-requests/${requestId}/cancel`).then((r) => r.data),
   setBufferStock: (id, buffer_stock) => client.post(`/orders/${id}/buffer-stock`, { buffer_stock }).then((r) => r.data),
   addAttachment: (id, payload, config) => client.post(`/orders/${id}/attachment`, payload, config).then((r) => r.data),
   getOrderAttachment: (id, kind, fileId, config = {}) =>
@@ -1026,6 +1035,16 @@ export const api = {
   salesReportExport: (payload) => client.post("/laporan/penjualan/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
   salesReportMemorize: (payload) => client.post("/laporan/penjualan/memorize", payload).then((r) => r.data),
   salesReportForget: (id) => client.delete(`/laporan/penjualan/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
+  purchaseReportCatalog: () => client.get("/laporan/pembelian/katalog").then((r) => r.data),
+  purchaseReportShow: (payload) => client.post("/laporan/pembelian/tampilkan", payload).then((r) => r.data),
+  purchaseReportExport: (payload) => client.post("/laporan/pembelian/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
+  purchaseReportMemorize: (payload) => client.post("/laporan/pembelian/memorize", payload).then((r) => r.data),
+  purchaseReportForget: (id) => client.delete(`/laporan/pembelian/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
+  stockReportCatalog: () => client.get("/laporan/persediaan/katalog").then((r) => r.data),
+  stockReportShow: (payload) => client.post("/laporan/persediaan/tampilkan", payload).then((r) => r.data),
+  stockReportExport: (payload) => client.post("/laporan/persediaan/ekspor", payload, { responseType: "blob" }).then((r) => r.data),
+  stockReportMemorize: (payload) => client.post("/laporan/persediaan/memorize", payload).then((r) => r.data),
+  stockReportForget: (id) => client.delete(`/laporan/persediaan/memorize/${encodeURIComponent(id)}`).then((r) => r.data),
   salesReceiptLifecycleCapability: () => client.get(`/sales-receipts/lifecycle-capability`).then((r) => r.data),
   getSalesReceipt: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   createSalesReceipt: (payload) => client.post(`/sales-receipts`, payload).then((r) => r.data),
@@ -1203,6 +1222,13 @@ export const api = {
 
   salesUserMapping: () => client.get("/settings/sales-user-mapping").then((r) => r.data),
   updateSalesUserMapping: (payload) => client.put("/settings/sales-user-mapping", payload).then((r) => r.data),
+  salesMasterList: (params = {}) => client.get("/settings/sales-master", { params }).then((r) => r.data),
+  salesMasterCreate: (payload) => client.post("/settings/sales-master", payload).then((r) => r.data),
+  salesMasterUpdate: (id, payload) => client.patch(`/settings/sales-master/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  salesMasterCatalog: (params = {}) => client.get("/sales-master/catalog", { params }).then((r) => r.data),
+  crmDailyReportOptionsSettings: () => client.get("/settings/crm-daily-report-options").then((r) => r.data),
+  updateCrmDailyReportOptionsSettings: (payload) => client.put("/settings/crm-daily-report-options", payload).then((r) => r.data),
+  crmDailyReportActiveOptions: () => client.get("/crm-daily-reports/options").then((r) => r.data),
   salesPwaMe: () => client.get("/sales-pwa/me").then((r) => r.data),
   salesPwaDashboard: (params = {}) => client.get("/sales-pwa/dashboard", { params }).then((r) => r.data),
   salesPwaDeliveriesToday: () => client.get("/sales-pwa/deliveries/today").then((r) => r.data),

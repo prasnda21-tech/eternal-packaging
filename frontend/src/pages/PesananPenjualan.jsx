@@ -26,6 +26,7 @@ import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import HeaderFieldFilter from "../components/HeaderFieldFilter";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import LookupSearchSelect from "../components/LookupSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import {
   EMPTY_SALES_ORDER_COLUMN_FILTERS,
@@ -42,6 +43,7 @@ import {
 } from "../lib/pesananPenjualanColumnFilters";
 import "./pesananPenjualan.css";
 import "./pesananPenjualanPremium.css";
+import "./ux90SalesCreate.css";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
@@ -575,6 +577,7 @@ export default function PesananPenjualan() {
     delivery_zone: "",
     payment_terms: "",
     sales: "",
+    sales_master_id: "",
     created_by_user: user?.name || user?.email || "",
     expedition: "Internal fleet",
     estimated_delivery: getThreeDaysLaterString(),
@@ -672,8 +675,26 @@ export default function PesananPenjualan() {
   const loadOptions = useCallback(async ({ applySuggestedPo = false } = {}) => {
     setOptionsLoading(true);
     try {
-      const data = await api.salesOrderOptions();
-      setOptions(data || {});
+      // Guard: tests/mocks may omit salesMasterCatalog or return a non-thenable.
+      const catalogPromise = Promise.resolve()
+        .then(() => (
+          typeof api.salesMasterCatalog === "function"
+            ? api.salesMasterCatalog()
+            : { items: [] }
+        ))
+        .then((res) => res || { items: [] })
+        .catch(() => ({ items: [] }));
+      const [data, catalogRes] = await Promise.all([
+        api.salesOrderOptions(),
+        catalogPromise,
+      ]);
+      const catalog = Array.isArray(catalogRes?.items) ? catalogRes.items : [];
+      const catalogNames = catalog.map((s) => s.sales_name).filter(Boolean);
+      const mergedSales = Array.from(new Set([
+        ...(Array.isArray(data?.sales_options) ? data.sales_options : []),
+        ...catalogNames,
+      ])).sort((a, b) => String(a).localeCompare(String(b), "id"));
+      setOptions({ ...(data || {}), sales_options: mergedSales, sales_master_catalog: catalog });
       // List mode loads options for header filters (e.g. Sales); only create may seed PO.
       if (applySuggestedPo && data?.suggested_po_number) {
         setFormData((prev) => ({
@@ -1503,6 +1524,7 @@ export default function PesananPenjualan() {
       delivery_zone: "",
       payment_terms: "",
       sales: "",
+      sales_master_id: "",
       created_by_user: user?.name || user?.email || "",
       expedition: "Internal fleet",
       estimated_delivery: getThreeDaysLaterString(),
@@ -1755,7 +1777,7 @@ export default function PesananPenjualan() {
   const pageButtons = [];
   for (let n = pageWindowStart; n <= pageWindowEnd; n += 1) pageButtons.push(n);
   const extraFields = SALES_ORDER_DRAWER_INPUTS.filter(
-    (item) => !["estimated_delivery", "notes", "outlet"].includes(item.field),
+    (item) => !["estimated_delivery", "notes", "outlet", "sales"].includes(item.field),
   );
 
   const openOrder = (order) => {
@@ -1878,7 +1900,7 @@ export default function PesananPenjualan() {
   return (
     <div
       className={viewMode === "create"
-        ? "sales-order-page so-create-workspace"
+        ? "sales-order-page so-create-workspace ux90-so-create"
         : "sales-order-page penjualan-page penjualan-workspace so-list-workspace"}
       data-testid="sales-order-page"
       data-view={viewMode}
@@ -2562,21 +2584,22 @@ export default function PesananPenjualan() {
                   <SoField field="outlet" label="Outlet" className="so-sum-field">
                     <div className="so-sum-editor">
                       {outletsForSelectedCustomer.length > 0 ? (
-                        <select
-                          id="so-outlet"
-                          className="so-line-input"
-                          value={formData.outlet}
-                          onChange={(e) => handleOutletChange(e.target.value)}
-                          data-testid="input-outlet"
-                        >
-                          <option value="">Pilih outlet</option>
-                          {outletsForSelectedCustomer.map((outlet) => (
-                            <option key={outlet.id || outlet.outlet} value={outlet.outlet}>{outlet.outlet || "Outlet"}</option>
-                          ))}
-                          {formData.outlet && !outletsForSelectedCustomer.some((outlet) => outlet.outlet === formData.outlet) && (
-                            <option value={formData.outlet}>{formData.outlet}</option>
-                          )}
-                        </select>
+                        <LookupSearchSelect
+                          options={[
+                            ...outletsForSelectedCustomer,
+                            ...(formData.outlet && !outletsForSelectedCustomer.some((o) => o.outlet === formData.outlet)
+                              ? [{ id: formData.outlet, outlet: formData.outlet }]
+                              : []),
+                          ]}
+                          value={formData.outlet || ""}
+                          onChange={(id) => handleOutletChange(id || "")}
+                          getOptionValue={(o) => o.outlet || o.id || ""}
+                          getOptionLabel={(o) => o.outlet || "Outlet"}
+                          getSearchText={(o) => [o.outlet, o.city, o.address].filter(Boolean).join(" ")}
+                          placeholder="Cari outlet / cabang…"
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          testId="input-outlet"
+                        />
                       ) : (
                         <input
                           id="so-outlet"
@@ -2637,6 +2660,66 @@ export default function PesananPenjualan() {
                   </SoField>
                 </div>
 
+                <div className="so-sum-chip is-editing">
+                  <SoField field="sales" label="Sales" className="so-sum-field" error={fieldHasError("sales")}>
+                    <div className="so-sum-editor">
+                      {(options.sales_master_catalog || []).length > 0 ? (
+                        <LookupSearchSelect
+                          options={options.sales_master_catalog || []}
+                          value={formData.sales_master_id || ""}
+                          onChange={(sid, hit) => {
+                            setFormData((p) => ({
+                              ...p,
+                              sales_master_id: sid || "",
+                              sales: hit?.sales_name || "",
+                            }));
+                          }}
+                          getOptionValue={(s) => s.id}
+                          getOptionLabel={(s) => s.sales_name || ""}
+                          getOptionMeta={(s) => [s.sales_code, s.branch_name || s.outlet].filter(Boolean).join(" · ")}
+                          getSearchText={(s) => [s.sales_name, s.sales_code, s.branch_name, s.outlet].filter(Boolean).join(" ")}
+                          placeholder="Ketik nama Sales…"
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          testId="input-sales"
+                        />
+                      ) : (options.sales_options || []).length > 0 ? (
+                        <LookupSearchSelect
+                          options={(options.sales_options || []).map((name) => ({ id: name, sales_name: name }))}
+                          value={formData.sales || ""}
+                          onChange={(name) => {
+                            setFormData((p) => ({
+                              ...p,
+                              sales: name || "",
+                              sales_master_id: "",
+                            }));
+                          }}
+                          getOptionValue={(s) => s.id}
+                          getOptionLabel={(s) => s.sales_name}
+                          getSearchText={(s) => s.sales_name}
+                          placeholder="Ketik nama Sales…"
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          testId="input-sales"
+                        />
+                      ) : (
+                        <input
+                          id="so-sales"
+                          type="text"
+                          className="so-line-input"
+                          value={formData.sales}
+                          onChange={(e) => setFormData((p) => ({
+                            ...p,
+                            sales: e.target.value,
+                            sales_master_id: "",
+                          }))}
+                          placeholder="mis. Vira"
+                          data-testid="input-sales"
+                          aria-invalid={fieldHasError("sales") || undefined}
+                        />
+                      )}
+                    </div>
+                  </SoField>
+                </div>
+
                 <div className="so-ship-card">
                   <span className="so-ship-icon" aria-hidden="true"><Truck size={18} /></span>
                   <div>
@@ -2687,6 +2770,9 @@ export default function PesananPenjualan() {
                   onClick={() => setCreateTab("ship")}
                 >
                   Pengiriman & Detail
+                  {newCustomer && (!String(formData.customer_phone || "").trim() || !String(formData.address || "").trim()) ? (
+                    <span className="ux90-req" title="HP/alamat wajib untuk pelanggan baru" data-testid="so-ship-required-hint"> *</span>
+                  ) : null}
                 </button>
               </div>
 
@@ -2991,6 +3077,11 @@ export default function PesananPenjualan() {
 
             <div className="so-create-extra so-ship-only" data-so-region="drawer" data-testid="so-extra-fields">
               <h3>Pengiriman & Detail</h3>
+              {newCustomer ? (
+                <p className="ux90-hint" data-testid="so-new-customer-ship-note" style={{ marginTop: 0 }}>
+                  Pelanggan baru: No. HP dan Alamat wajib diisi pada panel ini sebelum menyimpan.
+                </p>
+              ) : null}
               {extraFields.map((item) => (
                 <SoField key={item.field} field={item.field} label={item.label} error={fieldHasError(item.field)}>
                   <input
@@ -2999,21 +3090,67 @@ export default function PesananPenjualan() {
                     className="so-line-input"
                     list={item.list}
                     value={formData[item.field]}
-                    onChange={(e) => setFormData((p) => ({ ...p, [item.field]: e.target.value }))}
+                    onChange={(e) => setFormData((p) => ({
+                      ...p,
+                      [item.field]: e.target.value,
+                    }))}
                     placeholder={item.placeholder}
                     data-testid={item.testId}
                     aria-invalid={fieldHasError(item.field) || undefined}
                   />
-                  {item.field === "sales" && (
-                    <datalist id="sales-suggestions">
-                      {options.sales_options?.map((s) => (
-                        <option key={s} value={s} />
-                      ))}
-                    </datalist>
-                  )}
                 </SoField>
               ))}
             </div>
+
+            <aside className="ux90-so-side" data-testid="so-create-side-panel" aria-label="Ringkasan pesanan">
+              <div className="ux90-card">
+                <h3>Ringkasan Pesanan</h3>
+                <div className="ux90-summary-rows">
+                  <div>
+                    <span>Total Qty</span>
+                    <strong data-testid="so-side-total-qty">{quantityLabel}</strong>
+                  </div>
+                  <div>
+                    <span>Subtotal</span>
+                    <strong>{formatOrderRupiah(sellingTotal)}</strong>
+                  </div>
+                  <div className="is-total">
+                    <span>Total Pesanan</span>
+                    <strong data-testid="so-side-order-total">{formatOrderRupiah(sellingTotal)}</strong>
+                  </div>
+                </div>
+              </div>
+              <div className="ux90-card">
+                <h3>Informasi Pelanggan</h3>
+                <p className="ux90-card-muted" data-testid="so-side-customer">
+                  {formData.customer?.trim() || "Belum dipilih"}
+                  {formData.outlet ? ` · ${formData.outlet}` : ""}
+                </p>
+                <p className="ux90-card-muted" data-testid="so-side-customer-phone">
+                  {formData.customer_phone?.trim() || "HP belum diisi"}
+                </p>
+                <p className="ux90-card-muted" data-testid="so-side-customer-address">
+                  {formData.address?.trim() || "Alamat belum diisi"}
+                </p>
+                <button
+                  type="button"
+                  className="ux90-btn-ghost"
+                  style={{ marginTop: 8, height: 30, fontSize: 12 }}
+                  data-testid="so-side-edit-customer"
+                  onClick={() => setCreateTab("ship")}
+                >
+                  Edit pengiriman
+                </button>
+              </div>
+              <div className="ux90-card">
+                <h3>Rencana Pengiriman</h3>
+                <p className="ux90-card-muted" data-testid="so-side-ship-plan">
+                  {formatShipCardDate(formData.estimated_delivery) || "Tanggal belum diisi"}
+                  {" · "}
+                  {formData.expedition || "Ekspedisi belum diisi"}
+                </p>
+              </div>
+            </aside>
           </div>
 
           <div className="so-create-actionbar" data-testid="so-create-actionbar">

@@ -27,8 +27,10 @@ import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
+import LookupSearchSelect from "../components/LookupSearchSelect";
 import "./salesSubmenuDensity.css";
 import "./pengirimanPesananList.css";
+import "./ux90SalesCreate.css";
 
 /** Legacy API-cap constant (PR #605). Kept for tests/compat; UI uses server page+total. */
 export const DELIVERY_LIST_API_CAP = 1000;
@@ -182,7 +184,7 @@ export default function PengirimanPesanan() {
   const [detailData, setDetailData] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState("");
-  const [deliveryFormTab, setDeliveryFormTab] = useState("terms");
+  const [deliveryFormTab, setDeliveryFormTab] = useState("items");
 
   // Available POs for selection dropdown when creating from scratch
   const [availablePOs, setAvailablePOs] = useState([]);
@@ -809,7 +811,7 @@ export default function PengirimanPesanan() {
                 onClick={() => {
                   setViewMode("create");
                   setSelectedPoId("");
-                  setDeliveryFormTab("terms");
+                  setDeliveryFormTab("items");
                   setSearchParams({ action: "create" });
                 }}
                 data-testid="btn-new-delivery-order"
@@ -838,471 +840,365 @@ export default function PengirimanPesanan() {
         </div>
       )}
 
-      {/* VIEW: CREATE DELIVERY ORDER */}
+      {/* VIEW: CREATE DELIVERY — Eternal UX 9.0 allocation workspace */}
       {viewMode === "create" && (
-        <form className="sd-form-fill pj-delivery-form" data-form-tab={deliveryFormTab} onSubmit={handleSubmitDelivery}>
-          <div className="sd-form-stage">
-          <div className="sd-form-tabs" role="tablist" aria-label="Bagian pengiriman">
-            <button type="button" className={deliveryFormTab === "terms" ? "is-active" : ""} onClick={() => setDeliveryFormTab("terms")}>Pengiriman</button>
-            <button type="button" className={deliveryFormTab === "items" ? "is-active" : ""} onClick={() => setDeliveryFormTab("items")}>Barang</button>
-          </div>
-          {formErr && (
-            <div
-              className="alert-box error"
-              data-testid="form-error-banner"
-              style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "12px 16px", borderRadius: 8, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}
-            >
-              <AlertCircle size={18} />
+        <form
+          className="sd-form-fill pj-delivery-form ux90-create-shell ux90-pj-delivery"
+          data-form-tab={deliveryFormTab}
+          onSubmit={handleSubmitDelivery}
+          style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        >
+          {formErr ? (
+            <div className="alert-box error" data-testid="form-error-banner" style={{ margin: "8px 12px 0", flex: "0 0 auto" }}>
+              <AlertCircle size={16} />
               <span>{formErr}</span>
             </div>
-          )}
+          ) : null}
 
-          {/* Section 1: PO Selection & Information */}
-          <section className="panel sd-pane-terms" style={{ background: "#fff", border: "1px solid #CBD5E1", borderRadius: 10, padding: 12, marginBottom: 8 }}>
-            <header style={{ borderBottom: "1px solid #f1f5f9", paddingBottom: 8, marginBottom: 10 }}>
-              <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>1. Data Pesanan Penjualan (PO Asal)</h3>
-              <p style={{ margin: "4px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
-                Data diisi otomatis dari Pesanan Penjualan dan dapat disesuaikan untuk pengiriman ini.
-              </p>
-            </header>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
-              {/* Select PO */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Nomor PO <span style={{ color: "#ef4444" }}>*</span>
-                </label>
-                {queryPoId ? (
-                  <input
-                    type="text"
-                    readOnly
-                    value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
-                    data-testid="display-po-number"
-                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", fontWeight: 600, boxSizing: "border-box" }}
-                  />
-                ) : (
-                  <select
-                    value={selectedPoId}
-                    onChange={(e) => handleSelectPO(e.target.value)}
-                    disabled={formBusy}
-                    data-testid="select-po-for-delivery"
-                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", background: "#fff" }}
-                    required
-                  >
-                    <option value="">-- Pilih Pesanan Penjualan --</option>
-                    {availablePOs.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.po_number} - {p.customer} {p.outlet ? `(${p.outlet})` : ""} [Sisa: {p.delivery_summary?.total_remaining ?? p.total_quantity} pcs]
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <p style={{ margin: "4px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
-                  Terkunci berdasarkan PO dan urutan pengiriman.
-                </p>
-              </div>
-
-              {/* SJ Number Read-Only Indicator */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Nomor SJ
-                </label>
-                <input
-                  type="text"
-                  readOnly
-                  value={poSummary?.suggested_sj_number ? `${poSummary.suggested_sj_number} (Pengiriman #${poSummary.next_shipment_index})` : "(Pilih PO untuk melihat No SJ)"}
-                  data-testid="display-suggested-sj"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", fontWeight: 600, boxSizing: "border-box" }}
-                />
-                <p style={{ margin: "4px 0 0 0", fontSize: "0.75rem", color: "#64748b" }}>
-                  Terkunci berdasarkan PO dan urutan pengiriman.
-                </p>
-              </div>
-
-              {/* Tanggal Pengiriman */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Tanggal Pengiriman <span style={{ color: "#ef4444" }}>*</span>
-                </label>
-                <input
-                  type="date"
-                  value={formData.delivery_date}
-                  onChange={(e) => setFormData((p) => ({ ...p, delivery_date: e.target.value }))}
-                  data-testid="input-delivery-date"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                  required
-                />
-              </div>
-
-              {/* Customer Read-Only */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Customer
-                </label>
-                <input
-                  type="text"
-                  readOnly
-                  value={poSummary?.customer || "-"}
-                  data-testid="display-customer"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", boxSizing: "border-box" }}
-                />
-              </div>
-
-              {/* Outlet */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Outlet / Cabang
-                </label>
-                <input
-                  type="text"
-                  value={formData.outlet}
-                  onChange={(e) => setFormData((p) => ({ ...p, outlet: e.target.value }))}
-                  placeholder="Nama cabang / outlet"
-                  data-testid="input-delivery-outlet"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                />
-              </div>
-
-              {/* Penerima PIC */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Penerima (PIC)
-                </label>
-                <input
-                  type="text"
-                  value={formData.recipient}
-                  onChange={(e) => setFormData((p) => ({ ...p, recipient: e.target.value }))}
-                  placeholder="Nama penerima di lokasi"
-                  data-testid="input-delivery-recipient"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                />
-              </div>
-
-              <div style={{ gridColumn: "1 / -1" }} data-testid="delivery-recipient-phone-field">
-                <span style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  No. WhatsApp Penerima
-                </span>
-                <div role="radiogroup" aria-label="No. WhatsApp Penerima" style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px", marginBottom: 6 }}>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.9rem", color: customerPhoneAvailable ? "#1e293b" : "#94a3b8" }}>
+          <div className="ux90-workspace">
+            <div className="ux90-main">
+              <div className="ux90-card ux90-delivery-info" style={{ flex: "0 0 auto" }} data-ux90-region="delivery-info">
+                <h3>Informasi Pengiriman</h3>
+                <div className="ux90-field-grid ux90-delivery-essentials">
+                  <div className="ux90-field">
+                    <span>Nomor PO <span className="ux90-req">*</span></span>
+                    {queryPoId ? (
+                      <input
+                        className="ux90-input"
+                        type="text"
+                        readOnly
+                        value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
+                        data-testid="display-po-number"
+                      />
+                    ) : (
+                      <LookupSearchSelect
+                        options={availablePOs}
+                        value={selectedPoId}
+                        onChange={(id) => handleSelectPO(id || "")}
+                        getOptionValue={(p) => p.id}
+                        getOptionLabel={(p) => String(p.po_number || p.id || "")}
+                        getOptionMeta={(p) => {
+                          const sisa = p.delivery_summary?.total_remaining ?? p.total_quantity;
+                          return [
+                            p.customer,
+                            p.outlet || null,
+                            sisa != null ? `Sisa ${Number(sisa).toLocaleString("id-ID")} pcs` : null,
+                          ].filter(Boolean).join(" · ");
+                        }}
+                        getSearchText={(p) => [p.po_number, p.customer, p.outlet].filter(Boolean).join(" ")}
+                        placeholder="Ketik nomor PO atau customer…"
+                        noResultLabel="Tidak ada hasil yang cocok"
+                        disabled={formBusy}
+                        testId="select-po-for-delivery"
+                      />
+                    )}
+                  </div>
+                  <div className="ux90-field">
+                    <span>Nomor SJ</span>
                     <input
-                      type="radio"
-                      name="recipient-phone-source"
-                      value="customer"
-                      checked={phoneSource === "customer"}
-                      disabled={!customerPhoneAvailable || formBusy}
-                      onChange={() => {
-                        if (!customerPhoneAvailable) return;
-                        setPhoneSource("customer");
-                        setPhoneError("");
-                      }}
-                      data-testid="phone-source-customer"
+                      className="ux90-input"
+                      type="text"
+                      readOnly
+                      value={poSummary?.suggested_sj_number ? `${poSummary.suggested_sj_number} (#${poSummary.next_shipment_index})` : "(Pilih PO)"}
+                      data-testid="display-suggested-sj"
                     />
-                    Gunakan nomor pelanggan
-                  </label>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.9rem", color: "#1e293b" }}>
+                  </div>
+                  <div className="ux90-field">
+                    <span>Tanggal Kirim <span className="ux90-req">*</span></span>
                     <input
-                      type="radio"
-                      name="recipient-phone-source"
-                      value="manual"
-                      checked={phoneSource !== "customer"}
-                      disabled={formBusy}
-                      onChange={() => {
-                        setPhoneSource("manual");
-                        setPhoneError("");
-                      }}
-                      data-testid="phone-source-manual"
+                      className="ux90-input"
+                      type="date"
+                      value={formData.delivery_date}
+                      onChange={(e) => setFormData((p) => ({ ...p, delivery_date: e.target.value }))}
+                      data-testid="input-delivery-date"
+                      required
                     />
-                    Input nomor manual
-                  </label>
+                  </div>
+                  <div className="ux90-field">
+                    <span>Pelanggan</span>
+                    <input className="ux90-input" type="text" readOnly value={poSummary?.customer || "-"} data-testid="display-customer" />
+                  </div>
+                  <div className="ux90-field">
+                    <span>Outlet / Cabang</span>
+                    <input
+                      className="ux90-input"
+                      type="text"
+                      value={formData.outlet}
+                      onChange={(e) => setFormData((p) => ({ ...p, outlet: e.target.value }))}
+                      placeholder="Nama cabang / outlet"
+                      data-testid="input-delivery-outlet"
+                    />
+                  </div>
+                  <div className="ux90-field">
+                    <span>Penerima (PIC)</span>
+                    <input
+                      className="ux90-input"
+                      type="text"
+                      value={formData.recipient}
+                      onChange={(e) => setFormData((p) => ({ ...p, recipient: e.target.value }))}
+                      placeholder="Nama penerima di lokasi"
+                      data-testid="input-delivery-recipient"
+                    />
+                  </div>
                 </div>
-                {phoneSource === "customer" && customerPhoneAvailable ? (
-                  <input
-                    type="text"
-                    readOnly
-                    value={customerPhoneAvailable}
-                    data-testid="display-customer-phone"
-                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.95rem", background: "#f8fafc", color: "#334155", boxSizing: "border-box" }}
-                  />
-                ) : (
-                  <input
-                    type="tel"
-                    value={manualPhone}
-                    onChange={(e) => {
-                      setManualPhone(e.target.value);
-                      if (phoneError) setPhoneError("");
-                    }}
-                    placeholder="08… atau +62…"
-                    disabled={formBusy}
-                    data-testid="input-recipient-phone"
-                    autoComplete="tel"
-                    style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                  />
-                )}
-                {phoneError ? (
-                  <p className="error" data-testid="recipient-phone-error" style={{ margin: "4px 0 0", color: "#b91c1c", fontSize: "0.8rem" }}>{phoneError}</p>
-                ) : null}
+
+                <details className="ux90-delivery-more" data-testid="delivery-more-details">
+                  <summary>Detail pengiriman &amp; kontak</summary>
+                  <div className="ux90-field-grid" style={{ marginTop: 10 }}>
+                    <div className="ux90-field is-span-3" data-testid="delivery-recipient-phone-field">
+                      <span>No. WhatsApp Penerima</span>
+                      <div role="radiogroup" aria-label="No. WhatsApp Penerima" style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px", marginBottom: 4 }}>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: customerPhoneAvailable ? "#1e293b" : "#94a3b8" }}>
+                          <input
+                            type="radio"
+                            name="recipient-phone-source"
+                            value="customer"
+                            checked={phoneSource === "customer"}
+                            disabled={!customerPhoneAvailable || formBusy}
+                            onChange={() => {
+                              if (!customerPhoneAvailable) return;
+                              setPhoneSource("customer");
+                              setPhoneError("");
+                            }}
+                            data-testid="phone-source-customer"
+                          />
+                          Gunakan nomor pelanggan
+                        </label>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                          <input
+                            type="radio"
+                            name="recipient-phone-source"
+                            value="manual"
+                            checked={phoneSource !== "customer"}
+                            disabled={formBusy}
+                            onChange={() => {
+                              setPhoneSource("manual");
+                              setPhoneError("");
+                            }}
+                            data-testid="phone-source-manual"
+                          />
+                          Input nomor manual
+                        </label>
+                      </div>
+                      {phoneSource === "customer" && customerPhoneAvailable ? (
+                        <input className="ux90-input" type="text" readOnly value={customerPhoneAvailable} data-testid="display-customer-phone" />
+                      ) : (
+                        <input
+                          className="ux90-input"
+                          type="tel"
+                          value={manualPhone}
+                          onChange={(e) => {
+                            setManualPhone(e.target.value);
+                            if (phoneError) setPhoneError("");
+                          }}
+                          placeholder="08… atau +62…"
+                          disabled={formBusy}
+                          data-testid="input-recipient-phone"
+                          autoComplete="tel"
+                        />
+                      )}
+                      {phoneError ? <p className="error" data-testid="recipient-phone-error" style={{ margin: "4px 0 0", color: "#b91c1c", fontSize: 12 }}>{phoneError}</p> : null}
+                    </div>
+                    <div className="ux90-field">
+                      <span>Sales</span>
+                      <input
+                        className="ux90-input"
+                        type="text"
+                        value={formData.sales}
+                        onChange={(e) => setFormData((p) => ({ ...p, sales: e.target.value }))}
+                        placeholder="Nama sales"
+                        data-testid="input-delivery-sales"
+                      />
+                    </div>
+                    <div className="ux90-field">
+                      <span>Ekspedisi / Armada</span>
+                      <input
+                        className="ux90-input"
+                        type="text"
+                        value={formData.expedition}
+                        onChange={(e) => setFormData((p) => ({ ...p, expedition: e.target.value }))}
+                        placeholder="Internal fleet / nama kurir"
+                        data-testid="input-delivery-expedition"
+                      />
+                    </div>
+                    <div className="ux90-field">
+                      <span>Zona Kirim</span>
+                      <input
+                        className="ux90-input"
+                        type="text"
+                        value={formData.delivery_zone}
+                        onChange={(e) => setFormData((p) => ({ ...p, delivery_zone: e.target.value }))}
+                        placeholder="mis. Jakarta Barat"
+                        data-testid="input-delivery-zone"
+                      />
+                    </div>
+                    <div className="ux90-field is-span-3">
+                      <span>Alamat Pengiriman</span>
+                      <textarea
+                        className="ux90-input"
+                        value={formData.address}
+                        onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
+                        placeholder="Alamat tujuan pengiriman..."
+                        rows={2}
+                        data-testid="input-delivery-address"
+                      />
+                    </div>
+                    {poSummary ? (
+                      <div className="ux90-field is-span-3">
+                        <SjDeliveryLocationPicker
+                          poLocation={poSummary.delivery_location || null}
+                          override={sjLocationOverride}
+                          onOverrideChange={setSjLocationOverride}
+                          disabled={formBusy}
+                          compact
+                        />
+                      </div>
+                    ) : null}
+                    <div className="ux90-field is-span-3">
+                      <span>Catatan Pengiriman</span>
+                      <input
+                        className="ux90-input"
+                        type="text"
+                        value={formData.notes}
+                        onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
+                        placeholder="Instruksi pengiriman, kontak penerima, nomor resi dll."
+                        data-testid="input-delivery-notes"
+                      />
+                    </div>
+                  </div>
+                </details>
               </div>
 
-              {/* Sales */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Sales Representative
-                </label>
-                <input
-                  type="text"
-                  value={formData.sales}
-                  onChange={(e) => setFormData((p) => ({ ...p, sales: e.target.value }))}
-                  placeholder="Nama sales"
-                  data-testid="input-delivery-sales"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                />
-              </div>
-
-              {/* Ekspedisi */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Ekspedisi / Armada
-                </label>
-                <input
-                  type="text"
-                  value={formData.expedition}
-                  onChange={(e) => setFormData((p) => ({ ...p, expedition: e.target.value }))}
-                  placeholder="Internal fleet / nama kurir"
-                  data-testid="input-delivery-expedition"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                />
-              </div>
-
-              {/* Zona Kirim */}
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                  Zona Kirim
-                </label>
-                <input
-                  type="text"
-                  value={formData.delivery_zone}
-                  onChange={(e) => setFormData((p) => ({ ...p, delivery_zone: e.target.value }))}
-                  placeholder="mis. Jakarta Barat"
-                  data-testid="input-delivery-zone"
-                  style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-                />
-              </div>
-            </div>
-
-            {/* Alamat Lengkap */}
-            <div style={{ marginTop: 16 }}>
-              <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                Alamat Lengkap Pengiriman
-              </label>
-              <textarea
-                value={formData.address}
-                onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
-                placeholder="Alamat tujuan pengiriman..."
-                rows={2}
-                data-testid="input-delivery-address"
-                style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-              />
-            </div>
-
-            {poSummary && (
-              <SjDeliveryLocationPicker
-                poLocation={poSummary.delivery_location || null}
-                override={sjLocationOverride}
-                onOverrideChange={setSjLocationOverride}
-                disabled={formBusy}
-              />
-            )}
-
-            {/* Catatan */}
-            <div style={{ marginTop: 12 }}>
-              <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 600, color: "#334155", marginBottom: 4 }}>
-                Catatan Pengiriman
-              </label>
-              <input
-                type="text"
-                value={formData.notes}
-                onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
-                placeholder="Instruksi pengiriman, kontak penerima, nomor resi dll."
-                data-testid="input-delivery-notes"
-                style={{ width: "100%", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.95rem", boxSizing: "border-box" }}
-              />
-            </div>
-          </section>
-
-          {/* Section 2: Line Items & Quantity Allocation */}
-          <section className="panel sd-pane-items" style={{ background: "#fff", border: "1px solid #CBD5E1", borderRadius: 10, padding: 12, marginBottom: 8 }}>
-            <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 8, marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-              <div>
-                <h3 style={{ margin: 0, fontSize: "1.1rem", color: "#1e293b" }}>2. Alokasi Kuantitas Pengiriman</h3>
-                <p style={{ margin: "2px 0 0 0", fontSize: "0.85rem", color: "#64748b" }}>
-                  Tentukan jumlah qty yang dikirimkan pada Surat Jalan ini. Sisa kuantitas PO akan tetap tersedia untuk pengiriman berikutnya.
-                </p>
-              </div>
-              {poSummary?.lines?.length > 0 && (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    type="button"
-                    onClick={handleFillAllRemaining}
-                    data-testid="btn-fill-all-remaining"
-                    style={{ padding: "6px 12px", background: "#fff", color: "#166534", border: "1px solid #CBD5E1", borderRadius: 6, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
-                  >
-                    Kirim Semua Sisa
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleClearAllQtys}
-                    data-testid="btn-clear-all-qtys"
-                    style={{ padding: "6px 12px", background: "#f8fafc", color: "#475569", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: "0.8rem", fontWeight: 600, cursor: "pointer" }}
-                  >
-                    Reset 0
-                  </button>
+              <div className="ux90-table-wrap" data-ux90-region="delivery-lines">
+                <div className="ux90-table-head">
+                  <h3>Alokasi Qty Surat Jalan</h3>
+                  {poSummary?.lines?.length > 0 ? (
+                    <div className="ux90-table-actions">
+                      <button type="button" onClick={handleFillAllRemaining} data-testid="btn-fill-all-remaining">Kirim Semua Sisa</button>
+                      <button type="button" className="is-muted" onClick={handleClearAllQtys} data-testid="btn-clear-all-qtys">Reset Qty 0</button>
+                    </div>
+                  ) : null}
                 </div>
-              )}
-            </header>
-
-            {poSummaryLoading ? (
-              <div style={{ padding: 32, textAlign: "center", color: "#64748b" }}>
-                Memuat rincian PO...
-              </div>
-            ) : !poSummary ? (
-              <div style={{ padding: 40, textAlign: "center", color: "#64748b" }}>
-                <Package size={36} style={{ opacity: 0.4, marginBottom: 8 }} />
-                <p style={{ margin: 0, fontWeight: 500 }}>Silakan pilih Nomor PO pada bagian 1 di atas.</p>
-              </div>
-            ) : (
-              <div className="sd-lines">
-                <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.9rem" }}>
-                  <thead>
-                    <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#475569" }}>
-                      <th style={{ padding: "10px 8px", width: 40 }}>#</th>
-                      <th style={{ padding: "10px 8px", minWidth: 220 }}>Barang / Jasa</th>
-                      <th style={{ padding: "10px 8px", width: 100 }}>Proses</th>
-                      <th style={{ padding: "10px 8px", width: 100, textAlign: "right" }}>Qty PO</th>
-                      <th style={{ padding: "10px 8px", width: 110, textAlign: "right" }}>Terkirim</th>
-                      <th style={{ padding: "10px 8px", width: 110, textAlign: "right" }}>Sisa PO</th>
-                      <th style={{ padding: "10px 8px", width: 140 }}>Qty Kirim Sekarang <span style={{ color: "#ef4444" }}>*</span></th>
-                      <th style={{ padding: "10px 8px", minWidth: 160 }}>Catatan Baris</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {poSummary.lines.map((line) => {
-                      const qtyVal = formData.line_qtys[line.line_idx] ?? 0;
-                      const isOver = qtyVal > line.remaining_qty;
-                      const isZeroRemaining = line.remaining_qty <= 0;
-
-                      return (
-                        <tr key={line.line_idx} data-testid={`delivery-line-row-${line.line_idx}`} style={{ borderBottom: "1px solid #f1f5f9", background: isOver ? "#fef2f2" : "#fff" }}>
-                          <td style={{ padding: "10px 8px", color: "#64748b", fontWeight: 600 }}>
-                            {line.line_idx + 1}
-                          </td>
-                          <td style={{ padding: "10px 8px" }}>
-                            <div style={{ fontWeight: 600, color: "#1e293b" }}>{line.name}</div>
-                            {line.color && <div style={{ fontSize: "0.75rem", color: "#64748b" }}>Warna: {line.color}</div>}
-                          </td>
-                          <td style={{ padding: "10px 8px" }}>
-                            <span style={{ fontSize: "0.75rem", padding: "2px 6px", borderRadius: 4, background: line.production_process === "non_print" ? "#fef3c7" : "#e0f2fe", color: line.production_process === "non_print" ? "#92400e" : "#0369a1", fontWeight: 600 }}>
-                              {line.production_process === "non_print" ? "Non-Cetak" : "Cetak"}
-                            </span>
-                          </td>
-                          <td style={{ padding: "10px 8px", textAlign: "right", color: "#475569" }}>
-                            {line.ordered_qty.toLocaleString("id-ID")} {line.unit}
-                          </td>
-                          <td style={{ padding: "10px 8px", textAlign: "right", color: "#64748b" }}>
-                            {line.shipped_qty.toLocaleString("id-ID")} {line.unit}
-                          </td>
-                          <td style={{ padding: "10px 8px", textAlign: "right", fontWeight: 600, color: line.remaining_qty > 0 ? "#0284c7" : "#94a3b8" }}>
-                            {line.remaining_qty.toLocaleString("id-ID")} {line.unit}
-                          </td>
-                          <td style={{ padding: "10px 8px" }}>
-                            <input
-                              type="number"
-                              min="0"
-                              max={line.remaining_qty}
-                              disabled={isZeroRemaining || formBusy}
-                              value={qtyVal}
-                              onChange={(e) => handleLineQtyChange(line.line_idx, e.target.value)}
-                              data-testid={`input-ship-qty-${line.line_idx}`}
-                              style={{
-                                width: "100%",
-                                padding: "6px 8px",
-                                border: "1px solid",
-                                borderColor: isOver ? "#ef4444" : "#cbd5e1",
-                                borderRadius: 6,
-                                boxSizing: "border-box",
-                                fontWeight: 600,
-                                textAlign: "right",
-                                background: isZeroRemaining ? "#f1f5f9" : "#fff",
-                              }}
-                            />
-                            {isOver && (
-                              <span style={{ display: "block", fontSize: "0.7rem", color: "#ef4444", marginTop: 2 }}>
-                                Max: {line.remaining_qty}
-                              </span>
-                            )}
-                          </td>
-                          <td style={{ padding: "10px 8px" }}>
-                            <input
-                              type="text"
-                              placeholder="Catatan item..."
-                              disabled={isZeroRemaining || formBusy}
-                              value={formData.line_notes[line.line_idx] || ""}
-                              onChange={(e) => handleLineNoteChange(line.line_idx, e.target.value)}
-                              data-testid={`input-ship-note-${line.line_idx}`}
-                              style={{ width: "100%", padding: "6px 8px", border: "1px solid #cbd5e1", borderRadius: 6, boxSizing: "border-box", fontSize: "0.85rem" }}
-                            />
-                          </td>
+                <div className="ux90-table-scroll">
+                  {poSummaryLoading ? (
+                    <div style={{ padding: 24, textAlign: "center", color: "#64748b" }}>Memuat rincian PO...</div>
+                  ) : !poSummary ? (
+                    <div className="ux90-empty-alloc" data-testid="delivery-po-empty-hint">
+                      <Package size={28} style={{ opacity: 0.4 }} />
+                      <p style={{ margin: 0 }}>Pilih Nomor PO di atas untuk mengisi qty pengiriman.</p>
+                    </div>
+                  ) : (
+                    <table className="ux90-table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Produk</th>
+                          <th className="is-num">Qty PO</th>
+                          <th className="is-num">Sudah Dikirim</th>
+                          <th className="is-num">Sisa</th>
+                          <th className="is-num">Qty Kirim <span className="ux90-req">*</span></th>
+                          <th>Catatan</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody>
+                        {poSummary.lines.map((line) => {
+                          const qtyVal = formData.line_qtys[line.line_idx] ?? 0;
+                          const isOver = qtyVal > line.remaining_qty;
+                          const isZeroRemaining = line.remaining_qty <= 0;
+                          return (
+                            <tr key={line.line_idx} data-testid={`delivery-line-row-${line.line_idx}`} style={{ background: isOver ? "#fef2f2" : undefined }}>
+                              <td>{line.line_idx + 1}</td>
+                              <td>
+                                <div style={{ fontWeight: 600 }}>{line.name}</div>
+                                {line.color ? <div className="ux90-item-meta">Warna: {line.color}</div> : null}
+                                <div className="ux90-item-meta">{line.production_process === "non_print" ? "Non-Cetak" : "Cetak"}</div>
+                              </td>
+                              <td className="is-num">{line.ordered_qty.toLocaleString("id-ID")} {line.unit}</td>
+                              <td className="is-num">{line.shipped_qty.toLocaleString("id-ID")} {line.unit}</td>
+                              <td className="is-num" style={{ fontWeight: 600, color: line.remaining_qty > 0 ? "#0284c7" : "#94a3b8" }}>
+                                {line.remaining_qty.toLocaleString("id-ID")} {line.unit}
+                              </td>
+                              <td className="is-num">
+                                <input
+                                  className={`ux90-qty-input${isOver ? " is-over" : ""}`}
+                                  type="number"
+                                  min="0"
+                                  max={line.remaining_qty}
+                                  disabled={isZeroRemaining || formBusy}
+                                  value={qtyVal}
+                                  onChange={(e) => handleLineQtyChange(line.line_idx, e.target.value)}
+                                  data-testid={`input-ship-qty-${line.line_idx}`}
+                                />
+                                {isOver ? <span className="ux90-inline-err">Max: {line.remaining_qty}</span> : null}
+                              </td>
+                              <td>
+                                <input
+                                  className="ux90-input"
+                                  type="text"
+                                  placeholder="Catatan item..."
+                                  disabled={isZeroRemaining || formBusy}
+                                  value={formData.line_notes[line.line_idx] || ""}
+                                  onChange={(e) => handleLineNoteChange(line.line_idx, e.target.value)}
+                                  data-testid={`input-ship-note-${line.line_idx}`}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
-            )}
+            </div>
 
-          </section>
-
+            <aside className="ux90-side">
+              <div className="ux90-card">
+                <h3>Ringkasan Pengiriman</h3>
+                <div className="ux90-summary-rows">
+                  <div>
+                    <span>Total Qty SJ</span>
+                    <strong data-testid="total-delivery-qty">{totalShippingQty.toLocaleString("id-ID")} pcs</strong>
+                  </div>
+                  <div>
+                    <span>Sisa PO saat ini</span>
+                    <strong>{poSummary ? Number(poSummary.total_remaining || 0).toLocaleString("id-ID") : "—"} pcs</strong>
+                  </div>
+                  <div className="is-total">
+                    <span>Sisa setelah SJ</span>
+                    <strong>
+                      {poSummary
+                        ? Math.max(0, Number(poSummary.total_remaining || 0) - totalShippingQty).toLocaleString("id-ID")
+                        : "—"}{" "}
+                      pcs
+                    </strong>
+                  </div>
+                </div>
+              </div>
+              <div className="ux90-info-box">
+                Satu PO dapat memiliki beberapa Surat Jalan. Membuat SJ di sini menerbitkan dokumen pengiriman — bukan konfirmasi barang sudah diterima pelanggan.
+              </div>
+            </aside>
           </div>
-          <div className="sd-form-footer">
-            {poSummary && (
-              <div style={{ marginRight: "auto", display: "flex", gap: 16, alignItems: "baseline", flexWrap: "wrap" }}>
-                <span style={{ fontSize: 13, color: "#475569" }}>
-                  Total Sisa PO: <strong>{poSummary.total_remaining.toLocaleString("id-ID")} pcs</strong>
-                </span>
-                <span style={{ fontSize: 14, color: totalShippingQty > 0 ? "#14532d" : "#475569", fontWeight: 700 }}>
-                  Surat Jalan Ini: <span data-testid="total-delivery-qty">{totalShippingQty.toLocaleString("id-ID")}</span> pcs
-                </span>
-              </div>
-            )}
+
+          <div className="ux90-footer sd-form-footer">
             <button
               type="button"
-              className="ghost"
+              className="ux90-btn-ghost"
               onClick={() => {
                 setViewMode("list");
                 setSearchParams({});
               }}
               disabled={formBusy}
               data-testid="btn-cancel-delivery"
-              style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontWeight: 600 }}
             >
               Batal
             </button>
             <button
               type="submit"
-              className="primary"
+              className="ux90-btn-primary primary"
               disabled={formBusy || !poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0}
               data-testid="btn-submit-delivery-order"
-              style={{
-                padding: "10px 24px",
-                borderRadius: 8,
-                background: (!poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0 || formBusy) ? "#94a3b8" : "#0284c7",
-                color: "#fff",
-                border: "none",
-                cursor: (!poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0 || formBusy) ? "not-allowed" : "pointer",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
             >
               {formBusy ? "Memproses..." : "Buat & Terbitkan Surat Jalan"}
             </button>

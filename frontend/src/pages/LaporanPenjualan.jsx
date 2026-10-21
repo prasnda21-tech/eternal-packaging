@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, Columns3, Download, ListTree, Printer, RefreshCw,
   Save, Settings2, ZoomIn, ZoomOut, StretchHorizontal,
@@ -112,9 +112,13 @@ function IconBtn({ label, onClick, disabled, active, children, testId }) {
 
 export default function LaporanPenjualan() {
   const { hasPerm, user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const reportFromUrl = String(searchParams.get("report") || "").trim();
+  const memorizeFromUrl = String(searchParams.get("memorize") || "").trim();
   const [catalog,setCatalog] = useState(null);
   const [selectedId,setSelectedId] = useState("");
   const [filters,setFilters] = useState(month);
+  const urlMemorizeApplied = useRef("");
   const [layout,setLayout] = useState({order:[],hidden:[],widths:{}});
   const [analysisRow,setAnalysisRow] = useState("nama_barang");
   const [groupCurrency,setGroupCurrency] = useState(false);
@@ -150,11 +154,14 @@ export default function LaporanPenjualan() {
       setCatalog(data);
       const allowed=data?.branches || [];
       setFilters(prev => ({...prev,branch:allowed.some(x=>x.id===prev.branch)?prev.branch:(allowed[0]?.id || "semua")}));
-      const first=(data?.reports || []).find(r=>r.implemented!==false);
+      const implemented=(data?.reports || []).filter(r=>r.implemented!==false);
+      const fromUrl=implemented.find(r=>r.id===reportFromUrl);
+      const first=fromUrl || implemented[0];
       if(first) setSelectedId(first.id);
     }).catch(e=>{if(active)setError(errorText(e))});
     return ()=>{active=false};
-  }, []);
+  }, [reportFromUrl]);
+
   useEffect(() => {
     setReadyPrefsKey("");
     const pending=presetPending.current;
@@ -169,7 +176,10 @@ export default function LaporanPenjualan() {
       setAnalysisRow(pending.layout?.analysis_row || "nama_barang");
       setGroupCurrency(!!pending.layout?.group_currency);
     } else {
-      setLayout(normalizeReportColumns(definitions,local || {}));
+      const seed = local || {
+        hidden: definitions.filter((c) => c && c.default === false).map((c) => c.key),
+      };
+      setLayout(normalizeReportColumns(definitions, seed));
       setAnalysisRow(local?.analysis_row || "nama_barang");setGroupCurrency(!!local?.group_currency);
     }
     setResult(null);setPrintResult(null);setPage(1);setPopover(null);setDraft(null);setZoom(1);
@@ -260,6 +270,15 @@ export default function LaporanPenjualan() {
     setGroupCurrency(!!p.layout?.group_currency);
     setResult(null);setPage(1);setPopover(null);setDraft(null);
   }
+  useEffect(() => {
+    if (!catalog || !memorizeFromUrl || urlMemorizeApplied.current === memorizeFromUrl) return;
+    const preset = (catalog.memorized || []).find((m) => String(m.id) === memorizeFromUrl);
+    if (!preset) return;
+    urlMemorizeApplied.current = memorizeFromUrl;
+    loadPreset(preset);
+    // One-shot hydrate from ?memorize=; loadPreset closes over latest catalog/selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, memorizeFromUrl, selectedId]);
   const startResize=useCallback((event,key,startWidth)=>{
     event.preventDefault();resizeClean.current?.();
     const x=event.clientX;const move=(e)=>setLayout(old=>({...old,widths:{...old.widths,[key]:Math.max(100,Math.min(600,startWidth+e.clientX-x))}}));
@@ -481,7 +500,25 @@ export default function LaporanPenjualan() {
       toolbar={toolbar}
     >
       {viewerMode ? <>
-        {!!result.gap&&<p className="erw-report-warning" role="status">{result.gap}</p>}
+        {!!result.gap && (
+          <div className="erw-report-warning" role="status">
+            <p className="erw-report-warning-summary">{result.gap}</p>
+            {(result.gap_detail || result.methodology) && (
+              <details className="erw-report-warning-detail">
+                <summary>Lihat detail perhitungan</summary>
+                {!!result.gap_detail && <p>{result.gap_detail}</p>}
+                {!!result.methodology && (
+                  <p>{Object.values(result.methodology).filter(Boolean).join(". ")}</p>
+                )}
+              </details>
+            )}
+          </div>
+        )}
+        {!result.gap && result.methodology && (
+          <details className="erw-method"><summary>Dasar perhitungan & sumber data</summary>
+            <p>{Object.values(result.methodology).filter(Boolean).join(". ")}</p>
+          </details>
+        )}
         <div className="erw-viewer-stage">
           <ReportTable report={result} layout={layout} onResize={startResize} zoom={zoom}/>
         </div>
@@ -491,9 +528,6 @@ export default function LaporanPenjualan() {
           <span>Halaman {page} dari {result.page_count||1}</span>
           <button type="button" disabled={busy||page>=(result.page_count||1)} onClick={()=>show(page+1)}>Berikutnya</button>
         </div>
-        {result.methodology && <details className="erw-method"><summary>Dasar perhitungan & sumber data</summary>
-          <p>{Object.values(result.methodology).filter(Boolean).join(". ")}</p>
-        </details>}
       </> : <div className="erw-report-empty">Pilih jenis laporan, periode, dan cabang, lalu klik <strong>Tampilkan</strong>.</div>}
     </ReportWorkspaceShell>
     <div className="erw-print-only">{printResult && <ReportTable report={printResult}/>}</div>

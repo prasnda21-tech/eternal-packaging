@@ -198,11 +198,13 @@ from services.purchase_http import register_purchase_routes
 from services.product_requests_http import register_product_request_routes
 from services.paint_http import register_paint_routes
 from services.crm_daily_reports_http import register_crm_daily_report_routes
+from services.crm_daily_report_settings_http import register_crm_daily_report_settings_routes
 from services.spk_http import register_spk_routes
 from services.customer_pricing_http import register_customer_pricing_routes
 from services.public_catalog_http import register_public_catalog_routes
 from services.sales_accounting_settings_http import register_sales_accounting_settings_routes
 from services.sales_user_mapping_http import register_sales_user_mapping_routes
+from services.sales_master_http import register_sales_master_routes
 from services.sales_pwa_http import register_sales_pwa_routes
 from services.sales_user_mapping import (
     attach_sales_ownership,
@@ -238,6 +240,8 @@ from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.sales_dashboard_http import register_sales_dashboard_routes
 from services.sales_reports_http import register_sales_report_routes
+from services.purchase_reports_http import register_purchase_report_routes
+from services.stock_reports_http import register_stock_report_routes
 from services.owner_analytics_http import register_owner_analytics_routes
 from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
@@ -539,6 +543,7 @@ async def user_permissions(user: dict) -> set:
         OPT_IN_ONLY_PERMISSIONS,
         director_full_permission_set,
         is_director_full_access_role,
+        merge_director_must_opt_in,
         strip_opt_in_permissions,
     )
 
@@ -549,14 +554,22 @@ async def user_permissions(user: dict) -> set:
     # Super admin gets everything, always — except production package filter
     # (Holding/Direktur unrestricted; others need explicit package confirmation).
     # OPT_IN_ONLY keys require explicit permissions_override True for super-admin
-    # unless the account role is direktur_utama (director-full includes OPT_IN).
+    # unless the account role is direktur_utama (director-full includes OPT_IN,
+    # except DIRECTOR_MUST_OPT_IN which stay explicit).
     if user.get("email"):
         u = await db.users.find_one({"email": user["email"]}, {"is_super_admin": 1, "role": 1})
         if u and u.get("is_super_admin"):
             sa_role = str(u.get("role") or role).strip().lower()
             if is_director_full_access_role(sa_role) and sa_role not in inactive:
-                return filter_package_permissions(
+                role_override = await _role_defaults_override()
+                base = merge_director_must_opt_in(
                     director_full_permission_set(),
+                    sa_role,
+                    user.get("permissions_override"),
+                    role_override,
+                )
+                return filter_package_permissions(
+                    base,
                     user,
                     os.environ.get("APP_ENV"),
                     os.environ.get("MONGO_URL"),
@@ -593,11 +606,19 @@ async def user_permissions(user: dict) -> set:
             user_confirmed_keys=user_confirmed,
         )
 
-    # Direktur: full registered permission set. Short role_permissions / deny
-    # overrides do not reduce access; Mongo docs are left intact.
+    # Direktur: full registered permission set minus DIRECTOR_MUST_OPT_IN
+    # (all Phase A urgent.* keys). Short role_permissions / deny
+    # overrides do not reduce other access; Mongo docs are left intact.
     if is_director_full_access_role(role):
-        return filter_package_permissions(
+        role_override = await _role_defaults_override()
+        base = merge_director_must_opt_in(
             director_full_permission_set(),
+            role,
+            user.get("permissions_override"),
+            role_override,
+        )
+        return filter_package_permissions(
+            base,
             user,
             os.environ.get("APP_ENV"),
             os.environ.get("MONGO_URL"),
@@ -5021,17 +5042,19 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
 
 @api_router.post("/orders/{order_id}/urgent")
-async def set_urgent(order_id: str, payload: UrgentPayload, user=Depends(current_user)):
-    await _require_perm(user, "urgent.manage")
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(404, "PO tidak ditemukan")
-    _ensure_not_cancelled(order)
-    order["priority"] = "urgent" if payload.urgent else "normal"
-    order["urgency_approved_by"] = user.get("email") if payload.urgent else None
-    add_timeline(order, order["current_stage"], user, note=f"Prioritas diubah ke {order['priority']}")
-    await _persist_order(order)
-    return {"order": order}
+async def set_urgent(order_id: str, user=Depends(current_user)):
+    """Legacy direct priority toggle — blocked. Use urgent-requests workflow.
+
+    Body is intentionally ignored so clients of any shape always receive 410
+    (not 422 from UrgentPayload validation).
+    """
+    raise HTTPException(
+        410,
+        "Endpoint Urgent lama dinonaktifkan. Gunakan pengajuan Urgent "
+        "(POST /orders/{id}/urgent-requests) dan persetujuan "
+        "(POST /urgent-requests/{id}/decide). Permission urgent.manage "
+        "tidak lagi mengubah prioritas PO.",
+    )
 
 
 class BufferStockPayload(BaseModel):
@@ -9181,6 +9204,8 @@ class EmployeeCreate(BaseModel):
     joined_at: Optional[str] = None
     notes: Optional[str] = None
     permissions_override: Optional[Dict[str, bool]] = None
+    # Operational recipient only — never used for login/auth.
+    notification_email: Optional[str] = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -9193,6 +9218,8 @@ class EmployeeUpdate(BaseModel):
     permissions_override: Optional[Dict[str, bool]] = None
     # Explicit user-level package confirmation (independent of role stamp).
     confirm_package_keys: Optional[List[str]] = None
+    # Operational recipient only — never used for login/auth. Empty clears.
+    notification_email: Optional[str] = None
 
 
 class PasswordResetPayload(BaseModel):
@@ -9679,6 +9706,19 @@ async def get_user_admin(user_id: str, user=Depends(require_perm("users.view")))
     return {"user": u}
 
 
+def _normalize_notification_email(value: Optional[str]) -> str:
+    """Normalize operational notification email. Empty → no address (no login fallback)."""
+    from services.urgent_email_outbox import normalize_email, _validate_email_strict
+
+    raw = normalize_email(value)
+    if not raw:
+        return ""
+    ok, norm_or_reason = _validate_email_strict(raw)
+    if not ok:
+        raise HTTPException(400, f"Email notifikasi tidak valid ({norm_or_reason})")
+    return norm_or_reason
+
+
 @api_router.post("/admin/users")
 async def create_user_admin(payload: EmployeeCreate, user=Depends(require_perm("users.manage"))):
     saved = await create_canonical_user(
@@ -9691,6 +9731,7 @@ async def create_user_admin(payload: EmployeeCreate, user=Depends(require_perm("
         joined_at=payload.joined_at,
         notes=payload.notes,
         permissions_override=payload.permissions_override,
+        notification_email=payload.notification_email,
         actor=user,
         require_password=False,
     )
@@ -9708,6 +9749,7 @@ async def create_canonical_user(
     joined_at: Optional[str] = None,
     notes: Optional[str] = None,
     permissions_override: Optional[Dict[str, bool]] = None,
+    notification_email: Optional[str] = None,
     actor: dict,
     require_password: bool = False,
 ) -> dict:
@@ -9723,6 +9765,7 @@ async def create_canonical_user(
         raise HTTPException(400, f"Role '{role_slug}' tidak dikenal")
     if await db.users.find_one({"email": email_norm}):
         raise HTTPException(409, "Email sudah digunakan oleh akun Eternal lain.")
+    notify_norm = _normalize_notification_email(notification_email)
     if require_password:
         if not password or len(str(password)) < 6:
             raise HTTPException(400, "Password minimal 6 karakter")
@@ -9735,6 +9778,7 @@ async def create_canonical_user(
         "id": str(uuid.uuid4()),
         "employee_id": await _next_employee_id(),
         "email": email_norm,
+        "notification_email": notify_norm,
         "name": name_clean,
         "nickname": (nickname or "").strip() or None,
         "phone": (phone or "").strip() or None,
@@ -9775,6 +9819,9 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
     if payload.phone is not None: updates["phone"] = payload.phone.strip() or None
     if payload.joined_at is not None: updates["joined_at"] = payload.joined_at
     if payload.notes is not None: updates["notes"] = payload.notes
+    # Login email is never updated here. notification_email is optional ops recipient.
+    if "notification_email" in payload.model_fields_set:
+        updates["notification_email"] = _normalize_notification_email(payload.notification_email)
     if payload.role is not None:
         if not await _role_slug_is_valid(payload.role):
             raise HTTPException(400, "Role tidak dikenal")
@@ -9847,6 +9894,7 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     from permissions import (
         director_full_permission_set,
         is_director_full_access_role,
+        merge_director_must_opt_in,
     )
     from services.purchasing_inventory_access import (
         PACKAGE_CONFIRMED_KEYS_FIELD,
@@ -9862,9 +9910,16 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     if role in inactive:
         default_from_role = []
     elif is_director_full_access_role(role):
-        # Runtime full-access; persisted role_permissions may be short — do not
-        # present that shortfall as the Direktur default in the triad UI.
-        default_from_role = sorted(director_full_permission_set())
+        # Runtime full-access minus DIRECTOR_MUST_OPT_IN; persisted role_permissions
+        # may be short — do not present that shortfall as the Direktur default.
+        default_from_role = sorted(
+            merge_director_must_opt_in(
+                director_full_permission_set(),
+                role,
+                existing.get("permissions_override"),
+                role_override,
+            )
+        )
     elif role_override and role in role_override:
         default_from_role = list(with_nav_defaults(set(role_override[role] or [])))
     else:
@@ -10059,6 +10114,7 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "payment_status": "Waiting",
         "design_status": "Waiting",
         "sales": preview.get("sales"),
+        "sales_master_id": None,
         "created_by_user": preview.get("created_by_user"),
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
@@ -10095,6 +10151,19 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
     branch_id = str(preview.get("branch_id") or "").strip()
     if branch_id.isdigit():
         new["branch_id"] = branch_id
+    # Soft-attach Master Sales id when Accurate label matches; never auto-create master.
+    from services.sales_master import resolve_for_po_write
+    import_mid, import_label, _ = await resolve_for_po_write(
+        db,
+        sales_master_id=None,
+        sales_label=new.get("sales"),
+        user=None,
+    )
+    if import_mid:
+        new["sales_master_id"] = import_mid
+    if import_label:
+        new["sales"] = import_label
+        new["seller"] = new.get("seller") or import_label
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
@@ -10705,6 +10774,7 @@ class SalesOrderCreatePayload(BaseModel):
     delivery_zone: Optional[str] = None
     payment_terms: Optional[str] = None
     sales: Optional[str] = None
+    sales_master_id: Optional[str] = None
     created_by_user: Optional[str] = None
     expedition: Optional[str] = None
     estimated_delivery: Optional[str] = None
@@ -11347,6 +11417,14 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "uploaded_at": now,
         })
 
+    from services.sales_master import resolve_for_po_write
+    sales_master_id, sales_label, _sales_uid_hint = await resolve_for_po_write(
+        db,
+        sales_master_id=payload.sales_master_id,
+        sales_label=payload.sales,
+        user=user,
+    )
+
     new_order = {
         "id": order_id,
         "po_number": po_num,
@@ -11370,14 +11448,15 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "payment_terms": (payload.payment_terms or "").strip() or None,
         "payment_status": "Waiting",
         "design_status": "Waiting",
-        "sales": (payload.sales or "").strip() or None,
+        "sales": sales_label,
+        "sales_master_id": sales_master_id,
         "created_by_user": (payload.created_by_user or "").strip() or user.get("name") or user.get("email"),
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
         "imported_at": now,
         "expedition": (payload.expedition or "").strip() or None,
         "delivery_zone": (payload.delivery_zone or "").strip() or None,
-        "seller": (payload.sales or "").strip() or None,
+        "seller": sales_label,
         "line_items": normalized_lines,
         "total_quantity": total_qty,
         "item_count": item_cnt,
@@ -11571,6 +11650,7 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
 class OrderSalesUpdatePayload(BaseModel):
     """Reassignment of Accurate sales label. Does not guess users.id."""
     sales: Optional[str] = None
+    sales_master_id: Optional[str] = None
 
 
 @api_router.patch("/orders/{order_id}/sales")
@@ -11579,6 +11659,7 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
 
     Unmatched labels explicitly clear sales_user_id. The label itself is kept
     as submitted (including empty). Permission: po.edit or sales_order.create.
+    Optional sales_master_id resolves label from Master Sales without rewriting history.
     """
     await _require_any_perm(user, "po.edit", "sales_order.create")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -11588,15 +11669,34 @@ async def update_order_sales(order_id: str, payload: OrderSalesUpdatePayload, us
     before = {
         "sales": order.get("sales"),
         "sales_user_id": order.get("sales_user_id"),
+        "sales_master_id": order.get("sales_master_id"),
     }
-    new_label = (payload.sales or "").strip() or None
-    order["sales"] = new_label
+    from services.sales_master import resolve_for_po_write
+    mid, label, _hint_uid = await resolve_for_po_write(
+        db,
+        sales_master_id=payload.sales_master_id,
+        sales_label=payload.sales,
+        user=user,
+    )
+    order["sales"] = label
+    order["sales_master_id"] = mid
     await attach_sales_ownership(db, order)
     add_timeline(order, order.get("current_stage") or 0, user, note="Edit Sales")
-    await _persist_order(order, persist_keys=("sales", "sales_user_id", "sales_ownership_status", "sales_needs_verification", "timeline"))
+    await _persist_order(
+        order,
+        persist_keys=(
+            "sales",
+            "sales_master_id",
+            "sales_user_id",
+            "sales_ownership_status",
+            "sales_needs_verification",
+            "timeline",
+        ),
+    )
     after = {
         "sales": order.get("sales"),
         "sales_user_id": order.get("sales_user_id"),
+        "sales_master_id": order.get("sales_master_id"),
     }
     await _audit_po(order, "orders.sales.update", user, before=before, after=after, note="Edit / reassignment Sales")
     return {"order": order}
@@ -16060,6 +16160,20 @@ register_sales_user_mapping_routes(
     require_any_perm=_require_any_perm,
     Depends=Depends,
 )
+register_sales_master_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+register_crm_daily_report_settings_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
 register_sales_pwa_routes(
     api_router,
     get_db=lambda: db,
@@ -16123,6 +16237,14 @@ register_notification_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=_require_perm,
+    Depends=Depends,
+)
+from services.urgent_requests_http import register_urgent_request_routes
+register_urgent_request_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_opt_in_perm=_require_opt_in_perm,
     Depends=Depends,
 )
 register_general_journal_routes(
@@ -16208,6 +16330,20 @@ register_sales_report_routes(
     api_router,
     get_db=lambda: db,
     require_perm=require_perm,
+    Depends=Depends,
+)
+register_purchase_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_stock_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    current_user=current_user,
+    user_permissions=user_permissions,
     Depends=Depends,
 )
 register_owner_analytics_routes(
@@ -17759,7 +17895,10 @@ async def _ensure_unique_business_number_index(collection, field: str) -> None:
 @app.on_event("shutdown")
 async def shutdown_db_client():
     from services.sales_activity.evaluator import stop_evaluator_loop
+    from services.urgent_email_worker import stop_urgent_email_worker
+
     stop_evaluator_loop()
+    stop_urgent_email_worker()
     client.close()
 
 
@@ -17971,6 +18110,12 @@ async def seed():
     await _financial_opening_ensure_indexes(db)
     from services.customer_pricing import ensure_indexes as _customer_pricing_ensure_indexes
     await _customer_pricing_ensure_indexes(db)
+    from services.urgent_requests import ensure_indexes as _urgent_requests_ensure_indexes
+    await _urgent_requests_ensure_indexes(db)
+    from services.urgent_email_outbox import ensure_indexes as _urgent_email_outbox_ensure_indexes
+    await _urgent_email_outbox_ensure_indexes(db)
+    from services.urgent_email_worker import start_urgent_email_worker
+    start_urgent_email_worker(db)
     from services.public_catalog import ensure_indexes as _public_catalog_ensure_indexes
     await _public_catalog_ensure_indexes(db)
     from services.cash_bank_master import ensure_indexes as _cash_bank_master_ensure_indexes
