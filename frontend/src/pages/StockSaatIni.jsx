@@ -142,14 +142,21 @@ export default function StockSaatIni() {
       setErr("Koreksi tidak tersedia: belum ada gudang aktif.");
       return;
     }
-    // No warehouse balance yet → official Saldo Awal workflow (not a dead click).
-    // Fallback to adjustment when user can adjust but lacks opening permission.
-    if (!balancePresent && canOpening) {
+    // No warehouse balance yet → Saldo Awal only. Do not let Adjustment invent a
+    // first baseline when the operator lacks opening permission.
+    if (!balancePresent) {
+      setInlineItemId(null);
+      setAdjustItem(null);
+      if (!canOpening) {
+        setErr(
+          "Belum ada saldo fisik. Saldo Awal memerlukan izin current_stock.update "
+          + "(atau permissions.manage). Koreksi tidak dapat menggantikan Saldo Awal.",
+        );
+        return;
+      }
       const wh = singleWarehouse
         || (warehouseId ? adjustWarehouses.find((row) => row.id === warehouseId) : null)
         || (adjustWarehouses.length === 1 ? adjustWarehouses[0] : null);
-      setInlineItemId(null);
-      setAdjustItem(null);
       setErr("");
       setOpeningSeed({
         itemId: item.master_item_id,
@@ -345,13 +352,11 @@ export default function StockSaatIni() {
         {flag}
       </span>
     ) : null;
-    // Allow inline editor even when balance is missing (adjustment 0→N establishes
-    // reconciled baseline). Preferred path for missing balance is Saldo Awal via beginAdjust.
-    if (canAdjust && inlineItemId === it.master_item_id && singleWarehouse) {
+    // Inline koreksi hanya untuk saldo yang sudah ada. Tanpa balance → Saldo Awal.
+    if (canAdjust && inlineItemId === it.master_item_id && singleWarehouse && book.present) {
       return (
         <InlinePhysicalEditor
           item={it}
-          missingBalance={!book.present}
           saving={savingAdjust}
           onCancel={() => setInlineItemId(null)}
           onSave={(target, setCellError, close) => saveInline(it, target, setCellError, close)}
@@ -922,10 +927,8 @@ export default function StockSaatIni() {
   );
 }
 
-function InlinePhysicalEditor({ item, missingBalance = false, saving, onCancel, onSave }) {
-  const [draft, setDraft] = useState(() => (
-    missingBalance ? "" : String(item.physical_qty ?? 0)
-  ));
+function InlinePhysicalEditor({ item, saving, onCancel, onSave }) {
+  const [draft, setDraft] = useState(() => String(item.physical_qty ?? 0));
   const [error, setError] = useState("");
   const inputRef = useRef(null);
 

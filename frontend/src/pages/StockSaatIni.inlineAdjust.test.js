@@ -136,7 +136,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     container.remove();
   });
 
-  test("Belum tersedia falls back to inline adjust when opening permission is missing", async () => {
+  test("Belum tersedia without opening permission does not open Adjustment", async () => {
     mockHasPerm.mockReturnValue(false);
     const missingItem = {
       ...ITEM,
@@ -163,8 +163,11 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => {
       container.querySelector('[data-testid="stock-adjust-item-1"]').click();
     });
-    expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).toBeNull();
     expect(container.querySelector('[data-testid="saldo-awal-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
+    expect(container.textContent).toMatch(/Saldo Awal memerlukan izin/);
+    expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
     act(() => root.unmount());
     container.remove();
   });
