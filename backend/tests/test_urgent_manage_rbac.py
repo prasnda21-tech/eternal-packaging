@@ -1,4 +1,4 @@
-"""Urgent toggle follows urgent.manage — not a hardcoded role whitelist."""
+"""Legacy urgent.manage endpoint is blocked; workflow uses urgent-requests."""
 import os
 import sys
 import uuid
@@ -74,52 +74,36 @@ def test_default_role_matrix_urgent_manage():
     assert "urgent.manage" in defaults["head_production"]
     assert "urgent.manage" in defaults["head_operations"]
     assert "urgent.manage" not in defaults["crm"]
-    assert "urgent.manage" not in defaults["operator"]
-    assert "urgent.manage" not in defaults["designer"]
-    assert "urgent.manage" not in defaults["screener"]
-    assert "urgent.manage" not in defaults["helper"]
-    assert "urgent.manage" not in defaults["driver"]
     crm_granted = effective_permissions("crm", {"urgent.manage": True})
     assert "urgent.manage" in crm_granted
 
 
-def test_endpoint_uses_permission_not_role_whitelist():
+def test_endpoint_blocked_not_role_whitelist():
     src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
     start = src.index('@api_router.post("/orders/{order_id}/urgent")')
     end = src.index("class BufferStockPayload")
     chunk = src[start:end]
-    assert 'await _require_perm(user, "urgent.manage")' in chunk
+    assert "410" in chunk
     assert 'require("admin", "head_production")' not in chunk
 
 
 @pytest.mark.anyio
-async def test_authorized_roles_can_set_urgent_and_operator_cannot(bind_motor_and_clean):
+async def test_legacy_urgent_endpoint_returns_410_for_all_roles(bind_motor_and_clean):
     oid = await _seed_order()
     cases = [
-        (_user("admin"), 200),
-        (_user("head_production"), 200),
-        (_user("head_operations"), 200),
-        (_user("crm", permissions_override={"urgent.manage": True}), 200),
-        (_user("crm"), 403),
-        (_user("operator"), 403),
+        _user("admin"),
+        _user("head_production"),
+        _user("crm", permissions_override={"urgent.manage": True}),
+        _user("operator"),
     ]
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            for user, expected in cases:
+            for user in cases:
                 app.dependency_overrides[current_user] = lambda u=user: u
-                before = await server.db.orders.find_one({"id": oid}, {"_id": 0})
-                stage_before = before.get("current_stage")
                 r = await client.post(f"/api/orders/{oid}/urgent", json={"urgent": True})
-                assert r.status_code == expected, (user["role"], r.status_code, r.text)
+                assert r.status_code == 410, (user["role"], r.status_code, r.text)
                 after = await server.db.orders.find_one({"id": oid}, {"_id": 0})
-                assert after.get("current_stage") == stage_before
-                if expected == 200:
-                    assert after.get("priority") == "urgent"
-                    await server.db.orders.update_one(
-                        {"id": oid}, {"$set": {"priority": "normal", "urgency_approved_by": None}}
-                    )
-                else:
-                    assert after.get("priority") == "normal"
+                assert after.get("priority") == "normal"
     finally:
         app.dependency_overrides.pop(current_user, None)

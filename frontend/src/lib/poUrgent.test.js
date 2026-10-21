@@ -1,23 +1,39 @@
-import { canManageUrgent } from "./poUrgent";
+import {
+  canManageUrgent,
+  canRequestUrgent,
+  canApproveUrgent,
+  canShowUrgentRequestButton,
+} from "./poUrgent";
 
-describe("CRM / urgent.manage visibility", () => {
-  test("intended roles with urgent.manage see the control", () => {
+describe("Urgent PO permission helpers", () => {
+  test("request/approve follow dedicated keys", () => {
+    expect(canRequestUrgent((p) => p === "urgent.request")).toBe(true);
+    expect(canApproveUrgent((p) => p === "urgent.approve")).toBe(true);
+    expect(canRequestUrgent((p) => p === "urgent.manage")).toBe(false);
+    expect(canApproveUrgent((p) => p === "urgent.manage")).toBe(false);
+  });
+
+  test("legacy canManageUrgent still detects urgent.manage only", () => {
     expect(canManageUrgent((p) => p === "urgent.manage")).toBe(true);
-    expect(canManageUrgent(() => true)).toBe(true);
+    expect(canManageUrgent((p) => p === "urgent.request")).toBe(false);
   });
 
-  test("default CRM payload without urgent.manage hides the control", () => {
-    const crmDefault = new Set(["po.view", "payment.view", "sales.receipt.view"]);
-    expect(canManageUrgent((p) => crmDefault.has(p))).toBe(false);
-  });
-
-  test("CRM override urgent.manage shows the control", () => {
-    const crmGranted = new Set(["po.view", "urgent.manage"]);
-    expect(canManageUrgent((p) => crmGranted.has(p))).toBe(true);
-  });
-
-  test("unrelated operational role stays hidden", () => {
-    const operator = new Set(["po.view", "operator.update"]);
-    expect(canManageUrgent((p) => operator.has(p))).toBe(false);
+  test("show request button only for Normal eligible PO", () => {
+    const has = (p) => p === "urgent.request";
+    expect(canShowUrgentRequestButton({
+      hasPerm: has,
+      order: { priority: "normal", cancelled: false },
+      request: null,
+    })).toBe(true);
+    expect(canShowUrgentRequestButton({
+      hasPerm: has,
+      order: { priority: "urgent", cancelled: false },
+      request: null,
+    })).toBe(false);
+    expect(canShowUrgentRequestButton({
+      hasPerm: has,
+      order: { priority: "normal", cancelled: false },
+      request: { status: "pending" },
+    })).toBe(false);
   });
 });
