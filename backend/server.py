@@ -238,6 +238,8 @@ from services.profit_loss_http import register_profit_loss_routes
 from services.financial_dashboard_http import register_financial_dashboard_routes
 from services.sales_dashboard_http import register_sales_dashboard_routes
 from services.sales_reports_http import register_sales_report_routes
+from services.purchase_reports_http import register_purchase_report_routes
+from services.stock_reports_http import register_stock_report_routes
 from services.owner_analytics_http import register_owner_analytics_routes
 from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.balance_sheet_http import register_balance_sheet_routes
@@ -16208,6 +16210,20 @@ register_sales_report_routes(
     api_router,
     get_db=lambda: db,
     require_perm=require_perm,
+    Depends=Depends,
+)
+register_purchase_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    Depends=Depends,
+)
+register_stock_report_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    current_user=current_user,
+    user_permissions=user_permissions,
     Depends=Depends,
 )
 register_owner_analytics_routes(

@@ -29,6 +29,9 @@ class ReportRunBody(BaseModel):
     page: int = 1
     page_size: int = 25
     include_all: bool = False
+    # Optional penjualan-per-sales filters (backward-compatible defaults = all).
+    sales_user_id: str = ""
+    attribution_status: str = "all"
 
 
 class MemorizeBody(BaseModel):
@@ -84,6 +87,8 @@ def register_sales_report_routes(
                 page=body.page,
                 page_size=body.page_size,
                 include_all=body.include_all,
+                sales_user_id=body.sales_user_id,
+                attribution_status=body.attribution_status,
             )
         except SalesReportError as exc:
             _raise(exc)
@@ -101,6 +106,8 @@ def register_sales_report_routes(
                 branch=body.branch,
                 layout=body.layout,
                 include_all=True,
+                sales_user_id=body.sales_user_id,
+                attribution_status=body.attribution_status,
             )
         except SalesReportError as exc:
             _raise(exc)
