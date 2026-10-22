@@ -1010,3 +1010,302 @@ async def test_feature_flags_off_preserve_legacy_cancel():
         assert blocked.status_code == 409, blocked.text
         legacy = await client.post(f"/api/sales-invoices/{inv['id']}/cancel")
         assert legacy.status_code == 200, legacy.text
+
+
+# ---------------------------------------------------------------------------
+# Receipt cancel → PO payment projection (sync_order_payment_projections)
+# ---------------------------------------------------------------------------
+
+async def test_cancel_last_receipt_before_penjadwalan_resyncs_payment():
+    """Last effective receipt cancel before stage 5 → Waiting, empty projections."""
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        await server.db.orders.update_one(
+            {"id": po["id"]},
+            {"$set": {"current_stage": 4, "design_status": "Waiting"}},
+        )
+        inv = await _create_invoice(client, po["id"], unit_price=500_000)
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        rec = await _create_receipt(client, inv["id"], 100_000, cash_bank_id=bank["id"])
+        order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert order.get("payment_status") == "Approved"
+        assert any(r.get("receipt_id") == rec["id"] for r in (order.get("payment_receipts") or []))
+        assert (order.get("payment_fact") or {}).get("receipt_id") == rec["id"]
+        hist_before = len(order.get("payment_approval_history") or [])
+
+        res = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Cancel last PAY", "idempotency_key": _key()},
+        )
+        assert res.status_code == 200, res.text
+
+        after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert after.get("payment_status") == "Waiting"
+        assert not (after.get("payment_receipts") or [])
+        assert after.get("payment_fact") is None
+        assert int(after.get("current_stage") or 0) < 5
+        assert len(after.get("payment_approval_history") or []) == hist_before
+        inv_after = await server.db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+        assert float(inv_after.get("paid_total") or 0) == 0.0
+
+
+async def test_cancel_one_receipt_keeps_other_effective_projection():
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        inv = await _create_invoice(client, po["id"], unit_price=1_000_000)
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        first = await _create_receipt(client, inv["id"], 200_000, cash_bank_id=bank["id"])
+        second = await _create_receipt(client, inv["id"], 300_000, cash_bank_id=bank["id"])
+        order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert order.get("payment_status") == "Approved"
+        hist_before = len(order.get("payment_approval_history") or [])
+
+        res = await client.post(
+            f"/api/sales-receipts/{first['id']}/business-cancel",
+            json={"reason": "Cancel first of two", "idempotency_key": _key()},
+        )
+        assert res.status_code == 200, res.text
+
+        after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        ids = {r.get("receipt_id") for r in (after.get("payment_receipts") or [])}
+        assert first["id"] not in ids
+        assert second["id"] in ids
+        assert (after.get("payment_fact") or {}).get("receipt_id") == second["id"]
+        assert after.get("payment_status") == "Approved"
+        assert len(after.get("payment_approval_history") or []) == hist_before
+
+
+async def test_cancel_idempotent_replay_does_not_duplicate_history_or_journals():
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        inv = await _create_invoice(client, po["id"])
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        rec = await _create_receipt(client, inv["id"], 150_000, cash_bank_id=bank["id"])
+        post = await client.post(
+            f"/api/sales-receipts/{rec['id']}/post-accounting",
+            json={"cash_bank_id": bank["id"]},
+        )
+        assert post.status_code == 200, post.text
+        key = _key()
+        first = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Idempotent cancel", "idempotency_key": key},
+        )
+        assert first.status_code == 200, first.text
+        order_mid = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        hist_mid = list(order_mid.get("payment_approval_history") or [])
+        receipts_mid = list(order_mid.get("payment_receipts") or [])
+        journals = await server.db.journal_entries.find(
+            {"source_id": rec["id"]}, {"_id": 0, "id": 1, "status": 1, "reversal_of": 1}
+        ).to_list(20)
+        assert len([j for j in journals if not j.get("reversal_of")]) == 1
+        assert len([j for j in journals if j.get("reversal_of")]) == 1
+
+        replay = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Idempotent cancel", "idempotency_key": key},
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json().get("outcome") in {"idempotent_replay", "already_cancelled", "cancelled"}
+
+        order_after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert list(order_after.get("payment_approval_history") or []) == hist_mid
+        assert list(order_after.get("payment_receipts") or []) == receipts_mid
+        journals_after = await server.db.journal_entries.find(
+            {"source_id": rec["id"]}, {"_id": 0}
+        ).to_list(20)
+        assert len(journals_after) == len(journals)
+
+
+async def test_unset_settlement_receipt_not_counted_after_sibling_cancel():
+    """settlement_effective=False never appears in PO projections."""
+    from services.sales_receipts import create_sales_receipt
+
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        inv = await _create_invoice(client, po["id"], unit_price=1_000_000)
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        settled = await _create_receipt(client, inv["id"], 250_000, cash_bank_id=bank["id"])
+        deferred = await create_sales_receipt(
+            server.db,
+            {
+                "invoice_id": inv["id"],
+                "receipt_date": "2026-09-06",
+                "amount": 100_000,
+                "cash_bank_id": bank["id"],
+            },
+            CANCEL_USER,
+            defer_operational_settlement=True,
+            require_posted_invoice_journal=True,
+        )
+        assert deferred.get("settlement_effective") is False
+        order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        ids = {r.get("receipt_id") for r in (order.get("payment_receipts") or [])}
+        assert settled["id"] in ids
+        assert deferred["id"] not in ids
+
+        res = await client.post(
+            f"/api/sales-receipts/{settled['id']}/business-cancel",
+            json={"reason": "Cancel settled only", "idempotency_key": _key()},
+        )
+        assert res.status_code == 200, res.text
+        after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert deferred["id"] not in {r.get("receipt_id") for r in (after.get("payment_receipts") or [])}
+        assert after.get("payment_status") == "Waiting"
+        assert after.get("payment_fact") is None
+
+
+async def test_already_cancelled_heals_stale_payment_projections():
+    """already_cancelled path rebuilds PO projections when receipt already cancelled."""
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        inv = await _create_invoice(client, po["id"])
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        rec = await _create_receipt(client, inv["id"], 175_000, cash_bank_id=bank["id"])
+
+        # Simulate stale cancel: business cancelled without projection sync.
+        await server.db.sales_receipts.update_one(
+            {"id": rec["id"]},
+            {
+                "$set": {
+                    "financial_status": "cancelled",
+                    "cancelled": True,
+                    "settlement_effective": False,
+                }
+            },
+        )
+        stale = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert stale.get("payment_status") == "Approved"
+        assert any(r.get("receipt_id") == rec["id"] for r in (stale.get("payment_receipts") or []))
+
+        res = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Heal already cancelled", "idempotency_key": _key()},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json().get("outcome") == "already_cancelled"
+
+        after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert after.get("payment_status") == "Waiting"
+        assert not (after.get("payment_receipts") or [])
+        assert after.get("payment_fact") is None
+        inv_after = await server.db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+        assert float(inv_after.get("paid_total") or 0) == 0.0
+
+
+async def test_cancel_last_receipt_after_penjadwalan_keeps_approved():
+    """After stage >= 5, cancel last receipt clears projections but does not rewind Approved."""
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        inv = await _create_invoice(client, po["id"], unit_price=500_000)
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        rec = await _create_receipt(client, inv["id"], 100_000, cash_bank_id=bank["id"])
+        await server.db.orders.update_one(
+            {"id": po["id"]},
+            {
+                "$set": {
+                    "current_stage": 5,
+                    "status_label": "Penjadwalan",
+                    "payment_status": "Approved",
+                    "payment_approved_by": "system",
+                }
+            },
+        )
+        res = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Cancel after Penjadwalan", "idempotency_key": _key()},
+        )
+        assert res.status_code == 200, res.text
+        after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert after.get("payment_status") == "Approved"
+        assert not (after.get("payment_receipts") or [])
+        assert after.get("payment_fact") is None
+        assert int(after.get("current_stage") or 0) == 5
+
+
+async def test_already_cancelled_clean_projections_skip_order_write(monkeypatch):
+    """already_cancelled with reconciled projections must not call sync/recalc writers."""
+    import services.sales_receipts as receipts_mod
+
+    await _enable_flags()
+    await _configure_settings()
+    bank = await _cash_bank()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        _cancel_user()
+        po = await _seed_po()
+        inv = await _create_invoice(client, po["id"])
+        await _finalize(client, inv["id"])
+        await _post_invoice(client, inv["id"])
+        rec = await _create_receipt(client, inv["id"], 80_000, cash_bank_id=bank["id"])
+        first = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Clean cancel", "idempotency_key": _key()},
+        )
+        assert first.status_code == 200, first.text
+        mid = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+
+        calls = {"sync": 0, "recalc": 0}
+        real_sync = receipts_mod.sync_order_payment_projections
+        real_recalc = receipts_mod._recalc_invoice_payment_from_receipts
+
+        async def spy_sync(db, po_id):
+            calls["sync"] += 1
+            return await real_sync(db, po_id)
+
+        async def spy_recalc(db, invoice_id):
+            calls["recalc"] += 1
+            return await real_recalc(db, invoice_id)
+
+        monkeypatch.setattr(receipts_mod, "sync_order_payment_projections", spy_sync)
+        monkeypatch.setattr(receipts_mod, "_recalc_invoice_payment_from_receipts", spy_recalc)
+
+        second = await client.post(
+            f"/api/sales-receipts/{rec['id']}/business-cancel",
+            json={"reason": "Already clean", "idempotency_key": _key()},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json().get("outcome") == "already_cancelled"
+        assert calls["sync"] == 0
+        assert calls["recalc"] == 0
+
+        after = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+        assert after.get("payment_status") == mid.get("payment_status")
+        assert list(after.get("payment_receipts") or []) == list(mid.get("payment_receipts") or [])
+        assert after.get("payment_fact") == mid.get("payment_fact")
