@@ -45,9 +45,43 @@ def bind_motor():
     server.db = server.client[os.environ['DB_NAME']]
 
 
+async def _seed_master(name: str, *, item_code: str = "", item_type: str = "INVENTORY") -> dict:
+    import server
+    mid = f"mst-{uuid.uuid4().hex[:10]}"
+    aid = f"aid-{uuid.uuid4().hex[:10]}"
+    doc = {
+        "id": mid,
+        "master_item_id": mid,
+        "accurate_item_id": aid,
+        "item_code": item_code or f"SKU-{uuid.uuid4().hex[:6].upper()}",
+        "item_name": name,
+        "name": name,
+        "unit": "pcs",
+        "item_type": item_type,
+        "is_active": True,
+    }
+    await server.db.master_items.insert_one(dict(doc))
+    return doc
+
+
+def _line_with_master(master: dict, **extra) -> dict:
+    row = {
+        "item_code": master.get("item_code"),
+        "name": master.get("item_name") or master.get("name"),
+        "quantity": 100,
+        "unit": "pcs",
+        "production_process": "print",
+        "master_item_id": master["id"],
+        "accurate_item_id": master.get("accurate_item_id"),
+    }
+    row.update(extra)
+    return row
+
+
 @pytest.mark.anyio
 async def test_case_a_manual_create_single_line_print():
     """CASE A: manual create 1 line cetak -> sukses."""
+    master = await _seed_master("Paper Cup 12oz Motif", item_code="PC-12")
     po_num = f"PO-TEST-A-{uuid.uuid4().hex[:6].upper()}"
     payload = {
         "po_number": po_num,
@@ -64,15 +98,13 @@ async def test_case_a_manual_create_single_line_print():
         "expedition": "Internal fleet",
         "notes": "Jangan ditumpuk lebih dari 5 box",
         "line_items": [
-            {
-                "item_code": "PC-12",
-                "name": "Paper Cup 12oz Motif",
-                "quantity": 5000,
-                "unit": "pcs",
-                "color": "2 Warna",
-                "production_process": "print",
-                "notes": "Warna navy dan kuning",
-            }
+            _line_with_master(
+                master,
+                quantity=5000,
+                color="2 Warna",
+                production_process="print",
+                notes="Warna navy dan kuning",
+            )
         ],
     }
 
@@ -105,6 +137,9 @@ async def test_case_a_manual_create_single_line_print():
 @pytest.mark.anyio
 async def test_case_b_manual_create_multiline():
     """CASE B: manual create multi-line -> sukses."""
+    m1 = await _seed_master("Paper Bowl 800ml", item_code="BW-01")
+    m2 = await _seed_master("Tutup Bowl 800ml Bening", item_code="LD-01")
+    m3 = await _seed_master("Sendok Plastik Hitam", item_code="SP-01")
     po_num = f"PO-TEST-B-{uuid.uuid4().hex[:6].upper()}"
     payload = {
         "po_number": po_num,
@@ -112,28 +147,9 @@ async def test_case_b_manual_create_multiline():
         "outlet": "Cabang Bandung",
         "sales": "Rina",
         "line_items": [
-            {
-                "item_code": "BW-01",
-                "name": "Paper Bowl 800ml",
-                "quantity": 3000,
-                "unit": "pcs",
-                "color": "1 Warna",
-                "production_process": "print",
-            },
-            {
-                "item_code": "LD-01",
-                "name": "Tutup Bowl 800ml Bening",
-                "quantity": 3000,
-                "unit": "pcs",
-                "production_process": "non_print",
-            },
-            {
-                "item_code": "SP-01",
-                "name": "Sendok Plastik Hitam",
-                "quantity": 1500,
-                "unit": "pcs",
-                "production_process": "non_print",
-            },
+            _line_with_master(m1, quantity=3000, color="1 Warna", production_process="print"),
+            _line_with_master(m2, quantity=3000, production_process="non_print"),
+            _line_with_master(m3, quantity=1500, production_process="non_print"),
         ],
     }
 
@@ -162,27 +178,19 @@ async def test_case_b_manual_create_multiline():
 @pytest.mark.anyio
 async def test_case_c_exact_line_identity_no_merge():
     """CASE C: line item nama sama tapi baris berbeda -> tidak dimerge."""
+    m1 = await _seed_master("Cup 8oz", item_code="PC-08")
+    m2 = await _seed_master("Cup 8oz", item_code="PC-08")
     po_num = f"PO-TEST-C-{uuid.uuid4().hex[:6].upper()}"
     payload = {
         "po_number": po_num,
         "customer": "Kopi Kenangan Senja",
         "line_items": [
-            {
-                "item_code": "PC-08",
-                "name": "Cup 8oz",
-                "quantity": 1000,
-                "color": "Putih Polos",
-                "production_process": "non_print",
-                "notes": "Batch Pagi",
-            },
-            {
-                "item_code": "PC-08",
-                "name": "Cup 8oz",
-                "quantity": 2000,
-                "color": "Hitam Matte",
-                "production_process": "print",
-                "notes": "Batch Sore",
-            },
+            _line_with_master(
+                m1, quantity=1000, color="Putih Polos", production_process="non_print", notes="Batch Pagi"
+            ),
+            _line_with_master(
+                m2, quantity=2000, color="Hitam Matte", production_process="print", notes="Batch Sore"
+            ),
         ],
     }
 
@@ -246,11 +254,12 @@ async def test_case_d_reject_zero_or_negative_qty():
 @pytest.mark.anyio
 async def test_case_e_duplicate_po_number_rejected():
     """CASE E: duplicate No PO -> reject (409)."""
+    master = await _seed_master("Item A")
     po_num = f"PO-TEST-DUP-{uuid.uuid4().hex[:6].upper()}"
     payload = {
         "po_number": po_num,
         "customer": "PT Pelanggan Tetap",
-        "line_items": [{"name": "Item A", "quantity": 100}],
+        "line_items": [_line_with_master(master, quantity=100)],
     }
 
     app.dependency_overrides[current_user] = lambda: {
@@ -302,11 +311,12 @@ async def test_case_f_invalid_customer_or_empty_lines():
 @pytest.mark.anyio
 async def test_case_g_initial_workflow_matches_import():
     """CASE G: manual PO initial workflow matches imported PO (stage 0, timeline, initial status)."""
+    master = await _seed_master("Barang X")
     po_num = f"PO-TEST-G-{uuid.uuid4().hex[:6].upper()}"
     payload = {
         "po_number": po_num,
         "customer": "PT Workflow Test",
-        "line_items": [{"name": "Barang X", "quantity": 500, "production_process": "print"}],
+        "line_items": [_line_with_master(master, quantity=500, production_process="print")],
     }
 
     app.dependency_overrides[current_user] = lambda: {
@@ -338,13 +348,14 @@ async def test_case_g_initial_workflow_matches_import():
 @pytest.mark.anyio
 async def test_case_h_appears_in_list_and_status_po():
     """CASE H: manual PO appears in list / Status PO."""
+    master = await _seed_master("Barang H")
     po_num = f"PO-TEST-H-{uuid.uuid4().hex[:6].upper()}"
     cust_name = f"Cust H {uuid.uuid4().hex[:4]}"
     payload = {
         "po_number": po_num,
         "customer": cust_name,
         "outlet": "Cabang H",
-        "line_items": [{"name": "Barang H", "quantity": 1200}],
+        "line_items": [_line_with_master(master, quantity=1200)],
     }
 
     app.dependency_overrides[current_user] = lambda: {
@@ -409,6 +420,8 @@ async def test_case_i_rbac_unauthorized_rejected():
 @pytest.mark.anyio
 async def test_case_j_normalized_payload_equivalence():
     """CASE J: normalized business payload comparison: manual create vs imported PO."""
+    m1 = await _seed_master("Produk Satu", item_code="ITEM-1")
+    m2 = await _seed_master("Produk Dua", item_code="ITEM-2")
     po_num_man = f"PO-COMP-M-{uuid.uuid4().hex[:6].upper()}"
     payload_man = {
         "po_number": po_num_man,
@@ -424,8 +437,8 @@ async def test_case_j_normalized_payload_equivalence():
         "expedition": "Internal fleet",
         "notes": "Prioritas standar",
         "line_items": [
-            {"item_code": "ITEM-1", "name": "Produk Satu", "quantity": 1000, "unit": "pcs", "color": "Merah", "production_process": "print"},
-            {"item_code": "ITEM-2", "name": "Produk Dua", "quantity": 500, "unit": "pcs", "production_process": "non_print"},
+            _line_with_master(m1, quantity=1000, color="Merah", production_process="print"),
+            _line_with_master(m2, quantity=500, production_process="non_print"),
         ],
     }
 

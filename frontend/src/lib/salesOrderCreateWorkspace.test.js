@@ -159,7 +159,7 @@ describe("sales order create workspace contract", () => {
     const progress = salesOrderProgress({
       customer: "PT A",
       customer_id: "c1",
-      line_items: [{ name: "Box", quantity: 2 }],
+      line_items: [{ name: "Box", quantity: 2, master_item_id: "m1" }],
     });
     expect(progress).toMatchObject({
       completed: 2,
@@ -172,14 +172,14 @@ describe("sales order create workspace contract", () => {
     expect(salesOrderProgress({
       customer: "PT A",
       customer_id: "c1",
-      line_items: [{ name: "Box", quantity: 2, unit_price: "" }],
+      line_items: [{ name: "Box", quantity: 2, unit_price: "", master_item_id: "m1" }],
     }).statusLabel).toBe("Lengkap");
     expect(validateSalesOrderCreate({
       customer: "PT A",
       customer_id: "c1",
       customer_phone: "",
       address: "",
-      line_items: [{ name: "Box", quantity: 2 }],
+      line_items: [{ name: "Box", quantity: 2, master_item_id: "m1" }],
     })).toBe("");
   });
 
@@ -190,14 +190,14 @@ describe("sales order create workspace contract", () => {
       customer_id: null,
       customer_phone: " ",
       address: "Jl",
-      line_items: [{ name: "A", quantity: 1 }],
+      line_items: [{ name: "A", quantity: 1, master_item_id: "m1" }],
     })).toBe("Pelanggan baru terdeteksi: No. HP / WhatsApp pelanggan wajib diisi.");
     expect(validateSalesOrderCreate({
       customer: "Baru",
       customer_id: null,
       customer_phone: "0812",
       address: " ",
-      line_items: [{ name: "A", quantity: 1 }],
+      line_items: [{ name: "A", quantity: 1, master_item_id: "m1" }],
     })).toBe("Pelanggan baru terdeteksi: Alamat lengkap pengiriman wajib diisi.");
     expect(validateSalesOrderCreate({
       customer: "Baru",
@@ -218,7 +218,14 @@ describe("sales order create workspace contract", () => {
       customer_id: null,
       customer_phone: "0812",
       address: "Jl",
-      line_items: [{ name: "A", quantity: 0 }],
+      line_items: [{ name: "A", quantity: 1 }],
+    })).toMatch(/Master Produk wajib/);
+    expect(validateSalesOrderCreate({
+      customer: "Baru",
+      customer_id: null,
+      customer_phone: "0812",
+      address: "Jl",
+      line_items: [{ name: "A", quantity: 0, master_item_id: "m1" }],
     })).toBe("Baris #1: Quantity harus angka lebih besar dari 0.");
   });
 

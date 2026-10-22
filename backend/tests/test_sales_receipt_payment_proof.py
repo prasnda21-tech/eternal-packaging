@@ -57,8 +57,10 @@ def anyio_backend():
 async def bind_motor_and_clean():
     from motor.motor_asyncio import AsyncIOMotorClient
 
+    # Pin DB: other suites (e.g. customer_credit) may mutate os.environ["DB_NAME"].
+    os.environ["DB_NAME"] = "eternal_packaging_test"
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
+    server.db = server.client["eternal_packaging_test"]
     await server.db.sales_invoices.delete_many({"po_number": {"$regex": r"^TEST-PROOF-"}})
     await server.db.sales_receipts.delete_many({"po_number": {"$regex": r"^TEST-PROOF-"}})
     await server.db.orders.delete_many({"po_number": {"$regex": r"^TEST-PROOF-"}})
@@ -104,6 +106,28 @@ async def _seed_order(*, design_approved=True, prefix="TEST-PROOF"):
     return doc
 
 
+async def _ensure_invoice_journal_posted(invoice_id: str) -> None:
+    """Minimal posted sales_invoice journal so CREATE penerimaan passes P3 gate."""
+    existing = await server.db.journal_entries.find_one(
+        {"source_type": "sales_invoice", "source_id": str(invoice_id), "status": "posted"},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        return
+    jid = str(uuid.uuid4())
+    await server.db.journal_entries.insert_one({
+        "id": jid,
+        "number": f"FIX-INV-{jid[:12]}",
+        "source_type": "sales_invoice",
+        "source_id": str(invoice_id),
+        "status": "posted",
+        "reversal_of": None,
+        "date": "2026-09-01",
+        "description": "fixture posted invoice journal",
+        "created_at": "2026-09-01T00:00:00Z",
+    })
+
+
 async def _create_invoice(client, order, unit_price=100000, qty=100):
     res = await client.post(
         "/api/sales-invoices",
@@ -119,6 +143,7 @@ async def _create_invoice(client, order, unit_price=100000, qty=100):
     assert finalized.status_code == 200, finalized.text
     invoice = finalized.json()["invoice"]
     assert str(invoice.get("financial_status") or "").lower() == "finalized"
+    await _ensure_invoice_journal_posted(invoice_id)
     return invoice
 
 

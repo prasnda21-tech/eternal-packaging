@@ -11289,22 +11289,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     
     from services.master_items import resolve_line_production_process
     from services.order_line_addon import validate_service_print_requires_parent
-
-    master_ids_for_type = [
-        (li.master_item_id or "").strip()
-        for li in payload.line_items
-        if (li.master_item_id or "").strip()
-    ]
-    item_type_by_master: Dict[str, str] = {}
-    if master_ids_for_type:
-        type_rows = await db.master_items.find(
-            {"id": {"$in": list(set(master_ids_for_type))}},
-            {"_id": 0, "id": 1, "item_type": 1},
-        ).to_list(len(set(master_ids_for_type)))
-        for row in type_rows:
-            mid_key = str(row.get("id") or "").strip()
-            if mid_key:
-                item_type_by_master[mid_key] = str(row.get("item_type") or "").strip().upper()
+    from services.line_product_replacement import require_po_create_line_master
 
     normalized_lines = []
     seen_line_ids = set()
@@ -11319,8 +11304,16 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         if q <= 0:
             raise HTTPException(400, f"Line item #{i+1}: Quantity harus > 0.")
 
-        mid = (li.master_item_id or "").strip() or None
-        aid = (li.accurate_item_id or "").strip() or None
+        # Owner policy: every new PO goods line must resolve to a valid Master Produk.
+        # Name alone is never identity. Empty unit_price remains allowed.
+        master, mapped = await require_po_create_line_master(
+            db,
+            master_item_id=li.master_item_id,
+            accurate_item_id=li.accurate_item_id,
+            line_no=i + 1,
+        )
+        mid = mapped.get("master_item_id")
+        aid = mapped.get("accurate_item_id")
         proc = await resolve_line_production_process(
             db,
             master_item_id=mid,
@@ -11333,12 +11326,13 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             raise HTTPException(400, f"Line item #{i+1}: line_id duplikat '{line_id}'.")
         seen_line_ids.add(line_id)
 
+        unit = (li.unit or "").strip() or (mapped.get("unit") or "pcs")
         row = {
             "line_id": line_id,
-            "item_code": (li.item_code or "").strip() or None,
+            "item_code": (li.item_code or "").strip() or mapped.get("item_code") or None,
             "name": name,
             "quantity": q,
-            "unit": (li.unit or "pcs").strip() or "pcs",
+            "unit": unit.strip() or "pcs",
             "color": (li.color or "").strip() or None,
             "production_process": proc,
             "notes": (li.notes or "").strip() or None,
@@ -11348,7 +11342,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "price_source": li.price_source,
             "price_review": bool(li.price_review),
         }
-        stamped_type = item_type_by_master.get(mid or "")
+        stamped_type = str(master.get("item_type") or "").strip().upper()
         if stamped_type:
             row["item_type"] = stamped_type
         parent_id = (li.parent_line_id or "").strip() if li.parent_line_id is not None else ""
