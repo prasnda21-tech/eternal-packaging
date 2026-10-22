@@ -3,7 +3,24 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, purchasePaymentStatusLabel, invoiceSourceLabel, todayYmd, purchaseRowInteractionProps, formatPurchaseDateTime} from "../lib/purchaseUi";
+import {
+  errDetail,
+  formatRupiah,
+  friendlyLoadError,
+  newIdempotencyKey,
+  purchaseStatusPillClass,
+  purchasePaymentStatusLabel,
+  invoiceSourceLabel,
+  todayYmd,
+  purchaseRowInteractionProps,
+  formatPurchaseDateTime,
+  PURCHASE_TERM_PRESETS,
+  addDaysYmd,
+  termPresetFromDays,
+  paymentTermLabel,
+  dueDateLabel,
+  canEditPurchaseInvoicePaymentTerms,
+} from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import PurchasingFlowNav from "./PurchasingFlowNav";
@@ -24,6 +41,7 @@ export default function FakturPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_invoices.create");
+  const canEditTerms = hasPerm("purchase_invoices.edit");
   const canPostAccounting = hasPerm("purchase_accounting.post");
   const canReverseAccounting = hasPerm("purchase_accounting.reverse");
   const queryPoId = searchParams.get("purchase_order_id") || "";
@@ -55,6 +73,10 @@ export default function FakturPembelian() {
   const [receiptId, setReceiptId] = useState(canCreate ? queryReceiptId : "");
   const [preview, setPreview] = useState(null);
   const [invoiceDate, setInvoiceDate] = useState(todayYmd());
+  const [termPreset, setTermPreset] = useState("NET30");
+  const [paymentTermDays, setPaymentTermDays] = useState(30);
+  const [dueDate, setDueDate] = useState(() => addDaysYmd(todayYmd(), 30));
+  const [dueManual, setDueManual] = useState(false);
   const [qty, setQty] = useState({});
   const [precedesGoodsReceipt, setPrecedesGoodsReceipt] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -63,6 +85,14 @@ export default function FakturPembelian() {
   const [allocAmount, setAllocAmount] = useState("");
   const [allocErr, setAllocErr] = useState("");
   const [allocBusy, setAllocBusy] = useState(false);
+  const [editingTerms, setEditingTerms] = useState(false);
+  const [editTermPreset, setEditTermPreset] = useState("NET30");
+  const [editTermDays, setEditTermDays] = useState(30);
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editDueManual, setEditDueManual] = useState(false);
+  const [editReason, setEditReason] = useState("");
+  const [termsBusy, setTermsBusy] = useState(false);
+  const [termsErr, setTermsErr] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true); setErr("");
@@ -142,10 +172,47 @@ export default function FakturPembelian() {
     return { grand };
   }, [preview, qty]);
 
+  useEffect(() => {
+    if (dueManual) return;
+    setDueDate(addDaysYmd(invoiceDate, paymentTermDays));
+  }, [invoiceDate, paymentTermDays, dueManual]);
+
+  const applyTermPreset = (presetId, { edit = false } = {}) => {
+    const preset = PURCHASE_TERM_PRESETS.find((p) => p.id === presetId) || PURCHASE_TERM_PRESETS[0];
+    if (edit) {
+      setEditTermPreset(preset.id);
+      if (preset.days !== null) {
+        setEditTermDays(preset.days);
+        // Changing termin always recomputes due; manual override only via date input.
+        setEditDueManual(false);
+        setEditDueDate(addDaysYmd(detail?.invoice_date || invoiceDate, preset.days));
+      }
+      return;
+    }
+    setTermPreset(preset.id);
+    if (preset.days !== null) {
+      setPaymentTermDays(preset.days);
+      setDueManual(false);
+      setDueDate(addDaysYmd(invoiceDate, preset.days));
+    }
+  };
+
   const save = async () => {
     if (busy || !preview || !canCreate) return;
     if (invoiceSource === "purchase_order" && earlyNeeded && !precedesGoodsReceipt) {
       setErr("Centang acknowledgement 'Faktur mendahului penerimaan barang' untuk menyimpan.");
+      return;
+    }
+    if (!invoiceDate) {
+      setErr("Tanggal faktur wajib diisi.");
+      return;
+    }
+    if (!dueDate) {
+      setErr("Tanggal jatuh tempo wajib diisi.");
+      return;
+    }
+    if (!Number.isFinite(Number(paymentTermDays)) || Number(paymentTermDays) < 0) {
+      setErr("Termin pembayaran tidak valid.");
       return;
     }
     setBusy(true); setErr(""); setOk("");
@@ -160,6 +227,8 @@ export default function FakturPembelian() {
         receipt_id: invoiceSource === "receipt" ? (preview.receipt_id || receiptId) : undefined,
         precedes_goods_receipt: invoiceSource === "purchase_order" ? precedesGoodsReceipt : false,
         invoice_date: invoiceDate,
+        payment_term_days: Number(paymentTermDays),
+        due_date: dueDate,
         lines,
         idempotency_key: newIdempotencyKey(),
       });
@@ -167,6 +236,55 @@ export default function FakturPembelian() {
       setOk(`Faktur ${res.invoice?.invoice_number || ""} berhasil disimpan.`);
     } catch (ex) { setErr(errDetail(ex)); }
     finally { setBusy(false); }
+  };
+
+  const startEditTerms = () => {
+    if (!detail) return;
+    const days = Number(detail.payment_term_days);
+    const preset = termPresetFromDays(Number.isFinite(days) ? days : 0);
+    setEditTermPreset(preset);
+    setEditTermDays(Number.isFinite(days) ? days : 0);
+    setEditDueDate(String(detail.due_date || addDaysYmd(detail.invoice_date, days || 0) || "").slice(0, 10));
+    setEditDueManual(false);
+    setEditReason("");
+    setTermsErr("");
+    setEditingTerms(true);
+  };
+
+  const saveTerms = async () => {
+    if (!detail || termsBusy || !canEditPurchaseInvoicePaymentTerms(detail, canEditTerms)) return;
+    if (!editDueDate) {
+      setTermsErr("Tanggal jatuh tempo wajib diisi.");
+      return;
+    }
+    if (!Number.isFinite(Number(editTermDays)) || Number(editTermDays) < 0) {
+      setTermsErr("Termin pembayaran tidak valid.");
+      return;
+    }
+    if (String(editReason || "").trim().length < 3) {
+      setTermsErr("Alasan perubahan wajib diisi (minimal 3 karakter).");
+      return;
+    }
+    setTermsBusy(true);
+    setTermsErr("");
+    try {
+      const res = await api.updatePurchaseInvoicePaymentTerms(detail.id, {
+        payment_term_days: Number(editTermDays),
+        due_date: editDueDate,
+        reason: String(editReason).trim(),
+      });
+      setDetail(res.invoice);
+      setEditingTerms(false);
+      setOk("Termin / jatuh tempo diperbarui.");
+      // Refresh from API so history survives client state and matches post-reload view.
+      const fresh = (await api.getPurchaseInvoice(detail.id)).invoice;
+      setDetail(fresh);
+      if (view === "list") load();
+    } catch (ex) {
+      setTermsErr(errDetail(ex));
+    } finally {
+      setTermsBusy(false);
+    }
   };
 
   const loadEligibleAdvances = useCallback(async (invoice) => {
@@ -327,6 +445,8 @@ export default function FakturPembelian() {
                 <col className="col-ref" />
                 <col className="col-supplier" />
                 <col className="col-date" />
+                <col className="col-term" />
+                <col className="col-date" />
                 <col className="col-money" />
                 <col className="col-money" />
                 <col className="col-money" />
@@ -339,6 +459,8 @@ export default function FakturPembelian() {
                   <th>Referensi</th>
                   <th>Supplier</th>
                   <th>Tanggal</th>
+                  <th>Termin</th>
+                  <th>Jatuh Tempo</th>
                   <th className="num">Grand Total</th>
                   <th className="num">Dibayar</th>
                   <th className="num">Sisa</th>
@@ -346,10 +468,10 @@ export default function FakturPembelian() {
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr className="purchase-empty-row"><td colSpan={9} className="muted small">Memuat…</td></tr>}
+                {loading && <tr className="purchase-empty-row"><td colSpan={11} className="muted small">Memuat…</td></tr>}
                 {!loading && rows.length === 0 && (
                   <tr className="purchase-empty-row">
-                    <td colSpan={9} className="muted">Belum ada faktur.</td>
+                    <td colSpan={11} className="muted">Belum ada faktur.</td>
                   </tr>
                 )}
                 {rows.map((r) => {
@@ -368,6 +490,8 @@ export default function FakturPembelian() {
                       <td className="mono cell-clip" title={refLabel}>{refLabel}</td>
                       <td className="cell-clip" title={r.supplier}>{r.supplier}</td>
                       <td className="nowrap">{r.invoice_date || "—"}</td>
+                      <td className="nowrap" data-testid={`invoice-term-${r.id}`}>{paymentTermLabel(r.payment_term_days)}</td>
+                      <td className="nowrap" data-testid={`invoice-due-${r.id}`}>{dueDateLabel(r.due_date)}</td>
                       <td className="num">{formatRupiah(r.grand_total)}</td>
                       <td className="num">{formatRupiah(r.paid_total)}</td>
                       <td className="num">{formatRupiah(r.outstanding_amount)}</td>
@@ -449,9 +573,68 @@ export default function FakturPembelian() {
                 completed={[invoiceDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length}
                 total={2}
               />
-              <FormSection id="invoice-header" title="Informasi Faktur" status={computeStatus([{ value: invoiceDate, isRequired: true }])}>
+              <FormSection
+                id="invoice-header"
+                title="Informasi Faktur"
+                status={computeStatus([
+                  { value: invoiceDate, isRequired: true },
+                  { value: dueDate, isRequired: true },
+                ])}
+              >
                 <FormField id="invoice-date" label="Tanggal faktur" isRequired value={invoiceDate}>
                   <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
+                </FormField>
+                <FormField id="invoice-term" label="Termin pembayaran" isRequired value={String(paymentTermDays)}>
+                  <div className="purchase-term-row" data-testid="invoice-term-presets">
+                    {PURCHASE_TERM_PRESETS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={`ghost sm${termPreset === p.id ? " is-active" : ""}`}
+                        data-testid={`term-preset-${p.id.toLowerCase()}`}
+                        onClick={() => applyTermPreset(p.id)}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  {termPreset === "CUSTOM" && (
+                    <input
+                      type="number"
+                      min="0"
+                      value={paymentTermDays}
+                      onChange={(e) => {
+                        setPaymentTermDays(e.target.value);
+                        setDueManual(false);
+                      }}
+                      data-testid="invoice-term-days-input"
+                    />
+                  )}
+                </FormField>
+                <FormField id="invoice-due" label="Tanggal jatuh tempo" isRequired value={dueDate}>
+                  <div className="purchase-due-row">
+                    <input
+                      type="date"
+                      value={dueDate}
+                      onChange={(e) => {
+                        setDueManual(true);
+                        setDueDate(e.target.value);
+                      }}
+                      data-testid="invoice-due-date-input"
+                    />
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      data-testid="invoice-due-recalc"
+                      onClick={() => {
+                        setDueManual(false);
+                        setDueDate(addDaysYmd(invoiceDate, paymentTermDays));
+                      }}
+                    >
+                      Hitung ulang dari termin
+                    </button>
+                  </div>
+                  <p className="hint">Ganti termin menghitung ulang jatuh tempo. Override manual via input tanggal; tombol hitung ulang mengembalikan dari termin.</p>
                 </FormField>
               </FormSection>
               <FormSection id="invoice-lines" title="Detail Item" status={Object.values(qty).some(v => Number(v) > 0) ? "complete" : "incomplete"}>
@@ -545,10 +728,123 @@ export default function FakturPembelian() {
               <span className="value" data-testid="detail-invoice-date">{detail.invoice_date || "—"}</span>
             </div>
             <div>
+              <span className="label">Termin</span>
+              <span className="value" data-testid="detail-payment-term">{paymentTermLabel(detail.payment_term_days)}</span>
+            </div>
+            <div data-testid="detail-due-date-block">
+              <span className="label">Jatuh Tempo</span>
+              {!editingTerms ? (
+                <span className="value purchase-due-date-row">
+                  <span data-testid="detail-due-date">{dueDateLabel(detail.due_date)}</span>
+                  {detail.due_status && detail.due_status !== "LUNAS" && (
+                    <span className="muted small" data-testid="detail-due-status"> · {detail.due_status}</span>
+                  )}
+                  {canEditPurchaseInvoicePaymentTerms(detail, canEditTerms) && (
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      data-testid="btn-ubah-termin-jatuh-tempo"
+                      onClick={startEditTerms}
+                    >
+                      Ubah Termin / Jatuh Tempo
+                    </button>
+                  )}
+                </span>
+              ) : (
+                <span className="value purchase-due-date-edit" data-testid="detail-terms-edit">
+                  <div className="purchase-term-row">
+                    {PURCHASE_TERM_PRESETS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={`ghost sm${editTermPreset === p.id ? " is-active" : ""}`}
+                        data-testid={`edit-term-preset-${p.id.toLowerCase()}`}
+                        disabled={termsBusy}
+                        onClick={() => applyTermPreset(p.id, { edit: true })}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  {editTermPreset === "CUSTOM" && (
+                    <input
+                      type="number"
+                      min="0"
+                      value={editTermDays}
+                      disabled={termsBusy}
+                      onChange={(e) => {
+                        setEditTermDays(e.target.value);
+                        setEditDueManual(false);
+                        setEditDueDate(addDaysYmd(detail.invoice_date, e.target.value));
+                      }}
+                      data-testid="edit-term-days-input"
+                    />
+                  )}
+                  <input
+                    type="date"
+                    value={editDueDate}
+                    disabled={termsBusy}
+                    onChange={(e) => {
+                      setEditDueManual(true);
+                      setEditDueDate(e.target.value);
+                    }}
+                    data-testid="detail-due-date-input"
+                  />
+                  <input
+                    type="text"
+                    value={editReason}
+                    disabled={termsBusy}
+                    onChange={(e) => setEditReason(e.target.value)}
+                    placeholder="Alasan perubahan (wajib, min. 3 karakter)"
+                    data-testid="edit-terms-reason"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="primary sm"
+                    disabled={termsBusy || String(editReason || "").trim().length < 3}
+                    onClick={saveTerms}
+                    data-testid="btn-simpan-termin-jatuh-tempo"
+                  >
+                    {termsBusy ? "Menyimpan…" : "Simpan"}
+                  </button>
+                  <button type="button" className="ghost sm" disabled={termsBusy} onClick={() => setEditingTerms(false)} data-testid="btn-batal-termin-jatuh-tempo">
+                    Batal
+                  </button>
+                </span>
+              )}
+              {termsErr ? <p className="error" data-testid="terms-edit-error">{termsErr}</p> : null}
+              {!canEditPurchaseInvoicePaymentTerms(detail, canEditTerms) && detail.edit_payment_terms_block_reason ? (
+                <p className="muted small" data-testid="terms-edit-blocked">{detail.edit_payment_terms_block_reason}</p>
+              ) : null}
+            </div>
+            <div>
               <span className="label">Status Pembayaran</span>
               <span className={purchaseStatusPillClass(detail.payment_status)} data-testid="detail-payment-status">{purchasePaymentStatusLabel(detail.payment_status)}</span>
             </div>
           </div>
+
+          {(detail.payment_terms_history || []).length > 0 && (
+            <section className="purchase-terms-history" data-testid="invoice-terms-history">
+              <h4 className="purchase-activity-title">Riwayat Termin / Jatuh Tempo</h4>
+              <ul className="purchase-terms-history-list">
+                {[...(detail.payment_terms_history || [])].reverse().slice(0, 10).map((entry, idx) => (
+                  <li key={`${entry.at || "h"}-${idx}`} data-testid={`terms-history-row-${idx}`}>
+                    <span className="muted small">{formatPurchaseDateTime(entry.at)}</span>
+                    {" · "}
+                    <span>{entry?.by?.name || entry?.by?.email || "—"}</span>
+                    {" · "}
+                    <span>
+                      {paymentTermLabel(entry?.before?.payment_term_days)} / {dueDateLabel(entry?.before?.due_date)}
+                      {" → "}
+                      {paymentTermLabel(entry?.after?.payment_term_days)} / {dueDateLabel(entry?.after?.due_date)}
+                    </span>
+                    {entry.reason ? <span className="muted small"> — {entry.reason}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
           <div className="purchase-table-wrap">
             <table className="prod-table" data-testid="invoice-detail-lines">

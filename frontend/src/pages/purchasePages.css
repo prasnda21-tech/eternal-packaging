@@ -536,6 +536,45 @@
   font-weight: 600;
 }
 
+.purchase-page .purchase-term-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.purchase-page .purchase-term-row .ghost.sm.is-active {
+  border-color: var(--ink, #172126);
+  background: #eef3f5;
+  font-weight: 600;
+}
+
+.purchase-page .purchase-due-row,
+.purchase-page .purchase-due-date-row,
+.purchase-page .purchase-due-date-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.purchase-page .purchase-terms-history {
+  margin: 8px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+.purchase-page .purchase-terms-history-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table-inv col.col-term { width: 8% !important; }
+
 .purchase-page .purchase-modal-body {
   padding: 16px 18px 18px;
 }

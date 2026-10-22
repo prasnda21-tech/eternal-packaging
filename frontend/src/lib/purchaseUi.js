@@ -1,10 +1,13 @@
+import { addWibCalendarDays, getWibTodayString } from "./wibCalendarDate";
+
 export function formatRupiah(num) {
   const n = Number(num) || 0;
   return "Rp " + n.toLocaleString("id-ID");
 }
 
+/** Prefer Asia/Jakarta calendar day for purchasing date defaults (Owner timezone). */
 export function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  return getWibTodayString();
 }
 
 export function newIdempotencyKey() {
@@ -227,4 +230,48 @@ export function validatePurchasePaymentAmount(amount, outstanding) {
     return `Jumlah pembayaran melebihi sisa tagihan (${formatRupiah(out)}).`;
   }
   return "";
+}
+
+/** Purchase invoice payment-term presets (Accurate-style Net N / COD). */
+export const PURCHASE_TERM_PRESETS = [
+  { id: "COD", label: "COD", days: 0 },
+  { id: "NET7", label: "Net 7", days: 7 },
+  { id: "NET14", label: "Net 14", days: 14 },
+  { id: "NET30", label: "Net 30", days: 30 },
+  { id: "CUSTOM", label: "Custom", days: null },
+];
+
+/** Add whole calendar days to YYYY-MM-DD without UTC midnight shift (WIB-safe). */
+export function addDaysYmd(startYmd, days) {
+  return addWibCalendarDays(startYmd, days);
+}
+
+export function termPresetFromDays(days) {
+  const n = Number(days);
+  if (!Number.isFinite(n)) return "CUSTOM";
+  const hit = PURCHASE_TERM_PRESETS.find((p) => p.days !== null && p.days === n);
+  return hit ? hit.id : "CUSTOM";
+}
+
+export function paymentTermLabel(days) {
+  if (days === null || days === undefined || days === "") return "—";
+  const n = Number(days);
+  if (!Number.isFinite(n)) return "—";
+  if (n === 0) return "COD";
+  const hit = PURCHASE_TERM_PRESETS.find((p) => p.days === n);
+  return hit ? hit.label : `Net ${n}`;
+}
+
+export function dueDateLabel(dueDate) {
+  if (!dueDate) return "Belum ditentukan";
+  return String(dueDate).slice(0, 10);
+}
+
+export function canEditPurchaseInvoicePaymentTerms(invoice, hasEditPerm) {
+  if (!hasEditPerm || !invoice) return false;
+  if (invoice.cancelled === true) return false;
+  if (invoice.can_edit_payment_terms === false) return false;
+  const status = String(invoice.payment_status || "").toUpperCase();
+  if (status === "LUNAS") return false;
+  return true;
 }
