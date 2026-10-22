@@ -11264,7 +11264,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         raise HTTPException(400, "Minimal 1 line item.")
     
     from services.master_items import resolve_line_production_process
-    from services.order_line_addon import validate_lines_parent_graph
+    from services.order_line_addon import validate_service_print_requires_parent
 
     master_ids_for_type = [
         (li.master_item_id or "").strip()
@@ -11334,10 +11334,12 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             row["parent_line_idx"] = int(li.parent_line_idx)
         normalized_lines.append(row)
 
-    graph_err = validate_lines_parent_graph(normalized_lines)
-    if graph_err:
-        raise HTTPException(400, graph_err)
-    
+    # Create-only: SERVICE Cetak Add On must have a valid non-SERVICE induk.
+    # Does not rewrite historical PO documents (read paths never call this).
+    parent_err = validate_service_print_requires_parent(normalized_lines)
+    if parent_err:
+        raise HTTPException(400, parent_err)
+
     order_date = _parse_order_date_iso(payload.order_date, default_days_ahead=0)
     deadline = _parse_order_date_iso(payload.deadline or payload.estimated_delivery, default_days_ahead=3)
     estimated_delivery = _parse_order_date_iso(payload.estimated_delivery or payload.deadline, default_days_ahead=3)

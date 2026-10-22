@@ -23,6 +23,12 @@ describe("MasterItemSearchSelect helpers", () => {
       item_code: "CUP-16",
       accurate_item_id: "AID-1",
     })).toBe("Cup 16oz — CUP-16");
+    expect(formatMasterItemLabel({
+      item_name: "Sablon Warna 2",
+      item_code: "SVC-W2",
+      item_type: "SERVICE",
+      accurate_item_id: "AID-S",
+    })).toBe("Sablon Warna 2 — SVC-W2 · Jasa");
     expect(masterItemOptionKey({
       item_name: "Cup 16oz",
       accurate_item_id: "AID-1",

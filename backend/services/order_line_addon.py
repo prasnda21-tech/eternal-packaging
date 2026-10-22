@@ -490,3 +490,36 @@ def validate_lines_parent_graph(lines: Sequence[dict]) -> Optional[str]:
         if err:
             return f"Baris #{i + 1}: {err}"
     return None
+
+
+def validate_service_print_requires_parent(lines: Sequence[dict]) -> Optional[str]:
+    """Create-path rule: SERVICE + Cetak must name a valid non-SERVICE induk.
+
+    Does not invent parents. Missing/invalid/self/SERVICE parent → error.
+    Non-print SERVICE and INVENTORY lines are unchanged. Historical reads never
+    call this; only create (and optional future edit) enforce it.
+    """
+    from quantity_rules import is_print_line
+
+    graph_err = validate_lines_parent_graph(lines)
+    if graph_err:
+        return graph_err
+    for i, row in enumerate(lines):
+        if not isinstance(row, dict) or line_cancelled(row):
+            continue
+        if _line_item_type(row) != "SERVICE":
+            continue
+        if not is_print_line(row):
+            continue
+        parent = resolve_parent_idx(row, lines)
+        if parent is None:
+            return (
+                f"Baris #{i + 1}: Jasa Cetak (Add On warna) wajib memilih barang "
+                "induk non-SERVICE dalam PO yang sama (parent_line_id)."
+            )
+        parent_type = _line_item_type(lines[parent])
+        if parent_type == "SERVICE":
+            return (
+                f"Baris #{i + 1}: barang induk Add On tidak boleh bertipe SERVICE."
+            )
+    return None

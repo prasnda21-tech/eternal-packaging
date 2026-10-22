@@ -243,6 +243,41 @@ export function createSalesOrderLineItem(overrides = {}) {
 }
 
 /** Same messages and branches as the previous inline submit validation. */
+/** Create-path: SERVICE + Cetak must pick a valid non-SERVICE induk in this PO. */
+export function validateSalesOrderAddonParents(lineItems) {
+  const lines = Array.isArray(lineItems) ? lineItems : [];
+  const idToIdx = {};
+  lines.forEach((li, i) => {
+    const id = String(li?.line_id || li?.rowKey || "").trim();
+    if (id) idToIdx[id] = i;
+  });
+  for (let i = 0; i < lines.length; i += 1) {
+    const li = lines[i] || {};
+    const itype = String(li.item_type || "").trim().toUpperCase();
+    const proc = li.production_process === "non_print" ? "non_print" : "print";
+    if (itype !== "SERVICE" || proc !== "print") continue;
+    const selfId = String(li.line_id || li.rowKey || "").trim();
+    const parentId = String(li.parent_line_id || "").trim();
+    if (!parentId) {
+      return (
+        `Baris #${i + 1}: Jasa Cetak (Add On warna) wajib memilih barang induk ` +
+        "non-SERVICE dalam PO yang sama."
+      );
+    }
+    if (selfId && parentId === selfId) {
+      return `Baris #${i + 1}: Add On tidak boleh merujuk dirinya sendiri sebagai induk.`;
+    }
+    if (!Object.prototype.hasOwnProperty.call(idToIdx, parentId)) {
+      return `Baris #${i + 1}: barang induk tidak ditemukan dalam PO (parent_line_id).`;
+    }
+    const parentType = String(lines[idToIdx[parentId]]?.item_type || "").trim().toUpperCase();
+    if (parentType === "SERVICE") {
+      return `Baris #${i + 1}: barang induk Add On tidak boleh bertipe SERVICE.`;
+    }
+  }
+  return "";
+}
+
 export function validateSalesOrderCreate(formData) {
   if (!String(formData?.customer || "").trim()) {
     return "Customer wajib diisi.";
@@ -268,6 +303,8 @@ export function validateSalesOrderCreate(formData) {
       return `Baris #${i + 1}: Quantity harus angka lebih besar dari 0.`;
     }
   }
+  const addonErr = validateSalesOrderAddonParents(formData.line_items);
+  if (addonErr) return addonErr;
   return "";
 }
 
@@ -333,6 +370,9 @@ export function buildSalesOrderCreatePayload(formData) {
       else delete next.line_id;
       if (parentId) next.parent_line_id = parentId;
       else delete next.parent_line_id;
+      const itemType = String(li.item_type || "").trim().toUpperCase();
+      if (itemType) next.item_type = itemType;
+      else delete next.item_type;
       delete next.parent_line_idx;
       delete next.entry_mode;
       delete next.rowKey;
@@ -368,6 +408,7 @@ const INITIAL_LINE_ITEM = {
   price_review: false,
   price_lock: false,
   parent_line_id: "",
+  item_type: "",
 };
 
 const CHIP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
@@ -1332,6 +1373,7 @@ export default function PesananPenjualan() {
           item_code: "",
           accurate_item_id: null,
           master_item_id: null,
+          item_type: "",
           price_review: hadPrice || current.price_lock || current.price_source === "pengaturan_harga",
           price_source: hadPrice ? "manual" : "",
         };
@@ -1341,6 +1383,7 @@ export default function PesananPenjualan() {
           : master.production_process === "print"
             ? "print"
             : null;
+        const masterType = String(master.item_type || "").trim().toUpperCase();
         const next = {
           ...current,
           name: master.item_name || current.name,
@@ -1348,9 +1391,14 @@ export default function PesananPenjualan() {
           unit: master.unit || current.unit || "pcs",
           accurate_item_id: master.accurate_item_id || null,
           master_item_id: master.id || master.master_item_id || null,
+          item_type: masterType || "",
           price_message: "",
           ...(masterProcess ? { production_process: masterProcess } : {}),
         };
+        // Inventory / non-SERVICE lines are never Add On children.
+        if (masterType && masterType !== "SERVICE") {
+          next.parent_line_id = "";
+        }
         if (hadPrice || current.price_lock) {
           next.price_review = true;
           if (next.price_source === "pengaturan_harga") next.price_source = "manual";
@@ -2868,6 +2916,7 @@ export default function PesananPenjualan() {
                         })();
                         const detailSummary = [
                           line.item_code,
+                          String(line.item_type || "").toUpperCase() === "SERVICE" ? "Jasa Add On" : "",
                           line.production_process === "non_print" ? "Tidak Cetak" : "",
                           line.color,
                           parentLabel,
@@ -2901,6 +2950,7 @@ export default function PesananPenjualan() {
                                               item_name: line.name,
                                               item_code: line.item_code,
                                               unit: line.unit,
+                                              item_type: line.item_type || "",
                                             }
                                             : null
                                         }
@@ -3034,11 +3084,19 @@ export default function PesananPenjualan() {
                                       data-testid={`line-parent-${originalIndex}`}
                                       aria-label="Barang induk Add On"
                                     >
-                                      <option value="">— Bukan Add On / tanpa induk —</option>
+                                      <option value="">
+                                        {String(line.item_type || "").toUpperCase() === "SERVICE"
+                                          && (line.production_process || "print") !== "non_print"
+                                          ? "— Wajib pilih induk (bukan Add On kosong) —"
+                                          : "— Bukan Add On / tanpa induk —"}
+                                      </option>
                                       {formData.line_items.map((candidate, candIdx) => {
                                         if (candIdx === originalIndex) return null;
                                         const candId = String(candidate.line_id || candidate.rowKey || "").trim();
                                         if (!candId) return null;
+                                        if (String(candidate.item_type || "").toUpperCase() === "SERVICE") {
+                                          return null;
+                                        }
                                         const label = String(candidate.name || candidate.item_code || `Baris #${candIdx + 1}`).trim();
                                         return (
                                           <option key={candId} value={candId}>
@@ -3047,6 +3105,11 @@ export default function PesananPenjualan() {
                                         );
                                       })}
                                     </select>
+                                    <span className="so-line-hint" data-testid={`line-addon-hint-${originalIndex}`}>
+                                      {String(line.item_type || "").toUpperCase() === "SERVICE"
+                                        ? "Add On jasa = pekerjaan warna tambahan (Warna 2/3/4), bukan barang fisik. Wajib pilih induk. Tidak menambah stok."
+                                        : "Jika baris ini jasa Cetak (Add On), pilih induk di atas. Warna 1 dikerjakan pada line induk."}
+                                    </span>
                                   </label>
                                   <label>
                                     Catatan Item

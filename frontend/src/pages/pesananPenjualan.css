@@ -1649,6 +1649,14 @@ body.so-col-resizing * {
   font-weight: 600;
   color: #64748b;
 }
+.so-create-workspace .so-line-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: #64748b;
+}
 .so-create-workspace .so-col-action button {
   background: #fff !important;
   color: #dc2626 !important;
