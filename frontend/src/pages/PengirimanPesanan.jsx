@@ -7,6 +7,7 @@ import {
   Clock,
   ExternalLink,
   FileText,
+  Info,
   Package,
   Plus,
   Printer,
@@ -28,6 +29,7 @@ import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import LookupSearchSelect from "../components/LookupSearchSelect";
+import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import { deliveryBelumSjMeta } from "../lib/ux90RemainingMeta";
 import "./salesSubmenuDensity.css";
 import "./pengirimanPesananList.css";
@@ -564,6 +566,11 @@ export default function PengirimanPesanan() {
       return;
     }
 
+    if (!String(formData.delivery_date || "").trim()) {
+      setFormErr("Tanggal pengiriman wajib diisi (DD/MM/YYYY).");
+      return;
+    }
+
     if (totalShippingQty <= 0) {
       setFormErr("Kuantitas pengiriman sekarang harus lebih besar dari 0.");
       return;
@@ -746,6 +753,7 @@ export default function PengirimanPesanan() {
       className={
         "page-container penjualan-page penjualan-workspace sd-density "
         + (viewMode === "list" ? "sd-list-mode sd-delivery-list" : "sd-form-mode")
+        + (viewMode === "create" ? " ux90-pj-delivery-host" : "")
       }
       data-testid="pengiriman-pesanan-page"
     >
@@ -857,102 +865,130 @@ export default function PengirimanPesanan() {
           ) : null}
 
           <div className="ux90-workspace">
-            <div className="ux90-main">
-              <div className="ux90-card ux90-delivery-info" style={{ flex: "0 0 auto" }} data-ux90-region="delivery-info">
-                <h3>Header Surat Jalan</h3>
-                <div className="ux90-field-grid ux90-delivery-essentials">
-                  <div className="ux90-field">
-                    <span>Ambil dari PO <span className="ux90-req">*</span></span>
-                    {queryPoId ? (
+            <div className="ux90-main ux90-delivery-doc">
+              {/* Accurate-style document header: label-left rows, two columns */}
+              <div className="ux90-delivery-doc-header" data-ux90-region="delivery-info" data-testid="delivery-header-fields">
+                <div className="ux90-delivery-doc-col is-left">
+                  <div className="ux90-dlrow ux90-field-po">
+                    <label htmlFor="delivery-po-lookup">Ambil dari PO <span className="ux90-req">*</span></label>
+                    <div className="ux90-dlrow-control">
+                      {queryPoId ? (
+                        <input
+                          id="delivery-po-lookup"
+                          className="ux90-input"
+                          type="text"
+                          readOnly
+                          value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
+                          data-testid="display-po-number"
+                        />
+                      ) : (
+                        <LookupSearchSelect
+                          options={availablePOs}
+                          value={selectedPoId}
+                          onChange={(id) => handleSelectPO(id || "")}
+                          getOptionValue={(p) => p.id}
+                          getOptionLabel={(p) => String(p.po_number || p.id || "")}
+                          getOptionMeta={(p) => [
+                            p.customer,
+                            p.outlet || null,
+                            deliveryBelumSjMeta(p),
+                          ].filter(Boolean).join(" · ")}
+                          getSearchText={(p) => [p.po_number, p.customer, p.outlet].filter(Boolean).join(" ")}
+                          placeholder="Ketik nomor PO atau customer…"
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          disabled={formBusy}
+                          testId="select-po-for-delivery"
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <div className="ux90-dlrow">
+                    <label htmlFor="input-delivery-date">Tanggal <span className="ux90-req">*</span></label>
+                    <div className="ux90-dlrow-control ux90-delivery-date-control">
+                      <SalesInvoiceDateField
+                        valueIso={formData.delivery_date}
+                        onChange={(iso) => setFormData((p) => ({ ...p, delivery_date: iso }))}
+                        disabled={formBusy}
+                        testId="input-delivery-date"
+                        calendarLabel="Kalender tanggal pengiriman"
+                      />
+                    </div>
+                  </div>
+                  <div className="ux90-dlrow">
+                    <label htmlFor="so-delivery-customer">Pelanggan</label>
+                    <div className="ux90-dlrow-control">
                       <input
+                        id="so-delivery-customer"
                         className="ux90-input"
                         type="text"
                         readOnly
-                        value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
-                        data-testid="display-po-number"
+                        value={poSummary?.customer || "-"}
+                        data-testid="display-customer"
                       />
-                    ) : (
-                      <LookupSearchSelect
-                        options={availablePOs}
-                        value={selectedPoId}
-                        onChange={(id) => handleSelectPO(id || "")}
-                        getOptionValue={(p) => p.id}
-                        getOptionLabel={(p) => String(p.po_number || p.id || "")}
-                        getOptionMeta={(p) => [
-                          p.customer,
-                          p.outlet || null,
-                          deliveryBelumSjMeta(p),
-                        ].filter(Boolean).join(" · ")}
-                        getSearchText={(p) => [p.po_number, p.customer, p.outlet].filter(Boolean).join(" ")}
-                        placeholder="Ketik nomor PO atau customer…"
-                        noResultLabel="Tidak ada hasil yang cocok"
-                        disabled={formBusy}
-                        testId="select-po-for-delivery"
+                    </div>
+                  </div>
+                </div>
+                <div className="ux90-delivery-doc-col is-right">
+                  <div className="ux90-dlrow">
+                    <label htmlFor="so-delivery-sj">Nomor SJ</label>
+                    <div className="ux90-dlrow-control">
+                      <input
+                        id="so-delivery-sj"
+                        className="ux90-input"
+                        type="text"
+                        readOnly
+                        value={poSummary?.suggested_sj_number ? `${poSummary.suggested_sj_number} (#${poSummary.next_shipment_index})` : "(Pilih PO)"}
+                        data-testid="display-suggested-sj"
                       />
-                    )}
+                    </div>
                   </div>
-                  <div className="ux90-field">
-                    <span>Nomor SJ</span>
-                    <input
-                      className="ux90-input"
-                      type="text"
-                      readOnly
-                      value={poSummary?.suggested_sj_number ? `${poSummary.suggested_sj_number} (#${poSummary.next_shipment_index})` : "(Pilih PO)"}
-                      data-testid="display-suggested-sj"
-                    />
-                  </div>
-                  <div className="ux90-field">
-                    <span>Tanggal Pengiriman <span className="ux90-req">*</span></span>
-                    <input
-                      className="ux90-input"
-                      type="date"
-                      value={formData.delivery_date}
-                      onChange={(e) => setFormData((p) => ({ ...p, delivery_date: e.target.value }))}
-                      data-testid="input-delivery-date"
-                      required
-                    />
-                  </div>
-                  <div className="ux90-field">
-                    <span>Pelanggan</span>
-                    <input className="ux90-input" type="text" readOnly value={poSummary?.customer || "-"} data-testid="display-customer" />
-                  </div>
-                  <div className="ux90-field">
-                    <span>Outlet / Cabang</span>
-                    <input
-                      className="ux90-input"
-                      type="text"
-                      value={formData.outlet}
-                      onChange={(e) => setFormData((p) => ({ ...p, outlet: e.target.value }))}
-                      placeholder="Nama cabang / outlet"
-                      data-testid="input-delivery-outlet"
-                    />
+                  <div className="ux90-dlrow">
+                    <label htmlFor="so-delivery-outlet">Outlet / Cabang</label>
+                    <div className="ux90-dlrow-control">
+                      <input
+                        id="so-delivery-outlet"
+                        className="ux90-input"
+                        type="text"
+                        value={formData.outlet}
+                        onChange={(e) => setFormData((p) => ({ ...p, outlet: e.target.value }))}
+                        placeholder="Nama cabang / outlet"
+                        data-testid="input-delivery-outlet"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <div className="ux90-form-tabs" role="tablist" aria-label="Bagian pengiriman" data-testid="delivery-form-tabs">
-                <button
-                  type="button"
-                  role="tab"
-                  className={deliveryFormTab === "items" ? "is-active" : ""}
-                  aria-selected={deliveryFormTab === "items"}
-                  onClick={() => setDeliveryFormTab("items")}
-                  data-testid="delivery-tab-items"
-                >
-                  Rincian Pengiriman
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  className={deliveryFormTab === "terms" ? "is-active" : ""}
-                  aria-selected={deliveryFormTab === "terms"}
-                  onClick={() => setDeliveryFormTab("terms")}
-                  data-testid="delivery-tab-terms"
-                >
-                  Informasi Pengiriman
-                </button>
-              </div>
+              <div className="ux90-delivery-doc-body">
+                {/* Accurate-style vertical icon tabs beside workspace */}
+                <div className="ux90-delivery-vtabs ux90-form-tabs" role="tablist" aria-label="Bagian pengiriman" data-testid="delivery-form-tabs">
+                  <button
+                    type="button"
+                    role="tab"
+                    className={deliveryFormTab === "items" ? "is-active" : ""}
+                    aria-selected={deliveryFormTab === "items"}
+                    title="Rincian Pengiriman"
+                    onClick={() => setDeliveryFormTab("items")}
+                    data-testid="delivery-tab-items"
+                  >
+                    <FileText size={16} aria-hidden="true" />
+                    <span>Rincian</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    className={deliveryFormTab === "terms" ? "is-active" : ""}
+                    aria-selected={deliveryFormTab === "terms"}
+                    title="Informasi Pengiriman"
+                    onClick={() => setDeliveryFormTab("terms")}
+                    data-testid="delivery-tab-terms"
+                  >
+                    <Info size={16} aria-hidden="true" />
+                    <span>Info</span>
+                  </button>
+                </div>
 
+                <div className="ux90-delivery-doc-panel">
               <div
                 className="ux90-table-wrap"
                 data-ux90-region="delivery-lines"
@@ -960,13 +996,13 @@ export default function PengirimanPesanan() {
                 style={deliveryFormTab !== "items" ? { display: "none" } : undefined}
               >
                 <div className="ux90-table-head">
-                  <h3>Alokasi Qty Surat Jalan</h3>
                   {poSummary?.lines?.length > 0 ? (
                     <div className="ux90-table-actions">
                       <button type="button" onClick={handleFillAllRemaining} data-testid="btn-fill-all-remaining">+ Tambah Semua Sisa</button>
                       <button type="button" className="is-muted" onClick={handleClearAllQtys} data-testid="btn-clear-all-qtys">Clear</button>
                     </div>
-                  ) : null}
+                  ) : <span />}
+                  <h3>Alokasi Qty Surat Jalan <span className="ux90-req">*</span></h3>
                 </div>
                 <div className="ux90-table-scroll">
                   {poSummaryLoading ? (
@@ -1041,7 +1077,7 @@ export default function PengirimanPesanan() {
               </div>
 
               {deliveryFormTab === "items" ? (
-                <div className="ux90-doc-summary" data-testid="delivery-qty-summary">
+                <div className="ux90-doc-summary is-inline is-delivery-compact" data-testid="delivery-qty-summary">
                   <div className="ux90-doc-summary-rows">
                     <div>
                       <span>Total Qty SJ</span>
@@ -1069,12 +1105,10 @@ export default function PengirimanPesanan() {
               <div
                 className="ux90-doc-pane"
                 data-testid="delivery-side-panel"
-                style={{ flex: "0 0 auto" }}
                 hidden={deliveryFormTab !== "terms"}
                 aria-hidden={deliveryFormTab !== "terms"}
               >
                   <div data-testid="delivery-shipping-panel">
-                    <h3>Informasi Pengiriman</h3>
                     <div className="ux90-doc-info-grid">
                       <div className="ux90-field">
                         <span>Penerima (PIC)</span>
@@ -1089,8 +1123,8 @@ export default function PengirimanPesanan() {
                       </div>
                       <div className="ux90-field" data-testid="delivery-recipient-phone-field">
                         <span>No. Telepon / WhatsApp</span>
-                        <div role="radiogroup" aria-label="No. WhatsApp Penerima" style={{ display: "flex", flexWrap: "wrap", gap: "6px 12px", margin: "4px 0 6px" }}>
-                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: customerPhoneAvailable ? "#1e293b" : "#94a3b8" }}>
+                        <div role="radiogroup" aria-label="No. WhatsApp Penerima" className="ux90-phone-radios">
+                          <label style={{ color: customerPhoneAvailable ? "#1e293b" : "#94a3b8" }}>
                             <input
                               type="radio"
                               name="recipient-phone-source"
@@ -1106,7 +1140,7 @@ export default function PengirimanPesanan() {
                             />
                             Nomor pelanggan
                           </label>
-                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                          <label>
                             <input
                               type="radio"
                               name="recipient-phone-source"
@@ -1163,28 +1197,6 @@ export default function PengirimanPesanan() {
                           data-testid="input-delivery-zone"
                         />
                       </div>
-                      <div className="ux90-field" style={{ gridColumn: "1 / -1" }}>
-                        <span>Alamat Pengiriman</span>
-                        <textarea
-                          className="ux90-input"
-                          value={formData.address}
-                          onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
-                          placeholder="Alamat tujuan pengiriman..."
-                          rows={3}
-                          data-testid="input-delivery-address"
-                        />
-                      </div>
-                      {poSummary ? (
-                        <div className="ux90-field" style={{ gridColumn: "1 / -1" }} data-testid="delivery-location-override">
-                          <SjDeliveryLocationPicker
-                            poLocation={poSummary.delivery_location || null}
-                            override={sjLocationOverride}
-                            onOverrideChange={setSjLocationOverride}
-                            disabled={formBusy}
-                            compact
-                          />
-                        </div>
-                      ) : null}
                       <div className="ux90-field">
                         <span>Outlet / Cabang</span>
                         <input
@@ -1206,7 +1218,29 @@ export default function PengirimanPesanan() {
                         />
                         <input type="hidden" data-testid="input-delivery-sales-tab" value={formData.sales} readOnly />
                       </div>
-                      <div className="ux90-field" style={{ gridColumn: "1 / -1" }}>
+                      <div className="ux90-field is-span-all">
+                        <span>Alamat Pengiriman</span>
+                        <textarea
+                          className="ux90-input"
+                          value={formData.address}
+                          onChange={(e) => setFormData((p) => ({ ...p, address: e.target.value }))}
+                          placeholder="Alamat tujuan pengiriman..."
+                          rows={2}
+                          data-testid="input-delivery-address"
+                        />
+                      </div>
+                      {poSummary ? (
+                        <div className="ux90-field is-span-all is-loc" data-testid="delivery-location-override">
+                          <SjDeliveryLocationPicker
+                            poLocation={poSummary.delivery_location || null}
+                            override={sjLocationOverride}
+                            onOverrideChange={setSjLocationOverride}
+                            disabled={formBusy}
+                            compact
+                          />
+                        </div>
+                      ) : null}
+                      <div className="ux90-field is-span-all">
                         <span>Catatan Pengiriman</span>
                         <input
                           className="ux90-input"
@@ -1222,6 +1256,8 @@ export default function PengirimanPesanan() {
                       Satu PO dapat memiliki beberapa Surat Jalan. Membuat SJ menerbitkan dokumen pengiriman — bukan konfirmasi barang diterima.
                     </p>
                   </div>
+              </div>
+                </div>
               </div>
             </div>
           </div>

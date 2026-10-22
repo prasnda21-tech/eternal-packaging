@@ -134,7 +134,10 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/data-create-mode=\{isModalOpen \? "full-page" : "list"\}/);
     expect(pageSrc).toMatch(/ux90-sr-page/);
     expect(pageSrc).not.toMatch(/aria-modal="true"/);
-    expect(pageSrc).toMatch(/className="fs-section-scroll-safe"/);
+    expect(pageSrc).toMatch(/ux90-sr-doc-panel/);
+    expect(pageSrc).toMatch(/sr-tab-items/);
+    expect(pageSrc).toMatch(/sr-tab-info/);
+    expect(pageSrc).toMatch(/receipt-summary-boxes/);
     expect(pageSrc).toMatch(/handleCloseCreateModal/);
     expect(pageSrc).toMatch(/Escape/);
     expect(pageSrc).toMatch(/no-eligible-invoices-hint/);
