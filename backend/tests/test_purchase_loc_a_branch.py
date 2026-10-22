@@ -11,7 +11,10 @@ from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+_MONGO = os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs")
+if "replicaSet=" not in _MONGO:
+    _MONGO = _MONGO.rstrip("/") + ("&" if "?" in _MONGO else "?") + "replicaSet=eternal_local_rs"
+os.environ["MONGO_URL"] = _MONGO
 os.environ.setdefault("DB_NAME", "eternal_packaging_test_pur_loc_a")
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
@@ -458,3 +461,294 @@ async def test_http_edit_branch_permission(db):
         assert r.status_code == 200, r.text
         assert r.json()["order"]["branch_id"] == "branch-ygy"
     app.dependency_overrides.pop(current_user, None)
+
+
+async def _insert_legacy_po(db, item_id: str) -> str:
+    po_id = f"po-legacy-{uuid.uuid4().hex[:8]}"
+    await db.purchase_orders.insert_one({
+        "id": po_id,
+        "po_number": f"PB-LEGACY-{uuid.uuid4().hex[:4].upper()}",
+        "supplier": "Legacy",
+        "cancelled": False,
+        "lines": [{
+            "line_id": "pol-1",
+            "line_idx": 0,
+            "master_item_id": item_id,
+            "ordered_qty": 5,
+            "unit_price": 1000,
+            "item_name": "Bahan",
+            "unit": "PCS",
+        }],
+    })
+    return po_id
+
+
+async def test_patch_branch_txn_success_exactly_one_audit(db):
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+    updated = await set_purchase_order_branch(
+        db, po_id, {"branch_id": "branch-ygy", "reason": "atomic success"}, ADMIN,
+    )
+    assert updated["branch_id"] == "branch-ygy"
+    audits = await db[AUDIT_COLLECTION].find(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id},
+        {"_id": 0},
+    ).to_list(10)
+    assert len(audits) == 1
+    assert audits[0]["after"]["branch_id"] == "branch-ygy"
+
+
+async def test_patch_branch_second_rejected_no_extra_audit(db):
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+    await set_purchase_order_branch(
+        db, po_id, {"branch_id": "branch-ygy", "reason": "first set"}, ADMIN,
+    )
+    with pytest.raises(HTTPException) as ei:
+        await set_purchase_order_branch(
+            db, po_id, {"branch_id": "branch-smg", "reason": "second set"}, ADMIN,
+        )
+    assert ei.value.status_code == 400
+    assert BRANCH_ALREADY_SET_MSG in str(ei.value.detail)
+    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    assert po["branch_id"] == "branch-ygy"
+    assert await db[AUDIT_COLLECTION].count_documents(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id}
+    ) == 1
+
+
+async def test_patch_branch_concurrent_one_winner(db):
+    import asyncio
+
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+
+    async def _attempt(reason: str):
+        try:
+            doc = await set_purchase_order_branch(
+                db, po_id, {"branch_id": "branch-ygy", "reason": reason}, ADMIN,
+            )
+            return ("ok", doc)
+        except HTTPException as exc:
+            return ("err", exc.status_code, str(exc.detail))
+
+    results = await asyncio.gather(
+        _attempt("concurrent A win"),
+        _attempt("concurrent B lose"),
+    )
+    oks = [r for r in results if r[0] == "ok"]
+    errs = [r for r in results if r[0] == "err"]
+    assert len(oks) == 1
+    assert len(errs) == 1
+    assert errs[0][1] == 400
+    assert BRANCH_ALREADY_SET_MSG in errs[0][2]
+    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    assert po["branch_id"] == "branch-ygy"
+    assert await db[AUDIT_COLLECTION].count_documents(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id}
+    ) == 1
+
+
+async def test_patch_branch_forced_txn_abort_rolls_back(db):
+    from services.purchase_orders import set_fail_after_branch_cas_before_audit
+
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+
+    set_fail_after_branch_cas_before_audit(True)
+    try:
+        with pytest.raises(RuntimeError, match="forced abort"):
+            await set_purchase_order_branch(
+                db, po_id, {"branch_id": "branch-ygy", "reason": "should abort"}, ADMIN,
+            )
+    finally:
+        set_fail_after_branch_cas_before_audit(False)
+
+    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    assert not str(po.get("branch_id") or "").strip()
+    assert await db[AUDIT_COLLECTION].count_documents(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id}
+    ) == 0
+
+
+async def test_patch_branch_unknown_commit_retries_commit_not_body(db, monkeypatch):
+    """UnknownTransactionCommitResult must retry commit only (txn body once)."""
+    import motor.motor_asyncio as motor_asyncio
+    from pymongo.errors import OperationFailure
+    from services.purchase_orders import (
+        get_branch_txn_body_runs,
+        reset_branch_txn_body_runs,
+    )
+
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+    reset_branch_txn_body_runs()
+
+    commit_calls = {"n": 0}
+    real_commit = motor_asyncio.AsyncIOMotorClientSession.commit_transaction
+
+    def flaky_commit(self, *args, **kwargs):
+        commit_calls["n"] += 1
+        if commit_calls["n"] == 1:
+            raise OperationFailure(
+                "unknown commit",
+                50,
+                details={"errorLabels": ["UnknownTransactionCommitResult"]},
+            )
+        return real_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        motor_asyncio.AsyncIOMotorClientSession,
+        "commit_transaction",
+        flaky_commit,
+    )
+
+    updated = await set_purchase_order_branch(
+        db, po_id, {"branch_id": "branch-ygy", "reason": "unknown commit path"}, ADMIN,
+    )
+    assert updated["branch_id"] == "branch-ygy"
+    assert get_branch_txn_body_runs() == 1, "must not re-run CAS/audit body"
+    assert commit_calls["n"] >= 2, "commit must be retried"
+    assert await db[AUDIT_COLLECTION].count_documents(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id}
+    ) == 1
+
+
+async def test_patch_branch_transient_retries_full_txn_body(db):
+    """TransientTransactionError retries the full transaction callback."""
+    from services.purchase_orders import (
+        get_branch_txn_body_runs,
+        reset_branch_txn_body_runs,
+        set_fail_cas_with_transient_once,
+    )
+
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+    reset_branch_txn_body_runs()
+    set_fail_cas_with_transient_once(True)
+    try:
+        updated = await set_purchase_order_branch(
+            db, po_id, {"branch_id": "branch-ygy", "reason": "transient retry"}, ADMIN,
+        )
+    finally:
+        set_fail_cas_with_transient_once(False)
+
+    assert updated["branch_id"] == "branch-ygy"
+    assert get_branch_txn_body_runs() >= 2
+    assert await db[AUDIT_COLLECTION].count_documents(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id}
+    ) == 1
+
+
+async def test_patch_branch_concurrent_with_gr_no_mismatch(db):
+    """Concurrent PATCH + GR must not leave PO.branch_id != GR.branch_id."""
+    import asyncio
+
+    await _seed_ygy(db)
+    from services.physical_stock_settings import SETTINGS_KEY
+
+    await db.app_settings.update_one(
+        {"key": SETTINGS_KEY},
+        {"$set": {"key": SETTINGS_KEY, "enabled": False}},
+        upsert=True,
+    )
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+    # Seed a priced line identity for GR create helpers
+    po_doc = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    line_id = po_doc["lines"][0]["line_id"]
+    await db.purchase_orders.update_one(
+        {"id": po_id},
+        {"$set": {
+            "lines.0.item_code": "BR-LOCA",
+            "lines.0.item_name": "Bahan LOC-A",
+            "lines.0.accurate_item_id": "",
+            "grand_total": 5000,
+            "subtotal": 5000,
+        }},
+    )
+
+    async def _patch():
+        try:
+            return ("patch_ok", await set_purchase_order_branch(
+                db, po_id, {"branch_id": "branch-ygy", "reason": "race with GR"}, ADMIN,
+            ))
+        except HTTPException as exc:
+            return ("patch_err", exc.status_code, str(exc.detail))
+
+    async def _gr(warehouse_id: str):
+        try:
+            gr = await create_purchase_goods_receipt(
+                db,
+                {
+                    "purchase_order_id": po_id,
+                    "warehouse_id": warehouse_id,
+                    "lines": [{"purchase_order_line_id": line_id, "received_qty": 1}],
+                    "idempotency_key": f"gr-race-{warehouse_id}-{uuid.uuid4()}",
+                },
+                ADMIN,
+            )
+            return ("gr_ok", gr)
+        except HTTPException as exc:
+            return ("gr_err", exc.status_code, str(exc.detail))
+
+    results = await asyncio.gather(
+        _patch(),
+        _gr("wh-ygy"),
+        _gr("wh-smg"),
+    )
+    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    grs = await db.purchase_goods_receipts.find(
+        {"purchase_order_id": po_id, "cancelled": {"$ne": True}},
+        {"_id": 0, "branch_id": 1, "warehouse_id": 1},
+    ).to_list(20)
+    po_branch = str((po or {}).get("branch_id") or "").strip()
+    # If branch was set, every GR must match; if unset, no GR may exist.
+    if po_branch:
+        for gr in grs:
+            assert str(gr.get("branch_id") or "") == po_branch
+            assert str(gr.get("warehouse_id") or "") in {"wh-ygy", "wh-smg"}
+            # SMG warehouse cannot land on YGY PO
+            if po_branch == "branch-ygy":
+                assert str(gr.get("warehouse_id") or "") == "wh-ygy"
+    else:
+        assert grs == []
+    # Cross-check: never SMG GR against YGY PO
+    for gr in grs:
+        if str(gr.get("warehouse_id") or "") == "wh-smg":
+            assert str(gr.get("branch_id") or "") == "branch-smg"
+            assert po_branch == "branch-smg"
+
+
+async def test_patch_branch_non_replica_fail_closed(db, monkeypatch):
+    await _seed_ygy(db)
+    item_id = await _seed_item(db)
+    po_id = await _insert_legacy_po(db, item_id)
+
+    from services.physical_stock import PhysicalStockUnavailableError
+
+    async def _no_txn(_client):
+        raise PhysicalStockUnavailableError(
+            "MongoDB transactions are unavailable. A replica set is required."
+        )
+
+    monkeypatch.setattr(
+        "services.physical_stock.require_transaction_support", _no_txn,
+    )
+    with pytest.raises(HTTPException) as ei:
+        await set_purchase_order_branch(
+            db, po_id, {"branch_id": "branch-ygy", "reason": "no rs"}, ADMIN,
+        )
+    assert ei.value.status_code == 503
+    assert "replica set" in str(ei.value.detail).lower()
+    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    assert not str(po.get("branch_id") or "").strip()
+    assert await db[AUDIT_COLLECTION].count_documents(
+        {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": po_id}
+    ) == 0

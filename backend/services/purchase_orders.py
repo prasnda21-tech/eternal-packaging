@@ -15,6 +15,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from pymongo.errors import OperationFailure, PyMongoError
 
 from services.purchase_common import (
     PREFIX_PURCHASE_ORDER,
@@ -39,6 +40,7 @@ from services.purchase_common import (
 )
 from services.purchase_branch import (
     BRANCH_ALREADY_SET_MSG,
+    BRANCH_OUTCOME_UNKNOWN_MSG,
     assert_po_receipts_match_branch,
     branch_snapshot,
     load_active_branch,
@@ -57,6 +59,112 @@ INV_COLLECTION = "purchase_invoices"
 ALLOC_COLLECTION = "purchase_receipt_po_links"
 AUDIT_COLLECTION = "audit_logs"
 AUDIT_ACTION_BRANCH_SET = "purchase_order.branch.set"
+
+# CAS: only mutate when Cabang Pembelian is still unset.
+_BRANCH_UNSET_CAS = {
+    "$or": [
+        {"branch_id": {"$exists": False}},
+        {"branch_id": None},
+        {"branch_id": ""},
+    ],
+}
+
+# Test-only: abort after CAS update, before audit insert (same txn).
+_fail_after_branch_cas_before_audit = False
+# Test-only: first CAS attempt raises TransientTransactionError (full txn retry).
+_fail_cas_with_transient_once = False
+# Test-only: counts transaction body invocations (TransientTransactionError retries).
+_branch_txn_body_runs = 0
+
+
+def set_fail_after_branch_cas_before_audit(enabled: bool) -> None:
+    global _fail_after_branch_cas_before_audit
+    _fail_after_branch_cas_before_audit = bool(enabled)
+
+
+def set_fail_cas_with_transient_once(enabled: bool) -> None:
+    global _fail_cas_with_transient_once
+    _fail_cas_with_transient_once = bool(enabled)
+
+
+def reset_branch_txn_body_runs() -> None:
+    global _branch_txn_body_runs
+    _branch_txn_body_runs = 0
+
+
+def get_branch_txn_body_runs() -> int:
+    return _branch_txn_body_runs
+
+
+def _is_awaitable(value: Any) -> bool:
+    return hasattr(value, "__await__")
+
+
+async def _maybe_await(value: Any) -> Any:
+    if _is_awaitable(value):
+        return await value
+    return value
+
+
+async def _run_po_branch_transaction(session, txn_body) -> None:
+    """Run txn_body with correct Mongo retry semantics.
+
+    - TransientTransactionError: abort and re-run the full body (new txn).
+    - UnknownTransactionCommitResult: retry commit only (body not re-run).
+
+    Avoids Motor ``async with start_transaction()`` / ``with_transaction`` because
+    those commit inside ``__aexit__``, which cannot retry Unknown commit results.
+    """
+    import time
+
+    deadline = time.monotonic() + 120.0
+    last_error: Optional[BaseException] = None
+    while time.monotonic() < deadline:
+        session.start_transaction()
+        try:
+            await txn_body(session)
+            # Commit with UnknownTransactionCommitResult → retry commit only.
+            while time.monotonic() < deadline:
+                try:
+                    await _maybe_await(session.commit_transaction())
+                    return
+                except PyMongoError as exc:
+                    last_error = exc
+                    if exc.has_error_label("UnknownTransactionCommitResult"):
+                        continue
+                    if exc.has_error_label("TransientTransactionError"):
+                        break  # full txn retry
+                    raise
+            else:
+                break
+            # Transient on commit: abort if needed then full retry.
+            if session.in_transaction:
+                await _maybe_await(session.abort_transaction())
+            continue
+        except HTTPException:
+            if session.in_transaction:
+                await _maybe_await(session.abort_transaction())
+            raise
+        except PyMongoError as exc:
+            last_error = exc
+            if session.in_transaction:
+                await _maybe_await(session.abort_transaction())
+            if (
+                exc.has_error_label("TransientTransactionError")
+                and time.monotonic() < deadline
+            ):
+                continue
+            raise
+        except Exception:
+            if session.in_transaction:
+                await _maybe_await(session.abort_transaction())
+            raise
+    if last_error is not None:
+        raise last_error
+    raise HTTPException(
+        409,
+        "Penetapan Cabang Pembelian gagal karena perubahan bersamaan.",
+    )
 
 
 async def _received_qty_by_po_line(db, purchase_order_id: str) -> Dict[str, float]:
@@ -457,8 +565,16 @@ async def set_purchase_order_branch(
 ) -> dict:
     """Set Cabang Pembelian on a legacy PO that has no branch_id (once).
 
-    Does not mutate supplier, lines, qty, price, or GR/invoice documents.
+    Multi-document transaction: CAS PO update + audit insert. Transient errors
+    retry the full body; UnknownTransactionCommitResult retries commit only.
+    Does not mutate supplier, lines, qty, price, or GR/invoice docs.
     """
+    from services.branch_access import require_branch_access
+    from services.physical_stock import (
+        PhysicalStockUnavailableError,
+        require_transaction_support,
+    )
+
     data = dict(payload or {})
     reason = str(data.get("reason") or data.get("note") or "").strip()
     if len(reason) < 3:
@@ -481,10 +597,14 @@ async def set_purchase_order_branch(
             raise HTTPException(400, BRANCH_ALREADY_SET_MSG)
 
         branch = await load_active_branch(db, target_branch_id)
-        from services.branch_access import require_branch_access
-
         await require_branch_access(db, user, branch["id"])
+        # Preflight (non-authoritative): final GR check runs inside the txn.
         await assert_po_receipts_match_branch(db, doc["id"], branch["id"])
+
+        try:
+            await require_transaction_support(db.client)
+        except PhysicalStockUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
 
         snap = branch_snapshot(branch)
         before = {
@@ -498,33 +618,93 @@ async def set_purchase_order_branch(
             "branch_name": snap["branch_name"],
         }
         actor = actor_snapshot(user)
-        audit_id = str(uuid.uuid4())
-        await db[AUDIT_COLLECTION].insert_one({
-            "id": audit_id,
-            "action": AUDIT_ACTION_BRANCH_SET,
-            "entity_type": "purchase_order",
-            "entity_id": doc["id"],
-            "po_number": doc.get("po_number"),
-            "actor_email": actor.get("email"),
-            "actor_role": actor.get("role"),
-            "actor_name": actor.get("name"),
-            "actor_id": actor_user_id(user),
-            "before": before,
-            "after": after,
-            "reason": reason,
-            "note": reason,
-            "at": now_iso(),
-        })
         fields = {**snap, **stamp_update(user)}
-        try:
-            await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
-        except Exception:
-            await db[AUDIT_COLLECTION].delete_one(
-                {"id": audit_id, "action": AUDIT_ACTION_BRANCH_SET}
+
+        async def _txn_body(session):
+            global _branch_txn_body_runs, _fail_cas_with_transient_once
+            _branch_txn_body_runs += 1
+            current = await db[COLLECTION].find_one(
+                {"id": doc["id"]}, {"_id": 0}, session=session,
             )
+            if not current:
+                raise HTTPException(
+                    404, f"Pesanan Pembelian '{po_id}' tidak ditemukan."
+                )
+            if is_cancelled(current):
+                raise HTTPException(
+                    400, "Pesanan sudah dibatalkan; cabang tidak dapat diubah."
+                )
+            if str(current.get("branch_id") or "").strip():
+                raise HTTPException(400, BRANCH_ALREADY_SET_MSG)
+
+            # Authoritative GR consistency under the transaction snapshot.
+            await assert_po_receipts_match_branch(
+                db, doc["id"], snap["branch_id"], session=session,
+            )
+
+            if _fail_cas_with_transient_once:
+                _fail_cas_with_transient_once = False
+                raise OperationFailure(
+                    "forced transient before CAS",
+                    112,
+                    details={"errorLabels": ["TransientTransactionError"]},
+                )
+
+            result = await db[COLLECTION].update_one(
+                {"id": doc["id"], **_BRANCH_UNSET_CAS},
+                {"$set": fields},
+                session=session,
+            )
+            if result.matched_count != 1:
+                raise HTTPException(400, BRANCH_ALREADY_SET_MSG)
+
+            if _fail_after_branch_cas_before_audit:
+                raise RuntimeError("forced abort after branch CAS before audit")
+
+            await db[AUDIT_COLLECTION].insert_one(
+                {
+                    "id": str(uuid.uuid4()),
+                    "action": AUDIT_ACTION_BRANCH_SET,
+                    "entity_type": "purchase_order",
+                    "entity_id": doc["id"],
+                    "po_number": doc.get("po_number"),
+                    "actor_email": actor.get("email"),
+                    "actor_role": actor.get("role"),
+                    "actor_name": actor.get("name"),
+                    "actor_id": actor_user_id(user),
+                    "before": before,
+                    "after": after,
+                    "reason": reason,
+                    "note": reason,
+                    "at": now_iso(),
+                },
+                session=session,
+            )
+
+        try:
+            async with await db.client.start_session() as session:
+                await _run_po_branch_transaction(session, _txn_body)
+        except HTTPException:
             raise
-        doc.update(fields)
-        return await enrich_purchase_order(db, doc)
+        except PyMongoError as exc:
+            # Prefer observed state over assuming failure (esp. unknown commit).
+            current = await db[COLLECTION].find_one({"id": doc["id"]}, {"_id": 0})
+            if current and str(current.get("branch_id") or "").strip() == snap["branch_id"]:
+                audit_n = await db[AUDIT_COLLECTION].count_documents(
+                    {"action": AUDIT_ACTION_BRANCH_SET, "entity_id": doc["id"]}
+                )
+                if audit_n >= 1:
+                    return await get_purchase_order(db, doc["id"])
+            if exc.has_error_label("UnknownTransactionCommitResult"):
+                raise HTTPException(409, BRANCH_OUTCOME_UNKNOWN_MSG) from exc
+            if exc.has_error_label("TransientTransactionError"):
+                raise HTTPException(
+                    409,
+                    "Penetapan Cabang Pembelian gagal karena perubahan bersamaan.",
+                ) from exc
+            raise
+
+        return await get_purchase_order(db, doc["id"])
 
 
 async def cancel_purchase_order(db, po_id: str, user: dict, reason: str = "") -> dict:

@@ -16,6 +16,7 @@ from services.branch_access import (
     authorize_stock_location,
     require_branch_access,
 )
+from services.purchase_common import now_iso
 
 MODE_YGY_FIRST = "ygy_first"
 MODE_MULTI = "multi"
@@ -33,6 +34,11 @@ CROSS_PO_WAREHOUSE_MSG = "Gudang tidak berada di Cabang Pembelian PO."
 BRANCH_ALREADY_SET_MSG = "Cabang Pembelian sudah diisi dan tidak dapat diubah lewat endpoint ini."
 GR_BRANCH_CONFLICT_MSG = (
     "Tidak dapat menetapkan cabang: terdapat penerimaan dengan lokasi di luar cabang tujuan."
+)
+PO_BRANCH_CHANGED_MSG = "Cabang Pembelian PO berubah; ulangi penerimaan."
+BRANCH_OUTCOME_UNKNOWN_MSG = (
+    "Penetapan Cabang Pembelian belum dapat dipastikan. "
+    "Periksa status dokumen sebelum mengulang."
 )
 
 
@@ -116,7 +122,9 @@ async def load_active_branch(db, branch_id: str) -> dict:
     return branch
 
 
-async def assert_po_receipts_match_branch(db, po_id: str, branch_id: str) -> None:
+async def assert_po_receipts_match_branch(
+    db, po_id: str, branch_id: str, *, session=None
+) -> None:
     """Reject legacy branch set when any active GR location is outside target branch."""
     bid = str(branch_id or "").strip()
     rows = await db.purchase_goods_receipts.find(
@@ -125,12 +133,15 @@ async def assert_po_receipts_match_branch(db, po_id: str, branch_id: str) -> Non
             "cancelled": {"$ne": True},
         },
         {"_id": 0, "id": 1, "branch_id": 1, "warehouse_id": 1, "receipt_number": 1},
+        session=session,
     ).to_list(500)
     for row in rows:
         gr_branch = str(row.get("branch_id") or "").strip()
         wid = str(row.get("warehouse_id") or "").strip()
         if wid:
-            wh = await db[WAREHOUSES_COLLECTION].find_one({"id": wid}, {"_id": 0, "branch_id": 1})
+            wh = await db[WAREHOUSES_COLLECTION].find_one(
+                {"id": wid}, {"_id": 0, "branch_id": 1}, session=session,
+            )
             wh_branch = str((wh or {}).get("branch_id") or "").strip()
             if wh_branch and wh_branch != bid:
                 raise HTTPException(400, GR_BRANCH_CONFLICT_MSG)
@@ -138,6 +149,44 @@ async def assert_po_receipts_match_branch(db, po_id: str, branch_id: str) -> Non
                 raise HTTPException(400, GR_BRANCH_CONFLICT_MSG)
         elif gr_branch and gr_branch != bid:
             raise HTTPException(400, GR_BRANCH_CONFLICT_MSG)
+
+
+async def require_po_branch_stable_for_receipt(
+    db,
+    po_id: str,
+    expected_branch_id: str,
+    *,
+    session=None,
+) -> None:
+    """CAS: PO.branch_id must still equal the branch authorized for this GR.
+
+    Touches the PO document so concurrent branch-set transactions conflict
+    at the database (multi-worker safe; not an asyncio lock).
+    """
+    expected = str(expected_branch_id or "").strip()
+    if not expected:
+        raise HTTPException(400, LEGACY_BRANCH_REQUIRED_MSG)
+    result = await db.purchase_orders.update_one(
+        {
+            "id": str(po_id),
+            "branch_id": expected,
+            "cancelled": {"$ne": True},
+        },
+        {"$set": {"branch_receipt_guard_at": now_iso()}},
+        session=session,
+    )
+    if result.matched_count == 1:
+        return
+    po = await db.purchase_orders.find_one(
+        {"id": str(po_id)},
+        {"_id": 0, "branch_id": 1, "cancelled": 1},
+        session=session,
+    )
+    if not po or po.get("cancelled") is True:
+        raise HTTPException(400, "Pesanan sudah dibatalkan; penerimaan tidak dapat dibuat.")
+    if not str(po.get("branch_id") or "").strip():
+        raise HTTPException(400, LEGACY_BRANCH_REQUIRED_MSG)
+    raise HTTPException(409, PO_BRANCH_CHANGED_MSG)
 
 
 async def authorize_gr_warehouse_for_po(
