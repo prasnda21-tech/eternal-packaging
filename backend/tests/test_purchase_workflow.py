@@ -47,11 +47,9 @@ async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
         {"$set": {"key": SETTINGS_KEY, "enabled": False, "stock_in_trigger": "goods_receipt", "stock_out_trigger": "sales_delivery"}},
         upsert=True,
     )
-    await server.db.branches.update_one(
-        {"id": "branch-ygy"},
-        {"$set": {"id": "branch-ygy", "code": "YGY", "name": "Yogyakarta", "active": True}},
-        upsert=True,
-    )
+    from tests.purchase_ygy_fixtures import ensure_active_ygy
+    await ensure_active_ygy(server.db)
+    # Keep a single active YGY warehouse (wh-main) for omitted-warehouse GR resolve.
     await server.db.warehouses.update_one(
         {"id": "wh-main"},
         {"$set": {
@@ -59,6 +57,10 @@ async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
             "name": "Gudang Yogyakarta", "active": True,
         }},
         upsert=True,
+    )
+    await server.db.warehouses.update_many(
+        {"branch_id": "branch-ygy", "id": {"$ne": "wh-main"}},
+        {"$set": {"active": False}},
     )
 
 

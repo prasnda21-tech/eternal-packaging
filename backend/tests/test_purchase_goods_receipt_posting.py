@@ -120,6 +120,8 @@ async def indexes(bind_motor):
         {"$set": {"key": "physical_stock", "enabled": False, "stock_in_trigger": "goods_receipt"}},
         upsert=True,
     )
+    from tests.purchase_ygy_fixtures import ensure_active_ygy
+    await ensure_active_ygy(server.db)
     yield
     await server.db.app_settings.delete_many({"key": {"$in": [SETTINGS_KEY, "physical_stock"]}})
     await server.db.accounting_periods.delete_many({})

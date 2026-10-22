@@ -1030,18 +1030,31 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
     if not po_id:
         raise HTTPException(400, "ID Pesanan Pembelian (purchase_order_id) wajib diisi.")
 
-    from services.branch_access import authorize_stock_location
+    from services.purchase_branch import (
+        LEGACY_BRANCH_REQUIRED_MSG,
+        authorize_gr_warehouse_for_po,
+    )
+    from services.purchase_orders import get_purchase_order
+
+    # LOC-A: PO.branch_id + warehouse∈cabang PO before lock / stock writes.
+    # Client cannot override branch via payload — branch comes from warehouse↔PO.
+    po_for_branch = await get_purchase_order(db, po_id)
+    po_branch_id = str(po_for_branch.get("branch_id") or "").strip()
+    if not po_branch_id:
+        raise HTTPException(400, LEGACY_BRANCH_REQUIRED_MSG)
+    if is_cancelled(po_for_branch):
+        raise HTTPException(400, "Pesanan sudah dibatalkan; penerimaan tidak dapat dibuat.")
 
     requested_warehouse_id = str(payload.get("warehouse_id") or "").strip() or None
-    # Authorize selected receiving location before any stock mutation.
-    # Warehouse must belong to an authorized branch for this user.
-    if requested_warehouse_id:
-        await authorize_stock_location(
-            db,
-            user,
-            warehouse_id=requested_warehouse_id,
-            require_warehouse=True,
-        )
+    # Strip any client-supplied branch override; warehouse auth is authoritative.
+    payload = dict(payload or {})
+    payload.pop("branch_id", None)
+    requested_warehouse_id = await authorize_gr_warehouse_for_po(
+        db,
+        user,
+        po_branch_id=po_branch_id,
+        warehouse_id=requested_warehouse_id,
+    )
 
     async with get_named_lock("purchase_goods_receipt"):
         idem = str(payload.get("idempotency_key") or "").strip()
@@ -1209,13 +1222,13 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
 
         po_doc = await db.purchase_orders.find_one({"id": preview["purchase_order_id"]}, {"_id": 0})
         doc["physical_stock_snapshot"] = (po_doc or {}).get("physical_stock_snapshot")
-        # If warehouse omitted, resolve_purchase_receipt_warehouse defaults to YGY —
-        # still authorize that default branch before mutating R2.
-        if not requested_warehouse_id:
-            from services.branch_access import require_branch_access, find_branch_by_code
-            ygy = await find_branch_by_code(db, "YGY")
-            if ygy and ygy.get("id"):
-                await require_branch_access(db, user, ygy["id"])
+        # Pin location authorized against PO.branch_id (LOC-A). Commit helpers may
+        # re-resolve the same warehouse; client branch_id is never trusted.
+        doc["branch_id"] = po_branch_id
+        doc["warehouse_id"] = requested_warehouse_id
+        for line in doc["lines"]:
+            line["branch_id"] = po_branch_id
+            line["warehouse_id"] = requested_warehouse_id
         from services.r2_go_live import is_r2_authority_active
         from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
 

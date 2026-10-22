@@ -25,6 +25,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         get_purchase_order,
         get_request_po_preview,
         list_purchase_orders,
+        set_purchase_order_branch,
     )
     from services.purchase_goods_receipts import (
         allocate_accurate_receipt_line,
@@ -195,6 +196,17 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         data = _dump(payload) if payload is not None else {}
         doc = await cancel_purchase_order(get_db(), po_id, user, reason=str(data.get("reason") or ""))
         return {"order": doc, "message": "Pesanan Pembelian dibatalkan"}
+
+    @api_router.patch("/purchase-orders/{po_id}/branch")
+    async def set_purchase_order_branch_endpoint(
+        po_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_orders.edit_branch")
+        data = _dump(payload) if payload is not None else {}
+        doc = await set_purchase_order_branch(get_db(), po_id, data, user)
+        return {"order": doc, "message": "Cabang Pembelian berhasil dilengkapi"}
 
     @api_router.get("/purchase-goods-receipts")
     async def list_po_goods_receipts_endpoint(

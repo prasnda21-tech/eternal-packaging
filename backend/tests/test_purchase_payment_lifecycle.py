@@ -34,11 +34,13 @@ def bind_motor():
 async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
     """Purchase flow tests isolate cancel/payment/docs; stock V2 has its own suite."""
     from services.physical_stock_settings import SETTINGS_KEY
+    from tests.purchase_ygy_fixtures import ensure_active_ygy
     await server.db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {"key": SETTINGS_KEY, "enabled": False, "stock_in_trigger": "goods_receipt", "stock_out_trigger": "sales_delivery"}},
         upsert=True,
     )
+    await ensure_active_ygy(server.db)
 
 
 @pytest.fixture(autouse=True)

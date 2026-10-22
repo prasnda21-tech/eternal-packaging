@@ -19,7 +19,9 @@ from fastapi import HTTPException
 from services.purchase_common import (
     PREFIX_PURCHASE_ORDER,
     actor_snapshot,
+    actor_user_id,
     stamp_create,
+    stamp_update,
     cancellation_fields,
     get_named_lock,
     insert_with_unique_number,
@@ -35,6 +37,13 @@ from services.purchase_common import (
     next_dated_seq,
     with_active_filter,
 )
+from services.purchase_branch import (
+    BRANCH_ALREADY_SET_MSG,
+    assert_po_receipts_match_branch,
+    branch_snapshot,
+    load_active_branch,
+    resolve_create_purchase_order_branch,
+)
 from services.purchase_requests import get_purchase_request
 from services.physical_stock_engine import (
     attach_po_stock_snapshot,
@@ -46,6 +55,8 @@ COLLECTION = "purchase_orders"
 GR_COLLECTION = "purchase_goods_receipts"
 INV_COLLECTION = "purchase_invoices"
 ALLOC_COLLECTION = "purchase_receipt_po_links"
+AUDIT_COLLECTION = "audit_logs"
+AUDIT_ACTION_BRANCH_SET = "purchase_order.branch.set"
 
 
 async def _received_qty_by_po_line(db, purchase_order_id: str) -> Dict[str, float]:
@@ -371,6 +382,7 @@ async def create_purchase_order(db, payload: Dict[str, Any], user: dict) -> dict
 
         ts = now_iso()
         total = money_round(total)
+        branch_fields = await resolve_create_purchase_order_branch(db, payload, user)
         doc = {
             "id": str(uuid.uuid4()),
             "request_id": preview["request_id"] if preview else "",
@@ -381,6 +393,7 @@ async def create_purchase_order(db, payload: Dict[str, Any], user: dict) -> dict
             "lines": calculated,
             "subtotal": total,
             "grand_total": total,
+            **branch_fields,
             **stamp_create(user),
         }
         if idem:
@@ -437,6 +450,81 @@ async def get_purchase_order(db, po_id: str) -> dict:
     if not doc:
         raise HTTPException(404, f"Pesanan Pembelian '{po_id}' tidak ditemukan.")
     return await enrich_purchase_order(db, doc)
+
+
+async def set_purchase_order_branch(
+    db, po_id: str, payload: Optional[dict], user: dict
+) -> dict:
+    """Set Cabang Pembelian on a legacy PO that has no branch_id (once).
+
+    Does not mutate supplier, lines, qty, price, or GR/invoice documents.
+    """
+    data = dict(payload or {})
+    reason = str(data.get("reason") or data.get("note") or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "Alasan perubahan wajib diisi (minimal 3 karakter).")
+    target_branch_id = str(data.get("branch_id") or "").strip()
+    if not target_branch_id:
+        raise HTTPException(400, "branch_id wajib diisi.")
+
+    async with get_named_lock("purchase_order"):
+        doc = await db[COLLECTION].find_one({"id": str(po_id)}, {"_id": 0})
+        if not doc:
+            doc = await db[COLLECTION].find_one({"po_number": str(po_id)}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, f"Pesanan Pembelian '{po_id}' tidak ditemukan.")
+        if is_cancelled(doc):
+            raise HTTPException(400, "Pesanan sudah dibatalkan; cabang tidak dapat diubah.")
+
+        existing_branch = str(doc.get("branch_id") or "").strip()
+        if existing_branch:
+            raise HTTPException(400, BRANCH_ALREADY_SET_MSG)
+
+        branch = await load_active_branch(db, target_branch_id)
+        from services.branch_access import require_branch_access
+
+        await require_branch_access(db, user, branch["id"])
+        await assert_po_receipts_match_branch(db, doc["id"], branch["id"])
+
+        snap = branch_snapshot(branch)
+        before = {
+            "branch_id": doc.get("branch_id") or None,
+            "branch_code": doc.get("branch_code") or None,
+            "branch_name": doc.get("branch_name") or None,
+        }
+        after = {
+            "branch_id": snap["branch_id"],
+            "branch_code": snap["branch_code"],
+            "branch_name": snap["branch_name"],
+        }
+        actor = actor_snapshot(user)
+        audit_id = str(uuid.uuid4())
+        await db[AUDIT_COLLECTION].insert_one({
+            "id": audit_id,
+            "action": AUDIT_ACTION_BRANCH_SET,
+            "entity_type": "purchase_order",
+            "entity_id": doc["id"],
+            "po_number": doc.get("po_number"),
+            "actor_email": actor.get("email"),
+            "actor_role": actor.get("role"),
+            "actor_name": actor.get("name"),
+            "actor_id": actor_user_id(user),
+            "before": before,
+            "after": after,
+            "reason": reason,
+            "note": reason,
+            "at": now_iso(),
+        })
+        fields = {**snap, **stamp_update(user)}
+        try:
+            await db[COLLECTION].update_one({"id": doc["id"]}, {"$set": fields})
+        except Exception:
+            await db[AUDIT_COLLECTION].delete_one(
+                {"id": audit_id, "action": AUDIT_ACTION_BRANCH_SET}
+            )
+            raise
+        doc.update(fields)
+        return await enrich_purchase_order(db, doc)
 
 
 async def cancel_purchase_order(db, po_id: str, user: dict, reason: str = "") -> dict:
