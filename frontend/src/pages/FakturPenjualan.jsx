@@ -6,10 +6,13 @@ import {
   CheckCircle2,
   CreditCard,
   FileText,
+  Info,
+  Package,
   Plus,
   RefreshCw,
   Search,
   Trash2,
+  Wallet,
   X,
 } from "lucide-react";
 import api from "../lib/api";
@@ -1402,13 +1405,12 @@ export default function FakturPenjualan() {
     }
     if (createCalculations.chargesIncomplete) {
       setShowChargeErrors(true);
-      setInvoiceFormTab("terms");
+      setInvoiceFormTab("charges");
       setFormErr(createCalculations.chargesMessage);
       return;
     }
     const createDate = createDateRef.current?.read();
     if (!createDate?.ok) {
-      setInvoiceFormTab("terms");
       setFormErr(createDate?.message || "Tanggal faktur wajib diisi.");
       return;
     }
@@ -2491,267 +2493,341 @@ export default function FakturPenjualan() {
           ) : null}
 
           {previewData ? (
-            <form className="sd-form-fill fp-create-fill ux90-create-shell ux90-fp-filled" data-form-tab={invoiceFormTab} onSubmit={handleSaveInvoice} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              <div className="ux90-workspace">
-                <div className="ux90-main">
-                  <div className="ux90-card ux90-po-switch" style={{ flex: "0 0 auto", padding: "10px 12px" }} data-testid="fp-po-switch">
-                    <div className="ux90-field" style={{ maxWidth: 420 }}>
-                      <span>Nomor PO <span className="ux90-req">*</span></span>
-                      <LookupSearchSelect
-                        options={availablePOs}
-                        value={selectedPoId}
-                        onChange={handleSelectPoId}
-                        getOptionValue={(p) => p.id}
-                        getOptionLabel={invoicePoOptionLabel}
-                        getOptionMeta={invoicePoOptionMeta}
-                        getSearchText={invoicePoSearchText}
-                        fetchOptions={fetchInvoicePoOptions}
-                        isOptionDisabled={isInvoicePoDisabled}
-                        getOptionDisabledReason={invoicePoDisabledReason}
-                        placeholder="Ketik nomor PO atau customer…"
-                        noResultLabel="PO tidak ditemukan"
-                        disabled={previewLoading || formBusy}
-                        testId="po-selector"
-                      />
+            <form
+              className="sd-form-fill fp-create-fill ux90-create-shell ux90-fp-filled ux90-fp-doc-host"
+              data-form-tab={invoiceFormTab}
+              data-testid="fp-doc-host"
+              onSubmit={handleSaveInvoice}
+            >
+              <div className="ux90-fp-doc">
+                <div className="ux90-fp-doc-header" data-testid="po-snapshot-card">
+                  <div className="ux90-fp-dh-grid ux90-fp-dh-compact" data-testid="invoice-essential-terms">
+                    <div className="ux90-fp-dlrow ux90-fp-dlrow-po" data-testid="fp-po-switch">
+                      <label>Ambil dari PO <span className="ux90-req">*</span></label>
+                      <div className="ux90-fp-dlrow-control">
+                        <LookupSearchSelect
+                          options={availablePOs}
+                          value={selectedPoId}
+                          onChange={handleSelectPoId}
+                          getOptionValue={(p) => p.id}
+                          getOptionLabel={invoicePoOptionLabel}
+                          getOptionMeta={invoicePoOptionMeta}
+                          getSearchText={invoicePoSearchText}
+                          fetchOptions={fetchInvoicePoOptions}
+                          isOptionDisabled={isInvoicePoDisabled}
+                          getOptionDisabledReason={invoicePoDisabledReason}
+                          placeholder="Ketik nomor PO atau customer…"
+                          noResultLabel="PO tidak ditemukan"
+                          disabled={previewLoading || formBusy}
+                          testId="po-selector"
+                        />
+                        <input type="hidden" readOnly value={previewData.po_number || ""} data-testid="snapshot-po-number" />
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="ux90-card ux90-invoice-info" data-testid="po-snapshot-card" style={{ flex: "0 0 auto" }}>
-                    <h3>Informasi Faktur</h3>
-                    <div className="ux90-field-grid ux90-invoice-essentials" data-testid="invoice-essential-terms">
-                      <div className="ux90-field">
-                        <span>Ambil dari PO</span>
-                        <input className="ux90-input" readOnly value={previewData.po_number || ""} data-testid="snapshot-po-number" />
+                    <div className="ux90-fp-dlrow">
+                      <label htmlFor="fp-snapshot-customer">Pelanggan</label>
+                      <div className="ux90-fp-dlrow-control">
+                        <input id="fp-snapshot-customer" className="ux90-input" readOnly value={previewData.customer || ""} data-testid="snapshot-customer" />
                       </div>
-                      <div className="ux90-field">
-                        <span>Pelanggan</span>
-                        <input className="ux90-input" readOnly value={previewData.customer || ""} data-testid="snapshot-customer" />
-                      </div>
-                      <div className="ux90-field is-span-2">
-                        <span>Alamat</span>
-                        <input className="ux90-input" readOnly value={previewData.address || "-"} data-testid="snapshot-address" />
-                      </div>
-                      <div className="ux90-field">
-                        <span>Outlet / Cabang</span>
-                        <input className="ux90-input" readOnly value={previewData.outlet || "-"} data-testid="snapshot-outlet" />
-                      </div>
-                      <div className="ux90-field">
-                        <span>Tanggal Faktur <span className="ux90-req">*</span></span>
+                    </div>
+                    <div className="ux90-fp-dlrow">
+                      <label htmlFor="invoice-date-input">Tanggal <span className="ux90-req">*</span></label>
+                      <div className="ux90-fp-dlrow-control ux90-fp-date-control">
                         <SalesInvoiceDateField
                           ref={createDateRef}
                           valueIso={invoiceDate}
                           onChange={setInvoiceDate}
                           testId="invoice-date-input"
+                          calendarLabel="Kalender tanggal faktur"
                         />
                       </div>
-                      <div className="ux90-field">
-                        <span>PPN (%)</span>
-                        <input
-                          className="ux90-input ux90-num"
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="any"
-                          value={ppnPercent}
-                          onChange={(e) => setPpnPercent(e.target.value)}
-                          data-testid="invoice-ppn-input"
-                          placeholder="0"
-                        />
+                    </div>
+                    <div className="ux90-fp-dlrow">
+                      <label htmlFor="fp-snapshot-outlet">Outlet / Cabang</label>
+                      <div className="ux90-fp-dlrow-control">
+                        <input id="fp-snapshot-outlet" className="ux90-input" readOnly value={previewData.outlet || "-"} data-testid="snapshot-outlet" />
                       </div>
-                      <div className="ux90-field">
-                        <span>Termin (Hari)</span>
-                        <input
-                          className="ux90-input ux90-num"
-                          type="number"
-                          min="0"
-                          value={paymentTermDays}
-                          onChange={(e) => setPaymentTermDays(e.target.value)}
-                          data-testid="invoice-term-input"
-                          placeholder="0"
-                        />
-                      </div>
-                      <div className="ux90-field">
-                        <span>Jatuh Tempo</span>
-                        <input className="ux90-input" readOnly value={formatSalesInvoiceDate(calculatedDueDate) || "-"} data-testid="invoice-due-display" />
-                      </div>
-                      <div className="ux90-field">
-                        <span>Diskon Global (Rp)</span>
-                        <input
-                          className="ux90-input ux90-num"
-                          type="number"
-                          min="0"
-                          value={discountAmount}
-                          onChange={(e) => setDiscountAmount(e.target.value)}
-                          data-testid="invoice-discount-input"
-                          placeholder="0"
-                        />
-                      </div>
-                      <div className="ux90-field">
-                        <span>Sisa qty dapat difakturkan</span>
-                        <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"} style={{ fontSize: 14, paddingTop: 6 }}>
+                    </div>
+                    <div className="ux90-fp-dlrow ux90-fp-dlrow-sisa">
+                      <label>Sisa qty</label>
+                      <div className="ux90-fp-dlrow-control ux90-fp-remaining">
+                        <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"}>
                           {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
                         </strong>
                       </div>
                     </div>
                   </div>
+                </div>
 
-                  <div className="sd-form-tabs" role="tablist" aria-label="Bagian faktur" style={{ flex: "0 0 auto", margin: 0 }}>
-                    <button type="button" className={invoiceFormTab === "items" ? "is-active" : ""} onClick={() => setInvoiceFormTab("items")}>Daftar Barang</button>
-                    <button type="button" className={invoiceFormTab === "terms" ? "is-active" : ""} onClick={() => setInvoiceFormTab("terms")}>Catatan & Biaya Lainnya</button>
-                  </div>
+                <div className="ux90-fp-doc-body">
+                  <nav className="ux90-fp-vtabs" role="tablist" aria-label="Bagian faktur">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={invoiceFormTab === "items"}
+                      className={invoiceFormTab === "items" ? "is-active" : ""}
+                      data-testid="fp-tab-items"
+                      onClick={() => setInvoiceFormTab("items")}
+                    >
+                      <Package size={18} aria-hidden="true" />
+                      <span>Rincian</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={invoiceFormTab === "info"}
+                      className={invoiceFormTab === "info" ? "is-active" : ""}
+                      data-testid="fp-tab-info"
+                      onClick={() => setInvoiceFormTab("info")}
+                    >
+                      <Info size={18} aria-hidden="true" />
+                      <span>Info</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={invoiceFormTab === "charges"}
+                      className={invoiceFormTab === "charges" ? "is-active" : ""}
+                      data-testid="fp-tab-charges"
+                      onClick={() => setInvoiceFormTab("charges")}
+                    >
+                      <Wallet size={18} aria-hidden="true" />
+                      <span>Biaya</span>
+                    </button>
+                  </nav>
 
-                  <div className="fp-terms sd-pane-terms ux90-card ux90-invoice-terms">
-                    <div className="ux90-field is-span-3">
-                      <span>Catatan Faktur (Opsional)</span>
-                      <input
-                        className="ux90-input"
-                        type="text"
-                        placeholder="Catatan tambahan faktur penjualan..."
-                        value={invoiceNotes}
-                        onChange={(e) => setInvoiceNotes(e.target.value)}
-                        data-testid="invoice-notes-input"
+                  <div className="ux90-fp-pane">
+                    <div className="ux90-fp-pane-panel ux90-fp-pane-items fp-items sd-pane-items ux90-invoice-lines" data-pane="items">
+                      <div className="ux90-fp-pane-title">
+                        <h3>Rincian Barang <span className="ux90-req">*</span></h3>
+                        <span className="ux90-hint">Qty faktur ≤ sisa · multi-faktur per PO</span>
+                      </div>
+                      <div className="ux90-table-scroll" data-testid="invoice-lines-scroll">
+                        <table className="ux90-table fp-lines">
+                          <thead>
+                            <tr>
+                              <th>Produk</th>
+                              <th className="is-num">Qty PO</th>
+                              <th className="is-num">Sudah Faktur</th>
+                              <th className="is-num">Sisa</th>
+                              <th className="is-num">Qty Faktur</th>
+                              <th className="is-num">Harga</th>
+                              <th className="is-num">Subtotal</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {createCalculations.lines.map((li) => (
+                              <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
+                                <td>
+                                  <div className="ux90-item-name">{li.item_name}</div>
+                                  {li.color ? <div className="ux90-item-meta">Warna: {li.color}</div> : null}
+                                </td>
+                                <td className="is-num" data-testid={`create-line-ordered-${li.line_idx}`}>
+                                  {Number(li.ordered_qty || 0).toLocaleString("id-ID")}
+                                </td>
+                                <td className="is-num" data-testid={`create-line-invoiced-${li.line_idx}`}>
+                                  {Number(li.invoiced_cumulative || 0).toLocaleString("id-ID")}
+                                </td>
+                                <td className="is-num">
+                                  <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
+                                </td>
+                                <td className="is-num">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max={li.remaining}
+                                    value={lineQuantities[li.line_idx] !== undefined ? lineQuantities[li.line_idx] : li.remaining}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
+                                    }}
+                                    data-testid={`qty-input-${li.line_idx}`}
+                                    className={`ux90-qty-input${li.isQtyOver ? " is-over" : ""}`}
+                                  />
+                                  {li.isQtyOver ? <div className="ux90-inline-err">Maks {li.remaining}</div> : null}
+                                </td>
+                                <td className="is-num">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={linePrices[li.line_idx] !== undefined ? linePrices[li.line_idx] : ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
+                                    }}
+                                    readOnly={Boolean(li.price_from_order)}
+                                    placeholder={li.price_from_order ? "" : "Isi harga"}
+                                    data-testid={`unit-price-input-${li.line_idx}`}
+                                    className="ux90-price-input"
+                                  />
+                                  {li.price_from_order ? <div className="ux90-inline-ok">Harga dari pesanan</div> : null}
+                                  {li.priceMissing && li.numericQty > 0 ? <div className="ux90-inline-warn">Lengkapi harga jual</div> : null}
+                                </td>
+                                <td className="is-num" data-testid={`line-total-${li.line_idx}`}>
+                                  {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="ux90-fp-pane-panel ux90-fp-pane-info fp-terms sd-pane-terms" data-pane="info">
+                      <div className="ux90-fp-pane-title">
+                        <h3>Info Lainnya</h3>
+                      </div>
+                      <div className="ux90-fp-info-cols">
+                        <section className="ux90-fp-info-col" aria-label="Info dokumen">
+                          <h4 className="ux90-fp-info-h">Info dokumen</h4>
+                          <div className="ux90-fp-dlrow">
+                            <label htmlFor="fp-snapshot-address">Alamat</label>
+                            <div className="ux90-fp-dlrow-control">
+                              <input id="fp-snapshot-address" className="ux90-input" readOnly value={previewData.address || "-"} data-testid="snapshot-address" />
+                            </div>
+                          </div>
+                          <div className="ux90-fp-dlrow">
+                            <label htmlFor="invoice-notes-input">Keterangan</label>
+                            <div className="ux90-fp-dlrow-control">
+                              <input
+                                id="invoice-notes-input"
+                                className="ux90-input"
+                                type="text"
+                                placeholder="Catatan tambahan faktur penjualan..."
+                                value={invoiceNotes}
+                                onChange={(e) => setInvoiceNotes(e.target.value)}
+                                data-testid="invoice-notes-input"
+                              />
+                            </div>
+                          </div>
+                          <p className="ux90-doc-hint" data-testid="multi-invoice-hint">
+                            Sisa qty PO: <strong data-testid="invoice-remaining-qty-summary">{Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs</strong>
+                            {" · "}PO {previewData.po_number}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
+                          </p>
+                        </section>
+                        <section className="ux90-fp-info-col" aria-label="Pembayaran dan pajak">
+                          <h4 className="ux90-fp-info-h">Pembayaran &amp; pajak</h4>
+                          <div className="ux90-fp-dlrow">
+                            <label htmlFor="invoice-term-input">Termin (Hari)</label>
+                            <div className="ux90-fp-dlrow-control">
+                              <input
+                                id="invoice-term-input"
+                                className="ux90-input ux90-num"
+                                type="number"
+                                min="0"
+                                value={paymentTermDays}
+                                onChange={(e) => setPaymentTermDays(e.target.value)}
+                                data-testid="invoice-term-input"
+                                placeholder="0"
+                              />
+                            </div>
+                          </div>
+                          <div className="ux90-fp-dlrow">
+                            <label htmlFor="invoice-due-display">Jatuh Tempo</label>
+                            <div className="ux90-fp-dlrow-control">
+                              <input id="invoice-due-display" className="ux90-input" readOnly value={formatSalesInvoiceDate(calculatedDueDate) || "-"} data-testid="invoice-due-display" />
+                            </div>
+                          </div>
+                          <div className="ux90-fp-dlrow">
+                            <label htmlFor="invoice-ppn-input">PPN (%)</label>
+                            <div className="ux90-fp-dlrow-control">
+                              <input
+                                id="invoice-ppn-input"
+                                className="ux90-input ux90-num"
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="any"
+                                value={ppnPercent}
+                                onChange={(e) => setPpnPercent(e.target.value)}
+                                data-testid="invoice-ppn-input"
+                                placeholder="0"
+                              />
+                            </div>
+                          </div>
+                          <div className="ux90-fp-dlrow">
+                            <label htmlFor="invoice-discount-input">Diskon Global (Rp)</label>
+                            <div className="ux90-fp-dlrow-control">
+                              <input
+                                id="invoice-discount-input"
+                                className="ux90-input ux90-num"
+                                type="number"
+                                min="0"
+                                value={discountAmount}
+                                onChange={(e) => setDiscountAmount(e.target.value)}
+                                data-testid="invoice-discount-input"
+                                placeholder="0"
+                              />
+                            </div>
+                          </div>
+                        </section>
+                      </div>
+                    </div>
+
+                    <div className="ux90-fp-pane-panel ux90-fp-pane-charges ux90-invoice-terms" data-pane="charges">
+                      <div className="ux90-fp-pane-title">
+                        <h3>Biaya Lainnya</h3>
+                      </div>
+                      <OtherChargesEditor
+                        rows={otherCharges}
+                        accounts={chargeAccounts}
+                        disabled={formBusy}
+                        showErrors={showChargeErrors}
+                        onChange={setOtherCharges}
+                        idPrefix="create"
                       />
                     </div>
-                    <OtherChargesEditor
-                      rows={otherCharges}
-                      accounts={chargeAccounts}
-                      disabled={formBusy}
-                      showErrors={showChargeErrors}
-                      onChange={setOtherCharges}
-                      idPrefix="create"
-                    />
                   </div>
-
-                  <div className="fp-items sd-pane-items ux90-table-wrap ux90-invoice-lines">
-                    <div className="ux90-table-head">
-                      <h3>Daftar Barang</h3>
-                      <span className="ux90-hint">Qty faktur ≤ sisa per baris · multi-faktur per PO</span>
-                    </div>
-                    <div className="ux90-table-scroll" data-testid="invoice-lines-scroll">
-                      <table className="ux90-table fp-lines">
-                        <thead>
-                          <tr>
-                            <th>Produk</th>
-                            <th className="is-num">Qty PO</th>
-                            <th className="is-num">Sudah Faktur</th>
-                            <th className="is-num">Sisa</th>
-                            <th className="is-num">Qty Faktur</th>
-                            <th className="is-num">Harga</th>
-                            <th className="is-num">Subtotal</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {createCalculations.lines.map((li) => (
-                            <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
-                              <td>
-                                <div className="ux90-item-name">{li.item_name}</div>
-                                {li.color ? <div className="ux90-item-meta">Warna: {li.color}</div> : null}
-                              </td>
-                              <td className="is-num" data-testid={`create-line-ordered-${li.line_idx}`}>
-                                {Number(li.ordered_qty || 0).toLocaleString("id-ID")}
-                              </td>
-                              <td className="is-num" data-testid={`create-line-invoiced-${li.line_idx}`}>
-                                {Number(li.invoiced_cumulative || 0).toLocaleString("id-ID")}
-                              </td>
-                              <td className="is-num">
-                                <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
-                              </td>
-                              <td className="is-num">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max={li.remaining}
-                                  value={lineQuantities[li.line_idx] !== undefined ? lineQuantities[li.line_idx] : li.remaining}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
-                                  }}
-                                  data-testid={`qty-input-${li.line_idx}`}
-                                  className={`ux90-qty-input${li.isQtyOver ? " is-over" : ""}`}
-                                />
-                                {li.isQtyOver ? <div className="ux90-inline-err">Maks {li.remaining}</div> : null}
-                              </td>
-                              <td className="is-num">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="any"
-                                  value={linePrices[li.line_idx] !== undefined ? linePrices[li.line_idx] : ""}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
-                                  }}
-                                  readOnly={Boolean(li.price_from_order)}
-                                  placeholder={li.price_from_order ? "" : "Isi harga"}
-                                  data-testid={`unit-price-input-${li.line_idx}`}
-                                  className="ux90-price-input"
-                                />
-                                {li.price_from_order ? <div className="ux90-inline-ok">Harga dari pesanan</div> : null}
-                                {li.priceMissing && li.numericQty > 0 ? <div className="ux90-inline-warn">Lengkapi harga jual</div> : null}
-                              </td>
-                              <td className="is-num" data-testid={`line-total-${li.line_idx}`}>
-                                {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {createCalculations.totalRemaining <= 0 ? (
-                    <div className="ux90-card" data-testid="fully-invoiced-banner" style={{ borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", flex: "0 0 auto" }}>
-                      <AlertCircle size={16} style={{ verticalAlign: "middle", marginRight: 6 }} />
-                      Pesanan Penjualan ini sudah difakturkan sepenuhnya. Tidak ada sisa kuantitas untuk difakturkan.
-                    </div>
-                  ) : null}
-
-                  {formErr ? (
-                    <div className="alert-box error" data-testid="create-error-alert" style={{ flex: "0 0 auto" }}>
-                      <AlertCircle size={16} />
-                      <span>{formErr}</span>
-                    </div>
-                  ) : null}
-
-                  <p className="ux90-doc-hint" data-testid="multi-invoice-hint" style={{ margin: "8px 0 0" }}>
-                    Sisa qty PO: <strong data-testid="invoice-remaining-qty-summary">{Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs</strong>
-                    {" · "}PO {previewData.po_number}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
-                  </p>
                 </div>
+
+                {createCalculations.totalRemaining <= 0 ? (
+                  <div className="ux90-fp-banner" data-testid="fully-invoiced-banner">
+                    <AlertCircle size={16} />
+                    Pesanan Penjualan ini sudah difakturkan sepenuhnya. Tidak ada sisa kuantitas untuk difakturkan.
+                  </div>
+                ) : null}
+
+                {formErr ? (
+                  <div className="alert-box error" data-testid="create-error-alert">
+                    <AlertCircle size={16} />
+                    <span>{formErr}</span>
+                  </div>
+                ) : null}
               </div>
 
-              <div className="ux90-footer invoice-actions ux90-doc-footer">
-                <div className="ux90-doc-summary is-inline" data-testid="invoice-breakdown">
-                  <div className="ux90-doc-summary-rows">
-                    <div>
+              <div className="ux90-footer invoice-actions ux90-doc-footer ux90-fp-doc-footer">
+                <div className="ux90-fp-totals" data-testid="invoice-breakdown">
+                  <div className="ux90-fp-totals-lines">
+                    <div className="ux90-fp-tot-row">
                       <span>Subtotal</span>
-                      <strong>{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                      <strong className="ux90-fp-tot-amt">{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
                     </div>
-                    <div>
+                    <div className="ux90-fp-tot-row">
                       <span>Diskon</span>
-                      <strong>{formatRupiah(createCalculations.discount)}</strong>
+                      <strong className="ux90-fp-tot-amt">{formatRupiah(createCalculations.discount)}</strong>
                     </div>
-                    <div>
+                    <div className="ux90-fp-tot-row">
                       <span>DPP</span>
-                      <strong data-testid="invoice-dpp">
+                      <strong className="ux90-fp-tot-amt" data-testid="invoice-dpp">
                         {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}
                       </strong>
                     </div>
-                    <div>
+                    <div className="ux90-fp-tot-row">
                       <span>PPN ({createCalculations.ppnPercent}%)</span>
-                      <strong data-testid="invoice-ppn">
+                      <strong className="ux90-fp-tot-amt" data-testid="invoice-ppn">
                         {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}
                       </strong>
                     </div>
-                    <div>
+                    <div className="ux90-fp-tot-row">
                       <span>Biaya Lainnya</span>
-                      <strong data-testid="invoice-other-charges-total">
+                      <strong className="ux90-fp-tot-amt" data-testid="invoice-other-charges-total">
                         {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
                       </strong>
                     </div>
-                    <div className="is-total">
+                    <div className="ux90-fp-tot-row is-total">
                       <span>Total Faktur</span>
-                      <strong data-testid="invoice-grand-total">
+                      <strong className="ux90-fp-tot-amt" data-testid="invoice-grand-total">
                         {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
                           ? formatRupiah(createCalculations.grandTotal)
                           : "Belum lengkap"}

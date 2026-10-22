@@ -177,7 +177,13 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/createCalculations\?\.lines/);
     expect(pageSrc).toMatch(/FormProgress/);
     expect(pageSrc).toMatch(/Daftar Barang/);
-    expect(pageSrc).toMatch(/Catatan & Biaya/);
+    expect(pageSrc).toMatch(/Rincian Barang/);
+    expect(pageSrc).toMatch(/Info Lainnya/);
+    expect(pageSrc).toMatch(/Biaya Lainnya/);
+    expect(pageSrc).toMatch(/ux90-fp-vtabs/);
+    expect(pageSrc).toMatch(/invoice-breakdown/);
+    expect(pageSrc).toMatch(/invoice-dpp/);
+    expect(pageSrc).toMatch(/invoice-ppn/);
     expect(pageSrc).toMatch(/Belum lengkap/);
     expect(pageSrc).toMatch(/priceMissingAny/);
     expect(pageSrc).toMatch(/ux90-create-shell/);

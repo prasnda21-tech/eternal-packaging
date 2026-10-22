@@ -137,7 +137,8 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/data-testid="display-po-number"/);
     expect(src).toMatch(/data-testid="display-suggested-sj"/);
     expect(src).toMatch(/data-testid="display-customer"/);
-    expect(src).toMatch(/data-testid="input-delivery-date"/);
+    expect(src).toMatch(/SalesInvoiceDateField/);
+    expect(src).toMatch(/testId="input-delivery-date"/);
     expect(src).toMatch(/data-testid="input-delivery-outlet"/);
     expect(src).toMatch(/data-testid="input-delivery-recipient"/);
     expect(src).toMatch(/data-testid="input-delivery-sales"/);
