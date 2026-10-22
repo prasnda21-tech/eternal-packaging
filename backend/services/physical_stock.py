@@ -3689,7 +3689,10 @@ async def list_physical_stock_catalog(
         }
     else:
         delivered, delivery_provenance = aggregate_legacy_delivered_qty(
-            orders, [], owners,
+            orders,
+            [],
+            owners,
+            process_master_ids=service_master_ids,
         )
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
     balance_docs = []

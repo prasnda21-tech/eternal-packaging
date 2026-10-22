@@ -246,3 +246,203 @@ def test_sj_selesai_alone_is_not_delivery_proof():
     )
     assert row["belum_terkirim_status"] == BELUM_STATUS_READY
     assert row["qty_belum_terkirim"] == 80.0
+
+
+def test_cancelled_order_excluded_from_demand():
+    active = _print_order("so-live", quantity=50, completed=0, branch_id=BRANCH_YGY)
+    cancelled = _print_order("so-canc", quantity=90, completed=0, branch_id=BRANCH_YGY)
+    cancelled["cancelled"] = True
+    scoped = _orders_for_branch([active, cancelled], BRANCH_YGY, legacy_settings={})
+    progress = aggregate_operational_orders(scoped, {})
+    assert progress[ITEM]["ordered_qty"] == 50.0
+    buckets = operational_availability(
+        physical_qty=200, ordered_qty=50, completed_qty=0, r2_delivered_qty=0,
+    )
+    assert buckets["qty_pesanan"] == 50.0
+    assert buckets["qty_tersedia"] == 150.0
+
+
+def test_buffer_stock_flag_still_counts_as_demand():
+    """buffer_stock is a schedule label — still customer commitment for Qty Pesanan."""
+    order = _print_order("so-buf", quantity=40, completed=10, branch_id=BRANCH_YGY)
+    order["buffer_stock"] = True
+    scoped = _orders_for_branch([order], BRANCH_YGY, legacy_settings={})
+    progress = aggregate_operational_orders(scoped, {})[ITEM]
+    buckets = operational_availability(
+        physical_qty=100,
+        ordered_qty=progress["ordered_qty"],
+        completed_qty=progress["completed_qty"],
+        r2_delivered_qty=0,
+    )
+    assert buckets["qty_pesanan"] == 30.0
+    assert buckets["qty_belum_terkirim"] == 10.0
+    assert buckets["qty_tersedia"] == 60.0
+
+
+def test_service_addon_sj_line_remaps_to_parent_physical():
+    """SJ attributed to SERVICE Add On must reduce parent Belum — not double-count SERVICE."""
+    parent = "inv-parent"
+    svc = "svc-sablon"
+    orders = [{
+        "id": "so-addon-sj",
+        "cancelled": False,
+        "branch_id": BRANCH_YGY,
+        "line_items": [
+            {
+                "line_id": "ln-main",
+                "master_item_id": parent,
+                "quantity": 100,
+                "production_process": "print",
+                "name": "Karton",
+            },
+            {
+                "line_id": "ln-svc",
+                "master_item_id": svc,
+                "parent_line_id": "ln-main",
+                "quantity": 100,
+                "production_process": "print",
+                "name": "Sablon",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": "ship-svc",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-10-20T00:00:00+00:00",
+            "total_qty": 40,
+            "lines": [{"line_idx": 1, "qty": 40}],
+        }],
+    }]
+    scoped = _orders_for_branch(orders, BRANCH_YGY, legacy_settings={})
+    progress = aggregate_operational_orders(scoped, {}, exclude_master_ids={svc})
+    delivered, prov = aggregate_legacy_delivered_qty(
+        scoped, [], process_master_ids={svc},
+    )
+    assert parent in progress
+    assert svc not in progress
+    assert delivered.get(parent) == 40.0
+    assert svc not in delivered
+    assert prov.get(parent) == "confirmed_shipment"
+    buckets = operational_availability(
+        physical_qty=500,
+        ordered_qty=progress[parent]["ordered_qty"],
+        completed_qty=progress[parent]["completed_qty"],
+        r2_delivered_qty=delivered[parent],
+    )
+    # BEFORE bug: pesanan=0, belum=100 (SERVICE ate the SJ). AFTER: belum=60.
+    assert buckets["qty_pesanan"] == 0.0
+    assert buckets["qty_belum_terkirim"] == 60.0
+    assert buckets["qty_tersedia"] == 440.0
+
+
+def test_service_addon_qty_delivered_fallback_uses_parent():
+    """Legacy qty_delivered on parent+SERVICE PO still reduces parent Belum.
+
+    Process group must be FULLY_COMPLETED before siap/belum moves; SERVICE lines
+    must not block the single-physical-master qty_delivered fallback.
+    """
+    parent = "inv-parent"
+    svc = "svc-sablon"
+    orders = [{
+        "id": "so-addon-qd",
+        "cancelled": False,
+        "branch_id": BRANCH_YGY,
+        "qty_delivered": 25,
+        "line_items": [
+            {
+                "line_id": "ln-main",
+                "master_item_id": parent,
+                "quantity": 100,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-svc",
+                "master_item_id": svc,
+                "parent_line_id": "ln-main",
+                "quantity": 100,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+    }]
+    scoped = _orders_for_branch(orders, BRANCH_YGY, legacy_settings={})
+    progress = aggregate_operational_orders(scoped, {}, exclude_master_ids={svc})[parent]
+    delivered, prov = aggregate_legacy_delivered_qty(
+        scoped, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 25.0
+    assert prov.get(parent) == "order_qty_delivered"
+    assert progress["completed_qty"] == 100.0
+    buckets = operational_availability(
+        physical_qty=1000,
+        ordered_qty=progress["ordered_qty"],
+        completed_qty=progress["completed_qty"],
+        r2_delivered_qty=delivered[parent],
+    )
+    assert buckets["qty_pesanan"] == 0.0
+    assert buckets["qty_belum_terkirim"] == 75.0  # 100 siap - 25 delivered
+
+
+def test_unlinked_service_sj_stays_unproven_not_fake_zero():
+    """SERVICE SJ without parent_line_id → BELUM_TERVERIFIKASI; never belum=0."""
+    parent = "inv-parent"
+    svc = "svc-orphan"
+    orders = [{
+        "id": "so-orphan-svc",
+        "cancelled": False,
+        "branch_id": BRANCH_YGY,
+        "line_items": [
+            {"master_item_id": parent, "quantity": 100, "production_process": "print"},
+            {"master_item_id": svc, "quantity": 100, "production_process": "print"},
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 100},
+            {"line_idx": 1, "qty_completed": 100},
+        ],
+        "shipments": [{
+            "id": "ship-orphan",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-10-20T00:00:00+00:00",
+            "total_qty": 40,
+            "lines": [{"line_idx": 1, "qty": 40}],
+        }],
+    }]
+    scoped = _orders_for_branch(orders, BRANCH_YGY, legacy_settings={})
+    progress = aggregate_operational_orders(scoped, {}, exclude_master_ids={svc})[parent]
+    delivered, prov = aggregate_legacy_delivered_qty(
+        scoped, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent, 0) == 0
+    assert prov.get(parent) == "unproven"
+    row = compatibility_row(
+        master={"id": parent, "item_code": "P", "item_name": "Parent"},
+        physical_qty=500,
+        ordered_qty=progress["ordered_qty"],
+        completed_qty=progress["completed_qty"],
+        delivered_qty=0,
+        belum_status=BELUM_STATUS_UNVERIFIED,
+        updated_at=None,
+        base_unit="PCS",
+    )
+    assert row["qty_belum_terkirim"] is None
+    assert row["qty_tersedia_valid"] is False
+    assert row["qty_tersedia"] == 500 - row["qty_pesanan"]
+
+
+def test_formula_tersedia_with_valid_stock_and_demand():
+    """Approved ERP formula: Tersedia = Fisik − Pesanan − Belum (when valid)."""
+    buckets = operational_availability(
+        physical_qty=970,
+        ordered_qty=120,
+        completed_qty=40,
+        r2_delivered_qty=10,
+    )
+    assert buckets["qty_pesanan"] == 80.0
+    assert buckets["qty_belum_terkirim"] == 30.0
+    assert buckets["qty_tersedia"] == 860.0  # 970 - 80 - 30

@@ -46,19 +46,72 @@ def _delivery_line_qty(line: dict) -> float:
     return 0.0
 
 
+def _physical_delivery_master_id(
+    order_lines: list,
+    idx: int,
+    owners: Dict[str, str],
+    process_master_ids: set,
+) -> str:
+    """Master that receives Belum Terkirim reduction for a proven delivery line.
+
+    Process / jasa Add On (SERVICE) is work qty — never holds physical delivery
+    demand. Linked SERVICE lines remap to their explicit parent inventory master.
+    Unlinked SERVICE returns empty so callers fail-closed (unproven), never
+    invent a parent link from names.
+    """
+    from services.order_line_addon import resolve_parent_idx
+
+    if idx < 0 or idx >= len(order_lines):
+        return ""
+    line = order_lines[idx]
+    if not isinstance(line, dict):
+        return ""
+    mid = _line_master_id(line, owners)
+    if not mid:
+        return ""
+    if mid not in process_master_ids:
+        return mid
+    parent_idx = resolve_parent_idx(line, order_lines)
+    if parent_idx is None:
+        return ""
+    parent_mid = _line_master_id(order_lines[parent_idx], owners)
+    if not parent_mid or parent_mid in process_master_ids:
+        return ""
+    return parent_mid
+
+
+def _mark_physical_masters_unproven(
+    order_lines: list,
+    owners: Dict[str, str],
+    process_master_ids: set,
+    unproven_masters: Dict[str, bool],
+) -> None:
+    for oli in order_lines:
+        om = _line_master_id(oli, owners)
+        if om and om not in process_master_ids:
+            unproven_masters[om] = True
+
+
 def aggregate_legacy_delivered_qty(
     orders: Iterable[dict],
     deliveries: Iterable[dict],
     accurate_owners: Optional[Dict[str, str]] = None,
+    *,
+    process_master_ids: Optional[Iterable[str]] = None,
 ) -> Tuple[Dict[str, float], Dict[str, str]]:
     """Map PROVEN customer deliveries into delivered qty per master_item_id.
 
     sales_deliveries.status SELESAI/SEBAGIAN means SJ allocation vs PO remaining,
     not customer receipt — those rows alone never reduce Qty Belum Terkirim.
 
+    process_master_ids: SERVICE / process Add On masters. Proven shipment qty on
+    those lines remaps to the explicit parent inventory master when linked;
+    unlinked SERVICE never invents parent demand (fail-closed unproven).
+
     Returns (delivered_by_master, provenance_by_master) where provenance is:
     - "confirmed_shipment" when order.shipment has delivery confirmation / Terkirim
-    - "order_qty_delivered" when single-line order falls back to order.qty_delivered
+    - "order_qty_delivered" when single physical-master order falls back to
+      order.qty_delivered (SERVICE process lines do not block this fallback)
     - "unproven" when confirmation exists but line attribution is unsafe
     """
     from services.r2_go_live import (
@@ -69,6 +122,9 @@ def aggregate_legacy_delivered_qty(
     )
 
     owners = accurate_owners or {}
+    process_ids = {
+        str(mid).strip() for mid in (process_master_ids or []) if str(mid).strip()
+    }
     order_by_id: Dict[str, dict] = {}
     for order in orders:
         if _order_cancelled(order):
@@ -89,6 +145,9 @@ def aggregate_legacy_delivered_qty(
 
     def add(mid: str, qty: float, source: str) -> None:
         if not mid or qty <= 0:
+            return
+        if mid in process_ids:
+            # Process masters never accumulate physical delivery demand.
             return
         delivered[mid] = _qty_num(delivered.get(mid, 0)) + qty
         prev = provenance.get(mid)
@@ -140,10 +199,9 @@ def aggregate_legacy_delivered_qty(
                         continue
                     shipment_lines[idx] = float(shipment_lines.get(idx, 0.0)) + qty
                 if unresolved and len(order_lines) > 1:
-                    for oli in order_lines:
-                        om = _line_master_id(oli, owners)
-                        if om:
-                            unproven_masters[om] = True
+                    _mark_physical_masters_unproven(
+                        order_lines, owners, process_ids, unproven_masters,
+                    )
                     continue
             sh_tokens = _delivery_identity_tokens(sh)
             attributed, resolve_issues = _resolve_proven_line_attribution(
@@ -155,29 +213,41 @@ def aggregate_legacy_delivered_qty(
                 shipment_lines=shipment_lines,
             )
             if resolve_issues or not attributed:
-                for oli in order_lines:
-                    om = _line_master_id(oli, owners)
-                    if om:
-                        unproven_masters[om] = True
+                _mark_physical_masters_unproven(
+                    order_lines, owners, process_ids, unproven_masters,
+                )
                 continue
             for idx, qty in attributed.items():
                 if idx < 0 or idx >= len(order_lines):
                     continue
-                mid = _line_master_id(order_lines[idx], owners)
+                mid = _physical_delivery_master_id(
+                    order_lines, idx, owners, process_ids,
+                )
+                if not mid:
+                    # SERVICE/process without valid parent — fail-closed.
+                    _mark_physical_masters_unproven(
+                        order_lines, owners, process_ids, unproven_masters,
+                    )
+                    continue
                 add(mid, float(qty), "confirmed_shipment")
                 if order_id and mid:
                     confirmed_order_masters.add((order_id, mid))
 
-    # Single-line order.qty_delivered fallback when THIS PO has no confirmed
-    # shipment attribution for that master (other POs must not suppress it).
+    # Physical-master qty_delivered fallback when THIS PO has no confirmed
+    # shipment attribution for that master. SERVICE process lines do not block
+    # the fallback (parent + Add On is still one physical demand identity).
     for order in order_by_id.values():
         order_id = str(order.get("id") or "").strip()
         order_lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(li, owners) for li in order_lines]
-        identified = [m for m in master_ids if m]
-        if len(identified) != 1:
+        physical_ids = [
+            m for m in master_ids if m and m not in process_ids
+        ]
+        # Distinct physical masters only — two inventory lines stay fail-closed.
+        unique_physical = list(dict.fromkeys(physical_ids))
+        if len(unique_physical) != 1:
             continue
-        mid = identified[0]
+        mid = unique_physical[0]
         if order_id and (order_id, mid) in confirmed_order_masters:
             continue
         qd = _qty_num(order.get("qty_delivered"))
@@ -187,7 +257,8 @@ def aggregate_legacy_delivered_qty(
     # Ambiguous attribution always wins over partial confirmed totals — never
     # leave READY/confirmed when any shipment for the master is unproven.
     for mid in unproven_masters:
-        provenance[mid] = "unproven"
+        if mid not in process_ids:
+            provenance[mid] = "unproven"
 
     return delivered, provenance
 
@@ -551,7 +622,9 @@ async def list_compatibility_stock_catalog(
     progress = aggregate_operational_orders(
         orders, owners, exclude_master_ids=service_master_ids,
     )
-    delivered_map, provenance = aggregate_legacy_delivered_qty(orders, deliveries, owners)
+    delivered_map, provenance = aggregate_legacy_delivered_qty(
+        orders, deliveries, owners, process_master_ids=service_master_ids,
+    )
 
     state_by_mid: Dict[str, dict] = {}
     async for doc in db.product_stock_state.find({}, {"_id": 0}):
