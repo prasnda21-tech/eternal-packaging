@@ -407,6 +407,51 @@ async def resolve_replacement_master(
     return master
 
 
+async def require_po_create_line_master(
+    db,
+    *,
+    master_item_id: Optional[str] = None,
+    accurate_item_id: Optional[str] = None,
+    line_no: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Hard-require a valid Master Produk for a new PO line (create / replace).
+
+    Returns (master_doc, mapped_line_fields). Does not write. Line numbers are 1-based
+    for user-facing errors. Free-text name alone is never accepted as identity.
+    """
+    mid = (master_item_id or "").strip()
+    aid = (accurate_item_id or "").strip()
+    if not mid and not aid:
+        raise HTTPException(
+            400,
+            f"Line item #{line_no}: Master Produk wajib dipilih "
+            "(master_item_id atau accurate_item_id).",
+        )
+    try:
+        master = await resolve_replacement_master(
+            db,
+            master_item_id=mid or None,
+            accurate_item_id=aid or None,
+        )
+    except HTTPException as exc:
+        detail = exc.detail
+        if isinstance(detail, dict):
+            msg = str(detail.get("message") or MSG_NOT_FOUND)
+        else:
+            msg = str(detail or MSG_NOT_FOUND)
+        status = int(exc.status_code or 400)
+        if status not in (400, 404):
+            status = 400
+        raise HTTPException(status, f"Line item #{line_no}: {msg}") from exc
+    mapped = map_master_to_line_fields(master)
+    if not mapped.get("master_item_id") and not mapped.get("accurate_item_id"):
+        raise HTTPException(
+            400,
+            f"Line item #{line_no}: Produk target tidak memiliki identitas kanonis.",
+        )
+    return master, mapped
+
+
 def apply_product_fields_to_line(li: dict, mapped: dict) -> dict:
     """Update only product-derived fields; clear stale identity; preserve qty/process/etc."""
     updated = dict(li or {})

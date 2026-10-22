@@ -340,7 +340,8 @@ async def test_matrix_c_concurrent_post_one_journal():
 
 
 @pytest.mark.anyio
-async def test_matrix_d_invoice_not_posted_blocks_receipt_post_not_create():
+async def test_matrix_d_invoice_not_posted_blocks_receipt_create():
+    """Owner P3: CREATE penerimaan requires posted invoice journal (not only receipt post)."""
     await _configure_settings()
     bca = await _cash_bank()
     po = await _seed_po()
@@ -349,16 +350,22 @@ async def test_matrix_d_invoice_not_posted_blocks_receipt_post_not_create():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             inv = await _create_invoice(client, po["id"])
             fin = await _finalize(client, inv["id"])
-            receipt = await _create_receipt(client, fin["id"], 4_000_000, cash_bank_id=bca["id"])
-            assert receipt["accounting_status"] == "not_posted"
-            assert receipt["can_post_accounting"] is False
-
-            blocked = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
-            assert blocked.status_code == 409
+            blocked = await client.post(
+                "/api/sales-receipts",
+                json={
+                    "invoice_id": fin["id"],
+                    "receipt_date": "2026-09-05",
+                    "amount": 4_000_000,
+                    "cash_bank_id": bca["id"],
+                    "notes": "DP",
+                },
+            )
+            assert blocked.status_code == 409, blocked.text
             assert blocked.json()["detail"] == INVOICE_NOT_POSTED_MESSAGE
-            assert await _source_journals(receipt["id"]) == []
+            assert await server.db.sales_receipts.count_documents({"invoice_id": fin["id"]}) == 0
 
             await _post_invoice(client, fin["id"])
+            receipt = await _create_receipt(client, fin["id"], 4_000_000, cash_bank_id=bca["id"])
             ok = await client.post(f"/api/sales-receipts/{receipt['id']}/post-accounting")
             assert ok.status_code == 200, ok.text
             assert ok.json()["receipt"]["accounting_status"] == "posted"

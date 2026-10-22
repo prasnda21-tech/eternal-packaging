@@ -298,6 +298,14 @@ export function validateSalesOrderCreate(formData) {
     if (!String(li?.name || "").trim()) {
       return `Baris #${i + 1}: Nama barang/jasa wajib diisi.`;
     }
+    const mid = String(li?.master_item_id || "").trim();
+    const aid = String(li?.accurate_item_id || "").trim();
+    if (!mid && !aid) {
+      return (
+        `Baris #${i + 1}: Master Produk wajib dipilih ` +
+        "(master_item_id atau accurate_item_id)."
+      );
+    }
     const q = Number(li.quantity);
     if (!Number.isFinite(q) || q <= 0) {
       return `Baris #${i + 1}: Quantity harus angka lebih besar dari 0.`;
@@ -312,8 +320,10 @@ export function salesOrderRequiredChecks(formData) {
   const lines = formData?.line_items || [];
   const linesOk = lines.length > 0 && lines.every((li) => {
     const name = String(li?.name || "").trim();
+    const mid = String(li?.master_item_id || "").trim();
+    const aid = String(li?.accurate_item_id || "").trim();
     const q = Number(li?.quantity);
-    return Boolean(name) && Number.isFinite(q) && q > 0;
+    return Boolean(name) && (Boolean(mid) || Boolean(aid)) && Number.isFinite(q) && q > 0;
   });
   const checks = [
     { id: "customer", filled: Boolean(String(formData?.customer || "").trim()) },

@@ -47,12 +47,80 @@ from services.sales_receipt_posting import (
 
 _receipt_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
+# Physical delete already committed; projection rebuild failed — not a success,
+# and not safe to retry hard-delete (receipt is gone).
+DELETE_PROJECTION_SYNC_FAILED_CODE = "RECEIPT_DELETE_PROJECTION_SYNC_FAILED"
+DELETE_PROJECTION_SYNC_FAILED_MESSAGE = (
+    "Penerimaan sudah dihapus, tetapi sinkronisasi proyeksi pembayaran gagal. "
+    "Jangan hapus ulang. Lakukan rekonsiliasi proyeksi PO/faktur terdampak."
+)
+
 
 def _get_receipt_lock() -> asyncio.Lock:
     loop = asyncio.get_running_loop()
     if loop not in _receipt_locks:
         _receipt_locks[loop] = asyncio.Lock()
     return _receipt_locks[loop]
+
+
+async def _reconcile_after_hard_delete(
+    db,
+    *,
+    invoice_ids: List[Optional[str]],
+    po_ids: List[Optional[str]],
+    deleted_receipts: List[Dict[str, Any]],
+) -> None:
+    """Recalc invoice outstanding then rebuild PO projections.
+
+    On failure after physical delete: raise structured 409 (not 200) so clients
+    do not treat the operation as fully successful and do not retry delete.
+    """
+    inv_ids = [str(i) for i in invoice_ids if i]
+    order_ids = [str(p) for p in po_ids if p]
+    try:
+        for inv_id in inv_ids:
+            await _recalc_invoice_payment_from_receipts(db, inv_id)
+        for po_id in list(dict.fromkeys(order_ids)):
+            await sync_order_payment_projections(db, po_id)
+    except HTTPException as exc:
+        detail = exc.detail
+        if isinstance(detail, dict) and detail.get("code") == DELETE_PROJECTION_SYNC_FAILED_CODE:
+            raise
+        raise HTTPException(
+            409,
+            {
+                "code": DELETE_PROJECTION_SYNC_FAILED_CODE,
+                "message": DELETE_PROJECTION_SYNC_FAILED_MESSAGE,
+                "deleted": True,
+                "deleted_receipts": deleted_receipts,
+                "invoice_ids": inv_ids,
+                "po_ids": list(dict.fromkeys(order_ids)),
+                "cause": detail if isinstance(detail, (str, dict)) else str(detail),
+                "reconcile_hint": (
+                    "Jalankan ulang sync_order_payment_projections untuk po_ids "
+                    "dan _recalc_invoice_payment_from_receipts untuk invoice_ids. "
+                    "Jangan hard-delete ulang."
+                ),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            409,
+            {
+                "code": DELETE_PROJECTION_SYNC_FAILED_CODE,
+                "message": DELETE_PROJECTION_SYNC_FAILED_MESSAGE,
+                "deleted": True,
+                "deleted_receipts": deleted_receipts,
+                "invoice_ids": inv_ids,
+                "po_ids": list(dict.fromkeys(order_ids)),
+                "cause": str(exc),
+                "reconcile_hint": (
+                    "Jalankan ulang sync_order_payment_projections untuk po_ids "
+                    "dan _recalc_invoice_payment_from_receipts untuk invoice_ids. "
+                    "Jangan hard-delete ulang."
+                ),
+            },
+        ) from exc
 
 
 def now_iso() -> str:
@@ -513,24 +581,38 @@ async def create_sales_receipt(
         if reverse_claim_is_active(invoice):
             raise HTTPException(409, INVOICE_REVERSE_IN_PROGRESS_RECEIPT_CREATE_MESSAGE)
 
-        # Gate A / auto-lifecycle: require posted invoice journal (flag-driven unless forced).
-        # Helper/import failure fails closed — never silently skip a required gate.
-        gate_required = require_posted_invoice_journal
+        # Owner policy: CREATE penerimaan always requires finalized invoice + posted
+        # invoice journal (manual, auto-lifecycle, and flag-off paths alike).
+        # Flag helpers remain for observability / fail-closed; they cannot disable the gate.
+        # require_posted_invoice_journal kept for call-site compatibility (always enforced).
+        _ = require_posted_invoice_journal
+        gate_required = True
         try:
             from services.sales_receipt_auto_lifecycle import (
                 is_auto_sales_receipt_lifecycle_enabled,
                 is_receipt_create_requires_invoice_journal_posted,
             )
 
-            if (
-                await is_receipt_create_requires_invoice_journal_posted(db)
-                or await is_auto_sales_receipt_lifecycle_enabled(db)
-            ):
-                gate_required = True
+            # Touch helpers so import/DB failures still fail closed (never skip gate).
+            await is_receipt_create_requires_invoice_journal_posted(db)
+            await is_auto_sales_receipt_lifecycle_enabled(db)
         except Exception as exc:
             raise HTTPException(
                 409,
                 "Dependency gate jurnal faktur untuk penerimaan tidak dapat diverifikasi.",
+            ) from exc
+
+        # Pre-check journal before create-claim so rejected creates leave no claim side effect.
+        try:
+            from services.sales_receipt_posting import assert_invoice_allows_receipt_journal
+
+            await assert_invoice_allows_receipt_journal(db, invoice["id"])
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                409,
+                "Pemeriksaan jurnal faktur untuk penerimaan tidak dapat dijalankan.",
             ) from exc
 
         from services.financial_statement_common import MONEY_Q, money_float
@@ -758,7 +840,9 @@ async def create_sales_receipt(
                 except HTTPException:
                     await db.sales_receipts.delete_one({"id": receipt_id})
                     await _recalc_invoice_payment_from_receipts(db, invoice["id"])
-                    await _recalc_order_payment_facts_after_receipt_delete(db, invoice.get("po_id"), [receipt_id])
+                    # Rebuild PO projections from remaining settlement-effective receipts
+                    # (same path as hard-delete; avoid legacy _recalc filter-by-deleted-id).
+                    await sync_order_payment_projections(db, invoice.get("po_id"))
                     raise
                 await db.sales_receipts.update_one(
                     {"id": receipt_id},
@@ -1240,41 +1324,13 @@ async def _recalc_invoice_payment_from_receipts(db, invoice_id: str) -> None:
 
 
 async def _recalc_order_payment_facts_after_receipt_delete(db, po_id: str, deleted_receipt_ids: list) -> None:
-    """Recalculate payment_fact from remaining receipts. Never reverse stage history."""
-    if not po_id:
-        return
-    order = await db.orders.find_one({"id": po_id})
-    if not order:
-        return
-    deleted = set(deleted_receipt_ids or [])
-    remaining_docs = [
-        r
-        for r in await db.sales_receipts.find({"po_id": po_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
-        if receipt_counts_toward_outstanding(r)
-    ]
-    kept_facts = [
-        r for r in (order.get("payment_receipts") or [])
-        if r.get("receipt_id") not in deleted
-    ]
-    patch: Dict[str, Any] = {"payment_receipts": kept_facts}
-    if remaining_docs:
-        last = remaining_docs[-1]
-        patch["payment_fact"] = {
-            "receipt_id": last.get("id"),
-            "invoice_id": last.get("invoice_id"),
-            "amount": last.get("amount"),
-            "payment_state": last.get("payment_state"),
-            "updated_at": now_iso(),
-        }
-    else:
-        patch["payment_fact"] = None
-        cs = int(order.get("current_stage") or 0)
-        if cs < 5 and order.get("payment_approved_by") == "system":
-            patch["payment_status"] = "Waiting"
-            patch["payment_approved_by"] = None
-            patch["payment_approved_by_name"] = None
-            patch["payment_approved_at"] = None
-    await db.orders.update_one({"id": po_id}, {"$set": patch})
+    """Deprecated shim: hard-delete must rebuild via sync_order_payment_projections.
+
+    ``deleted_receipt_ids`` is ignored — after physical delete the receipt is
+    already absent; sync rebuilds from remaining settlement-effective rows only.
+    """
+    _ = deleted_receipt_ids
+    await sync_order_payment_projections(db, po_id)
 
 
 async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
@@ -1333,8 +1389,12 @@ async def delete_sales_receipt(db, receipt_id: str, user: dict) -> dict:
         deleted_by=str(user.get("email") or ""),
         reason="sales_receipt_deleted",
     )
-    await _recalc_invoice_payment_from_receipts(db, invoice_id)
-    await _recalc_order_payment_facts_after_receipt_delete(db, po_id, [rec["id"]])
+    await _reconcile_after_hard_delete(
+        db,
+        invoice_ids=[invoice_id],
+        po_ids=[po_id],
+        deleted_receipts=[{"id": rec["id"], "receipt_number": receipt_number}],
+    )
     return {"deleted": True, "receipt_number": receipt_number, "id": rec["id"]}
 
 
@@ -1471,18 +1531,20 @@ async def bulk_delete_sales_receipts(
             reason="sales_receipt_bulk_deleted",
         )
 
-    affected_invoice_ids = list(set(r.get("invoice_id") for r in reserved if r.get("invoice_id")))
-    for inv_id in affected_invoice_ids:
-        await _recalc_invoice_payment_from_receipts(db, inv_id)
-
-    affected_po_ids = list(set(r.get("po_id") for r in reserved if r.get("po_id")))
-    for po_id in affected_po_ids:
-        po_deleted = [r["id"] for r in reserved if r.get("po_id") == po_id]
-        await _recalc_order_payment_facts_after_receipt_delete(db, po_id, po_deleted)
+    deleted_rows = [{"id": r["id"], "receipt_number": r.get("receipt_number", "")} for r in reserved]
+    affected_invoice_ids = list(dict.fromkeys(r.get("invoice_id") for r in reserved if r.get("invoice_id")))
+    # One sync per affected PO (not per deleted receipt).
+    affected_po_ids = list(dict.fromkeys(r.get("po_id") for r in reserved if r.get("po_id")))
+    await _reconcile_after_hard_delete(
+        db,
+        invoice_ids=affected_invoice_ids,
+        po_ids=affected_po_ids,
+        deleted_receipts=deleted_rows,
+    )
 
     return {
         "deleted_count": len(reserved),
-        "deleted": [{"id": r["id"], "receipt_number": r.get("receipt_number", "")} for r in reserved],
+        "deleted": deleted_rows,
     }
 
 
