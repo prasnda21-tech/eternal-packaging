@@ -94,6 +94,28 @@ export function formatDisplayDate(iso) {
   }
 }
 
+/**
+ * Desktop sales list/detail calendar date: 2026-08-26 → 26/08/2026.
+ * Display-only — does not change stored payloads. Prefer this over formatDisplayDate
+ * on Penjualan list surfaces (UX 9.0). Keep formatDisplayDate for dense boards/PWA.
+ */
+export function formatDesktopListDate(iso) {
+  if (!iso) return "-";
+  const text = String(iso).trim();
+  if (!text) return "-";
+  const prefix = text.match(ISO_DATE_PREFIX_RE);
+  if (prefix) {
+    return `${prefix[3]}/${prefix[2]}/${prefix[1]}`;
+  }
+  try {
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return "-";
+    return `${_pad2(d.getDate())}/${_pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+  } catch {
+    return "-";
+  }
+}
+
 const WIB_TRACKING_DATE_TIME = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Jakarta",
   day: "2-digit",

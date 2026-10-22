@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatDisplayDate } from "../lib/constants";
+import { formatDesktopListDate } from "../lib/constants";
 import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import LookupSearchSelect from "../components/LookupSearchSelect";
@@ -1330,7 +1330,7 @@ export default function PenerimaanPenjualan() {
                       </span>
                       <PoIdentityBadges order={r} testIdPrefix={`rcp-po-${r.po_number || r.id}`} />
                     </td>
-                    <td>{formatDisplayDate(r.receipt_date)}</td>
+                    <td>{formatDesktopListDate(r.receipt_date)}</td>
                     <td className="sd-money is-zero">{formatRupiah(r.amount)}</td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <span
@@ -2003,7 +2003,7 @@ export default function PenerimaanPenjualan() {
                 <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
                 <dt>Tanggal</dt>
                 <dd data-testid="receipt-detail-date" style={{ margin: 0 }}>
-                  {formatSalesInvoiceDate(detailReceipt.receipt_date) || formatDisplayDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}
+                  {formatSalesInvoiceDate(detailReceipt.receipt_date) || formatDesktopListDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}
                 </dd>
                 <dt>Kas / Bank</dt>
                 <dd data-testid="receipt-detail-cash-bank" style={{ margin: 0 }}>{detailReceipt.cash_bank_name || "-"}</dd>
