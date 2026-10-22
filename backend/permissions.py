@@ -454,8 +454,12 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
 
 # Opt-in even for Direktur full-access /auth/me — must be explicit override or
 # role_permissions entry. API already uses _require_opt_in_perm for these.
-# All Phase A urgent.* keys stay OFF for Direktur/SA until explicitly granted.
+# Sales cancel/edit must match write-path / lifecycle capability: never implied by
+# Direktur full-access alone. Phase A urgent.* keys stay OFF until granted.
 DIRECTOR_MUST_OPT_IN_PERMISSIONS = frozenset({
+    "sales.invoice.cancel",
+    "sales.receipt.cancel",
+    "sales.receipt.edit",
     "urgent.request",
     "urgent.review",
     "urgent.approve",

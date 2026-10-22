@@ -725,6 +725,77 @@ async def _soft_cancel_invoice_business(
     raise HTTPException(409, "Pembatalan faktur gagal karena perubahan bersamaan.")
 
 
+async def _receipt_payment_projections_stale(db, receipt: dict) -> tuple[bool, bool]:
+    """Return (invoice_stale, po_stale) for a cancelled receipt's settlement projections.
+
+    Used only by already_cancelled heal — avoids rewriting orders/invoices that already
+    match settlement-effective receipts + sync_order_payment_projections rules.
+    """
+    from services.sales_receipt_posting import receipt_counts_toward_outstanding
+    from services.sales_receipts import _money_eq, expected_invoice_payment_from_receipts
+
+    invoice_stale = False
+    po_stale = False
+    invoice_id = receipt.get("invoice_id")
+    po_id = receipt.get("po_id")
+
+    if invoice_id:
+        expected = await expected_invoice_payment_from_receipts(db, invoice_id)
+        if expected:
+            inv = expected["invoice"]
+            if (
+                not _money_eq(inv.get("paid_total"), expected["paid_total"])
+                or not _money_eq(inv.get("outstanding_amount"), expected["outstanding_amount"])
+                or str(inv.get("payment_status") or "") != expected["payment_status"]
+            ):
+                invoice_stale = True
+
+    if po_id:
+        order = await db.orders.find_one({"id": str(po_id)})
+        if not order:
+            order = await db.orders.find_one({"po_number": str(po_id)})
+        if order and not order.get("cancelled"):
+            effective = [
+                r
+                for r in await db.sales_receipts.find({"po_id": order["id"]}, {"_id": 0})
+                .sort("created_at", 1)
+                .to_list(500)
+                if receipt_counts_toward_outstanding(r)
+            ]
+            expected_ids = [str(r.get("id") or "") for r in effective]
+            current_ids = [
+                str(row.get("receipt_id") or "")
+                for row in (order.get("payment_receipts") or [])
+            ]
+            expected_fact = str(effective[-1].get("id") or "") if effective else ""
+            current_fact = str((order.get("payment_fact") or {}).get("receipt_id") or "")
+            if current_ids != expected_ids or current_fact != expected_fact:
+                po_stale = True
+            elif effective:
+                if order.get("payment_status") != "Approved":
+                    po_stale = True
+            else:
+                cs = int(order.get("current_stage") or 0)
+                if cs < 5 and order.get("payment_approved_by") == "system":
+                    if order.get("payment_status") != "Waiting":
+                        po_stale = True
+                if order.get("payment_fact") is not None:
+                    po_stale = True
+
+    return invoice_stale, po_stale
+
+
+async def _heal_cancelled_receipt_projections_if_stale(db, receipt: dict) -> None:
+    """Rebuild invoice/PO payment projections only when already-cancelled left them stale."""
+    from services.sales_receipts import _recalc_invoice_payment_from_receipts, sync_order_payment_projections
+
+    invoice_stale, po_stale = await _receipt_payment_projections_stale(db, receipt)
+    if invoice_stale:
+        await _recalc_invoice_payment_from_receipts(db, receipt.get("invoice_id"))
+    if po_stale and receipt.get("po_id"):
+        await sync_order_payment_projections(db, receipt.get("po_id"))
+
+
 async def _soft_cancel_receipt_business(
     db, receipt: dict, user: dict, reason: str, *, cancel_id: str, token: str
 ) -> dict:
@@ -1336,6 +1407,8 @@ async def cancel_sales_receipt_business(
         stored and stored.get("complete") is not True
         and str(stored.get("phase") or "") not in {PHASE_COMPLETE, PHASE_FAILED}
     ):
+        # Heal only when projections are stale; skip writes when already reconciled.
+        await _heal_cancelled_receipt_projections_if_stale(db, rec)
         detail = await _public_receipt(db, rec["id"])
         await attach_receipt_business_cancel_fields(db, [detail])
         return {

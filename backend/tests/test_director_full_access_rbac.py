@@ -52,6 +52,13 @@ async def bind_db(monkeypatch):
     client.close()
 
 
+SALES_DIR_OPT_IN = frozenset({
+    "sales.invoice.cancel",
+    "sales.receipt.cancel",
+    "sales.receipt.edit",
+})
+
+
 def test_director_helpers():
     assert is_director_full_access_role("direktur_utama")
     assert director_full_permission_set() == set(ALL_PERMISSIONS) - DIRECTOR_MUST_OPT_IN_PERMISSIONS
@@ -59,6 +66,25 @@ def test_director_helpers():
         director_full_permission_set()
     )
     assert not DIRECTOR_MUST_OPT_IN_PERMISSIONS.intersection(director_full_permission_set())
+    # Displayed Direktor /auth/me must not imply sales cancel/edit without grant.
+    assert SALES_DIR_OPT_IN.issubset(DIRECTOR_MUST_OPT_IN_PERMISSIONS)
+    assert not SALES_DIR_OPT_IN.intersection(director_full_permission_set())
+    # Adjacent OPT_IN modules stay on the prior Direktur contract (not this patch).
+    for keep in (
+        "cash_bank.reconcile.purge_unmatched",
+        "reports.purchase.view",
+        "paint.view",
+    ):
+        assert keep in director_full_permission_set()
+    for urgent in (
+        "urgent.request",
+        "urgent.review",
+        "urgent.approve",
+        "urgent.notify",
+        "urgent.email_notify",
+    ):
+        assert urgent in DIRECTOR_MUST_OPT_IN_PERMISSIONS
+        assert urgent not in director_full_permission_set()
 
 
 def test_confirm_helpers_do_not_auto_activate_on_shrink():
@@ -212,6 +238,10 @@ async def test_director_super_admin_keeps_opt_in_purge_and_auth_me(bind_db, monk
     for must in DIRECTOR_MUST_OPT_IN_PERMISSIONS:
         assert must not in dir_sa
         assert must not in admin_sa
+    for sales_key in SALES_DIR_OPT_IN:
+        assert sales_key not in dir_sa
+        assert sales_key not in dir_nosa
+        assert sales_key not in admin_sa
 
     app.dependency_overrides[current_user] = lambda: {
         "id": "dir-sa-1",
@@ -229,6 +259,8 @@ async def test_director_super_admin_keeps_opt_in_purge_and_auth_me(bind_db, monk
         assert body["role"] == "direktur_utama"
         assert body["is_super_admin"] is True
         assert PURGE in body["permissions"]
+        for sales_key in SALES_DIR_OPT_IN:
+            assert sales_key not in body["permissions"]
 
         # Effective triad matches runtime for Direktur+SA
         app.dependency_overrides[current_user] = lambda: {
@@ -243,6 +275,153 @@ async def test_director_super_admin_keeps_opt_in_purge_and_auth_me(bind_db, monk
         triad_admin = await client.get("/api/admin/users/admin-sa-1/permissions/effective")
         assert triad_admin.status_code == 200, triad_admin.text
         assert PURGE not in triad_admin.json()["effective"]
+
+
+@pytest.mark.anyio
+async def test_director_sales_cancel_edit_require_explicit_grant(bind_db, monkeypatch):
+    """/auth/me sales cancel/edit match executable opt-in: role_permissions or override."""
+    monkeypatch.setenv("APP_ENV", "local")
+    await server.db.users.insert_one(
+        {
+            "id": "dir-sales-1",
+            "email": "dir.sales@test.local",
+            "role": "direktur_utama",
+            "status": "active",
+            "permissions_override": {},
+        }
+    )
+    bare = await user_permissions(
+        {"role": "direktur_utama", "email": "dir.sales@test.local", "permissions_override": {}}
+    )
+    for key in SALES_DIR_OPT_IN:
+        assert key not in bare
+
+    await server.db.role_permissions.update_one(
+        {"role": "direktur_utama"},
+        {
+            "$set": {
+                "role": "direktur_utama",
+                "permissions": sorted(SALES_DIR_OPT_IN),
+            }
+        },
+        upsert=True,
+    )
+    granted = await user_permissions(
+        {"role": "direktur_utama", "email": "dir.sales@test.local", "permissions_override": {}}
+    )
+    for key in SALES_DIR_OPT_IN:
+        assert key in granted
+
+    denied = await user_permissions(
+        {
+            "role": "direktur_utama",
+            "email": "dir.sales@test.local",
+            "permissions_override": {key: False for key in SALES_DIR_OPT_IN},
+        }
+    )
+    for key in SALES_DIR_OPT_IN:
+        assert key not in denied
+
+    await server.db.role_permissions.delete_many({"role": "direktur_utama"})
+    override_only = await user_permissions(
+        {
+            "role": "direktur_utama",
+            "email": "dir.sales@missing.local",
+            "permissions_override": {"sales.receipt.cancel": True},
+        }
+    )
+    assert "sales.receipt.cancel" in override_only
+    assert "sales.receipt.edit" not in override_only
+    assert "sales.invoice.cancel" not in override_only
+
+
+@pytest.mark.anyio
+async def test_director_sales_opt_in_auth_me_matches_endpoint_and_capability(bind_db, monkeypatch):
+    """Same grant config → /auth/me, lifecycle capability, and write endpoint agree."""
+    from services.sales_lifecycle_capability import (
+        OP_BUSINESS_CANCEL,
+        OP_EDIT_REVISION,
+        build_receipt_lifecycle_capability,
+    )
+
+    monkeypatch.setenv("APP_ENV", "local")
+    from services.sales_business_cancel import RECEIPT_FLAG_KEY, prepare_cancel_indexes_for_tests
+
+    await prepare_cancel_indexes_for_tests(server.db)
+    await server.db.app_settings.update_one(
+        {"key": RECEIPT_FLAG_KEY},
+        {"$set": {"key": RECEIPT_FLAG_KEY, "enabled": True}},
+        upsert=True,
+    )
+
+    director = {
+        "id": "dir-matrix-1",
+        "email": "dir.matrix@test.local",
+        "name": "Dir Matrix",
+        "role": "direktur_utama",
+        "permissions_override": {},
+    }
+    await server.db.users.insert_one({**director, "status": "active"})
+    await server.db.role_permissions.delete_many({"role": "direktur_utama"})
+
+    # No grant: display, capability, endpoint all deny.
+    bare_perms = await user_permissions(director)
+    for key in SALES_DIR_OPT_IN:
+        assert key not in bare_perms
+    bare_cap = await build_receipt_lifecycle_capability(server.db, director, None)
+    assert bare_cap[OP_BUSINESS_CANCEL]["available"] is False
+    assert "permission_missing" in (bare_cap[OP_BUSINESS_CANCEL].get("reasons") or [])
+    assert bare_cap[OP_EDIT_REVISION]["available"] is False
+
+    app.dependency_overrides[current_user] = lambda: dict(director)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        me = await client.get("/api/auth/me")
+        assert me.status_code == 200, me.text
+        for key in SALES_DIR_OPT_IN:
+            assert key not in me.json()["permissions"]
+        denied = await client.post(
+            "/api/sales-receipts/does-not-exist/business-cancel",
+            json={"reason": "Matrix deny", "idempotency_key": "matrix-deny-1"},
+        )
+        assert denied.status_code == 403, denied.text
+
+        # role_permissions grant: display + capability + endpoint auth agree (404 after auth).
+        await server.db.role_permissions.update_one(
+            {"role": "direktur_utama"},
+            {"$set": {"role": "direktur_utama", "permissions": sorted(SALES_DIR_OPT_IN)}},
+            upsert=True,
+        )
+        granted_perms = await user_permissions(director)
+        for key in SALES_DIR_OPT_IN:
+            assert key in granted_perms
+        grant_cap = await build_receipt_lifecycle_capability(server.db, director, None)
+        assert "permission_missing" not in (grant_cap[OP_BUSINESS_CANCEL].get("reasons") or [])
+        assert "permission_missing" not in (grant_cap[OP_EDIT_REVISION].get("reasons") or [])
+        me2 = await client.get("/api/auth/me")
+        for key in SALES_DIR_OPT_IN:
+            assert key in me2.json()["permissions"]
+        not_found = await client.post(
+            "/api/sales-receipts/does-not-exist/business-cancel",
+            json={"reason": "Matrix grant", "idempotency_key": "matrix-grant-1"},
+        )
+        assert not_found.status_code == 404, not_found.text
+
+        # Explicit deny wins over role_permissions.
+        blocked = {
+            **director,
+            "permissions_override": {key: False for key in SALES_DIR_OPT_IN},
+        }
+        app.dependency_overrides[current_user] = lambda: dict(blocked)
+        blocked_perms = await user_permissions(blocked)
+        for key in SALES_DIR_OPT_IN:
+            assert key not in blocked_perms
+        deny = await client.post(
+            "/api/sales-receipts/does-not-exist/business-cancel",
+            json={"reason": "Matrix explicit deny", "idempotency_key": "matrix-deny-2"},
+        )
+        assert deny.status_code == 403, deny.text
 
 
 @pytest.mark.anyio
