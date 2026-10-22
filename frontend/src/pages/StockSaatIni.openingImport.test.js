@@ -15,6 +15,7 @@ jest.mock("../lib/api", () => ({
     branches: jest.fn(),
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
+    physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
     masterItems: jest.fn(),
     physicalOpeningBalance: jest.fn(),
     createPhysicalOpeningBalance: jest.fn(),
@@ -83,6 +84,14 @@ function chooseFile(input, name = "saldo.xlsx") {
 }
 
 describe("Stock Saat Ini physical opening import", () => {
+  beforeEach(() => {
+    api.physicalStockStatusSummary.mockResolvedValue({
+      counts: {},
+      operational_actions: [],
+      read_only: true,
+    });
+  });
+
   afterEach(() => {
     jest.clearAllMocks();
     document.body.innerHTML = "";
@@ -233,6 +242,31 @@ describe("Stock Saat Ini physical opening import", () => {
     expect(text).toMatch(/Impor ditolak/);
     expect(text).not.toMatch(/\{/);
     expect(view.container.textContent).not.toMatch(/JSON/);
+    view.cleanup();
+  });
+
+  test("manual saldo awal form uses aligned fields and shows validation errors", async () => {
+    const view = await renderStock();
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
+    });
+    expect(view.container.querySelector('[data-testid="saldo-awal-fields"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-item"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-branch"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-warehouse"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-qty"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-unit"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="saldo-awal-reason"]')).not.toBeNull();
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-submit"]').click();
+      await Promise.resolve();
+    });
+    expect(view.container.querySelector('[data-testid="saldo-awal-error-item"]')?.textContent).toMatch(/Pilih barang/i);
+    expect(view.container.querySelector('[data-testid="saldo-awal-error-branch"]')?.textContent).toMatch(/Pilih cabang/i);
+    expect(view.container.querySelector('[data-testid="saldo-awal-error-warehouse"]')?.textContent).toMatch(/Pilih gudang/i);
+    expect(view.container.querySelector('[data-testid="saldo-awal-error-qty"]')?.textContent).toMatch(/qty/i);
+    expect(api.createPhysicalOpeningBalance).not.toHaveBeenCalled();
+    expect(view.container.querySelector('[data-testid="stock-status-summary"]')).not.toBeNull();
     view.cleanup();
   });
 });

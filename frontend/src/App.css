@@ -8889,6 +8889,84 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .stock-adjust-actions .stock-btn-primary:disabled{opacity:.45;cursor:not-allowed}
 
+/* Stock Saat Ini — status summary (read-only diagnostics) */
+.stock-page--mockup .stock-status-summary{
+  margin:10px 0 0;padding:12px 14px;border:1px solid var(--stock-line);
+  border-radius:var(--stock-radius);background:var(--stock-panel)
+}
+.stock-page--mockup .stock-status-summary-title{
+  margin:0 0 8px;font:700 12px/1.3 'IBM Plex Sans',sans-serif;color:var(--stock-head);
+  letter-spacing:.02em;text-transform:uppercase
+}
+.stock-page--mockup .stock-status-summary-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px 12px;
+  font:500 12px/1.35 'IBM Plex Sans',sans-serif;color:var(--stock-ink)
+}
+.stock-page--mockup .stock-status-summary-actions{
+  margin:10px 0 0;padding-left:18px;font:400 12px/1.45 'IBM Plex Sans',sans-serif;color:var(--stock-soft)
+}
+.stock-page--mockup .stock-status-summary-actions li{margin:0 0 4px}
+
+/* Saldo Awal Stock Fisik modal */
+.saldo-awal-overlay{
+  position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:40;
+  display:flex;align-items:center;justify-content:center;padding:16px
+}
+.saldo-awal-panel{
+  width:min(720px,100%);max-height:90vh;overflow:auto;background:#fff;
+  border-radius:12px;padding:22px 24px;display:grid;gap:16px;
+  box-shadow:0 18px 48px rgba(15,23,42,.18)
+}
+.saldo-awal-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.saldo-awal-panel-head h2{
+  margin:0;font:700 20px/1.2 'IBM Plex Sans',sans-serif;color:#0f172a;letter-spacing:-.02em
+}
+.saldo-awal-tabs{gap:8px}
+.saldo-awal-form,
+.saldo-awal-import-panel{display:grid;gap:14px}
+.saldo-awal-fields{
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 16px;align-items:start
+}
+.saldo-awal-fields--import{grid-template-columns:minmax(0,1fr) auto;align-items:end}
+.saldo-awal-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.saldo-awal-field--full{grid-column:1 / -1}
+.saldo-awal-label{
+  font:600 12px/1.2 'IBM Plex Sans',sans-serif;color:#334155;letter-spacing:.01em
+}
+.saldo-awal-field select,
+.saldo-awal-field input{
+  width:100%;min-width:0;height:40px;padding:0 12px;border:1px solid #c5d4cc;
+  border-radius:8px;background:#fff;font:500 14px/1.2 'IBM Plex Sans',sans-serif;color:#0f172a;
+  box-sizing:border-box
+}
+.saldo-awal-field select:disabled,
+.saldo-awal-field input:disabled,
+.saldo-awal-field input[readonly]{background:#f4f7f5;color:#475569}
+.saldo-awal-field select[aria-invalid="true"],
+.saldo-awal-field input[aria-invalid="true"]{border-color:#dc2626;background:#fef2f2}
+.saldo-awal-field-error{font:500 12px/1.3 'IBM Plex Sans',sans-serif;color:#b42318}
+.saldo-awal-actions{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.saldo-awal-import-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.saldo-awal-file-btn{display:inline-flex;align-items:center;cursor:pointer;min-height:40px;padding:0 12px}
+.saldo-awal-file-btn input{display:none}
+.saldo-awal-preview-wrap{overflow-x:auto}
+.saldo-awal-established{
+  grid-column:1 / -1;padding:14px 16px;border:1px solid #b7d4c2;border-radius:10px;background:#e8f5ee
+}
+.saldo-awal-established-grid{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;margin:12px 0 0
+}
+.saldo-awal-established-grid dt{
+  margin:0;font:600 11px/1.2 'IBM Plex Sans',sans-serif;color:#64748b;text-transform:uppercase;letter-spacing:.04em
+}
+.saldo-awal-established-grid dd{margin:2px 0 0;font:600 14px/1.3 'IBM Plex Sans',sans-serif;color:#0f172a}
+@media (max-width:640px){
+  .saldo-awal-fields,
+  .saldo-awal-fields--import,
+  .saldo-awal-established-grid{grid-template-columns:1fr}
+  .saldo-awal-panel{padding:16px}
+}
+
 @media (max-width:1100px){
   .stock-page--mockup .stock-filter-bar{flex-wrap:wrap}
 }

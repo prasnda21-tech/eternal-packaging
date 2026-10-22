@@ -14728,6 +14728,43 @@ async def physical_opening_import_confirm(
         raise HTTPException(503, str(exc)) from exc
 
 
+@api_router.get("/physical-stock/status-summary")
+async def physical_stock_status_summary_get(
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read-only Stock Saat Ini status counts. No item identities; no writes."""
+    from services.branch_access import (
+        require_warehouse_access,
+        resolve_stock_catalog_branch_id,
+    )
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        summarize_physical_stock_status,
+    )
+    try:
+        resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        if warehouse_id:
+            await require_warehouse_access(
+                db, user, warehouse_id, expected_branch_id=effective_branch_id,
+            )
+        summary = await summarize_physical_stock_status(
+            db,
+            branch_id=effective_branch_id,
+            warehouse_id=warehouse_id,
+        )
+        summary["effective_branch_id"] = effective_branch_id
+        summary["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        return summary
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.get("/physical-stock")
 async def physical_stock_catalog_get(
     q: Optional[str] = None,

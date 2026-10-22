@@ -299,6 +299,8 @@ export const api = {
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
   physicalStockCatalog: (params = {}) => client.get(`/physical-stock`, { params }).then((r) => r.data),
+  physicalStockStatusSummary: (params = {}) =>
+    client.get(`/physical-stock/status-summary`, { params }).then((r) => r.data),
   physicalStock: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-stock`, { params }).then((r) => r.data),
   physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
   physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),

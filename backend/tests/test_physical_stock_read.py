@@ -27,6 +27,7 @@ from services.physical_stock import (  # noqa: E402
     list_physical_mutations,
     list_physical_stock_catalog,
     read_physical_stock,
+    summarize_physical_stock_status,
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
 import server  # noqa: E402
@@ -622,3 +623,34 @@ async def test_branch_isolation_same_master_ygy_vs_smg(db):
     assert again_smg["items"][0]["physical_qty"] == 700
     assert again_smg["items"][0]["qty_pesanan"] == 150
     assert again_smg["items"][0]["qty_belum_terkirim"] == 50
+
+
+async def test_summarize_physical_stock_status_counts_without_item_payload(db):
+    """Read-only diagnostics: counts + reasons only; never invent verified zero."""
+    item = await _seed_item(db, item_code="SUM-SECRET", item_name="Secret Cup")
+    branch = await _seed_branch(db)
+    wh_main = await _seed_warehouse(db, branch, "MAIN")
+    await _seed_warehouse(db, branch, "SOP")
+    await _seed_balance(db, item, branch, wh_main, 12)
+    await db[BALANCE_COLLECTION].update_one(
+        {"master_item_id": item["id"], "warehouse_id": wh_main["id"]},
+        {"$set": {"baseline_status": "reconciled"}},
+    )
+    before_bal = await db[BALANCE_COLLECTION].count_documents({})
+    before_led = await db[LEDGER_COLLECTION].count_documents({})
+
+    summary = await summarize_physical_stock_status(db, branch_id=branch["id"])
+
+    assert summary["read_only"] is True
+    assert summary["writes"] is False
+    assert summary["never_forces_verified_zero"] is True
+    assert "items" not in summary
+    assert summary["counts"]["items_physical_incomplete"] == 1
+    assert summary["counts"]["warehouse_slots_missing_balance"] == 1
+    assert summary["reason_codes"]["BASELINE_MISSING_OR_UNRECONCILED"] == 1
+    assert any("Saldo Awal" in line for line in summary["operational_actions"])
+    blob = repr(summary)
+    assert "SUM-SECRET" not in blob
+    assert "Secret Cup" not in blob
+    assert await db[BALANCE_COLLECTION].count_documents({}) == before_bal
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_led
