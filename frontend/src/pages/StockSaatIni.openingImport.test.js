@@ -86,8 +86,18 @@ function chooseFile(input, name = "saldo.xlsx") {
 describe("Stock Saat Ini physical opening import", () => {
   beforeEach(() => {
     api.physicalStockStatusSummary.mockResolvedValue({
-      counts: {},
-      operational_actions: [],
+      counts: {
+        items_physical_ok: 2,
+        items_physical_incomplete: 2,
+        items_physical_missing: 0,
+        warehouse_slots_missing_balance: 2,
+        warehouse_slots_unreconciled: 1,
+        items_belum_terkirim_unverified: 0,
+        items_qty_tersedia_invalid: 2,
+      },
+      operational_actions: [
+        "Tetapkan Saldo Awal atau konfirmasi Stock Opname per barang×gudang yang belum punya saldo reconciled.",
+      ],
       read_only: true,
     });
   });
@@ -267,6 +277,29 @@ describe("Stock Saat Ini physical opening import", () => {
     expect(view.container.querySelector('[data-testid="saldo-awal-error-qty"]')?.textContent).toMatch(/qty/i);
     expect(api.createPhysicalOpeningBalance).not.toHaveBeenCalled();
     expect(view.container.querySelector('[data-testid="stock-status-summary"]')).not.toBeNull();
+    const counts = view.container.querySelector('[data-testid="stock-status-summary-counts"]');
+    expect(counts?.textContent).toMatch(/Fisik OK:\s*2/);
+    expect(counts?.textContent).toMatch(/Belum lengkap:\s*2/);
+    expect(counts?.textContent).toMatch(/Belum saldo:\s*0/);
+    expect(counts?.textContent).toMatch(/Slot tanpa saldo:\s*2/);
+    expect(counts?.textContent).toMatch(/Slot unreconciled:\s*1/);
+    expect(counts?.textContent).toMatch(/Belum Terkirim unverified:\s*0/);
+    expect(counts?.textContent).toMatch(/Tersedia invalid:\s*2/);
+    const detail = view.container.querySelector('[data-testid="stock-status-summary-detail"]');
+    const toggle = view.container.querySelector('[data-testid="stock-status-summary-detail-toggle"]');
+    expect(detail?.hasAttribute("hidden")).toBe(true);
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(detail?.hasAttribute("hidden")).toBe(false);
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.container.querySelector('[data-testid="stock-status-summary-actions"]')?.textContent)
+      .toMatch(/Saldo Awal/);
+    await act(async () => {
+      toggle.click();
+    });
+    expect(detail?.hasAttribute("hidden")).toBe(true);
     view.cleanup();
   });
 });

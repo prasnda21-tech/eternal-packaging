@@ -51,6 +51,7 @@ export default function StockSaatIni() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [statusSummary, setStatusSummary] = useState(null);
   const [statusSummaryErr, setStatusSummaryErr] = useState("");
+  const [statusDetailOpen, setStatusDetailOpen] = useState(false);
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
   const summarySeq = useRef(0);
@@ -621,31 +622,49 @@ export default function StockSaatIni() {
 
           {(statusSummary || statusSummaryErr) && (
             <div className="stock-status-summary" data-testid="stock-status-summary" role="status">
-              <p className="stock-status-summary-title">Diagnostik status (read-only)</p>
               {statusSummaryErr ? (
                 <p className="muted small" data-testid="stock-status-summary-error">{statusSummaryErr}</p>
               ) : (
                 <>
-                  <div className="stock-status-summary-grid" data-testid="stock-status-summary-counts">
-                    <span data-testid="summary-physical-ok">Fisik OK: {statusSummary.counts?.items_physical_ok ?? 0}</span>
-                    <span data-testid="summary-physical-incomplete">Belum lengkap: {statusSummary.counts?.items_physical_incomplete ?? 0}</span>
-                    <span data-testid="summary-physical-missing">Belum saldo: {statusSummary.counts?.items_physical_missing ?? 0}</span>
-                    <span data-testid="summary-slots-missing">Slot tanpa saldo: {statusSummary.counts?.warehouse_slots_missing_balance ?? 0}</span>
-                    <span data-testid="summary-slots-unreconciled">Slot unreconciled: {statusSummary.counts?.warehouse_slots_unreconciled ?? 0}</span>
-                    <span data-testid="summary-belum-unverified">Belum Terkirim unverified: {statusSummary.counts?.items_belum_terkirim_unverified ?? 0}</span>
-                    <span data-testid="summary-tersedia-invalid">Tersedia invalid: {statusSummary.counts?.items_qty_tersedia_invalid ?? 0}</span>
+                  <div className="stock-status-summary-bar">
+                    <p className="stock-status-summary-title">Diagnostik status (read-only)</p>
+                    <div className="stock-status-summary-grid" data-testid="stock-status-summary-counts">
+                      <span data-testid="summary-physical-ok">Fisik OK: {statusSummary.counts?.items_physical_ok ?? 0}</span>
+                      <span data-testid="summary-physical-incomplete">Belum lengkap: {statusSummary.counts?.items_physical_incomplete ?? 0}</span>
+                      <span data-testid="summary-physical-missing">Belum saldo: {statusSummary.counts?.items_physical_missing ?? 0}</span>
+                      <span data-testid="summary-slots-missing">Slot tanpa saldo: {statusSummary.counts?.warehouse_slots_missing_balance ?? 0}</span>
+                      <span data-testid="summary-slots-unreconciled">Slot unreconciled: {statusSummary.counts?.warehouse_slots_unreconciled ?? 0}</span>
+                      <span data-testid="summary-belum-unverified">Belum Terkirim unverified: {statusSummary.counts?.items_belum_terkirim_unverified ?? 0}</span>
+                      <span data-testid="summary-tersedia-invalid">Tersedia invalid: {statusSummary.counts?.items_qty_tersedia_invalid ?? 0}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="stock-status-summary-detail-toggle"
+                      data-testid="stock-status-summary-detail-toggle"
+                      aria-expanded={statusDetailOpen}
+                      onClick={() => setStatusDetailOpen((v) => !v)}
+                    >
+                      Detail
+                      <ChevronDown size={14} className={statusDetailOpen ? "is-open" : undefined} aria-hidden="true" />
+                    </button>
                   </div>
-                  {(statusSummary.operational_actions || []).length > 0 && (
-                    <ul className="stock-status-summary-actions" data-testid="stock-status-summary-actions">
-                      {statusSummary.operational_actions.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  )}
-                  <p className="muted small">
-                    Angka diagnostik tidak mengubah saldo dan tidak memaksa status verified/nol.
-                    {statusSummary.truncated ? " (Cuplikan terpotong — total item &gt; scan.)" : ""}
-                  </p>
+                  <div
+                    className="stock-status-summary-detail"
+                    data-testid="stock-status-summary-detail"
+                    hidden={!statusDetailOpen}
+                  >
+                    {(statusSummary.operational_actions || []).length > 0 && (
+                      <ul className="stock-status-summary-actions" data-testid="stock-status-summary-actions">
+                        {statusSummary.operational_actions.map((line) => (
+                          <li key={line}>{line}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="muted small">
+                      Angka diagnostik tidak mengubah saldo dan tidak memaksa status verified/nol.
+                      {statusSummary.truncated ? " (Cuplikan terpotong — total item &gt; scan.)" : ""}
+                    </p>
+                  </div>
                 </>
               )}
             </div>
