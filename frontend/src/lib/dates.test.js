@@ -1,9 +1,15 @@
-import { formatDate, formatDisplayDate, formatDisplayDateTime } from "./constants";
+import { formatDate, formatDesktopListDate, formatDisplayDate, formatDisplayDateTime } from "./constants";
 
 describe("display date formatter dd/mm/yy", () => {
   test("2026-08-26 → 26/08/26", () => {
     expect(formatDisplayDate("2026-08-26")).toBe("26/08/26");
     expect(formatDate("2026-08-26")).toBe("26/08/26");
+  });
+
+  test("desktop sales list dates use DD/MM/YYYY", () => {
+    expect(formatDesktopListDate("2026-08-26")).toBe("26/08/2026");
+    expect(formatDesktopListDate("2026-09-09T00:00:00Z")).toBe("09/09/2026");
+    expect(formatDesktopListDate(null)).toBe("-");
   });
 
   test("Tanggal Pengerjaan calendar examples stay dd/mm/yy", () => {

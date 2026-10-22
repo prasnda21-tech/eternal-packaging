@@ -1,4 +1,4 @@
-import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME, loadingConfirmations, loadingConfirmationsAll, canDeleteLoadingConfirmation, MSG_LOADING_CORRECTION_SJ_CANCEL } from "./loadingConfirm";
+import { emptyLoadingLine, validateLoadingDraftLines, loadingPoLines, sjFilesForLoading, resolveLoadingPoLineIdx, loadingVerificationStatus, selectedLoadingSjOrNull, nextSelectedLoadingSjId, nextActionableLoadingSjId, selectedSjIdentitySet, selectedSjDisplayLines, totalSelectedSjQty, resolveSelectedSjItemName, canonicalSjLineQty, SJ_LINE_UNAVAILABLE_NAME, loadingConfirmations, loadingConfirmationsAll, canDeleteLoadingConfirmation, deletableLoadingConfirmationsForCancelledSj, loadingConfirmationsForSj, MSG_LOADING_CORRECTION_SJ_CANCEL } from "./loadingConfirm";
 import { loadingAvailability } from "./mobileWorkspaces";
 import { parseSjQty } from "./suratJalan";
 import fs from "fs";
@@ -29,6 +29,12 @@ describe("Loading confirm helpers", () => {
     expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[0])).toBe(true);
     expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[2])).toBe(false);
     expect(canDeleteLoadingConfirmation(order, order.loading_confirmations[3])).toBe(true);
+    expect(loadingConfirmationsForSj(order, "sj-a").map((c) => c.id)).toEqual(["a"]);
+    expect(deletableLoadingConfirmationsForCancelledSj(order, "sj-a").map((c) => c.id)).toEqual(["a"]);
+    // Sibling SJ-B still active → its Loading not eligible via SJ-A cancel follow-up.
+    expect(deletableLoadingConfirmationsForCancelledSj(order, "sj-b").map((c) => c.id)).toEqual([]);
+    // Unresolved token stays out of deletable set (fail-closed).
+    expect(deletableLoadingConfirmationsForCancelledSj(order, "sj-gone")).toEqual([]);
     const panel = fs.readFileSync(path.join(__dirname, "../components/LoadingPanel.jsx"), "utf8");
     expect(panel).toMatch(/loading-correction-hint/);
     expect(panel).toMatch(/MSG_LOADING_CORRECTION_SJ_CANCEL/);
