@@ -3432,10 +3432,14 @@
 }
 
 .ux90-sr-create .ux90-sr-doc-body {
+  /* Single height chain: body does not scroll; pane + table wrap scroll. */
   display: flex !important;
   flex-direction: column !important;
-  gap: 10px !important;
-  padding: 10px 14px 12px !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  gap: 8px !important;
+  padding: 8px 14px 8px !important;
 }
 
 .ux90-sr-create .ux90-sr-alert {
@@ -3565,7 +3569,7 @@
 .ux90-sr-create .ux90-sr-doc-panel {
   display: flex !important;
   flex: 1 1 auto !important;
-  min-height: 220px !important;
+  min-height: 0 !important;
   background: #fff !important;
   border: 1px solid #d1d5db !important;
   border-radius: 6px !important;
@@ -3646,9 +3650,11 @@
   flex: 1 1 auto !important;
   min-height: 0 !important;
   flex-direction: column !important;
-  gap: 8px !important;
-  padding: 10px 12px !important;
-  overflow: auto !important;
+  gap: 6px !important;
+  padding: 8px 12px !important;
+  /* Vertical scroll lives here (not on doc-body) so footer/summary stay docked. */
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
 }
 
 .ux90-sr-create .ux90-sr-doc-panel[data-form-tab="items"] .ux90-sr-pane-items,
@@ -3677,9 +3683,13 @@
 }
 
 .ux90-sr-create .ux90-sr-inv-table-wrap {
+  flex: 0 1 auto !important;
+  min-height: 0 !important;
+  max-height: min(280px, 42vh) !important;
   border: 1px solid #d1d5db !important;
   border-radius: 4px !important;
   overflow: auto !important;
+  -webkit-overflow-scrolling: touch !important;
 }
 
 .ux90-sr-create .ux90-sr-inv-table {
@@ -3690,6 +3700,9 @@
 
 .ux90-sr-create .ux90-sr-inv-table thead th {
   /* Match approved Faktur/Pengiriman Eternal green headers */
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 1 !important;
   background: #0f3d32 !important;
   color: #fff !important;
   font-weight: 600 !important;
@@ -3782,7 +3795,13 @@
 }
 
 .ux90-sr-create .ux90-sr-credit {
-  margin-top: 4px !important;
+  flex: 0 0 auto !important;
+  margin-top: 2px !important;
+}
+
+.ux90-sr-create .ux90-sr-pane-items > .ux90-sr-hint,
+.ux90-sr-create .ux90-sr-pane-items > .ux90-after-pay {
+  flex: 0 0 auto !important;
 }
 
 .ux90-sr-create .ux90-sr-credit-btn {
