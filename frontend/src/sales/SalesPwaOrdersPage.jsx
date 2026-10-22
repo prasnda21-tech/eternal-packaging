@@ -7,6 +7,7 @@ import { SALES_PWA_PO_PAGE_SIZE, readSalesPwaPoListState, salesPwaPoFiltersFromC
 import SalesPwaDesignApproval, { orderExpectsDesignLink } from "./SalesPwaDesignApproval";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
 import SalesPwaProgress from "./SalesPwaProgress";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const FILTERS = [
   { id: "semua", label: "Semua" },
@@ -386,18 +387,15 @@ export default function SalesPwaOrdersPage() {
               <li key={o.id} className="spwa-po-card" data-testid={`sales-po-card-${o.po_number}`}>
                 <div className="spwa-po-card-customer">{o.customer}</div>
                 <div className="spwa-po-card-number">{o.po_number}</div>
-                {String(o.priority || "").trim() ? <div className="spwa-po-card-urgency">{String(o.priority).trim()}</div> : null}
+                <div className="spwa-po-card-line">
+                  <PoIdentityBadges order={o} testIdPrefix={`sales-po-badges-${o.po_number || o.id}`} />
+                </div>
                 <div className={`spwa-po-card-status ${poCardStatusTone(o)}`}>{o.status}</div>
                 {o.partial_delivery && !/parsial/i.test(String(o.status || "")) ? <div className="spwa-po-card-line"><span>Partial terkirim</span></div> : null}
                 {o.tanggal_kirim_overdue ? <div className="spwa-po-card-urgency">Kirim terlambat</div> : null}
                 <div className="spwa-po-card-line"><span>Tanggal</span><strong>{formatSalesDate(o.order_date)}</strong></div>
                 <div className="spwa-po-card-line"><span>Progress {o.progress_percent ?? 0}%</span></div>
                 <SalesPwaProgress order={o} />
-                <div className="spwa-po-card-line">
-                  {o.buffer_stock
-                    ? <span className="spwa-buffer-badge">Buffer Stock</span>
-                    : <span className="spwa-buffer-plain">Bukan buffer stock</span>}
-                </div>
                 {o.design_need?.label ? <div className="spwa-po-card-line" data-testid={`sales-po-design-need-${o.id}`}><span>{o.design_need.label}</span></div> : null}
                 {o.design_need?.design_name ? <div className="spwa-po-card-line"><span>{o.design_need.design_name}</span></div> : null}
                 <SalesPwaDesignApproval order={o} expectMissing={orderExpectsDesignLink(o)} />
@@ -468,7 +466,7 @@ export default function SalesPwaOrdersPage() {
                         <span style={{ padding: "5px 6px" }}>
                           <span className="spwa-cust">{o.customer}</span>
                           <div className="spwa-po">{o.po_number}</div>
-                          {o.buffer_stock && <span className="spwa-buffer-badge">BUFFER</span>}
+                          <PoIdentityBadges order={o} testIdPrefix={`sales-po-table-${o.po_number || o.id}`} />
                           <SalesPwaProgress order={o} />
                         </span>
                         <span className={`spwa-stage${o.hold ? " is-hold" : ""}`} style={{ padding: "5px 6px" }}>{o.status}</span>

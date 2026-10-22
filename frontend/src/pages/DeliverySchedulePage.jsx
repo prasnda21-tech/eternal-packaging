@@ -36,6 +36,7 @@ import {
 } from "../lib/poListReturn";
 import SuratJalanViewButton from "../components/SuratJalanViewButton";
 import OutletLocationModal from "../components/OutletLocationModal";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 /** Shipment-scoped SJ number from GET /delivery/schedule — never PO-level latest SJ. */
 export function scheduleRowSjNumber(row) {
@@ -437,6 +438,14 @@ export default function DeliverySchedulePage() {
                         {r.order_number}
                       </Link>
                     ) : (r.order_number || "-")}
+                    <PoIdentityBadges
+                      order={{
+                        priority: r.priority,
+                        urgent: r.urgent,
+                        buffer_stock: r.buffer_stock,
+                      }}
+                      testIdPrefix={`ds-po-${r.order_number}`}
+                    />
                   </td>
                   <td className="ship-cust" title={r.customer_name || undefined}>{r.customer_name || "-"}</td>
                   <td data-testid={`ds-status-${r.order_number}`}>{r.status_label}</td>

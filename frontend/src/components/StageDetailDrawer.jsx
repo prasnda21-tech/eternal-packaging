@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { STAGES, formatDate } from "../lib/constants";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 /**
  * Read-only drawer showing detail information about a specific stage.
@@ -20,6 +21,7 @@ export default function StageDetailDrawer({ order, stageIdx, onClose, editSlot }
             <p className="eyebrow">Tahap {stageIdx + 1} dari {STAGES.length}</p>
             <h3 data-testid="stage-drawer-title">{label}</h3>
             <p className="muted small">PO {order.po_number} · {order.customer}</p>
+            <PoIdentityBadges order={order} testIdPrefix="stage-drawer-po" />
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Tutup" data-testid="stage-drawer-close"><X size={18}/></button>
         </header>
@@ -160,7 +162,6 @@ function StageContent({ order, stageIdx }) {
               )
               : null
           }/>
-          <KV label="Prioritas" value={order.priority === "urgent" ? "URGENT" : "Normal"}/>
           <KV label="HOLD" value={order.hold ? "Ya" : "Tidak"}/>
           <KV label="Alasan HOLD" value={(order.hold_reasons || []).join("; ") || null}/>
         </dl>

@@ -25,6 +25,7 @@ import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDel
 import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
@@ -1481,6 +1482,7 @@ export default function PengirimanPesanan() {
                         <Link to={`/po/${d.po_id}`} className="sd-doc" data-testid={`po-link-${d.po_number}`}>
                           {d.po_number}
                         </Link>
+                        <PoIdentityBadges order={d} testIdPrefix={`pp-po-${d.po_number || d.id}`} />
                       </td>
                       <td>{formatDisplayDate(d.delivery_date) || "-"}</td>
                       <td className="sd-qty-cell">{Number(d.total_qty || 0).toLocaleString("id-ID")} pcs</td>

@@ -47,6 +47,7 @@ _REMINDERS_REQUIRED_SCALARS = (
     "customer",
     "deadline",
     "priority",
+    "buffer_stock",
     "current_stage",
     "status_label",
 )
@@ -80,6 +81,7 @@ _RESPONSE_ROW_KEYS = (
     "customer",
     "deadline",
     "priority",
+    "buffer_stock",
     "current_stage",
     "status_label",
     "owner_role",
@@ -195,6 +197,9 @@ def test_reminders_does_not_use_hop_deadline_snapshot_helpers():
     assert "_compute_pending_queues" not in _REMINDERS_SRC
     assert "_deadline_status(" in _REMINDERS_SRC
     assert "STAGE_OWNER_ROLE" in _REMINDERS_SRC
+    # Buffer Stock never enters customer-overdue reminder bucket.
+    assert 'buffer_stock' in _REMINDERS_SRC
+    assert 'ds["bucket"] == "overdue"' in _REMINDERS_SRC
 
 
 def test_reminders_python_still_skips_done_stage_and_ok_bucket():

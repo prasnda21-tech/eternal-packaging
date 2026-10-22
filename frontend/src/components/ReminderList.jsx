@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { AlertOctagon, AlertTriangle, Clock } from "lucide-react";
 import { STAGES, ROLES } from "../lib/constants";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 const bucketMeta = {
   overdue: { label: "Overdue", icon: AlertOctagon, cls: "rem-overdue" },
@@ -39,13 +40,13 @@ export default function ReminderList({ reminders, counts, scope, testid = "remin
                 <div className="rem-body">
                   <div>
                     <strong>{r.po_number}</strong>
+                    <PoIdentityBadges order={r} testIdPrefix={`reminder-po-${r.po_number}`} />
                     <span className="muted"> · {r.outlet}</span>
                   </div>
                   <div className="rem-meta">
                     <span className="stage-chip">{STAGES[r.current_stage]}</span>
                     <span className="mono">Ditahan: {ROLES[r.owner_role] || r.owner_role}</span>
                     <span className="mono">{formatHours(r.hours_left)}</span>
-                    {r.priority === "urgent" && <span className="urgent-badge">URGENT</span>}
                   </div>
                 </div>
               </Link>

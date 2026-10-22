@@ -61,6 +61,7 @@ function formatRupiah(num) {
 
 import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import SalesReceiptProofViewer from "./SalesReceiptProofViewer";
 import {
   RECEIPT_PROOF_ACCEPT,
@@ -1327,6 +1328,7 @@ export default function PenerimaanPenjualan() {
                         {r.po_number ? ` · ${r.po_number}` : ""}
                         {r.notes ? ` · ${r.notes}` : ""}
                       </span>
+                      <PoIdentityBadges order={r} testIdPrefix={`rcp-po-${r.po_number || r.id}`} />
                     </td>
                     <td>{formatDisplayDate(r.receipt_date)}</td>
                     <td className="sd-money is-zero">{formatRupiah(r.amount)}</td>

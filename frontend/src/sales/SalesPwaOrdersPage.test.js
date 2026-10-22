@@ -338,7 +338,7 @@ describe("SalesPwaOrdersPage", () => {
     expect(held.className).not.toContain("is-running");
     expect(card.textContent).toContain("18/09/26");
     expect(card.textContent).toContain("Progress 40%");
-    expect(card.textContent).toContain("Buffer Stock");
+    expect(card.textContent).toContain("BUFFER STOCK");
     expect(card.textContent).toContain("0 dokumen");
     expect(card.querySelector('[data-testid="sales-po-detail-po-1"]').getAttribute("href")).toBe("/sales/po/po-1");
     expect(container.querySelector('[data-testid="sales-filter-open"]')).toBeTruthy();

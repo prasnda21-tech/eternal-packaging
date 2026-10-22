@@ -56,6 +56,32 @@
   white-space: nowrap;
   color: #0f172a;
 }
+/* PO identity badges must remain visible without a dedicated horizontal scroll */
+.dp-adv-table tbody td:has(.dp-po-identity) {
+  height: auto;
+  max-height: none;
+  min-height: 31px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+  vertical-align: top;
+}
+.dp-po-identity {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+.dp-po-identity .dp-link-po {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dp-adv-table tbody tr:nth-child(even) { background: #f8fafc; }
 .dp-adv-table tbody tr:hover { background: #f0fdf4; }
 .dp-adv-table .num {

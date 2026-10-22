@@ -27,6 +27,7 @@ import {
   poNavStateFromList,
 } from "../lib/poListReturn";
 import ProductionSchedulePriorityBadges from "../components/ProductionSchedulePriorityBadges";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const STATUS_TABS = [
   { key: "semua", label: "Semua" },
@@ -323,8 +324,11 @@ export default function DivisionTaskPage() {
                     </span>
                   </td>
                   <td>
-                    <div className="mono">{t.order_number}</div>
-                    <div className="muted small">{t.customer_name || "—"}</div>
+                    <div className="kp-po-cell">
+                      <div className="mono kp-po-number">{t.order_number}</div>
+                      <PoIdentityBadges order={t} testIdPrefix={`kp-po-${t.order_number || t.task_id}`} omitUrgent />
+                      <div className="muted small">{t.customer_name || "—"}</div>
+                    </div>
                   </td>
                   <td title={t.item || ""}>{t.item || "—"}</td>
                   <td className="mono" data-testid={`kp-delivery-${t.task_id}`}>{formatDeliveryDate(t)}</td>
@@ -378,6 +382,8 @@ export default function DivisionTaskPage() {
                     <span>{t.order_number}</span>
                     {" "}
                     <ProductionSchedulePriorityBadges row={t} testIdPrefix={`division-task-priority-${t.task_id || t.order_number}`} />
+                    {" "}
+                    <PoIdentityBadges order={t} testIdPrefix={`division-task-po-${t.order_number || t.task_id}`} omitUrgent />
                   </td>
                   <td>{t.customer_name || "—"}</td>
                   <td>{t.item || "—"}</td>

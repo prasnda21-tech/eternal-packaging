@@ -456,6 +456,8 @@ def schedule_row(
         "qty_delivered_sj": qty_delivered_sj,
         "qty_sj": qty_sj,
         "urgent": str(order.get("priority") or "").lower() == "urgent",
+        "priority": order.get("priority") or "normal",
+        "buffer_stock": bool(order.get("buffer_stock")),
         "role_status": role_status_for_schedule_row(order, sh),
     }
 

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { fmtQty } from "./qtyUi";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 function TodayTable({ title, empty, rows, columns, allHref, allLabel, total, testid }) {
   return (
@@ -49,7 +50,12 @@ const workCols = [
   {
     key: "po_number",
     label: "No PO",
-    render: (r) => <Link to={`/po/${r.id}`} data-testid={`today-work-po-${r.po_number}`}>{r.po_number}</Link>,
+    render: (r) => (
+      <span>
+        <Link to={`/po/${r.id}`} data-testid={`today-work-po-${r.po_number}`}>{r.po_number}</Link>{" "}
+        <PoIdentityBadges order={r} testIdPrefix={`today-work-badges-${r.po_number}`} />
+      </span>
+    ),
   },
   {
     key: "customer",
@@ -76,7 +82,12 @@ const shipCols = [
   {
     key: "po_number",
     label: "No PO",
-    render: (r) => <Link to={`/po/${r.id}`} data-testid={`today-ship-po-${r.po_number}`}>{r.po_number}</Link>,
+    render: (r) => (
+      <span>
+        <Link to={`/po/${r.id}`} data-testid={`today-ship-po-${r.po_number}`}>{r.po_number}</Link>{" "}
+        <PoIdentityBadges order={r} testIdPrefix={`today-ship-badges-${r.po_number}`} />
+      </span>
+    ),
   },
   {
     key: "customer",

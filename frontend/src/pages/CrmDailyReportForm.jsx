@@ -29,6 +29,7 @@ import {
   writeCrmDailyDraft,
 } from "../lib/crmDailyReport";
 import "./crmDailyReport.css";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 function errText(e) {
   const d = e?.response?.data?.detail;
@@ -746,7 +747,8 @@ export default function CrmDailyReportForm() {
             />
             {selectedOrder && (
               <p className="cdr-hint" data-testid="cdr-po-selected">
-                Terpilih: {selectedOrder.po_number || "—"} · {selectedOrder.customer || "—"}
+                Terpilih: {selectedOrder.po_number || "—"} · {selectedOrder.customer || "—"}{" "}
+                <PoIdentityBadges order={selectedOrder} testIdPrefix="cdr-po-selected" />
                 {" "}
                 <button type="button" className="ghost" data-testid="cdr-po-clear" onClick={() => applyOrderSelection(null)}>
                   Hapus PO
@@ -757,7 +759,8 @@ export default function CrmDailyReportForm() {
               {poHits.map((order) => (
                 <li key={order.id}>
                   <button type="button" onClick={() => applyOrderSelection(order)}>
-                    {order.po_number || "—"} · {order.customer || "—"}
+                    {order.po_number || "—"} · {order.customer || "—"}{" "}
+                    <PoIdentityBadges order={order} testIdPrefix={`cdr-po-hit-${order.po_number || order.id}`} />
                     {order.sales_verified
                       ? ` · Sales: ${order.sales_label_resolved || order.sales}`
                       : " · Sales belum terverifikasi"}

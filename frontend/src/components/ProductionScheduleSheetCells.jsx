@@ -18,6 +18,7 @@ import {
 } from "../lib/productionScheduleTable";
 import { isProductionScheduleH1, isProductionScheduleUrgent } from "../lib/productionSchedulePriority";
 import { cupMarkTone, prodMarkTone, screenMarkTone, packMarkTone, loadMarkTone, kirimMarkTone } from "../lib/mobileOpsStatusMark";
+import { isPoUrgent } from "../lib/poIdentityBadges";
 
 function MobileRoleMark({ tone, title, testid }) {
   const kind = tone === "done" || tone === "pending" ? tone : "idle";
@@ -295,11 +296,14 @@ function cellContent(col, ctx) {
       if (ctx.opsBadge) {
         return <span className={`mop-ops-badge mop-ops-badge-${ctx.opsBadge.tone}`}>{ctx.opsBadge.label}</span>;
       }
-      return isProductionScheduleUrgent(row) ? <span className="urgent-badge">URGENT</span> : <span className="muted small">Normal</span>;
+      // Column "prio" is urgent-only; buffer has its own column (no NORMAL badge).
+      return isPoUrgent(row) ? (
+        <span className="urgent-badge" data-testid={`prod-prio-${row.po_number}-urgent`}>URGENT</span>
+      ) : null;
     case "buffer":
       return row.buffer_stock
-        ? <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span>
-        : <span className="muted small">—</span>;
+        ? <span className="buffer-stock-badge" data-testid={`prod-buffer-${row.po_number}`}>BUFFER STOCK</span>
+        : null;
     case "item":
       return <ItemCell row={row} variant={variant} />;
     case "qty":

@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
 import { encodeHeaderFilters } from "../components/deliveryPlan/deliveryPlanTableLayout";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import "./DeliveryPlanPage.css";
 
 const EMPTY_FILTERS = {
@@ -255,11 +256,14 @@ export default function DeliveryPlanPage() {
       key: "po_number",
       label: "Nomor PO",
       type: "text",
-      minWidth: 120,
+      minWidth: 200,
       render: (v, row) => (
-        <Link className="dp-link-po" to={`/po/${encodeURIComponent(row.id || row.order_id)}`}>
-          {v || "—"}
-        </Link>
+        <span className="dp-po-identity">
+          <Link className="dp-link-po" to={`/po/${encodeURIComponent(row.id || row.order_id)}`}>
+            {v || "—"}
+          </Link>
+          <PoIdentityBadges order={row} testIdPrefix={`dp-po-${row.po_number || row.id}`} />
+        </span>
       ),
     },
     { key: "customer_name", label: "Customer", type: "text", minWidth: 140 },

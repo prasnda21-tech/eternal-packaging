@@ -26,6 +26,7 @@ import { invoiceBelumDifakturMeta } from "../lib/ux90RemainingMeta";
 import { FormProgress } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import {
   buildSalesInvoiceListCacheKey,
@@ -2314,6 +2315,7 @@ export default function FakturPenjualan() {
                         <Link to={`/po/${inv.po_id}`} className="sd-doc" title={inv.po_number || "Buka PO"}>
                           {inv.po_number || "-"}
                         </Link>
+                        <PoIdentityBadges order={inv} testIdPrefix={`fp-po-${inv.po_number || inv.id}`} />
                       </td>
                       <td>{formatSalesInvoiceDate(inv.invoice_date || inv.created_at) || "-"}</td>
                       <td className="sd-money">{formatRupiah(inv.grand_total)}</td>

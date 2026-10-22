@@ -75,6 +75,7 @@ import MobileWorkspaceSelect from "./components/MobileWorkspaceSelect";
 import MobileTaskModal, { opsRoleIcon } from "./components/MobileTaskModal";
 import OpsScheduleThead from "./components/OpsScheduleThead";
 import OpsRoleMark from "./components/OpsRoleMark";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import {
   MOBILE_DELIVERY_FILTER_KEY,
   MOBILE_DELIVERY_SCROLL_KEY,
@@ -239,7 +240,13 @@ function DeliveryIdentityCell({ row, onOpenRoute, canOpenRoute }) {
   return (
     <div className="mop-ops-identity" data-testid={`mds-identity-${suffix}`}>
       <strong className="mop-ops-customer">{row.customer_name || "-"}</strong>
-      <span className="mop-ops-po">{row.order_number || ""}</span>
+      <span className="mop-ops-po">
+        {row.order_number || ""}{" "}
+        <PoIdentityBadges
+          order={{ priority: row.priority, urgent: row.urgent, buffer_stock: row.buffer_stock }}
+          testIdPrefix={`mds-po-${suffix}`}
+        />
+      </span>
       {row.latest_sj_number || row.sj_label ? (
         <span className="mop-ops-po" data-testid={`mds-sj-${suffix}`}>{row.latest_sj_number || row.sj_label}</span>
       ) : (

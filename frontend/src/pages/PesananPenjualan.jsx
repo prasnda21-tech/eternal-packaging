@@ -46,6 +46,7 @@ import "./pesananPenjualan.css";
 import "./pesananPenjualanPremium.css";
 import "./ux90SalesCreate.css";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
@@ -2431,6 +2432,7 @@ export default function PesananPenjualan() {
                           >
                             {o.po_number || "—"}
                           </Link>
+                          <PoIdentityBadges order={o} testIdPrefix={`so-po-badges-${o.po_number || o.id}`} />
                           {o.outlet ? (
                             <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span>
                           ) : null}

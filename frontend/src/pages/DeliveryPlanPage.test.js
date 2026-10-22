@@ -137,6 +137,19 @@ test("page wires route api and no mutate verbs", () => {
   expect(app).toMatch(/DeliveryPlanPage/);
 });
 
+test("Nomor PO cell keeps identity badges visible (no clip)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "DeliveryPlanPage.jsx"), "utf8");
+  const tableCss = fs.readFileSync(
+    path.join(__dirname, "../components/deliveryPlan/DeliveryPlanAdvancedTable.css"),
+    "utf8",
+  );
+  expect(src).toMatch(/PoIdentityBadges/);
+  expect(src).toMatch(/dp-po-identity/);
+  expect(src).toMatch(/minWidth:\s*200/);
+  expect(tableCss).toMatch(/td:has\(\.dp-po-identity\)/);
+  expect(tableCss).toMatch(/\.dp-po-identity\s*\{/);
+});
+
 test("compact ux9 contracts and akan datang label", async () => {
   const src = fs.readFileSync(path.join(__dirname, "DeliveryPlanPage.jsx"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "DeliveryPlanPage.css"), "utf8");
