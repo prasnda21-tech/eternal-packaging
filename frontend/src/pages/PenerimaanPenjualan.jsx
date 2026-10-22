@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   CreditCard,
   FileText,
+  Info,
+  Package,
   Plus,
   RefreshCw,
   Search,
@@ -17,7 +19,6 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDisplayDate } from "../lib/constants";
 import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
-import { FormSection, computeStatus } from "../components/form-standard";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import LookupSearchSelect from "../components/LookupSearchSelect";
 import { receiptBelumDibayarMeta } from "../lib/ux90RemainingMeta";
@@ -141,6 +142,7 @@ export default function PenerimaanPenjualan() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createErr, setCreateErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [receiptFormTab, setReceiptFormTab] = useState("items");
   const [creditOffer, setCreditOffer] = useState(null);
   const [creditOfferErr, setCreditOfferErr] = useState("");
   const [creditPanelOpen, setCreditPanelOpen] = useState(false);
@@ -726,6 +728,7 @@ export default function PenerimaanPenjualan() {
     setProofErr("");
     setCashBankId("");
     setCreateErr("");
+    setReceiptFormTab("items");
     setIsModalOpen(true);
     const next = { action: "create" };
     if (invId) next.invoice_id = invId;
@@ -766,6 +769,7 @@ export default function PenerimaanPenjualan() {
     setProofErr("");
     setCashBankId("");
     setCreateErr("");
+    setReceiptFormTab("items");
     setSearchParams({});
   };
 
@@ -1514,346 +1518,401 @@ export default function PenerimaanPenjualan() {
             </header>
 
             <form className="ux90-sr-page-form" onSubmit={handleSaveReceipt} data-testid="receipt-create-modal">
-              <div className="ux90-sr-body" data-testid="receipt-modal-body">
+              <div className="ux90-sr-body ux90-sr-doc-body" data-testid="receipt-modal-body">
                 {createErr && (
-                  <div style={{ padding: "10px 14px", backgroundColor: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", borderRadius: 6, marginBottom: 12, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                  <div className="ux90-sr-alert is-error">
                     <AlertCircle size={16} />
                     <span>{createErr}</span>
                   </div>
                 )}
                 {successMsg && (
-                  <div style={{ padding: "10px 14px", backgroundColor: "#ecfdf5", border: "1px solid #a7f3d0", color: "#065f46", borderRadius: 6, marginBottom: 12, display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                  <div className="ux90-sr-alert is-ok">
                     <CheckCircle2 size={16} />
                     <span>{successMsg}</span>
                   </div>
                 )}
 
-                <div className="ux90-sr-topgrid" data-testid="receipt-top-grid">
-                  <div>
-                    <span className="ux90-sr-toplabel">Pilih Faktur *</span>
-                    <LookupSearchSelect
-                      options={invoicesWithBalance}
-                      value={selectedInvoiceId}
-                      onChange={(id) => setSelectedInvoiceId(id || "")}
-                      getOptionValue={(inv) => inv.id}
-                      getOptionLabel={(inv) => String(inv.invoice_number || inv.id || "")}
-                      getOptionMeta={(inv) => [
-                        inv.customer,
-                        receiptBelumDibayarMeta(inv, formatRupiah),
-                      ].filter(Boolean).join(" · ")}
-                      getSearchText={(inv) => [inv.invoice_number, inv.customer, inv.po_number].filter(Boolean).join(" ")}
-                      placeholder={invoicesLoading ? "Memuat faktur…" : "Ketik nomor faktur atau customer…"}
-                      noResultLabel="Tidak ada hasil yang cocok"
-                      disabled={createBusy || invoicesLoading}
-                      overModal
-                      testId="select-receipt-invoice"
-                    />
-                    {invoicesWithBalance.length === 0 && !invoicesLoading && (
-                      <p data-testid="no-eligible-invoices-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
-                        Tidak ada faktur dengan sisa tagihan aktif.
-                      </p>
-                    )}
+                {/* Accurate-style compact header: label left + input right */}
+                <div className="ux90-sr-hdr" data-testid="receipt-top-grid">
+                  <div className="ux90-sr-hdr-col">
+                    <div className="ux90-sr-field">
+                      <span className="ux90-sr-hdr-label">Terima dari <span className="ux90-req">*</span></span>
+                      <div className="ux90-sr-hdr-control">
+                        <LookupSearchSelect
+                          options={invoicesWithBalance}
+                          value={selectedInvoiceId}
+                          onChange={(id) => setSelectedInvoiceId(id || "")}
+                          getOptionValue={(inv) => inv.id}
+                          getOptionLabel={(inv) => String(inv.customer || inv.invoice_number || inv.id || "")}
+                          getOptionMeta={(inv) => [
+                            inv.invoice_number,
+                            receiptBelumDibayarMeta(inv, formatRupiah),
+                          ].filter(Boolean).join(" · ")}
+                          getSearchText={(inv) => [inv.invoice_number, inv.customer, inv.po_number].filter(Boolean).join(" ")}
+                          placeholder={invoicesLoading ? "Memuat faktur…" : "Cari/Pilih pelanggan atau faktur…"}
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          disabled={createBusy || invoicesLoading}
+                          overModal
+                          testId="select-receipt-invoice"
+                        />
+                        {invoicesWithBalance.length === 0 && !invoicesLoading && (
+                          <p data-testid="no-eligible-invoices-hint" className="ux90-sr-hint">
+                            Tidak ada faktur dengan sisa tagihan aktif.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="ux90-sr-field">
+                      <span className="ux90-sr-hdr-label">Bank <span className="ux90-req">*</span></span>
+                      <div className="ux90-sr-hdr-control">
+                        <LookupSearchSelect
+                          options={cashBanks}
+                          value={cashBankId}
+                          onChange={(id) => setCashBankId(id || "")}
+                          getOptionValue={(acc) => acc.id}
+                          getOptionLabel={(acc) => String(acc.name || acc.id || "")}
+                          getOptionMeta={(acc) => [acc.account_code, acc.bank_name, acc.account_number].filter(Boolean).join(" · ")}
+                          getSearchText={(acc) => [acc.name, acc.account_code, acc.bank_name, acc.account_number].filter(Boolean).join(" ")}
+                          placeholder={cashBanksLoading ? "Memuat Kas/Bank…" : "Cari/Pilih…"}
+                          noResultLabel="Tidak ada hasil yang cocok"
+                          disabled={createBusy || cashBanksLoading}
+                          overModal
+                          testId="select-receipt-cash-bank"
+                        />
+                        {cashBanks.length === 0 && !cashBanksLoading && (
+                          <p data-testid="no-cash-bank-hint" className="ux90-sr-hint">
+                            Belum ada Kas/Bank aktif.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="ux90-sr-field">
+                      <span className="ux90-sr-hdr-label">Nilai Pembayaran <span className="ux90-req">*</span></span>
+                      <div className="ux90-sr-hdr-control ux90-sr-pay-row">
+                        <input
+                          type="number"
+                          className="form-input ux90-sr-amount-input"
+                          data-testid="input-receipt-amount"
+                          placeholder="0"
+                          min="1"
+                          value={receiptAmount}
+                          onChange={(e) => {
+                            setReceiptAmount(e.target.value);
+                            if (!allocationTouched) setAllocationAmount("");
+                          }}
+                          disabled={createBusy || !selectedInvoice}
+                        />
+                        {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
+                          <button
+                            type="button"
+                            onClick={handlePayFull}
+                            data-testid="btn-pay-full-outstanding"
+                            className="ux90-sr-linkbtn"
+                          >
+                            Isi sisa
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <span className="ux90-sr-toplabel">Tanggal Penerimaan *</span>
-                    <SalesInvoiceDateField
-                      valueIso={receiptDate}
-                      onChange={setReceiptDate}
-                      disabled={createBusy}
-                      testId="input-receipt-date"
-                      calendarLabel="Kalender tanggal penerimaan"
-                    />
-                  </div>
-                  <div>
-                    <span className="ux90-sr-toplabel">Kas / Bank *</span>
-                    <LookupSearchSelect
-                      options={cashBanks}
-                      value={cashBankId}
-                      onChange={(id) => setCashBankId(id || "")}
-                      getOptionValue={(acc) => acc.id}
-                      getOptionLabel={(acc) => String(acc.name || acc.id || "")}
-                      getOptionMeta={(acc) => [acc.account_code, acc.bank_name, acc.account_number].filter(Boolean).join(" · ")}
-                      getSearchText={(acc) => [acc.name, acc.account_code, acc.bank_name, acc.account_number].filter(Boolean).join(" ")}
-                      placeholder={cashBanksLoading ? "Memuat Kas/Bank…" : "Ketik nama rekening…"}
-                      noResultLabel="Tidak ada hasil yang cocok"
-                      disabled={createBusy || cashBanksLoading}
-                      overModal
-                      testId="select-receipt-cash-bank"
-                    />
-                    {cashBanks.length === 0 && !cashBanksLoading && (
-                      <p data-testid="no-cash-bank-hint" style={{ margin: "6px 0 0 0", fontSize: 12, color: "#64748b" }}>
-                        Belum ada Kas/Bank aktif.
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <span className="ux90-sr-toplabel">Metode</span>
-                    <input className="form-input" readOnly value="Transfer / Tunai" data-testid="receipt-method-display" style={{ width: "100%", height: 38 }} />
+                  <div className="ux90-sr-hdr-col">
+                    <div className="ux90-sr-field">
+                      <span className="ux90-sr-hdr-label">No. Faktur</span>
+                      <div className="ux90-sr-hdr-control">
+                        <input
+                          className="form-input"
+                          readOnly
+                          value={selectedInvoice?.invoice_number || ""}
+                          placeholder="—"
+                          data-testid="summary-invoice-number"
+                        />
+                      </div>
+                    </div>
+                    <div className="ux90-sr-field">
+                      <span className="ux90-sr-hdr-label">Tgl Bayar <span className="ux90-req">*</span></span>
+                      <div className="ux90-sr-hdr-control">
+                        <SalesInvoiceDateField
+                          valueIso={receiptDate}
+                          onChange={setReceiptDate}
+                          disabled={createBusy}
+                          testId="input-receipt-date"
+                          calendarLabel="Kalender tanggal penerimaan"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div data-testid="selected-invoice-summary-card" className="ux90-doc-meta-strip sr-money-summary">
-                  <div className="ux90-doc-meta-grid sr-invoice-meta">
-                    <div>
-                      <span>Pelanggan</span>
-                      <strong data-testid="summary-customer">{selectedInvoice?.customer || "—"}</strong>
-                    </div>
-                    <div>
-                      <span>No. Faktur</span>
-                      <strong data-testid="summary-invoice-number">{selectedInvoice?.invoice_number || "—"}</strong>
-                    </div>
-                    <div>
-                      <span>No. PO</span>
-                      <strong data-testid="summary-po-number">{selectedInvoice?.po_number || "—"}</strong>
-                    </div>
-                    <div>
-                      <span>Total Faktur</span>
-                      <strong data-testid="summary-grand-total">{formatRupiah(selectedInvoice?.grand_total || 0)}</strong>
-                    </div>
-                    <div>
-                      <span>Sudah Dibayar</span>
-                      <strong data-testid="summary-paid-total">{formatRupiah(selectedInvoice?.paid_total || 0)}</strong>
-                    </div>
-                    <div>
-                      <span>Sisa Tagihan</span>
-                      <strong data-testid="summary-outstanding-amount" className="is-due">
-                        {formatRupiah(selectedInvoice?.outstanding_amount || 0)}
-                      </strong>
-                    </div>
-                  </div>
-                  <div hidden data-testid="receipt-money-triad" aria-hidden="true" />
-                </div>
-
-                <div className="ux90-sr-grid">
-                  <div>
-                    <FormSection
-                      id="sr-payment-section"
-                      title="Jumlah &amp; Alokasi"
-                      description="Isi jumlah diterima, lalu sesuaikan alokasi ke faktur."
-                      status={computeStatus([{ value: receiptAmount, isRequired: true }, { value: receiptDate, isRequired: true }, { value: cashBankId, isRequired: true }])}
-                      className="fs-section-scroll-safe"
+                {/* Document panel + vertical rail (Accurate pattern) */}
+                <div
+                  className="ux90-sr-doc-panel"
+                  data-form-tab={receiptFormTab}
+                  data-testid="receipt-doc-panel"
+                >
+                  <nav className="ux90-sr-vtabs" role="tablist" aria-label="Bagian penerimaan">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={receiptFormTab === "items"}
+                      className={receiptFormTab === "items" ? "is-active" : ""}
+                      data-testid="sr-tab-items"
+                      onClick={() => setReceiptFormTab("items")}
                     >
-                      <div className="ux90-pay-grid sr-payment-grid">
-                        <div>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", margin: 0 }}>
-                              Jumlah Diterima (Rp) *
-                            </label>
-                            {selectedInvoice && selectedInvoice.outstanding_amount > 0 && (
-                              <button
-                                type="button"
-                                onClick={handlePayFull}
-                                data-testid="btn-pay-full-outstanding"
-                                style={{ background: "none", border: "none", color: "#059669", fontSize: 11, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
-                              >
-                                Isi sisa tagihan
-                              </button>
-                            )}
-                          </div>
-                          <input
-                            type="number"
-                            className="form-input"
-                            data-testid="input-receipt-amount"
-                            placeholder="0"
-                            min="1"
-                            value={receiptAmount}
-                            onChange={(e) => {
-                              setReceiptAmount(e.target.value);
-                              if (!allocationTouched) setAllocationAmount("");
-                            }}
-                            disabled={createBusy || !selectedInvoice}
-                            style={{ width: "100%", fontSize: 16, fontWeight: 700, textAlign: "right", height: 42 }}
-                          />
-                        </div>
+                      <Package size={18} aria-hidden="true" />
+                      <span>Faktur</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={receiptFormTab === "info"}
+                      className={receiptFormTab === "info" ? "is-active" : ""}
+                      data-testid="sr-tab-info"
+                      onClick={() => setReceiptFormTab("info")}
+                    >
+                      <Info size={18} aria-hidden="true" />
+                      <span>Info</span>
+                    </button>
+                  </nav>
 
-                        <div data-testid="receipt-allocation-field">
-                          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                            Alokasi Pembayaran (Rp)
-                          </label>
-                          <input
-                            type="number"
-                            className="form-input"
-                            data-testid="input-receipt-allocation"
-                            min="0"
-                            value={allocationTouched ? allocationAmount : (previewCalc ? String(previewCalc.allocated || "") : allocationAmount)}
-                            onChange={(e) => {
-                              setAllocationTouched(true);
-                              setAllocationAmount(e.target.value);
-                            }}
-                            disabled={createBusy || !selectedInvoice}
-                            style={{ width: "100%", fontSize: 14, textAlign: "right", height: 42 }}
-                          />
-                          {previewCalc && previewCalc.amount > 0 && (
-                            <p data-testid="receipt-allocation-total" style={{ margin: "6px 0 0", fontSize: 12, color: "#0f766e" }}>
-                              Dipakai: {formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated)}
-                            </p>
-                          )}
-                          {previewCalc && previewCalc.customerCredit > 0 && (
-                            <p data-testid="receipt-customer-credit-remainder" style={{ margin: "4px 0 0", fontSize: 12, fontWeight: 700, color: "#0f766e" }}>
-                              Sisa menjadi saldo pelanggan: {formatRupiah(previewCalc.customerCredit)}
-                            </p>
-                          )}
-                          {previewCalc && previewCalc.allocationExceedsOutstanding && (
-                            <p data-testid="receipt-allocation-over-hint" style={{ margin: "4px 0 0", fontSize: 12, fontWeight: 600, color: "#b91c1c" }}>
-                              Melebihi sisa tagihan. Turunkan nominal atau alokasi.
-                            </p>
-                          )}
-                        </div>
+                  <div className="ux90-sr-pane">
+                    <div className="ux90-sr-pane-panel ux90-sr-pane-items" data-pane="items">
+                      <div className="ux90-sr-pane-title">
+                        <h3>Alokasi Faktur</h3>
+                        <span className="ux90-hint">Alokasi ≤ sisa tagihan · ≤ nilai pembayaran</span>
                       </div>
 
+                      <div data-testid="selected-invoice-summary-card" className="ux90-sr-inv-table-wrap">
+                        <table className="ux90-sr-inv-table">
+                          <thead>
+                            <tr>
+                              <th>No. Faktur</th>
+                              <th>Pelanggan</th>
+                              <th>No. PO</th>
+                              <th className="is-num">Total Faktur</th>
+                              <th className="is-num">Terutang</th>
+                              <th className="is-num">Bayar</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedInvoice ? (
+                              <tr>
+                                <td>
+                                  <strong>{selectedInvoice.invoice_number || "—"}</strong>
+                                </td>
+                                <td data-testid="summary-customer">{selectedInvoice.customer || "—"}</td>
+                                <td data-testid="summary-po-number">{selectedInvoice.po_number || "—"}</td>
+                                <td className="is-num" data-testid="summary-grand-total">{formatRupiah(selectedInvoice.grand_total || 0)}</td>
+                                <td className="is-num is-due" data-testid="summary-outstanding-amount">
+                                  {formatRupiah(selectedInvoice.outstanding_amount || 0)}
+                                </td>
+                                <td className="is-num" data-testid="receipt-allocation-field">
+                                  <input
+                                    type="number"
+                                    className="form-input"
+                                    data-testid="input-receipt-allocation"
+                                    min="0"
+                                    value={allocationTouched ? allocationAmount : (previewCalc ? String(previewCalc.allocated || "") : allocationAmount)}
+                                    onChange={(e) => {
+                                      setAllocationTouched(true);
+                                      setAllocationAmount(e.target.value);
+                                    }}
+                                    disabled={createBusy || !selectedInvoice}
+                                  />
+                                </td>
+                              </tr>
+                            ) : (
+                              <tr>
+                                <td colSpan={6} className="is-empty">Belum ada data — pilih faktur di atas</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                        <div hidden data-testid="receipt-money-triad" aria-hidden="true" />
+                        <div hidden data-testid="summary-paid-total">{formatRupiah(selectedInvoice?.paid_total || 0)}</div>
+                      </div>
+
+                      {previewCalc && previewCalc.amount > 0 && (
+                        <p data-testid="receipt-allocation-total" className="ux90-sr-hint is-ok">
+                          Dipakai: {formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated)}
+                        </p>
+                      )}
+                      {previewCalc && previewCalc.customerCredit > 0 && (
+                        <p data-testid="receipt-customer-credit-remainder" className="ux90-sr-hint is-ok is-strong">
+                          Sisa menjadi saldo pelanggan: {formatRupiah(previewCalc.customerCredit)}
+                        </p>
+                      )}
+                      {previewCalc && previewCalc.allocationExceedsOutstanding && (
+                        <p data-testid="receipt-allocation-over-hint" className="ux90-sr-hint is-err">
+                          Melebihi sisa tagihan. Turunkan nominal atau alokasi.
+                        </p>
+                      )}
+
                       {canPostAccounting && selectedInvoice && (
-                        <div style={{ marginTop: 12 }} data-testid="receipt-use-credit">
-                          {creditOfferErr && <p data-testid="credit-load-error" style={{ color: "#b91c1c", fontSize: 12 }}>{String(creditOfferErr)}</p>}
+                        <div className="ux90-sr-credit" data-testid="receipt-use-credit">
+                          {creditOfferErr && <p data-testid="credit-load-error" className="ux90-sr-hint is-err">{String(creditOfferErr)}</p>}
                           {creditOffer?.blocked_reason && (
-                            <p data-testid="credit-blocked-reason" style={{ fontSize: 12, color: "#92400e" }}>{creditOffer.blocked_reason}</p>
+                            <p data-testid="credit-blocked-reason" className="ux90-sr-hint is-warn">{creditOffer.blocked_reason}</p>
                           )}
                           {creditOffer?.loaded && Number(creditOffer.available) > 0 && (
                             <button
                               type="button"
                               data-testid="btn-gunakan-saldo"
+                              className="ux90-sr-credit-btn"
                               onClick={() => {
                                 setCreditPanelOpen(true);
                                 const first = creditOffer.sources?.[0];
                                 setCreditSourceId(first?.receipt_id || "");
                                 setCreditUseAmount(String(Math.min(Number(first?.available) || 0, Number(selectedInvoice.outstanding_amount) || 0)));
                               }}
-                              style={{ border: "none", background: "#047857", color: "#fff", borderRadius: 6, padding: "6px 10px", fontSize: 12 }}
                             >
                               Gunakan Saldo Customer
                             </button>
                           )}
                           {creditPanelOpen && creditOffer?.loaded && (
-                            <div data-testid="credit-use-panel" style={{ marginTop: 8, padding: 10, border: "1px solid #99f6e4", borderRadius: 8, background: "#fff" }}>
-                              <div style={{ fontSize: 12, marginBottom: 6 }}>Saldo tersedia: {formatRupiah(creditOffer.available)}</div>
-                              <div style={{ fontSize: 12, marginBottom: 6 }}>Faktur tujuan: {selectedInvoice.invoice_number}</div>
-                              <select data-testid="select-credit-source" value={creditSourceId} onChange={(e) => setCreditSourceId(e.target.value)} style={{ width: "100%", marginBottom: 6 }}>
+                            <div data-testid="credit-use-panel" className="ux90-sr-credit-panel">
+                              <div>Saldo tersedia: {formatRupiah(creditOffer.available)}</div>
+                              <div>Faktur tujuan: {selectedInvoice.invoice_number}</div>
+                              <select data-testid="select-credit-source" value={creditSourceId} onChange={(e) => setCreditSourceId(e.target.value)}>
                                 {(creditOffer.sources || []).map((row) => (
                                   <option key={row.receipt_id} value={row.receipt_id}>
                                     {row.receipt_number} · {formatRupiah(row.available)}
                                   </option>
                                 ))}
                               </select>
-                              <input data-testid="input-credit-use-amount" type="number" value={creditUseAmount} onChange={(e) => setCreditUseAmount(e.target.value)} style={{ width: "100%", marginBottom: 6 }} />
-                              <div style={{ fontSize: 12, marginBottom: 6 }}>
+                              <input data-testid="input-credit-use-amount" type="number" value={creditUseAmount} onChange={(e) => setCreditUseAmount(e.target.value)} />
+                              <div>
                                 Sisa faktur: {formatRupiah(Math.max(0, Number(selectedInvoice.outstanding_amount || 0) - Number(creditUseAmount || 0)))}
                               </div>
-                              <button type="button" data-testid="btn-confirm-gunakan-saldo" disabled={creditBusy} onClick={handleApplyCredit} style={{ border: "none", background: "#047857", color: "#fff", borderRadius: 6, padding: "6px 10px" }}>
+                              <button type="button" data-testid="btn-confirm-gunakan-saldo" disabled={creditBusy} onClick={handleApplyCredit} className="ux90-sr-credit-btn">
                                 {creditBusy ? "Memakai saldo..." : "Konfirmasi pakai saldo"}
                               </button>
-                              {creditMsg && <p data-testid="credit-use-result" style={{ fontSize: 12 }}>{creditMsg}</p>}
+                              {creditMsg && <p data-testid="credit-use-result">{creditMsg}</p>}
                             </div>
                           )}
                         </div>
                       )}
 
                       {previewCalc && previewCalc.amount > 0 && !previewCalc.allocationExceedsOutstanding && !previewCalc.allocationExceedsReceived && (
-                        <div
-                          className="ux90-after-pay"
-                          data-testid="receipt-after-payment-summary"
-                          style={{ marginTop: 12 }}
-                        >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-                            <div>
-                              <div style={{ fontSize: 11 }}>Sisa Tagihan Setelah Pembayaran</div>
-                              <div style={{ fontSize: 15, fontWeight: 700 }} data-testid="receipt-new-outstanding">
-                                {formatRupiah(previewCalc.newOutstanding)}
-                              </div>
-                              <div style={{ fontSize: 12, marginTop: 2 }}>
-                                {previewCalc.newState === "LUNAS" ? "LUNAS (100% Terbayar)" : "Pembayaran parsial (DP)"}
-                              </div>
+                        <div className="ux90-after-pay" data-testid="receipt-after-payment-summary">
+                          <div>
+                            <div className="ux90-sr-mini">Sisa Tagihan Setelah Pembayaran</div>
+                            <div className="ux90-sr-mini-strong" data-testid="receipt-new-outstanding">
+                              {formatRupiah(previewCalc.newOutstanding)}
                             </div>
-                            <div style={{ textAlign: "right" }}>
-                              <div style={{ fontSize: 11 }}>Total Terbayar</div>
-                              <div style={{ fontSize: 13, fontWeight: 700 }} data-testid="receipt-new-paid">{formatRupiah(previewCalc.newPaid)}</div>
-                              {previewCalc.newState === "LUNAS" ? (
-                                <span className="ux90-badge-lunas" data-testid="receipt-lunas-badge">Lunas</span>
-                              ) : null}
+                            <div className="ux90-sr-hint">
+                              {previewCalc.newState === "LUNAS" ? "LUNAS (100% Terbayar)" : "Pembayaran parsial (DP)"}
                             </div>
+                          </div>
+                          <div className="is-right">
+                            <div className="ux90-sr-mini">Total Terbayar</div>
+                            <div className="ux90-sr-mini-strong" data-testid="receipt-new-paid">{formatRupiah(previewCalc.newPaid)}</div>
+                            {previewCalc.newState === "LUNAS" ? (
+                              <span className="ux90-badge-lunas" data-testid="receipt-lunas-badge">Lunas</span>
+                            ) : null}
                           </div>
                         </div>
                       )}
-                    </FormSection>
 
-                    <div className="ux90-sr-bottom" data-testid="receipt-proof-notes-row">
-                      <div data-testid="receipt-payment-proof-field">
-                        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                          Bukti Pembayaran *
-                        </label>
-                        <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#64748b" }}>
-                          JPG, JPEG, PNG, atau PDF (maks. 6MB).
-                        </p>
-                        {proofFile ? (
-                          <div className="ux90-proof-drop receipt-proof-row" data-testid="receipt-proof-compact-row">
-                            <div className="receipt-proof-thumb" aria-hidden="true">
-                              {proofThumbUrl ? (
-                                <img src={proofThumbUrl} alt="" data-testid="receipt-proof-thumb-img" />
-                              ) : (
-                                <FileText size={22} data-testid="receipt-proof-thumb-pdf" />
-                              )}
-                            </div>
-                            <div className="receipt-proof-meta" style={{ flex: 1, minWidth: 0 }}>
-                              <span className="receipt-proof-name" data-testid="receipt-proof-filename" title={proofFile.name}>
-                                {proofFile.name}
-                              </span>
-                            </div>
-                            <div className="receipt-proof-actions" style={{ display: "flex", gap: 6 }}>
-                              <label className={"ghost sm btn-file" + (createBusy ? " disabled" : "")} data-testid="receipt-proof-upload-label" style={{ cursor: createBusy ? "not-allowed" : "pointer", opacity: createBusy ? 0.6 : 1, margin: 0 }}>
-                                <input type="file" accept={RECEIPT_PROOF_ACCEPT} disabled={createBusy} onChange={handleProofFileChange} data-testid="input-receipt-payment-proof" style={{ display: "none" }} />
-                                Ganti
-                              </label>
-                              <button type="button" className="ghost sm" data-testid="btn-clear-receipt-proof" disabled={createBusy} onClick={() => { setProofFile(null); setProofErr(""); }}>
-                                Hapus
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="ux90-proof-drop receipt-proof-row" data-testid="receipt-proof-empty-row">
-                            <div className="receipt-proof-thumb" aria-hidden="true"><FileText size={22} /></div>
-                            <div className="receipt-proof-meta" style={{ flex: 1 }}>
-                              <span className="receipt-proof-name" style={{ fontWeight: 500, color: "#64748b" }}>Belum ada file — seret atau pilih</span>
-                            </div>
-                            <div className="receipt-proof-actions">
-                              <label
-                                className={"primary btn-file" + (createBusy ? " disabled" : "")}
-                                data-testid="receipt-proof-upload-label"
-                                style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: createBusy ? "not-allowed" : "pointer", opacity: createBusy ? 0.6 : 1, margin: 0 }}
-                              >
-                                <input type="file" accept={RECEIPT_PROOF_ACCEPT} disabled={createBusy} onChange={handleProofFileChange} data-testid="input-receipt-payment-proof" style={{ display: "none" }} />
-                                Pilih File
-                              </label>
-                            </div>
-                          </div>
-                        )}
-                        {proofErr && (
-                          <div className="error" data-testid="receipt-proof-error" style={{ marginTop: 8, fontSize: 12, color: "#b91c1c" }}>
-                            {proofErr}
-                          </div>
-                        )}
+                    </div>
+
+                    <div className="ux90-sr-pane-panel ux90-sr-pane-info" data-pane="info">
+                      <div className="ux90-sr-pane-title">
+                        <h3>Info lainnya</h3>
                       </div>
-                      <div>
-                        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                          Catatan
-                        </label>
-                        <textarea
-                          className="form-input"
-                          data-testid="input-receipt-notes"
-                          placeholder="Catatan pembayaran…"
-                          value={receiptNotes}
-                          onChange={(e) => setReceiptNotes(e.target.value)}
-                          disabled={createBusy}
-                          rows={4}
-                          style={{ width: "100%", fontSize: 13, minHeight: 88, resize: "vertical" }}
-                        />
-                        <div style={{ marginTop: 8, fontSize: 12, color: "#64748b" }} data-testid="receipt-allocation-side-amount">
-                          Alokasi: {previewCalc ? formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated) : "Rp 0"}
+                      <div className="ux90-sr-info-grid" data-testid="receipt-proof-notes-row">
+                        <div className="ux90-sr-field">
+                          <span className="ux90-sr-hdr-label">Metode Bayar</span>
+                          <div className="ux90-sr-hdr-control">
+                            <input className="form-input" readOnly value="Transfer / Tunai" data-testid="receipt-method-display" />
+                          </div>
+                        </div>
+                        <div className="ux90-sr-field ux90-sr-field-span" data-testid="receipt-payment-proof-field">
+                          <span className="ux90-sr-hdr-label">Bukti Pembayaran <span className="ux90-req">*</span></span>
+                          <div className="ux90-sr-hdr-control">
+                            <p className="ux90-sr-hint">JPG, JPEG, PNG, atau PDF (maks. 6MB).</p>
+                            {proofFile ? (
+                              <div className="ux90-proof-drop receipt-proof-row" data-testid="receipt-proof-compact-row">
+                                <div className="receipt-proof-thumb" aria-hidden="true">
+                                  {proofThumbUrl ? (
+                                    <img src={proofThumbUrl} alt="" data-testid="receipt-proof-thumb-img" />
+                                  ) : (
+                                    <FileText size={22} data-testid="receipt-proof-thumb-pdf" />
+                                  )}
+                                </div>
+                                <div className="receipt-proof-meta">
+                                  <span className="receipt-proof-name" data-testid="receipt-proof-filename" title={proofFile.name}>
+                                    {proofFile.name}
+                                  </span>
+                                </div>
+                                <div className="receipt-proof-actions">
+                                  <label className={"ghost sm btn-file" + (createBusy ? " disabled" : "")} data-testid="receipt-proof-upload-label">
+                                    <input type="file" accept={RECEIPT_PROOF_ACCEPT} disabled={createBusy} onChange={handleProofFileChange} data-testid="input-receipt-payment-proof" style={{ display: "none" }} />
+                                    Ganti
+                                  </label>
+                                  <button type="button" className="ghost sm" data-testid="btn-clear-receipt-proof" disabled={createBusy} onClick={() => { setProofFile(null); setProofErr(""); }}>
+                                    Hapus
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="ux90-proof-drop receipt-proof-row" data-testid="receipt-proof-empty-row">
+                                <div className="receipt-proof-thumb" aria-hidden="true"><FileText size={22} /></div>
+                                <div className="receipt-proof-meta">
+                                  <span className="receipt-proof-name is-muted">Belum ada file — seret atau pilih</span>
+                                </div>
+                                <div className="receipt-proof-actions">
+                                  <label
+                                    className={"primary btn-file" + (createBusy ? " disabled" : "")}
+                                    data-testid="receipt-proof-upload-label"
+                                  >
+                                    <input type="file" accept={RECEIPT_PROOF_ACCEPT} disabled={createBusy} onChange={handleProofFileChange} data-testid="input-receipt-payment-proof" style={{ display: "none" }} />
+                                    Pilih File
+                                  </label>
+                                </div>
+                              </div>
+                            )}
+                            {proofErr && (
+                              <div className="error" data-testid="receipt-proof-error">{proofErr}</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="ux90-sr-field ux90-sr-field-span">
+                          <span className="ux90-sr-hdr-label">Keterangan</span>
+                          <div className="ux90-sr-hdr-control">
+                            <textarea
+                              className="form-input"
+                              data-testid="input-receipt-notes"
+                              placeholder="Catatan pembayaran…"
+                              value={receiptNotes}
+                              onChange={(e) => setReceiptNotes(e.target.value)}
+                              disabled={createBusy}
+                              rows={4}
+                            />
+                            <div className="ux90-sr-hint" data-testid="receipt-allocation-side-amount">
+                              Alokasi: {previewCalc ? formatRupiah(previewCalc.allocationExceedsOutstanding || previewCalc.allocationExceedsReceived ? 0 : previewCalc.allocated) : "Rp 0"}
+                            </div>
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
+
+                <div className="ux90-sr-summary-boxes" data-testid="receipt-summary-boxes">
+                  <div className="ux90-sr-sum-box">
+                    <span>Nilai Pembayaran</span>
+                    <strong data-testid="receipt-summary-nilai">{formatRupiah(Number(receiptAmount) || 0)}</strong>
+                  </div>
+                  <div className="ux90-sr-sum-box">
+                    <span>Faktur Dibayar</span>
+                    <strong data-testid="receipt-summary-allocated">
+                      {formatRupiah(previewCalc && !previewCalc.allocationExceedsOutstanding && !previewCalc.allocationExceedsReceived ? previewCalc.allocated : 0)}
+                    </strong>
+                  </div>
+                </div>
               </div>
 
-              <div className="ux90-footer" data-testid="receipt-modal-footer">
+              <div className="ux90-footer ux90-sr-doc-footer" data-testid="receipt-modal-footer">
                 <button
                   type="button"
                   data-testid="btn-cancel-receipt-modal"
