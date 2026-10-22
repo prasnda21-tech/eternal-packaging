@@ -151,28 +151,39 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
   test("required fields stay on the main page and extra fields stay in the summary", async () => {
     await openCreate();
     const main = mainRegion();
-    ["input-po-number", "btn-generate-po", "input-order-date", "input-customer", "btn-repeat-order", "input-customer-phone", "input-address", "input-outlet", "input-estimated-delivery"]
+    ["input-po-number", "btn-generate-po", "input-order-date", "input-customer", "btn-repeat-order", "input-customer-phone", "input-address"]
       .forEach((id) => {
         expect(main.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
       });
-    expect(main.querySelector('[data-testid="input-sales"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ux90-so-vtabs"], .ux90-so-vtabs')).toBeTruthy();
+    expect(container.querySelector('[data-testid="so-tab-items"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="so-tab-info"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="so-tab-ship"]')).toBeTruthy();
     const extra = container.querySelector('[data-testid="so-extra-fields"]');
     expect(extra).toBeTruthy();
-    expect(extra.querySelector('[data-testid="input-sales"]')).toBeNull();
-    ["input-created-by-user", "input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-payment-terms", "input-expedition"]
+    ["input-sales", "input-outlet", "input-created-by-user", "input-estimated-delivery", "input-payment-terms", "input-notes"]
       .forEach((id) => {
         expect(extra.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
-        expect(main.querySelector(`[data-testid="${id}"]`)).toBeNull();
+        expect(container.querySelector('[data-testid="so-main-fields"]').querySelector(`[data-testid="${id}"]`)).toBeNull();
+      });
+    ["input-recipient", "input-delivery-zone", "input-tanggal-pengiriman", "input-expedition", "input-customer-phone", "input-address"]
+      .forEach((id) => {
+        expect(main.querySelector(`[data-testid="${id}"]`)).toBeTruthy();
+        expect(extra.querySelector(`[data-testid="${id}"]`)).toBeNull();
       });
     expect(container.querySelector('[data-testid="so-create-side-panel"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="so-order-summary"]').querySelector('[data-testid="input-notes"]')).toBeTruthy();
-    expect(extra.querySelector('[data-testid="input-customer-phone"]')).toBeNull();
+    expect(extra.querySelector('[data-testid="input-notes"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
     expect(container.querySelector('[data-testid="btn-detail-tambahan"]')).toBeNull();
+    expect(container.querySelector('[data-testid="line-name-0"]')).toBeNull();
+    expect(container.querySelector('[data-testid="line-mode-master-0"]')).toBeNull();
   });
 
   test("outlet and notes stay on the form without a drawer", async () => {
     await openCreate();
+    await act(async () => {
+      container.querySelector('[data-testid="so-tab-info"]').click();
+    });
     const outlet = container.querySelector('[data-testid="input-outlet"]');
     await act(async () => {
       setNativeValue(outlet, "Cabang Tebet");
@@ -261,11 +272,10 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       container.querySelector('[data-testid="btn-submit-sales-order"]').click();
     });
     await tick(0);
-    const extra = container.querySelector('[data-testid="so-extra-fields"]');
-    expect(extra).toBeTruthy();
     expect(container.querySelector('[data-testid="form-error-banner"]').textContent).toContain("Zona Kirim tidak dikenali");
+    expect(container.querySelector('[data-testid="sales-order-form"]').getAttribute("data-form-tab")).toBe("ship");
     expect(document.activeElement).toBe(container.querySelector('[data-testid="input-delivery-zone"]'));
-    expect(extra.querySelector('[data-testid="input-delivery-zone"]').getAttribute("aria-invalid")).toBe("true");
+    expect(container.querySelector('[data-testid="input-delivery-zone"]').getAttribute("aria-invalid")).toBe("true");
     expect(container.querySelector('[data-testid="so-extra-drawer"]')).toBeNull();
   });
 

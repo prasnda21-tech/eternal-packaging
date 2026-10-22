@@ -817,9 +817,12 @@ export default function PenerimaanPenjualan() {
     if (!check.ok) {
       setProofFile(null);
       setProofErr(check.error);
+      setReceiptFormTab("info");
       return;
     }
     setProofFile(f);
+    // Clear proof-related create banner once a valid file is chosen.
+    setCreateErr((prev) => (/bukti/i.test(String(prev || "")) ? "" : prev));
   };
 
   useEffect(() => {
@@ -908,8 +911,10 @@ export default function PenerimaanPenjualan() {
     }
     const proofCheck = validateReceiptProofFile(proofFile);
     if (!proofCheck.ok) {
+      const proofMessage = `${proofCheck.error} Buka tab Info → Bukti Pembayaran.`;
       setProofErr(proofCheck.error);
-      setCreateErr(proofCheck.error);
+      setCreateErr(proofMessage);
+      setReceiptFormTab("info");
       return;
     }
 
@@ -1665,12 +1670,13 @@ export default function PenerimaanPenjualan() {
                       type="button"
                       role="tab"
                       aria-selected={receiptFormTab === "info"}
-                      className={receiptFormTab === "info" ? "is-active" : ""}
+                      className={`${receiptFormTab === "info" ? "is-active" : ""}${proofErr ? " has-error" : ""}`.trim()}
                       data-testid="sr-tab-info"
                       onClick={() => setReceiptFormTab("info")}
                     >
                       <Info size={18} aria-hidden="true" />
                       <span>Info</span>
+                      {proofErr ? <span className="ux90-sr-tab-err" data-testid="sr-tab-info-error-dot" aria-label="Perlu perhatian">!</span> : null}
                     </button>
                   </nav>
 
@@ -1689,6 +1695,7 @@ export default function PenerimaanPenjualan() {
                               <th>Pelanggan</th>
                               <th>No. PO</th>
                               <th className="is-num">Total Faktur</th>
+                              <th className="is-num">Sudah Dibayar</th>
                               <th className="is-num">Terutang</th>
                               <th className="is-num">Bayar</th>
                             </tr>
@@ -1702,6 +1709,9 @@ export default function PenerimaanPenjualan() {
                                 <td data-testid="summary-customer">{selectedInvoice.customer || "—"}</td>
                                 <td data-testid="summary-po-number">{selectedInvoice.po_number || "—"}</td>
                                 <td className="is-num" data-testid="summary-grand-total">{formatRupiah(selectedInvoice.grand_total || 0)}</td>
+                                <td className="is-num" data-testid="summary-paid-total">
+                                  {formatRupiah(selectedInvoice.paid_total || 0)}
+                                </td>
                                 <td className="is-num is-due" data-testid="summary-outstanding-amount">
                                   {formatRupiah(selectedInvoice.outstanding_amount || 0)}
                                 </td>
@@ -1722,13 +1732,12 @@ export default function PenerimaanPenjualan() {
                               </tr>
                             ) : (
                               <tr>
-                                <td colSpan={6} className="is-empty">Belum ada data — pilih faktur di atas</td>
+                                <td colSpan={7} className="is-empty">Belum ada data — pilih faktur di atas</td>
                               </tr>
                             )}
                           </tbody>
                         </table>
                         <div hidden data-testid="receipt-money-triad" aria-hidden="true" />
-                        <div hidden data-testid="summary-paid-total">{formatRupiah(selectedInvoice?.paid_total || 0)}</div>
                       </div>
 
                       {previewCalc && previewCalc.amount > 0 && (
