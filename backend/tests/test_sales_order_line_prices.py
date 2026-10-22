@@ -34,6 +34,24 @@ def _user(role):
     return {"email": f"{role}@eternalpackaging.com", "name": role, "role": role}
 
 
+async def _seed_master(db, *, accurate_item_id: str, name: str, unit: str = "pcs") -> dict:
+    """Preview-only Master Produk row so P1 create PO resolver can resolve the line."""
+    mid = f"mst-{uuid.uuid4().hex[:10]}"
+    doc = {
+        "id": mid,
+        "master_item_id": mid,
+        "accurate_item_id": accurate_item_id,
+        "item_code": f"SKU-{uuid.uuid4().hex[:6].upper()}",
+        "item_name": name,
+        "name": name,
+        "unit": unit,
+        "item_type": "INVENTORY",
+        "is_active": True,
+    }
+    await db.master_items.insert_one(dict(doc))
+    return doc
+
+
 async def _seed_price(db, aid, unit_price, unit="pcs", hpp=111):
     from services.customer_pricing import GROUPS, VERSIONS
     version_id = str(uuid.uuid4())
@@ -103,6 +121,8 @@ async def test_order_snapshots_selling_price_and_partial_invoice_keeps_it():
     import server
     cup = f"aid-cup-{uuid.uuid4().hex[:8]}"
     lid = f"aid-lid-{uuid.uuid4().hex[:8]}"
+    await _seed_master(server.db, accurate_item_id=cup, name="Cup PET")
+    await _seed_master(server.db, accurate_item_id=lid, name="Lid")
     cup_version = await _seed_price(server.db, cup, 700)
     lid_version = await _seed_price(server.db, lid, 150)
     po_number = f"TEST-PRICE-{uuid.uuid4().hex[:6].upper()}"
@@ -186,6 +206,10 @@ async def test_order_snapshots_selling_price_and_partial_invoice_keeps_it():
 async def test_same_item_lines_invoice_their_own_price_and_blank_is_not_zero():
     import server
     aid = f"aid-same-{uuid.uuid4().hex[:8]}"
+    await _seed_master(server.db, accurate_item_id=aid, name="Cup PET")
+    blank_master = await _seed_master(
+        server.db, accurate_item_id=f"aid-blank-{uuid.uuid4().hex[:8]}", name="Tanpa harga"
+    )
     await _seed_price(server.db, aid, 700)
     po_number = f"TEST-SAME-{uuid.uuid4().hex[:6].upper()}"
     app.dependency_overrides[current_user] = lambda: _user("admin")
@@ -198,7 +222,14 @@ async def test_same_item_lines_invoice_their_own_price_and_blank_is_not_zero():
                 "line_items": [
                     {"name": "Cup PET", "quantity": 10, "unit": "pcs", "accurate_item_id": aid, "unit_price": 700, "price_source": "manual"},
                     {"name": "Cup PET", "quantity": 10, "unit": "pcs", "accurate_item_id": aid, "unit_price": 900, "price_source": "manual"},
-                    {"name": "Tanpa harga", "quantity": 2, "unit": "pcs", "unit_price": ""},
+                    {
+                        "name": "Tanpa harga",
+                        "quantity": 2,
+                        "unit": "pcs",
+                        "unit_price": "",
+                        "master_item_id": blank_master["id"],
+                        "accurate_item_id": blank_master["accurate_item_id"],
+                    },
                 ],
             })
             assert created.status_code == 200, created.text

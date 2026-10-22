@@ -169,6 +169,20 @@ async def test_create_and_reassign_use_explicit_mapping():
             {"label": ACCURATE_EUIS, "user_id": EUIS_ID},
         ],
     })
+    # P1: create PO requires a resolvable Master Produk on every goods line.
+    mid = f"mst-map-{uuid.uuid4().hex[:8]}"
+    aid = f"aid-map-{uuid.uuid4().hex[:8]}"
+    await db.master_items.insert_one({
+        "id": mid,
+        "master_item_id": mid,
+        "accurate_item_id": aid,
+        "item_code": f"SKU-MAP-{uuid.uuid4().hex[:6].upper()}",
+        "item_name": "Cup",
+        "name": "Cup",
+        "unit": "pcs",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    })
 
     app.dependency_overrides[current_user] = lambda: _admin()
     transport = ASGITransport(app=app)
@@ -178,7 +192,14 @@ async def test_create_and_reassign_use_explicit_mapping():
         "order_date": "2026-09-01",
         "customer": "PT Mapping Test",
         "sales": ACCURATE_AYUB,
-        "line_items": [{"name": "Cup", "quantity": 100, "unit": "pcs", "production_process": "print"}],
+        "line_items": [{
+            "name": "Cup",
+            "quantity": 100,
+            "unit": "pcs",
+            "production_process": "print",
+            "master_item_id": mid,
+            "accurate_item_id": aid,
+        }],
         "estimated_delivery": "2026-09-04",
         "deadline": "2026-09-04",
     }
