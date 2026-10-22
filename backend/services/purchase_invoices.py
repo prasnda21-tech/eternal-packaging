@@ -38,6 +38,12 @@ from services.purchase_common import (
     qty_le,
     with_active_filter,
 )
+from services.purchase_branch import (
+    invoice_location_public,
+    resolve_invoice_location_from_gr,
+    resolve_invoice_location_from_po,
+    strip_client_invoice_location,
+)
 from services.purchase_orders import get_purchase_order
 
 COLLECTION = "purchase_invoices"
@@ -95,6 +101,8 @@ async def attach_payment_fields(db, inv: dict) -> dict:
     from services.purchase_return_finance import active_return_credit_breakdown
 
     out = dict(inv)
+    # LOC-B: normalize location snapshot for read model (legacy nulls stay null).
+    out.update(invoice_location_public(out))
     paid = await _paid_total(db, out["id"])
     applied = await _advance_applied_total(db, out["id"])
     credit = await active_return_credit_breakdown(db, out["id"])
@@ -250,6 +258,7 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
             "unit_price": unit_price,
             "line_subtotal": line_subtotal(qty, unit_price),
         })
+    location = await resolve_invoice_location_from_po(db, po)
     return {
         "purchase_order_id": po["id"],
         "po_number": po.get("po_number"),
@@ -262,6 +271,7 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
         "receiving_progress": po.get("receiving_progress") or {},
         "receiving_status": po.get("receiving_status"),
         "invoice_status": po.get("invoice_status"),
+        **location,
     }
 
 
@@ -308,6 +318,8 @@ async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
             "invoice_qty": eligible,
             "line_subtotal": line_subtotal(eligible, unit_price),
         })
+    po_doc = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    location = await resolve_invoice_location_from_gr(db, receipt, po_doc)
     return {
         "invoice_source": "receipt",
         "receipt_id": receipt["id"],
@@ -322,10 +334,12 @@ async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
         "lines": lines,
         "invoice_progress": po_preview.get("invoice_progress") or {},
         "receiving_progress": po_preview.get("receiving_progress") or {},
+        **location,
     }
 
 
 async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> dict:
+    payload = strip_client_invoice_location(payload)
     invoice_source = _invoice_source_of(payload)
     precedes_goods_receipt = bool(payload.get("precedes_goods_receipt"))
     receipt_id = str(payload.get("receipt_id") or payload.get("goods_receipt_id") or "").strip() or None
@@ -479,6 +493,10 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             "Tanggal faktur",
         )
         term_days, due_date = _resolve_create_terms(payload, invoice_date)
+        if invoice_source == "receipt":
+            location = await resolve_invoice_location_from_gr(db, receipt_doc or {}, po_check)
+        else:
+            location = await resolve_invoice_location_from_po(db, po_check)
         existing_count = await db[COLLECTION].count_documents({"purchase_order_id": preview["purchase_order_id"]})
         doc = {
             "id": str(uuid.uuid4()),
@@ -499,6 +517,7 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             "lines": calculated,
             "subtotal": total,
             "grand_total": total,
+            **location,
             **stamp_create(user),
         }
         if idem:
