@@ -1040,7 +1040,10 @@ async def require_r2_delivery_stock_ready(
     branch_id: Optional[str] = None,
     lines: Optional[List[dict]] = None,
 ) -> Tuple[str, str, List[dict]]:
-    """Resolve R2 delivery location + master identity; never block on book qty.
+    """Resolve delivery warehouse + master identity; read-only book qty warnings.
+
+    Used by delivery-stock-preflight for R2 authority **or** warehouse
+    standalone (R2 OFF). Never posts ledger/balance. Never blocks on book qty.
 
     Warehouse/master identity must be valid (no guessing). Missing balance is
     unreconciled baseline — delivery may proceed; warnings describe uncertainty.
@@ -1051,7 +1054,7 @@ async def require_r2_delivery_stock_ready(
     wh_id = str(warehouse_id or "").strip()
     if not wh_id:
         raise PhysicalStockValidationError(
-            "Pilih gudang sebelum konfirmasi terkirim saat stok R2 aktif"
+            "Pilih gudang sebelum konfirmasi terkirim saat stok gudang aktif"
         )
     warehouse = await _require_warehouse_any(db, wh_id)
     br_id = str(branch_id or warehouse.get("branch_id") or "").strip()
@@ -1093,7 +1096,7 @@ async def require_r2_delivery_stock_ready(
             ))
     if not seen:
         raise PhysicalStockValidationError(
-            "Baris pengiriman tidak dapat dipetakan ke master item untuk stok R2"
+            "Baris pengiriman tidak dapat dipetakan ke master item untuk stok gudang"
         )
     return str(branch["id"]), str(warehouse["id"]), warnings
 

@@ -6557,26 +6557,39 @@ async def delivery_stock_preflight(
     payload: DeliveryStockPreflightPayload,
     user=Depends(current_user),
 ):
-    """Read-only R2 shortage preflight before Konfirmasi Terkirim.
+    """Read-only warehouse shortage preflight before Konfirmasi Terkirim.
 
     Never posts ledger/balance movements. Shortage warns; identity errors still 400.
-    R2 OFF returns r2_authority_active=false without fabricating warehouse warnings.
+
+    Active when R2 ON **or** warehouse_stock_standalone ON (R2 OFF).
+    When both OFF: r2_authority_active=false, empty warnings (N/A) — no fabricated
+    warehouse shortage. ``blocks_delivery`` is always false on this path.
     """
     await _require_perm(user, "delivery.update")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
     r2_on = await _is_r2_authority_active(db)
+    standalone_on = False
     if not r2_on:
-        return {
-            "r2_authority_active": False,
-            "blocks_delivery": False,
-            "stock_warnings": [],
-            "warehouse_id": None,
-            "branch_id": None,
-            "message": "Mode R2 nonaktif — preflight kekurangan gudang tidak berlaku.",
-        }
+        standalone_on = await is_warehouse_stock_standalone_active(db)
+        if not standalone_on:
+            return {
+                "r2_authority_active": False,
+                "warehouse_stock_standalone_active": False,
+                "blocks_delivery": False,
+                "stock_warnings": [],
+                "has_shortage_warning": False,
+                "warehouse_id": None,
+                "branch_id": None,
+                "message": (
+                    "Mode R2 dan warehouse stock standalone nonaktif — "
+                    "preflight kekurangan gudang tidak berlaku."
+                ),
+            }
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
@@ -6593,15 +6606,18 @@ async def delivery_stock_preflight(
         raise HTTPException(400, plan["error"])
     if isinstance(plan, dict) and plan.get("skip"):
         return {
-            "r2_authority_active": True,
+            "r2_authority_active": bool(r2_on),
+            "warehouse_stock_standalone_active": bool(standalone_on),
             "blocks_delivery": False,
             "stock_warnings": [],
+            "has_shortage_warning": False,
             "warehouse_id": str(payload.warehouse_id or "").strip() or None,
             "branch_id": str(payload.branch_id or "").strip() or None,
             "message": "Surat Jalan sudah terkirim — preflight dilewati.",
         }
     ready_lines = (plan or {}).get("lines") if isinstance(plan, dict) else None
     try:
+        # Shared read-only balance check (R2 or Standalone). No ledger writes.
         branch_id, warehouse_id, warnings = await require_r2_delivery_stock_ready(
             db,
             order,
@@ -6629,7 +6645,8 @@ async def delivery_stock_preflight(
         warnings, warehouse=warehouse, item_names=item_names,
     )
     return {
-        "r2_authority_active": True,
+        "r2_authority_active": bool(r2_on),
+        "warehouse_stock_standalone_active": bool(standalone_on),
         "blocks_delivery": False,
         "stock_warnings": enriched,
         "has_shortage_warning": any(w.get("has_shortage") for w in enriched),

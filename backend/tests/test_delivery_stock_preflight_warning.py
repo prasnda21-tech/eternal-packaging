@@ -41,6 +41,9 @@ from services.physical_stock import (  # noqa: E402
     require_r2_delivery_stock_ready,
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
+from services.warehouse_stock_standalone import (  # noqa: E402
+    set_warehouse_stock_standalone_enabled,
+)
 from server import current_user  # noqa: E402
 
 pytestmark = pytest.mark.anyio
@@ -275,6 +278,7 @@ async def test_preflight_no_warning_when_sufficient(seeded):
 
 
 async def test_preflight_r2_off_compatible(seeded):
+    """Standalone OFF + R2 OFF → N/A (no fabricated warehouse warnings)."""
     db, fx = seeded
     await set_r2_authority_active(db, active=False)
     transport = httpx.ASGITransport(app=app)
@@ -290,7 +294,81 @@ async def test_preflight_r2_off_compatible(seeded):
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["r2_authority_active"] is False
+        assert body.get("warehouse_stock_standalone_active") is False
         assert body["stock_warnings"] == []
+        assert body.get("has_shortage_warning") is False
+        assert "tidak berlaku" in (body.get("message") or "")
+
+
+async def test_preflight_standalone_on_r2_off_shortage(seeded):
+    """Standalone ON + R2 OFF + book 11 vs need 15 → shortage warning, no ledger write."""
+    db, fx = seeded
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True)
+    ledger_before = await db[LEDGER_COLLECTION].count_documents({})
+    bal_before = await db["physical_stock_balances"].count_documents({})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        login = await client.post("/api/auth/login", json={"email": EMAIL, "password": PASSWORD})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        res = await client.post(
+            f"/api/orders/{fx['po_id']}/delivery-stock-preflight",
+            headers=headers,
+            json={"shipment_id": fx["sj_id"], "warehouse_id": fx["wh_a"]},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["r2_authority_active"] is False
+        assert body["warehouse_stock_standalone_active"] is True
+        assert body["blocks_delivery"] is False
+        assert body["has_shortage_warning"] is True
+        warn = body["stock_warnings"][0]
+        assert warn["stok_tercatat"] == 11
+        assert warn["kebutuhan"] == 15
+        assert warn["kekurangan"] == 4
+        assert warn["blocks_delivery"] is False
+        assert warn.get("stok_tercatat_uncertain") is not True
+    assert await db[LEDGER_COLLECTION].count_documents({}) == ledger_before
+    assert await db["physical_stock_balances"].count_documents({}) == bal_before
+
+
+async def test_preflight_standalone_missing_balance_unreconciled(seeded):
+    """Standalone ON + R2 OFF + no balance row → unreconciled, not fake reconciled zero."""
+    db, fx = seeded
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True)
+    # Use warehouse B after wiping its balance so the item has no row there.
+    await db["physical_stock_balances"].delete_many(
+        {"master_item_id": fx["item"], "warehouse_id": fx["wh_b"]},
+    )
+    await db[LEDGER_COLLECTION].delete_many(
+        {"master_item_id": fx["item"], "warehouse_id": fx["wh_b"]},
+    )
+    ledger_before = await db[LEDGER_COLLECTION].count_documents({})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        login = await client.post("/api/auth/login", json={"email": EMAIL, "password": PASSWORD})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        res = await client.post(
+            f"/api/orders/{fx['po_id']}/delivery-stock-preflight",
+            headers=headers,
+            json={"shipment_id": fx["sj_id"], "warehouse_id": fx["wh_b"]},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["warehouse_stock_standalone_active"] is True
+        assert body["r2_authority_active"] is False
+        assert body["blocks_delivery"] is False
+        assert body["has_shortage_warning"] is True
+        warn = body["stock_warnings"][0]
+        assert warn["baseline_status"] == "unreconciled"
+        assert warn.get("stok_tercatat_uncertain") is True
+        assert warn["kebutuhan"] == 15
+        # Display may show 0 book but must not claim reconciled certainty.
+        assert warn["blocks_delivery"] is False
+    assert await db[LEDGER_COLLECTION].count_documents({}) == ledger_before
 
 
 async def test_shortage_does_not_block_and_replay_is_idempotent(seeded):
