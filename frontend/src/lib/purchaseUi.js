@@ -267,6 +267,40 @@ export function dueDateLabel(dueDate) {
   return String(dueDate).slice(0, 10);
 }
 
+const PURCHASE_MONTHS_ID = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+
+/** Display-only Indonesian calendar date: 2026-10-22 → "22 Okt 2026". */
+export function formatPurchaseDateId(value) {
+  const ymd = String(value || "").trim().slice(0, 10);
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return value ? String(value) : "—";
+  const day = Number(m[3]);
+  const month = Number(m[2]);
+  if (!Number.isFinite(day) || month < 1 || month > 12) return ymd;
+  return `${day} ${PURCHASE_MONTHS_ID[month - 1]} ${m[1]}`;
+}
+
+/**
+ * Umur Faktur in whole calendar days from invoice_date to today (Asia/Jakarta).
+ * Minimum 0. Does not use due_date.
+ */
+export function invoiceAgeDays(invoiceDate, today = todayYmd()) {
+  const inv = String(invoiceDate || "").trim().slice(0, 10);
+  const tod = String(today || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(inv) || !/^\d{4}-\d{2}-\d{2}$/.test(tod)) return null;
+  const [y1, m1, d1] = inv.split("-").map(Number);
+  const [y2, m2, d2] = tod.split("-").map(Number);
+  const a = Date.UTC(y1, m1 - 1, d1);
+  const b = Date.UTC(y2, m2 - 1, d2);
+  return Math.max(0, Math.floor((b - a) / 86400000));
+}
+
+export function invoiceAgeLabel(invoiceDate, today = todayYmd()) {
+  const days = invoiceAgeDays(invoiceDate, today);
+  if (days === null) return "—";
+  return `${days} hari`;
+}
+
 export function canEditPurchaseInvoicePaymentTerms(invoice, hasEditPerm) {
   if (!hasEditPerm || !invoice) return false;
   if (invoice.cancelled === true) return false;
