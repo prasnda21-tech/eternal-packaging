@@ -23,6 +23,7 @@ import {
   capturePoOpenFromList,
   poNavStateFromList,
 } from "../lib/poListReturn";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const PAGE_SIZE = 50;
 
@@ -225,8 +226,11 @@ export default function KepalaProduksiKpiDetailPage() {
                     </span>
                   </td>
                   <td>
-                    <div className="mono">{t.order_number}</div>
-                    <div className="muted small">{t.customer_name || "—"}</div>
+                    <div className="kp-po-cell">
+                      <div className="mono kp-po-number">{t.order_number}</div>
+                      <PoIdentityBadges order={t} testIdPrefix={`kp-kpi-po-${t.order_number}`} omitUrgent />
+                      <div className="muted small">{t.customer_name || "—"}</div>
+                    </div>
                   </td>
                   <td title={t.item || ""}>{t.item || "—"}{t.unit ? ` (${t.unit})` : ""}</td>
                   <td className="mono">{formatDeliveryDate(t)}</td>

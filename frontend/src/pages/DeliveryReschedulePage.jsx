@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { formatDate } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import RescheduleDeliveryModal from "../components/RescheduleDeliveryModal";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const EMPTY = { po: "", customer: "", status: "aktif" };
 
@@ -106,7 +107,10 @@ export default function DeliveryReschedulePage() {
             {visible.map((r) => (
               <tr key={r.reschedule_id} data-testid={`dr-row-${r.reschedule_id}`}>
                 <td className="mono">{r.new_date ? formatDate(r.new_date, { dateOnly: true }) : "—"}</td>
-                <td className="mono">{r.order_id ? <Link to={`/po/${r.order_id}`}>{r.order_number}</Link> : r.order_number}</td>
+                <td className="mono">
+                  {r.order_id ? <Link to={`/po/${r.order_id}`}>{r.order_number}</Link> : r.order_number}{" "}
+                  <PoIdentityBadges order={r} testIdPrefix={`dr-po-${r.order_number}`} />
+                </td>
                 <td>{r.customer_name || "-"}</td>
                 <td className="mono">{r.previous_date ? formatDate(r.previous_date, { dateOnly: true }) : "—"}</td>
                 <td>{r.reason || "—"}</td>

@@ -90,6 +90,7 @@ def apply_priority_fields(row: dict, order: dict, li: dict, *, produced: int, pr
     date_key = effective_delivery_date_key(order)
     dd_status = order.get("delivery_deadline_status") or "unknown"
     schedule_eligible = (not hold) and group2_complete(order) and not fully
+    buffer_stock = bool(order.get("buffer_stock"))
 
     row["qty_order_current"] = printable
     row["qty_produced"] = max(0, produced)
@@ -109,6 +110,7 @@ def apply_priority_fields(row: dict, order: dict, li: dict, *, produced: int, pr
     row["explicit_urgent"] = urgent
     row["urgent"] = urgent
     row["priority"] = "urgent" if urgent else (order.get("priority") or "normal")
+    row["buffer_stock"] = buffer_stock
     row["fully_delivered"] = fully
     row["schedule_eligible"] = schedule_eligible
     row["actionable"] = bool(schedule_eligible and unscheduled > 0)
@@ -128,6 +130,9 @@ def classify_row_kpi_flags(row: dict, order: Optional[dict] = None) -> Dict[str,
     OVERDUE  ↔ effective_delivery_date < today_WIB
     DUE TODAY ↔ effective_delivery_date == today_WIB
 
+    Buffer Stock is not a customer SLA — never `terlambat` / OVERDUE customer.
+    Row stays on the board for production progress and scheduling.
+
     Does NOT use the global deadline-status timestamp helper (WIB-midnight overdue).
     Explicit URGENT remains independent and may combine with either flag.
     """
@@ -140,9 +145,14 @@ def classify_row_kpi_flags(row: dict, order: Optional[dict] = None) -> Dict[str,
     fully = bool(row.get("fully_delivered"))
     hold = bool(row.get("authoritative_hold") or row.get("hold"))
     urgent = bool(row.get("explicit_urgent") or row.get("urgent") or row.get("priority") == "urgent")
+    buffer_stock = bool(
+        row.get("buffer_stock")
+        if "buffer_stock" in (row or {})
+        else (order or {}).get("buffer_stock")
+    )
     prod_rem = max(0, _safe_int(row.get("qty_production_remaining")))
     due_today = (not fully) and bool(date_key) and date_key == today
-    overdue = (not fully) and bool(date_key) and date_key < today
+    overdue = (not fully) and bool(date_key) and date_key < today and not buffer_stock
     return {
         "kirim-hari-ini": due_today,
         "terlambat": overdue,

@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { currentSalesMonth, formatSalesDate, formatSalesMoney, salesJakartaDay, salesWibParts } from "../lib/salesPwa";
 import SalesPwaDesignApproval, { salesDesignApprovalPath } from "./SalesPwaDesignApproval";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const VISIT_MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
 const RECEIVABLE_INFO = "Saldo invoice yang masih belum lunas, termasuk periode sebelumnya.";
@@ -95,7 +96,10 @@ function FieldStagePreview({ testKey, title, orders, total, stage, payment, show
             data-testid={`sales-action-${testKey}-${order.id}`}
           >
             <strong>{order.customer}</strong>
-            <span>{order.po_number}</span>
+            <span>
+              {order.po_number}{" "}
+              <PoIdentityBadges order={order} testIdPrefix={`sales-dash-po-${order.po_number || order.id}`} />
+            </span>
             {!sameStageLabel(order.status, title) && order.status ? <small>Status: {order.status}</small> : null}
             {order.tanggal_kirim_overdue ? <small className="is-urgent">Kirim terlambat</small> : null}
             {showApproval ? <SalesPwaDesignApproval order={order} expectMissing /> : null}
@@ -166,7 +170,10 @@ function DesignApprovalQueue({ queue, onRetry }) {
         return (
           <article key={order.id} className="spwa-action-card" data-testid={`sales-design-approval-${order.id}`}>
             <strong>{order.customer}</strong>
-            <span>{order.po_number}</span>
+            <span>
+              {order.po_number}{" "}
+              <PoIdentityBadges order={order} testIdPrefix={`sales-dash-design-${order.po_number || order.id}`} />
+            </span>
             {order.design_need?.design_name ? <small>{order.design_need.design_name}</small> : null}
             {order.design_need?.label ? <small data-testid={`sales-design-need-${order.id}`}>{order.design_need.label}</small> : null}
             <SalesPwaDesignApproval order={order} expectMissing />
@@ -652,7 +659,10 @@ function TodayDeliveries() {
                 <article key={key} className="spwa-ship-card" data-testid={`sales-today-row-${key}`}>
                   <div className="spwa-ship-top">
                     <div>
-                      <Link className="spwa-ship-po" to={`/sales/po/${encodeURIComponent(row.id)}`} data-testid={`sales-today-po-${key}`}>{row.po_number}</Link>
+                      <Link className="spwa-ship-po" to={`/sales/po/${encodeURIComponent(row.id)}`} data-testid={`sales-today-po-${key}`}>
+                        {row.po_number}{" "}
+                        <PoIdentityBadges order={row} testIdPrefix={`sales-today-badges-${key}`} />
+                      </Link>
                       <strong>{row.customer}</strong>
                     </div>
                     <span className="spwa-ship-status" data-testid={`sales-today-status-${key}`}>{row.status_label}</span>

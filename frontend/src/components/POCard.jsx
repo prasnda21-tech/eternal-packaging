@@ -4,6 +4,7 @@ import { STAGES, formatDeadline } from "../lib/constants";
 import { useAuth } from "../lib/auth";
 import { schedulePoHref } from "../lib/workPanel";
 import StageBar from "./StageBar";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 export default function POCard({ order }) {
   const { hasPerm } = useAuth();
@@ -22,12 +23,7 @@ export default function POCard({ order }) {
       <div className="job-top">
         <div>
           <span className="po" data-testid={`order-po-${order.po_number}`}>{order.po_number}</span>
-          <span
-            className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"}
-            data-testid={`order-priority-${order.po_number}`}
-          >
-            {order.priority === "urgent" ? "URGENT" : "NORMAL"}
-          </span>
+          <PoIdentityBadges order={order} testIdPrefix={`order-priority-${order.po_number}`} />
         </div>
         <div>
           <span className="lbl">Tanggal Pengiriman</span>

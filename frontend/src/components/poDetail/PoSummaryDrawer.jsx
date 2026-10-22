@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { STAGES, formatDate } from "../../lib/constants";
 import { isCustomerDesignApproved } from "../../lib/designEvidence";
+import PoIdentityBadges from "../PoIdentityBadges";
 
 /**
  * Cross-stage PO summary. Presentation only — no fetch or write.
@@ -56,7 +57,10 @@ export default function PoSummaryDrawer({
           <dl className="po-summary-dl">
             <div>
               <dt>Nomor PO</dt>
-              <dd className="mono">{order.po_number || "-"}</dd>
+              <dd className="mono">
+                {order.po_number || "-"}{" "}
+                <PoIdentityBadges order={order} testIdPrefix="po-summary-identity" />
+              </dd>
             </div>
             <div>
               <dt>Outlet / cabang</dt>

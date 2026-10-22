@@ -1133,6 +1133,8 @@ def _orders_list_summary_projection() -> dict:
         "status_label": 1,
         "deadline": 1,
         "work_date": 1,
+        "priority": 1,
+        "buffer_stock": 1,
         "cancelled": 1,
         "created_at": 1,
         "design_status": 1,
@@ -4046,6 +4048,7 @@ def _orders_action_center_projection() -> dict:
         "loading_checklist.seal_ok": 1,
         "delivery_deadline_manual": 1,
         "scheduled_delivery_date": 1,
+        "priority": 1,
         "buffer_stock": 1,
         "design_files": _orders_dashboard_file_presence_expr("design_files"),
         "payment_files": _orders_dashboard_file_presence_expr("payment_files"),
@@ -4130,6 +4133,7 @@ def _shape_order_for_action_center_compute(order: dict) -> dict:
         "qty_packed": src.get("qty_packed"),
         "delivery_deadline_manual": src.get("delivery_deadline_manual"),
         "scheduled_delivery_date": src.get("scheduled_delivery_date"),
+        "priority": src.get("priority"),
         "buffer_stock": src.get("buffer_stock"),
         "design_files": _action_center_file_presence(src.get("design_files")),
         "payment_files": _action_center_file_presence(src.get("payment_files")),
@@ -4375,6 +4379,9 @@ def _slim_action(o: dict) -> dict:
         "work_date": o.get("work_date"),
         "current_stage": o.get("current_stage"),
         "total_quantity": o.get("total_quantity"),
+        "priority": o.get("priority") or "normal",
+        "urgent": str(o.get("priority") or "").lower() == "urgent",
+        "buffer_stock": bool(o.get("buffer_stock")),
         "delivery_deadline_effective": o.get("delivery_deadline_effective"),
         "delivery_deadline_status": o.get("delivery_deadline_status"),
         "delivery_deadline_source": o.get("delivery_deadline_source"),
@@ -12146,6 +12153,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "customer_approval.status": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
+    "priority": 1,
     "buffer_stock": 1,
     "delivery_status": 1,
     "_has_design_files": _mongo_array_nonempty_expr("design_files"),
@@ -12292,6 +12300,9 @@ def _apply_sales_order_header_filters(
                 continue
         elif preset not in ("", "all"):
             # Legacy preset param kept for backward compatibility only.
+            # Buffer Stock is not customer-delivery overdue.
+            if preset == "overdue" and bool(order.get("buffer_stock")):
+                continue
             active = _sales_order_is_active_for_overdue(order) if preset == "overdue" else None
             if not match_shipping_date(
                 order.get("tanggal_pengiriman"),
@@ -16667,7 +16678,9 @@ async def analytics_operators(user=Depends(require("admin", "head_production")))
                 "qty_remaining": max(0, int(s.get("quantity", 0)) - int(s.get("qty_completed", 0))),
                 "stage": s.get("stage"),
                 "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
-                "priority": o.get("priority"),
+                "priority": o.get("priority") or "normal",
+                "urgent": str(o.get("priority") or "").lower() == "urgent",
+                "buffer_stock": bool(o.get("buffer_stock")),
                 "assigned_at": assigned_at,
                 "first_progress_at": first_progress_at,
                 "last_progress_at": last_progress_at,
@@ -17740,7 +17753,11 @@ def _orders_reminders_operator_splits_expr() -> dict:
 
 
 def _orders_reminders_projection() -> dict:
-    """Fields read by GET /reminders. Dedicated; not HoP summary or Action Center."""
+    """Fields read by GET /reminders. Dedicated; not HoP summary or Action Center.
+
+    Operational reminders still use legacy `orders.deadline` buckets.
+    Buffer Stock is excluded from the customer-overdue bucket only.
+    """
     return {
         "_id": 0,
         "id": 1,
@@ -17749,6 +17766,7 @@ def _orders_reminders_projection() -> dict:
         "customer": 1,
         "deadline": 1,
         "priority": 1,
+        "buffer_stock": 1,
         "current_stage": 1,
         "status_label": 1,
         "operator_splits": _orders_reminders_operator_splits_expr(),
@@ -17765,6 +17783,7 @@ def _shape_order_for_reminders_compute(order: dict) -> dict:
         "customer": src.get("customer"),
         "deadline": src.get("deadline"),
         "priority": src.get("priority"),
+        "buffer_stock": src.get("buffer_stock"),
         "current_stage": src.get("current_stage"),
         "status_label": src.get("status_label"),
         "operator_splits": [
@@ -17778,7 +17797,11 @@ def _shape_order_for_reminders_compute(order: dict) -> dict:
 @api_router.get("/reminders")
 async def reminders(user=Depends(current_user)):
     """Return active POs with reminder status. Filters by role — HoP/admin see all,
-    other roles see only reminders where they are the current owner."""
+    other roles see only reminders where they are the current owner.
+
+    Operational buckets still use legacy `orders.deadline`. Buffer Stock never
+    enters the customer-overdue reminder count/badge.
+    """
     orders = await db.orders.aggregate([
         {"$limit": _REMINDERS_LIMIT},
         {"$project": _orders_reminders_projection()},
@@ -17790,6 +17813,9 @@ async def reminders(user=Depends(current_user)):
         if o.get("current_stage", 0) >= 14:
             continue
         ds = _deadline_status(o.get("deadline"), o.get("current_stage", 0))
+        # Buffer Stock is not customer-delivery overdue.
+        if bool(o.get("buffer_stock")) and ds["bucket"] == "overdue":
+            continue
         if ds["bucket"] == "ok":
             continue
         owner_role = STAGE_OWNER_ROLE.get(o.get("current_stage", 0), "admin")
@@ -17809,6 +17835,7 @@ async def reminders(user=Depends(current_user)):
             "customer": o.get("customer"),
             "deadline": o.get("deadline"),
             "priority": o.get("priority"),
+            "buffer_stock": bool(o.get("buffer_stock")),
             "current_stage": o.get("current_stage"),
             "status_label": o.get("status_label"),
             "owner_role": owner_role,

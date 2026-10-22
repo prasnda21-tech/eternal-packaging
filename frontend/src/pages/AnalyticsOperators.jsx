@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, Info, RefreshCw } from "lucide-react";
 import api from "../lib/api";
 import { STAGES, formatDate } from "../lib/constants";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 export default function AnalyticsOperators() {
   const [data, setData] = useState(null);
@@ -81,7 +82,10 @@ export default function AnalyticsOperators() {
               </div>
               {op.po_history.map((p) => (
                 <Link key={p.po_id} to={`/po/${p.po_id}`} className="analytics-row" data-testid={`analytics-po-${op.email}-${p.po_number}`}>
-                  <span className="mono">{p.po_number}</span>
+                  <span className="mono">
+                    {p.po_number}{" "}
+                    <PoIdentityBadges order={p} testIdPrefix={`analytics-po-${p.po_number}`} />
+                  </span>
                   <span>{p.outlet}</span>
                   <span className="mono">{p.quantity.toLocaleString("id-ID")}</span>
                   <span className="mono status-ok">{p.qty_completed.toLocaleString("id-ID")}</span>

@@ -37,6 +37,8 @@ WORK_PROJECTION = {
     "current_stage": 1,
     "status_label": 1,
     "work_date": 1,
+    "priority": 1,
+    "buffer_stock": 1,
     "total_quantity": 1,
     "line_items.name": 1,
     "line_items.quantity": 1,
@@ -55,6 +57,8 @@ SHIP_PROJECTION = {
     "cancelled": 1,
     "current_stage": 1,
     "status_label": 1,
+    "priority": 1,
+    "buffer_stock": 1,
     "delivery_status": 1,
     "delivery_note_number": 1,
     "delivery_note_created_at": 1,
@@ -263,6 +267,9 @@ def slim_work_row(order: dict, today: date) -> dict:
         "operator": work_operators_today(order, today),
         "qty": work_qty(order, today),
         "work_date": today.isoformat(),
+        "priority": order.get("priority") or "normal",
+        "urgent": str(order.get("priority") or "").lower() == "urgent",
+        "buffer_stock": bool(order.get("buffer_stock")),
     }
 
 
@@ -401,6 +408,9 @@ def slim_ship_row(order: dict, today: date) -> dict:
         "qty": _today_ship_qty(order, today),
         "status": delivery_status_label(order),
         "partial": delivery_status_label(order) != "Terkirim",
+        "priority": order.get("priority") or "normal",
+        "urgent": str(order.get("priority") or "").lower() == "urgent",
+        "buffer_stock": bool(order.get("buffer_stock")),
     }
 
 
@@ -423,6 +433,9 @@ def _slim_schedule_row(row: dict) -> dict:
         "status": row.get("status_label") or "Hari Ini",
         "partial": row.get("status") != "terkirim",
         "tanggal_pengiriman": row.get("tanggal_pengiriman"),
+        "priority": row.get("priority") or "normal",
+        "urgent": bool(row.get("urgent")) or str(row.get("priority") or "").lower() == "urgent",
+        "buffer_stock": bool(row.get("buffer_stock")),
     }
 
 

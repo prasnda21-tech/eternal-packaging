@@ -60,6 +60,8 @@ export function productionQuickMatch(row, quickKey, today = new Date()) {
   if (quickKey === "hari_ini") return isScheduledToday(row, today);
   if (quickKey === "besok") return keys.includes(tomorrow);
   if (quickKey === "belum_dijadwalkan") return keys.length === 0;
+  // Production work-date slip (internal schedule) — not customer delivery SLA.
+  // Buffer Stock still appears when work_date has slipped.
   if (quickKey === "terlambat") {
     if (!keys.length) return false;
     const latest = keys.slice().sort().pop();
@@ -72,7 +74,12 @@ export function productionQuickMatch(row, quickKey, today = new Date()) {
   return true;
 }
 
-/** Delivery schedule status / date semantics aligned with Web DELIVERY_SCHEDULE_STATUS_OPTIONS. */
+/** Delivery schedule status / date semantics aligned with Web DELIVERY_SCHEDULE_STATUS_OPTIONS.
+
+Customer-delivery "terlambat" follows authoritative API `status` only.
+Buffer Stock past-date rows stay `terjadwal` on the server — do not recompute late
+from the calendar date alone.
+*/
 export function deliveryQuickMatch(row, quickKey, today = new Date()) {
   const todayKey = opsTodayKey(today);
   const tomorrow = addDays(todayKey, 1);
@@ -86,7 +93,7 @@ export function deliveryQuickMatch(row, quickKey, today = new Date()) {
 
   if (quickKey === "hari_ini") return status === "hari_ini" || eff === todayKey;
   if (quickKey === "besok") return eff === tomorrow;
-  if (quickKey === "terlambat") return status === "terlambat" || (eff && eff < todayKey && !finished);
+  if (quickKey === "terlambat") return status === "terlambat";
   if (quickKey === "belum_dijadwalkan") return status === "belum_dijadwalkan" || !eff;
   if (quickKey === "minggu_ini") {
     if (!eff) return false;
@@ -121,12 +128,14 @@ export function deliveryQueueRank(row, today = new Date()) {
   const eff = dateKey(row?.effective_delivery_date) || "";
   const status = String(row?.status || "");
   const finished = status === "terkirim";
+  const urgentBoost = row?.urgent ? 0 : 1;
   if (finished) return { bucket: 90, date: "9999-99-99", urgent: 1 };
-  if (status === "terlambat" || (eff && eff < todayKey)) return { bucket: 10, date: eff || "0000-00-00", urgent: 1 };
-  if (status === "hari_ini" || eff === todayKey) return { bucket: 20, date: todayKey, urgent: 1 };
-  if (eff === tomorrow) return { bucket: 30, date: tomorrow, urgent: 1 };
-  if (!eff || status === "belum_dijadwalkan") return { bucket: 50, date: "9999-99-99", urgent: 1 };
-  return { bucket: 40, date: eff, urgent: 1 };
+  // Authoritative status only — Buffer Stock past dates stay terjadwal, not terlambat.
+  if (status === "terlambat") return { bucket: 10, date: eff || "0000-00-00", urgent: urgentBoost };
+  if (status === "hari_ini" || eff === todayKey) return { bucket: 20, date: todayKey, urgent: urgentBoost };
+  if (eff === tomorrow) return { bucket: 30, date: tomorrow, urgent: urgentBoost };
+  if (!eff || status === "belum_dijadwalkan") return { bucket: 50, date: "9999-99-99", urgent: urgentBoost };
+  return { bucket: 40, date: eff, urgent: urgentBoost };
 }
 
 export function sortByOpsQueue(rows, rankFn, today = new Date()) {
@@ -149,6 +158,7 @@ export function productionOpsBadge(row, today = new Date()) {
   const dateBadge = (() => {
     if (!keys.length) return { key: "unscheduled", label: "Belum Dijadwalkan", tone: "gray" };
     const earliest = keys[0];
+    // Internal production work-date slip — not customer-delivery overdue.
     if (earliest < todayKey) return { key: "late", label: "Terlambat", tone: "red" };
     if (keys.includes(todayKey)) return { key: "today", label: "Hari ini", tone: "blue" };
     if (keys.includes(tomorrow)) return { key: "tomorrow", label: "Besok", tone: "blue" };
@@ -169,7 +179,8 @@ export function deliveryOpsBadge(row, today = new Date()) {
   const eff = dateKey(row?.effective_delivery_date);
   const status = String(row?.status || "");
   const dateBadge = (() => {
-    if (status === "terlambat" || (eff && eff < todayKey && status !== "terkirim")) {
+    // Customer-delivery late only when API status says so (Buffer Stock never terlambat).
+    if (status === "terlambat") {
       return { key: "late", label: "Terlambat", tone: "red" };
     }
     if (status === "hari_ini" || eff === todayKey) return { key: "today", label: "Hari ini", tone: "blue" };

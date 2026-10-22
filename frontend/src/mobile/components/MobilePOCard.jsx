@@ -7,6 +7,7 @@ import {
   poNavStateFromList,
 } from "../../lib/poListReturn";
 import { poCardPresentation } from "../../lib/mobileWorkspaces";
+import PoIdentityBadges from "../../components/PoIdentityBadges";
 
 export default function MobilePOCard({ order }) {
   const { user } = useAuth();
@@ -33,7 +34,10 @@ export default function MobilePOCard({ order }) {
         });
       }}
     >
-      <div className="mop-card-kicker">{order.po_number}</div>
+      <div className="mop-card-kicker">
+        {order.po_number}{" "}
+        <PoIdentityBadges order={order} testIdPrefix={`mobile-po-${order.po_number}`} />
+      </div>
       <div className="mop-card-title">{getCanonicalCustomerName(order)}</div>
       <div className="mop-card-meta">
         <span>{card.product}</span>

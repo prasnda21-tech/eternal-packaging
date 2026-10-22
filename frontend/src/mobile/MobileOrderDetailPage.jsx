@@ -19,6 +19,7 @@ import MobilePrintWorkspace from "./workspaces/MobilePrintWorkspace";
 import MobileSampleWorkspace from "./workspaces/MobileSampleWorkspace";
 import MobileLoadingWorkspace from "./workspaces/MobileLoadingWorkspace";
 import MobileDeliveryWorkspace from "./workspaces/MobileDeliveryWorkspace";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const WORKSPACE_VIEWS = {
   screener: MobileScreenerWorkspace,
@@ -152,6 +153,12 @@ export default function MobileOrderDetailPage() {
               <div className="mop-meta-grid" data-testid="mobile-po-ringkasan">
                 <div className="mop-meta-grid-head" data-testid="mobile-po-ringkasan-title">Ringkasan PO</div>
                 <div data-testid="mobile-order-customer"><span>Customer</span><strong>{getCanonicalCustomerName(order)}</strong></div>
+                {(order.priority === "urgent" || order.buffer_stock) ? (
+                  <div data-testid="mobile-order-identity">
+                    <span>Label PO</span>
+                    <strong><PoIdentityBadges order={order} testIdPrefix="mobile-order-po" /></strong>
+                  </div>
+                ) : null}
                 <div><span>Product</span><strong>{card.product}</strong></div>
                 <div><span>Qty</span><strong>{card.qty != null ? Number(card.qty).toLocaleString("id-ID") : (card.lines.length ? card.lines.map((l) => l.qty).join(" / ") : "—")}</strong></div>
                 <div>

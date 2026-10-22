@@ -1213,6 +1213,8 @@ async def list_sales_deliveries(
                 po_statuses.get(doc.get("po_id")) or doc.get("status")
             )
             page_rows.append(doc)
+        from services.po_identity_fields import attach_po_identity_fields
+        await attach_po_identity_fields(db, page_rows, po_id_key="po_id")
 
     return {
         "deliveries": page_rows,

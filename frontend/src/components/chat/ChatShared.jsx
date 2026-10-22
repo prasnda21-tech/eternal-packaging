@@ -10,6 +10,7 @@ import {
   replyQuotePreview,
   roomInitials,
 } from "../../lib/chatFormat";
+import PoIdentityBadges from "../PoIdentityBadges";
 
 export function WorkContextCard({ workRef, mobile = false }) {
   const snap = workRef?.snapshot || workRef || {};
@@ -17,7 +18,10 @@ export function WorkContextCard({ workRef, mobile = false }) {
   const title = workContextLabel(workRef);
   return (
     <div className="chat-work-card" data-testid="chat-work-card">
-      <div className="chat-work-card-title">{title}</div>
+      <div className="chat-work-card-title">
+        {title}{" "}
+        <PoIdentityBadges order={snap} testIdPrefix="chat-work-card" />
+      </div>
       <div className="chat-work-card-meta">
         {snap.customer_name ? <div>Customer: {snap.customer_name}</div> : null}
         {snap.item_name ? <div>Item: {snap.item_name}</div> : null}
@@ -27,7 +31,6 @@ export function WorkContextCard({ workRef, mobile = false }) {
         ) : null}
         {(snap.assignee || snap.assignee_name) ? <div>Assignee: {snap.assignee || snap.assignee_name}</div> : null}
         {snap.h_minus_1 || snap.is_h1 ? <div className="chat-work-flag">H-1</div> : null}
-        {snap.is_urgent || snap.urgent ? <div className="chat-work-flag urgent">URGENT</div> : null}
       </div>
       {href ? (
         <Link className="chat-work-link" to={href} data-testid="chat-work-open-link">
@@ -491,7 +494,10 @@ export function WorkPickerModal({
                         setLines(lr?.items || lr || []);
                       }}
                     >
-                      <strong>{o.po_number || o.order_number}</strong>
+                      <strong>
+                        {o.po_number || o.order_number}{" "}
+                        <PoIdentityBadges order={o} testIdPrefix={`chat-work-po-${o.po_number || o.id}`} />
+                      </strong>
                       <span>{o.customer_name || o.customer || ""}</span>
                     </button>
                   </li>

@@ -98,6 +98,8 @@ def _order_summary(d: dict) -> dict:
         "customer_name": d.get("customer_name") or d.get("customer") or d.get("outlet"),
         "deadline": d.get("deadline"),
         "urgent": d.get("priority") == "urgent",
+        "priority": d.get("priority") or "normal",
+        "buffer_stock": bool(d.get("buffer_stock")),
     }
 
 
@@ -150,6 +152,8 @@ async def resolve_work_snapshot(db, user, *, order_id, line_id=None, line_idx=No
         "delivery_deadline_status": order.get("delivery_deadline_status"),
         "h_minus_1": order.get("delivery_deadline_status") == "h1",
         "urgent": order.get("priority") == "urgent",
+        "priority": order.get("priority") or "normal",
+        "buffer_stock": bool(order.get("buffer_stock")),
         "screen_size": line_screen_size(order, idx) if idx is not None else None,
         "captured_at": now_iso(),
     }

@@ -23,6 +23,7 @@ import {
   workflowProgressPercent,
   writeStoredColWidths,
 } from "../lib/statusPoWorkflow";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 function ResizeHandle({ colKey, onStart }) {
   return (
@@ -309,6 +310,7 @@ export default function StatusPoWorkflowTable({
                     {r.po_number}
                   </Link>
                 ) : (r.po_number || "-")}
+                <PoIdentityBadges order={r} testIdPrefix={`status-po-badges-${r.po_number}`} />
               </td>
               <td className={`mono spo-sticky${narrow ? " spo-unstick-narrow" : ""}`} style={stickyStyle("date")}>
                 {formatStatusPoDate(r.order_date)}

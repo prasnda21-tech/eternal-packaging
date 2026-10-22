@@ -17,6 +17,7 @@ import {
   taskWorkDateLabel,
 } from "../../lib/mobileTaskCard";
 import ProductionSchedulePriorityBadges from "../../components/ProductionSchedulePriorityBadges";
+import PoIdentityBadges from "../../components/PoIdentityBadges";
 
 export default function MobileTaskCard({ task, workspaceId }) {
   const { user } = useAuth();
@@ -52,6 +53,7 @@ export default function MobileTaskCard({ task, workspaceId }) {
       <div className="mop-card-kicker-row">
         <div className="mop-card-kicker">{task.order_number}</div>
         <ProductionSchedulePriorityBadges row={task} testIdPrefix="mobile-task-priority" />
+        <PoIdentityBadges order={task} testIdPrefix="mobile-task-po" omitUrgent />
       </div>
       <div className="mop-card-title">{getCanonicalCustomerName(task)}</div>
       <div className="mop-task-facts">

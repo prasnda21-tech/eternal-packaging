@@ -855,6 +855,8 @@ def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]
         "outlet": str(order.get("outlet") or "").strip() or None,
         "sales": order.get("sales"),
         "order_date": parse_calendar_date(order.get("order_date")) or str(order.get("order_date") or "")[:10] or None,
+        "priority": order.get("priority") or "normal",
+        "urgent": str(order.get("priority") or "").lower() == "urgent",
         "buffer_stock": bool(order.get("buffer_stock")),
         "tanggal_kirim": kirim,
         "tanggal_kirim_source": order.get("tanggal_pengiriman_source"),
