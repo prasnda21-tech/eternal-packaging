@@ -68,14 +68,20 @@ def test_no_date_excluded():
     assert plan_row(o, lead_time_days=3) is None
 
 
-def test_buffer_stock_excluded_even_with_date():
+def test_buffer_stock_included_never_terlambat():
     o = _po(
         buffer_stock=True,
-        delivery_deadline_manual=calendar_date_to_wib_iso("2026-10-20"),
-        scheduled_delivery_date="2026-10-20",
+        delivery_deadline_manual=calendar_date_to_wib_iso("2026-10-10"),
+        scheduled_delivery_date="2026-10-10",
         qty_delivered=10,
+        priority="urgent",
     )
-    assert plan_row(o, lead_time_days=3) is None
+    row = plan_row(o, lead_time_days=3, today="2026-10-12")
+    assert row is not None
+    assert row["buffer_stock"] is True
+    assert row["priority"] == "urgent"
+    assert row["delivery_schedule_status"] == "terjadwal"
+    assert row["delivery_schedule_status"] != "terlambat"
 
 
 def test_cancelled_excluded():
@@ -154,10 +160,10 @@ def test_filter_source_and_sort_pagination():
     assert meta["counts"]["by_source"]["manual"] == 2
 
 
-def test_mongo_match_excludes_cancelled_and_buffer():
+def test_mongo_match_excludes_cancelled_keeps_buffer():
     m = mongo_match()
     assert m["cancelled"] == {"$ne": True}
-    assert m["buffer_stock"] == {"$ne": True}
+    assert "buffer_stock" not in m
 
 
 def test_schedule_status_today_not_terlambat():
@@ -224,7 +230,7 @@ def test_deadline_status_preserves_h1_h6_absolute_future():
 def test_pagination_no_loss_no_dup_stable_tiebreak():
     """Fixtures > page_size: pages partition without loss/dup; same-date sort stable."""
     orders = []
-    # 5 POs on same date + 2 later + 1 ineligible (no date) + 1 buffer
+    # 5 POs on same date + 2 later + 1 ineligible (no date) + 1 buffer (now eligible)
     for i in range(5):
         orders.append(_po(
             id=f"same-{i}",
@@ -248,20 +254,21 @@ def test_pagination_no_loss_no_dup_stable_tiebreak():
         scheduled_delivery_date="2026-10-20",
     ))
     filtered = build_plan_rows(orders, lead_time_days=3, today="2026-10-12", filters={})
-    assert len(filtered) == 7  # eligibility before pagination
-    assert all(r["id"] != "nodate" and r["id"] != "buf" for r in filtered)
-    # Stable tie-break: same date ordered by po_number then id
+    assert len(filtered) == 8  # buffer included; nodate still excluded
+    assert all(r["id"] != "nodate" for r in filtered)
+    assert any(r["id"] == "buf" for r in filtered)
+    # Stable tie-break: same date ordered by po_number then id (BUF before SAME/*)
     same = [r for r in filtered if r["tanggal_pengiriman"] == "2026-10-20"]
-    assert [r["po_number"] for r in same] == [f"PO/SAME/{i}" for i in range(5)]
+    assert [r["po_number"] for r in same] == ["PO/BUF"] + [f"PO/SAME/{i}" for i in range(5)]
 
     page1, meta1 = paginate_rows(filtered, page=1, page_size=3)
     page2, meta2 = paginate_rows(filtered, page=2, page_size=3)
     page3, meta3 = paginate_rows(filtered, page=3, page_size=3)
-    assert meta1["total"] == meta2["total"] == meta3["total"] == 7
+    assert meta1["total"] == meta2["total"] == meta3["total"] == 8
     assert meta1["total_pages"] == 3
-    assert len(page1) == 3 and len(page2) == 3 and len(page3) == 1
+    assert len(page1) == 3 and len(page2) == 3 and len(page3) == 2
     ids = [r["id"] for r in page1 + page2 + page3]
-    assert len(ids) == len(set(ids)) == 7
+    assert len(ids) == len(set(ids)) == 8
     assert set(ids) == {r["id"] for r in filtered}
     # last page clamp
     page_over, meta_over = paginate_rows(filtered, page=99, page_size=3)
@@ -382,30 +389,36 @@ def test_estimation_bypass_matrix_and_lead_time_and_manual_reset():
     assert plan_row(o4, lead_time_days=5)["tanggal_pengiriman"] == "2026-10-15"
 
 
-def test_buffer_excluded_from_rows_total_and_search():
+def test_buffer_included_in_rows_not_terlambat():
+    """Owner: Buffer Stock stays visible in Rencana Jadwal Kirim, never terlambat."""
     orders = [
         _po(id="ok", po_number="PO/OK", scheduled_delivery_date="2026-10-20", customer_name="Keep Me"),
         _po(
             id="buf1",
             po_number="PO/BUFFER/HIT",
             buffer_stock=True,
-            scheduled_delivery_date="2026-10-20",
+            scheduled_delivery_date="2026-10-10",
             customer_name="Keep Me Buffer",
             design_approved_at="2026-10-01T00:00:00+07:00",
             payment_approved_at="2026-10-01T00:00:00+07:00",
+            priority="urgent",
         ),
     ]
     rows = build_plan_rows(orders, lead_time_days=3, today="2026-10-12")
-    assert [r["id"] for r in rows] == ["ok"]
+    assert {r["id"] for r in rows} == {"ok", "buf1"}
+    buf = next(r for r in rows if r["id"] == "buf1")
+    assert buf["buffer_stock"] is True
+    assert buf["priority"] == "urgent"
+    assert buf["delivery_schedule_status"] != "terlambat"
+    assert buf["delivery_schedule_status"] == "terjadwal"
     _, meta = paginate_rows(rows, page=1, page_size=50)
-    assert meta["total"] == 1
-    assert meta["counts"]["total"] == 1
-    searched = build_plan_rows(orders, lead_time_days=3, filters={"q": "BUFFER"})
-    assert searched == []
-    searched2 = build_plan_rows(orders, lead_time_days=3, filters={"q": "Keep Me"})
-    assert [r["id"] for r in searched2] == ["ok"]
+    assert meta["total"] == 2
+    assert meta["counts"]["total"] == 2
+    assert meta["counts"]["by_status"].get("terlambat", 0) == 0
+    searched = build_plan_rows(orders, lead_time_days=3, filters={"q": "BUFFER"}, today="2026-10-12")
+    assert [r["id"] for r in searched] == ["buf1"]
     m = mongo_match()
-    assert m["buffer_stock"] == {"$ne": True}
+    assert "buffer_stock" not in m
 
 
 def test_rbac_endpoint_wiring_scope_before_paginate():
@@ -431,7 +444,7 @@ def test_rbac_endpoint_wiring_scope_before_paginate():
     assert scope == {"sales_user_id": "sales-u-1"}
     merged = mongo_match(scope)
     assert merged["sales_user_id"] == "sales-u-1"
-    assert merged["buffer_stock"] == {"$ne": True}
+    assert "buffer_stock" not in merged
     assert merged["cancelled"] == {"$ne": True}
     # empty scope for non-sales does not invent filter
     assert sales_owner_match({"role": "admin", "id": "a1"}) == {}

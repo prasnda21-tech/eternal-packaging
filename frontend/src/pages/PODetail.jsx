@@ -71,6 +71,7 @@ import LineProductReplaceControl from "../components/LineProductReplaceControl";
 import PoDetailFocusPanel from "../components/poDetail/PoDetailFocusPanel";
 import PoStageSection from "../components/poDetail/PoStageSection";
 import PoSummaryDrawer from "../components/poDetail/PoSummaryDrawer";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import ProductionNotesPanel from "../components/poDetail/ProductionNotesPanel";
 import ProformaInvoiceDocRow from "../components/poDetail/ProformaInvoiceDocRow";
 import { canAppendProductionNote, productionNotesVisible } from "../lib/productionNoteAccess";
@@ -872,14 +873,7 @@ export default function PODetail() {
               ) : (
                 <p className="po-hero-outlet" data-testid="detail-outlet" hidden>—</p>
               )}
-              <span className={order.priority === "urgent" ? "urgent-badge" : "standard-badge"} data-testid="detail-priority">
-                {order.priority === "urgent" ? "URGENT" : "NORMAL"}
-              </span>
-              {order.buffer_stock && (
-                <span className="pill sm" data-testid="buffer-stock-badge">
-                  BUFFER STOCK
-                </span>
-              )}
+              <PoIdentityBadges order={order} testIdPrefix="detail-priority" />
             </div>
           </div>
           <div className="po-hero-title-actions">

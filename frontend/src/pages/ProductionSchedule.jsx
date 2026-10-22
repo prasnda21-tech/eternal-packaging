@@ -10,6 +10,7 @@ import useProductionSheetZoom from "../hooks/useProductionSheetZoom";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import ProductionScheduleSheetCells from "../components/ProductionScheduleSheetCells";
 import ProductionScheduleRingkasan, { ProductionScheduleSearchCluster } from "../components/ProductionScheduleRingkasan";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import {
   PRODUCTION_SCHEDULE_DEFAULT_COL_WIDTHS,
   clearProductionScheduleColWidths,
@@ -846,8 +847,7 @@ export default function ProductionSchedule() {
             <Link key={r.id} to={productionSchedulePoHref(r.id, { stage: "penjadwalan" })} className="prod-card" data-testid={`prod-card-${r.po_number}`}>
               <header>
                 <strong>{r.po_number}</strong>
-                {r.urgent && <span className="urgent-badge">URGENT</span>}
-                {r.buffer_stock && <span className="pill sm" style={{ background: "#e6ecf3", color: "#3a4b60" }}>Buffer</span>}
+                <PoIdentityBadges order={r} testIdPrefix={`prod-card-${r.po_number}`} />
                 {r.hold && <span className="pill sm pill-hold">HOLD</span>}
                 {r.cancelled && <span className="pill sm pill-cancel">Cancelled</span>}
               </header>

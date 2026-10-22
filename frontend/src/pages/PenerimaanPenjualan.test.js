@@ -144,6 +144,16 @@ describe("Penerimaan Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Buat Penerimaan Penjualan/);
   });
 
+  test("credit blocked_reason uses display mapper; create layout avoids body nested scroll", () => {
+    expect(pageSrc).toMatch(/formatCustomerCreditBlockedReason/);
+    expect(pageSrc).toMatch(/credit-blocked-reason/);
+    expect(pageSrc).not.toMatch(/\{creditOffer\.blocked_reason\}/);
+    const cssSrc = fs.readFileSync(path.join(__dirname, "ux90SalesCreate.css"), "utf8");
+    expect(cssSrc).toMatch(/\.ux90-sr-create \.ux90-sr-doc-body[\s\S]*?overflow:\s*hidden\s*!important/);
+    expect(cssSrc).toMatch(/\.ux90-sr-create \.ux90-sr-inv-table-wrap[\s\S]*?overflow:\s*auto\s*!important/);
+    expect(cssSrc).toMatch(/\.ux90-sr-create \.ux90-sr-doc-panel[\s\S]*?min-height:\s*0\s*!important/);
+  });
+
   describe("Critical Penerimaan Invoice Selector Eligibility Tests", () => {
     const { filterEligibleInvoices } = require("../lib/salesReceipts");
 

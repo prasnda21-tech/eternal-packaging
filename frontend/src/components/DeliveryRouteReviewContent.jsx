@@ -34,6 +34,7 @@ import { fmtQty } from "./qtyUi";
 import { formatKm, statusLabel } from "../lib/independentRoute";
 import { navigateToOptimasiRute } from "../lib/mobileOpsShell";
 import MobileTopBar from "../mobile/MobileTopBar";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 const PANEL = {
   border: "1px solid #1e293b",
@@ -436,10 +437,10 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
                               flexWrap: "wrap",
                             }}
                           >
-                            <strong>{row.order_number || id}</strong>
-                            <span className={`pill ${row.urgent ? "warn" : ""}`}>
-                              {row.urgent ? "Urgent" : "Normal"}
-                            </span>
+                            <strong>
+                              {row.order_number || id}{" "}
+                              <PoIdentityBadges order={row} testIdPrefix={`mds-review-po-${row.order_number || id}`} />
+                            </strong>
                           </div>
                           <div className="muted" style={{ fontSize: 12 }}>
                             {row.customer_name || "—"}
@@ -665,7 +666,8 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
                         <div>
                           <strong>{row.customer_name || "—"}</strong>
                           {" · "}
-                          {row.order_number || row.sales_order_id}
+                          {row.order_number || row.sales_order_id}{" "}
+                          <PoIdentityBadges order={row} testIdPrefix={`mds-review-unassigned-${row.order_number || row.sales_order_id}`} />
                           {" · SJ "}
                           {unit.sj_number || row.sj_label || "—"}
                           {" · Qty SJ "}

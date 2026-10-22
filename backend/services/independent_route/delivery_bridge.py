@@ -499,6 +499,7 @@ async def build_review_rows(db, order_ids: List[str]) -> dict:
             "lng": snap.get("lng"),
             "urgent": order_is_urgent(order),
             "priority": _text(order.get("priority")) or "normal",
+            "buffer_stock": bool(order.get("buffer_stock")),
             "eligible": elig["eligible"],
             "reasons": elig["reasons"],
             "reason": elig["reason"],

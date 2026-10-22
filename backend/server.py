@@ -1133,6 +1133,8 @@ def _orders_list_summary_projection() -> dict:
         "status_label": 1,
         "deadline": 1,
         "work_date": 1,
+        "priority": 1,
+        "buffer_stock": 1,
         "cancelled": 1,
         "created_at": 1,
         "design_status": 1,
@@ -4046,6 +4048,7 @@ def _orders_action_center_projection() -> dict:
         "loading_checklist.seal_ok": 1,
         "delivery_deadline_manual": 1,
         "scheduled_delivery_date": 1,
+        "priority": 1,
         "buffer_stock": 1,
         "design_files": _orders_dashboard_file_presence_expr("design_files"),
         "payment_files": _orders_dashboard_file_presence_expr("payment_files"),
@@ -4130,6 +4133,7 @@ def _shape_order_for_action_center_compute(order: dict) -> dict:
         "qty_packed": src.get("qty_packed"),
         "delivery_deadline_manual": src.get("delivery_deadline_manual"),
         "scheduled_delivery_date": src.get("scheduled_delivery_date"),
+        "priority": src.get("priority"),
         "buffer_stock": src.get("buffer_stock"),
         "design_files": _action_center_file_presence(src.get("design_files")),
         "payment_files": _action_center_file_presence(src.get("payment_files")),
@@ -4375,6 +4379,9 @@ def _slim_action(o: dict) -> dict:
         "work_date": o.get("work_date"),
         "current_stage": o.get("current_stage"),
         "total_quantity": o.get("total_quantity"),
+        "priority": o.get("priority") or "normal",
+        "urgent": str(o.get("priority") or "").lower() == "urgent",
+        "buffer_stock": bool(o.get("buffer_stock")),
         "delivery_deadline_effective": o.get("delivery_deadline_effective"),
         "delivery_deadline_status": o.get("delivery_deadline_status"),
         "delivery_deadline_source": o.get("delivery_deadline_source"),
@@ -6557,26 +6564,39 @@ async def delivery_stock_preflight(
     payload: DeliveryStockPreflightPayload,
     user=Depends(current_user),
 ):
-    """Read-only R2 shortage preflight before Konfirmasi Terkirim.
+    """Read-only warehouse shortage preflight before Konfirmasi Terkirim.
 
     Never posts ledger/balance movements. Shortage warns; identity errors still 400.
-    R2 OFF returns r2_authority_active=false without fabricating warehouse warnings.
+
+    Active when R2 ON **or** warehouse_stock_standalone ON (R2 OFF).
+    When both OFF: r2_authority_active=false, empty warnings (N/A) — no fabricated
+    warehouse shortage. ``blocks_delivery`` is always false on this path.
     """
     await _require_perm(user, "delivery.update")
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     from services.r2_go_live import is_r2_authority_active as _is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
     r2_on = await _is_r2_authority_active(db)
+    standalone_on = False
     if not r2_on:
-        return {
-            "r2_authority_active": False,
-            "blocks_delivery": False,
-            "stock_warnings": [],
-            "warehouse_id": None,
-            "branch_id": None,
-            "message": "Mode R2 nonaktif — preflight kekurangan gudang tidak berlaku.",
-        }
+        standalone_on = await is_warehouse_stock_standalone_active(db)
+        if not standalone_on:
+            return {
+                "r2_authority_active": False,
+                "warehouse_stock_standalone_active": False,
+                "blocks_delivery": False,
+                "stock_warnings": [],
+                "has_shortage_warning": False,
+                "warehouse_id": None,
+                "branch_id": None,
+                "message": (
+                    "Mode R2 dan warehouse stock standalone nonaktif — "
+                    "preflight kekurangan gudang tidak berlaku."
+                ),
+            }
     from services.physical_stock import (
         PhysicalStockNotFoundError,
         PhysicalStockValidationError,
@@ -6593,15 +6613,18 @@ async def delivery_stock_preflight(
         raise HTTPException(400, plan["error"])
     if isinstance(plan, dict) and plan.get("skip"):
         return {
-            "r2_authority_active": True,
+            "r2_authority_active": bool(r2_on),
+            "warehouse_stock_standalone_active": bool(standalone_on),
             "blocks_delivery": False,
             "stock_warnings": [],
+            "has_shortage_warning": False,
             "warehouse_id": str(payload.warehouse_id or "").strip() or None,
             "branch_id": str(payload.branch_id or "").strip() or None,
             "message": "Surat Jalan sudah terkirim — preflight dilewati.",
         }
     ready_lines = (plan or {}).get("lines") if isinstance(plan, dict) else None
     try:
+        # Shared read-only balance check (R2 or Standalone). No ledger writes.
         branch_id, warehouse_id, warnings = await require_r2_delivery_stock_ready(
             db,
             order,
@@ -6629,7 +6652,8 @@ async def delivery_stock_preflight(
         warnings, warehouse=warehouse, item_names=item_names,
     )
     return {
-        "r2_authority_active": True,
+        "r2_authority_active": bool(r2_on),
+        "warehouse_stock_standalone_active": bool(standalone_on),
         "blocks_delivery": False,
         "stock_warnings": enriched,
         "has_shortage_warning": any(w.get("has_shortage") for w in enriched),
@@ -12140,6 +12164,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "customer_approval.status": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
+    "priority": 1,
     "buffer_stock": 1,
     "delivery_status": 1,
     "_has_design_files": _mongo_array_nonempty_expr("design_files"),
@@ -12286,6 +12311,9 @@ def _apply_sales_order_header_filters(
                 continue
         elif preset not in ("", "all"):
             # Legacy preset param kept for backward compatibility only.
+            # Buffer Stock is not customer-delivery overdue.
+            if preset == "overdue" and bool(order.get("buffer_stock")):
+                continue
             active = _sales_order_is_active_for_overdue(order) if preset == "overdue" else None
             if not match_shipping_date(
                 order.get("tanggal_pengiriman"),
@@ -16661,7 +16689,9 @@ async def analytics_operators(user=Depends(require("admin", "head_production")))
                 "qty_remaining": max(0, int(s.get("quantity", 0)) - int(s.get("qty_completed", 0))),
                 "stage": s.get("stage"),
                 "stage_label": STAGES[min(s.get("stage", 8), len(STAGES) - 1)],
-                "priority": o.get("priority"),
+                "priority": o.get("priority") or "normal",
+                "urgent": str(o.get("priority") or "").lower() == "urgent",
+                "buffer_stock": bool(o.get("buffer_stock")),
                 "assigned_at": assigned_at,
                 "first_progress_at": first_progress_at,
                 "last_progress_at": last_progress_at,
@@ -17734,7 +17764,11 @@ def _orders_reminders_operator_splits_expr() -> dict:
 
 
 def _orders_reminders_projection() -> dict:
-    """Fields read by GET /reminders. Dedicated; not HoP summary or Action Center."""
+    """Fields read by GET /reminders. Dedicated; not HoP summary or Action Center.
+
+    Operational reminders still use legacy `orders.deadline` buckets.
+    Buffer Stock is excluded from the customer-overdue bucket only.
+    """
     return {
         "_id": 0,
         "id": 1,
@@ -17743,6 +17777,7 @@ def _orders_reminders_projection() -> dict:
         "customer": 1,
         "deadline": 1,
         "priority": 1,
+        "buffer_stock": 1,
         "current_stage": 1,
         "status_label": 1,
         "operator_splits": _orders_reminders_operator_splits_expr(),
@@ -17759,6 +17794,7 @@ def _shape_order_for_reminders_compute(order: dict) -> dict:
         "customer": src.get("customer"),
         "deadline": src.get("deadline"),
         "priority": src.get("priority"),
+        "buffer_stock": src.get("buffer_stock"),
         "current_stage": src.get("current_stage"),
         "status_label": src.get("status_label"),
         "operator_splits": [
@@ -17772,7 +17808,11 @@ def _shape_order_for_reminders_compute(order: dict) -> dict:
 @api_router.get("/reminders")
 async def reminders(user=Depends(current_user)):
     """Return active POs with reminder status. Filters by role — HoP/admin see all,
-    other roles see only reminders where they are the current owner."""
+    other roles see only reminders where they are the current owner.
+
+    Operational buckets still use legacy `orders.deadline`. Buffer Stock never
+    enters the customer-overdue reminder count/badge.
+    """
     orders = await db.orders.aggregate([
         {"$limit": _REMINDERS_LIMIT},
         {"$project": _orders_reminders_projection()},
@@ -17784,6 +17824,9 @@ async def reminders(user=Depends(current_user)):
         if o.get("current_stage", 0) >= 14:
             continue
         ds = _deadline_status(o.get("deadline"), o.get("current_stage", 0))
+        # Buffer Stock is not customer-delivery overdue.
+        if bool(o.get("buffer_stock")) and ds["bucket"] == "overdue":
+            continue
         if ds["bucket"] == "ok":
             continue
         owner_role = STAGE_OWNER_ROLE.get(o.get("current_stage", 0), "admin")
@@ -17803,6 +17846,7 @@ async def reminders(user=Depends(current_user)):
             "customer": o.get("customer"),
             "deadline": o.get("deadline"),
             "priority": o.get("priority"),
+            "buffer_stock": bool(o.get("buffer_stock")),
             "current_stage": o.get("current_stage"),
             "status_label": o.get("status_label"),
             "owner_role": owner_role,

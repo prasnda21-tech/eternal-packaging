@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { outletAddressLabel, stopLocationOk } from "../lib/deliveryRoute";
 import OutletLocationModal from "../components/OutletLocationModal";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 export default function DeliveryBatchPage() {
   const { batchId } = useParams();
@@ -87,7 +88,8 @@ export default function DeliveryBatchPage() {
               return (
                 <tr key={s.stop_id} data-testid={`dbatch-stop-${s.stop_id}`}>
                   <td className="mono">
-                    {s.order_id ? <Link to={`/po/${s.order_id}`}>{s.order_number}</Link> : (s.order_number || "—")}
+                    {s.order_id ? <Link to={`/po/${s.order_id}`}>{s.order_number}</Link> : (s.order_number || "—")}{" "}
+                    <PoIdentityBadges order={s} testIdPrefix={`db-po-${s.order_number || s.id}`} />
                   </td>
                   <td>{s.customer || "—"}</td>
                   <td>{outletAddressLabel(s)}</td>

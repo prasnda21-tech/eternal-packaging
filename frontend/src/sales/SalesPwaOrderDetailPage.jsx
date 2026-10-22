@@ -6,6 +6,7 @@ import { formatSalesDate } from "../lib/salesPwa";
 import { STATUS_PO_WORKFLOW_STAGES } from "../lib/statusPoWorkflow";
 import SalesPwaDesignApproval, { orderExpectsDesignLink } from "./SalesPwaDesignApproval";
 import SalesPwaDocumentSheet from "./SalesPwaDocumentSheet";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 const DOCUMENTS = [
   { id: "po", label: "PO" },
@@ -127,7 +128,7 @@ export default function SalesPwaOrderDetailPage() {
               {stageLabel ? <p className="spwa-status-field"><span>Tahap aktif</span>{stageLabel}</p> : null}
               {order.tanggal_kirim ? <p className="spwa-status-field"><span>Pengiriman</span>{formatSalesDate(order.tanggal_kirim)}</p> : null}
               {order.tanggal_kirim_overdue ? <p className="spwa-po-card-urgency">Kirim terlambat</p> : null}
-              {order.buffer_stock ? <span className="spwa-buffer-badge spwa-buffer-status">Buffer Stock</span> : null}
+              <PoIdentityBadges order={order} testIdPrefix="sales-detail-po" />
               <SalesPwaDesignApproval order={order} expectMissing={orderExpectsDesignLink(order)} />
             </section>
             {address ? (

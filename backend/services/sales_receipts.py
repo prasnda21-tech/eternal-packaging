@@ -424,6 +424,8 @@ async def query_sales_receipts(
 
     start = (page_num - 1) * size
     page_rows = filtered[start:start + size]
+    from services.po_identity_fields import attach_po_identity_fields
+    await attach_po_identity_fields(db, page_rows, po_id_key="po_id")
     if exclusive_tab == TAB_CANCELLED or (exclusive_tab is None and scope_key == TAB_CANCELLED):
         tab_total = tab_counts[TAB_CANCELLED]
     elif exclusive_tab == TAB_COMPLETED:

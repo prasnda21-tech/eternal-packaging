@@ -425,6 +425,31 @@ export function canDeleteLoadingConfirmation(order, confirmation) {
 
 export const LOADING_DELETE_PERM = "loading.delete";
 
+/** Active Loading rows whose SJ token matches the given cancelled Surat Jalan id. */
+export function loadingConfirmationsForSj(order, sjId) {
+  const want = String(sjId || "").trim();
+  if (!want) return [];
+  return loadingConfirmations(order).filter((c) => {
+    const token = loadingConfirmationSjToken(c);
+    if (!token) return false;
+    if (token === want) return true;
+    const related = loadingRelatedShipment(order, c);
+    if (!related) return false;
+    return (
+      String(related.id || "").trim() === want
+      || String(related.sales_delivery_id || "").trim() === want
+    );
+  });
+}
+
+/**
+ * Loading confirmations eligible for Hapus after Batalkan SJ (gate already applied).
+ * Unresolved SJ identity and sibling active SJ remain blocked by canDeleteLoadingConfirmation.
+ */
+export function deletableLoadingConfirmationsForCancelledSj(order, sjId) {
+  return loadingConfirmationsForSj(order, sjId).filter((c) => canDeleteLoadingConfirmation(order, c));
+}
+
 export function validateLoadingDraftLines(rows, poLines) {
   const used = new Set();
   const out = [];

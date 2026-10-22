@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import api, { publicApiUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatDisplayDate } from "../lib/constants";
+import { formatDesktopListDate } from "../lib/constants";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import HeaderFieldFilter from "../components/HeaderFieldFilter";
@@ -46,6 +46,7 @@ import "./pesananPenjualan.css";
 import "./pesananPenjualanPremium.css";
 import "./ux90SalesCreate.css";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import {
   REPEAT_NO_PREVIOUS_MESSAGE,
   REPEAT_ORDER_QUERY_PARAM,
@@ -2441,13 +2442,14 @@ export default function PesananPenjualan() {
                           >
                             {o.po_number || "—"}
                           </Link>
+                          <PoIdentityBadges order={o} testIdPrefix={`so-po-badges-${o.po_number || o.id}`} />
                           {o.outlet ? (
                             <span className="so-list-outlet" title={o.outlet}>{o.outlet}</span>
                           ) : null}
                         </div>
                       </td>
-                      <td>{formatDisplayDate(o.order_date) || "—"}</td>
-                      <td>{formatDisplayDate(o.tanggal_pengiriman) || "—"}</td>
+                      <td>{formatDesktopListDate(o.order_date) || "—"}</td>
+                      <td>{formatDesktopListDate(o.tanggal_pengiriman) || "—"}</td>
                       <td data-testid={`order-qty-${o.id}`}>{orderQuantityLabel(o)}</td>
                       <td>
                         <SalesOrderDeliveryProgress order={o} />
@@ -3380,7 +3382,7 @@ export default function PesananPenjualan() {
               <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
                 <dt style={{ color: "#64748b", minWidth: 110 }}>Tanggal</dt>
                 <dd data-testid="repeat-confirm-date" style={{ margin: 0 }}>
-                  {formatDisplayDate(repeatConfirm.source?.source_order_date || repeatConfirm.source?.source_created_at) || "—"}
+                  {formatDesktopListDate(repeatConfirm.source?.source_order_date || repeatConfirm.source?.source_created_at) || "—"}
                 </dd>
               </div>
               <div style={{ display: "flex", gap: 8 }}>

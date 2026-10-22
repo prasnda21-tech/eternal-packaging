@@ -37,6 +37,7 @@ import server  # noqa: E402
 from server import app, current_user  # noqa: E402
 from quantity_rules import (  # noqa: E402
     MSG_LOADING_DELETE_REQUIRES_SJ_CANCEL,
+    MSG_LOADING_DELETE_SJ_UNRESOLVED,
     qty_loaded_for_line,
     validate_cancel_loading_confirmation,
 )
@@ -498,3 +499,108 @@ async def test_operational_path_does_not_require_replica_set(db, monkeypatch):
     assert res.status_code == 200, res.text
     assert res.json().get("stock_engine") == "operational_no_stock"
     boom.assert_not_awaited()
+
+
+async def test_concurrent_cancel_two_sj_same_po_independent(db):
+    """Two SJ on one PO cancelled concurrently: both succeed; Loading stays manual; no cross-write."""
+    import asyncio
+
+    database, _ = db
+    seeded = await _seed_multi_sj(database)
+    ledger_before = await database[LEDGER_COLLECTION].count_documents({})
+    pss_before = await database.stock_movements.count_documents({})
+    _admin()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        res_a, res_b = await asyncio.gather(
+            client.delete(f"/api/sales-deliveries/{seeded['sj_a']}"),
+            client.delete(f"/api/sales-deliveries/{seeded['sj_b']}"),
+        )
+    assert res_a.status_code == 200, res_a.text
+    assert res_b.status_code == 200, res_b.text
+    body_a, body_b = res_a.json(), res_b.json()
+    assert body_a.get("soft_cancelled") is True
+    assert body_b.get("soft_cancelled") is True
+    assert body_a.get("stock_engine") == "operational_no_stock"
+    assert body_b.get("stock_engine") == "operational_no_stock"
+
+    d_a = await database.sales_deliveries.find_one({"id": seeded["sj_a"]})
+    d_b = await database.sales_deliveries.find_one({"id": seeded["sj_b"]})
+    assert d_a["is_cancelled"] is True and d_a["status"] == "DIBATALKAN"
+    assert d_b["is_cancelled"] is True and d_b["status"] == "DIBATALKAN"
+
+    order = await database.orders.find_one({"id": seeded["po_id"]}, {"_id": 0})
+    by_ship = {sh["id"]: sh for sh in order["shipments"]}
+    assert by_ship[seeded["sj_a"]].get("is_cancelled") is True
+    assert by_ship[seeded["sj_b"]].get("is_cancelled") is True
+    loading = {c["id"]: c for c in order["loading_confirmations"]}
+    assert loading[seeded["lc_a"]].get("cancelled") is not True
+    assert loading[seeded["lc_b"]].get("cancelled") is not True
+    assert validate_cancel_loading_confirmation(order, seeded["lc_a"]) is None
+    assert validate_cancel_loading_confirmation(order, seeded["lc_b"]) is None
+    assert await database[LEDGER_COLLECTION].count_documents({}) == ledger_before
+    assert await database.stock_movements.count_documents({}) == pss_before
+
+
+async def test_loading_delete_403_without_perm_after_sj_cancel(db):
+    database, _ = db
+    seeded = await _seed_multi_sj(database)
+    _admin()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.delete(f"/api/sales-deliveries/{seeded['sj_a']}")
+    assert res.status_code == 200, res.text
+    _designer()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.delete(
+            f"/api/orders/{seeded['po_id']}/loading-confirm/{seeded['lc_a']}",
+        )
+    assert denied.status_code == 403, denied.text
+    order = await database.orders.find_one({"id": seeded["po_id"]}, {"_id": 0})
+    lc_a = next(c for c in order["loading_confirmations"] if c["id"] == seeded["lc_a"])
+    assert lc_a.get("cancelled") is not True
+    lc_b = next(c for c in order["loading_confirmations"] if c["id"] == seeded["lc_b"])
+    assert lc_b.get("cancelled") is not True
+
+
+async def test_loading_delete_404_unknown_confirmation(db):
+    database, _ = db
+    seeded = await _seed_multi_sj(database)
+    _admin()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.delete(f"/api/sales-deliveries/{seeded['sj_a']}")
+        missing = await client.delete(
+            f"/api/orders/{seeded['po_id']}/loading-confirm/lc-does-not-exist",
+        )
+    # Gate reports not-found via validate (400) or mutate path (404).
+    assert missing.status_code in (400, 404), missing.text
+    detail = missing.json().get("detail")
+    assert "tidak ditemukan" in str(detail).lower()
+
+
+async def test_loading_delete_unresolved_fail_closed(db):
+    database, _ = db
+    seeded = await _seed_multi_sj(database)
+    # Ambiguous / missing SJ identity on Loading → fail-closed (not auto-delete).
+    await database.orders.update_one(
+        {"id": seeded["po_id"], "loading_confirmations.id": seeded["lc_a"]},
+        {"$set": {
+            "loading_confirmations.$.surat_jalan_id": "sj-gone-missing",
+            "loading_confirmations.$.shipment_id": "sj-gone-missing",
+        }},
+    )
+    _admin()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.delete(
+            f"/api/orders/{seeded['po_id']}/loading-confirm/{seeded['lc_a']}",
+        )
+    assert denied.status_code == 400, denied.text
+    assert MSG_LOADING_DELETE_SJ_UNRESOLVED in str(denied.json().get("detail"))
+    order = await database.orders.find_one({"id": seeded["po_id"]}, {"_id": 0})
+    lc_a = next(c for c in order["loading_confirmations"] if c["id"] == seeded["lc_a"])
+    assert lc_a.get("cancelled") is not True
+    # Sibling Loading untouched.
+    lc_b = next(c for c in order["loading_confirmations"] if c["id"] == seeded["lc_b"])
+    assert lc_b.get("cancelled") is not True

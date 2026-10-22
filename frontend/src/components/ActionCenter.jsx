@@ -6,6 +6,7 @@ import useAutoRefresh from "../lib/useAutoRefresh";
 import { useAuth } from "../lib/auth";
 import { taskPoHref } from "../lib/workPanel";
 import { actionKeyToTaskPath } from "../lib/navAccess";
+import PoIdentityBadges from "./PoIdentityBadges";
 
 /**
  * ActionCenter — Batch 3 · "Tugas Saya" untuk user berdasarkan Effective
@@ -122,7 +123,7 @@ export default function ActionCenter() {
                     color: "inherit",
                   }}
                 >
-                  <span className="mono">{o.po_number}</span>
+                  <span className="mono">{o.po_number} <PoIdentityBadges order={o} testIdPrefix={`ac-po-${o.po_number}`} /></span>
                   <span>
                     <strong>{o.outlet || o.item || "-"}</strong>
                     <span className="muted small" style={{ marginLeft: 6 }}>{o.customer || "Customer belum tersedia"}</span>

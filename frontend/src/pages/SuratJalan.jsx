@@ -5,6 +5,7 @@ import api from "../lib/api";
 import { formatDate, formatDeadline } from "../lib/constants";
 import { formatApiError } from "../lib/errors";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 
 export function latestTimelineEvent(order, stage) {
   return order?.timeline?.filter((event) => event.stage === stage).slice(-1)[0] || null;
@@ -93,7 +94,10 @@ export default function SuratJalan() {
               || order.scheduled_delivery_date
               || order.delivery_deadline_manual
             )}</p>
-            {order.priority === "urgent" && <p className="urgent-badge inline">URGENT</p>}
+            {/* Internal identity only — hidden from Cetak / Save-as-PDF via .no-print */}
+            <div className="no-print" data-testid="sj-po-identity-screen">
+              <PoIdentityBadges order={order} testIdPrefix="sj-po" />
+            </div>
           </div>
         </section>
 

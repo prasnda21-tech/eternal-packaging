@@ -47,6 +47,12 @@ describe("mobileOpsQueue", () => {
     expect(deliveryQuickMatch({ status: "hari_ini", effective_delivery_date: "2026-09-10" }, "hari_ini", today)).toBe(true);
     expect(deliveryQuickMatch({ status: "terjadwal", effective_delivery_date: "2026-09-11" }, "besok", today)).toBe(true);
     expect(deliveryQuickMatch({ status: "terlambat", effective_delivery_date: "2026-09-01" }, "terlambat", today)).toBe(true);
+    // Buffer Stock past date stays terjadwal on API — never late from calendar alone.
+    expect(deliveryQuickMatch({
+      status: "terjadwal",
+      effective_delivery_date: "2026-09-01",
+      buffer_stock: true,
+    }, "terlambat", today)).toBe(false);
     expect(deliveryQuickMatch({ status: "belum_dijadwalkan" }, "belum_dijadwalkan", today)).toBe(true);
     expect(deliveryQuickMatch({ status: "terkirim", effective_delivery_date: "2026-09-10" }, "semua_aktif", today)).toBe(false);
     expect(deliveryQuickMatch({ status: "terkirim", effective_delivery_date: "2026-09-10" }, "semua", today)).toBe(true);
@@ -60,8 +66,10 @@ describe("mobileOpsQueue", () => {
       { id: "t", status: "hari_ini", effective_delivery_date: "2026-09-10" },
       { id: "l", status: "terlambat", effective_delivery_date: "2026-09-01" },
       { id: "b", status: "terjadwal", effective_delivery_date: "2026-09-11" },
+      // Buffer past-date with terjadwal ranks with next dates, not late bucket.
+      { id: "buf", status: "terjadwal", effective_delivery_date: "2026-09-01", buffer_stock: true },
     ];
-    expect(sortByOpsQueue(rows, deliveryQueueRank, today).map((r) => r.id)).toEqual(["l", "t", "b", "n", "u"]);
+    expect(sortByOpsQueue(rows, deliveryQueueRank, today).map((r) => r.id)).toEqual(["l", "t", "b", "buf", "n", "u"]);
     expect(productionQueueRank({ work_date: "2026-09-01" }, today).bucket).toBe(10);
   });
 

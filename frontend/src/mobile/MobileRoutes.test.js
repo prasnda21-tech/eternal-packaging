@@ -187,7 +187,7 @@ describe("mobile route wiring", () => {
     expect(css).toMatch(/font-size:\s*clamp\(11px,\s*calc\(11\.5px \* var\(--production-sheet-zoom/);
     expect(css).toMatch(/min-height:\s*20px/);
     expect(css).not.toMatch(/transform:\s*scale\(/);
-    expect(appCss).toMatch(/\.urgent-badge,\.standard-badge,\.status\{font:10\.5px 'IBM Plex Mono'/);
+    expect(appCss).toMatch(/\.urgent-badge,\.standard-badge,\.buffer-stock-badge,\.status\{font:10\.5px 'IBM Plex Mono'/);
     expect(appCss).not.toMatch(/mop-sched-zoom/);
     expect(mobileCss).not.toMatch(/mop-schedule-zoom-btn/);
     expect(mobileCss).not.toMatch(/--mop-sched-zoom/);

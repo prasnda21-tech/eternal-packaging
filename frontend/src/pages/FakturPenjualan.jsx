@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatDisplayDate } from "../lib/constants";
+import { formatDesktopListDate } from "../lib/constants";
 import { addSalesInvoiceCalendarDays, formatSalesInvoiceDate, salesInvoiceDateToIso } from "../lib/salesInvoiceDate";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
@@ -26,6 +26,7 @@ import { invoiceBelumDifakturMeta } from "../lib/ux90RemainingMeta";
 import { FormProgress } from "../components/form-standard";
 import { INVOICE_DATE_PRESET_OPTIONS, invoiceDatePresetRange } from "../lib/salesDatePresets";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import {
   buildSalesInvoiceListCacheKey,
@@ -1285,7 +1286,7 @@ export default function FakturPenjualan() {
     p?.po_number,
     p?.customer,
     p?.outlet,
-    formatDisplayDate(p?.order_date || p?.created_at),
+    formatDesktopListDate(p?.order_date || p?.created_at),
   ].map((v) => String(v || "").trim()).filter(Boolean).join(" ");
 
   const invoicePoOptionLabel = (p) => String(p?.po_number || p?.id || "");
@@ -1293,7 +1294,7 @@ export default function FakturPenjualan() {
   const invoicePoOptionMeta = (p) => {
     const bits = [
       p?.customer,
-      formatDisplayDate(p?.order_date || p?.created_at) || null,
+      formatDesktopListDate(p?.order_date || p?.created_at) || null,
       invoiceBelumDifakturMeta(p),
     ].filter(Boolean);
     return bits.join(" · ");
@@ -2314,6 +2315,7 @@ export default function FakturPenjualan() {
                         <Link to={`/po/${inv.po_id}`} className="sd-doc" title={inv.po_number || "Buka PO"}>
                           {inv.po_number || "-"}
                         </Link>
+                        <PoIdentityBadges order={inv} testIdPrefix={`fp-po-${inv.po_number || inv.id}`} />
                       </td>
                       <td>{formatSalesInvoiceDate(inv.invoice_date || inv.created_at) || "-"}</td>
                       <td className="sd-money">{formatRupiah(inv.grand_total)}</td>
@@ -3124,7 +3126,7 @@ export default function FakturPenjualan() {
                                 {r.receipt_number || r.id}
                               </Link>
                             </td>
-                            <td>{formatSalesInvoiceDate(r.receipt_date) || formatDisplayDate(r.receipt_date)}</td>
+                            <td>{formatSalesInvoiceDate(r.receipt_date) || formatDesktopListDate(r.receipt_date)}</td>
                             <td className="is-num">{formatRupiah(r.amount)}</td>
                             <td className="is-center">{r.payment_state}</td>
                             <td>{r.notes || "-"}</td>

@@ -58,6 +58,20 @@ describe("Division task UI", () => {
     expect(page).toMatch(/ProductionSchedulePriorityBadges/);
   });
 
+  test("PoIdentityBadges omitUrgent beside priority badges (no duplicate URGENT)", () => {
+    expect(page).toMatch(/PoIdentityBadges/);
+    expect(page).toMatch(/omitUrgent/);
+  });
+
+  test("KP PO identity badges sit below number (not clipped by mono ellipsis)", () => {
+    expect(page).toMatch(/kp-po-cell/);
+    expect(page).toMatch(/kp-po-number/);
+    const css = fs.readFileSync(path.join(__dirname, "../App.css"), "utf8");
+    expect(css).toMatch(/\.kp-po-number\{[^}]*overflow:hidden/s);
+    expect(css).toMatch(/td:nth-child\(2\) \.po-identity-badges/);
+    expect(css).not.toMatch(/td:nth-child\(2\) \.mono\{overflow:hidden;text-overflow:ellipsis;white-space:nowrap\}/);
+  });
+
   test("Lihat PO gated by can_view_po", () => {
     expect(page).toMatch(/canViewPo/);
     expect(page).toMatch(/Lihat PO/);

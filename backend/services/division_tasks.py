@@ -577,6 +577,7 @@ def _base_row(order: dict, division: str, *, line_idx=None, split_id=None, split
         "delivery_deadline_status": order.get("delivery_deadline_status"),
         "priority": order.get("priority") or "normal",
         "urgent": order.get("priority") == "urgent",
+        "buffer_stock": bool(order.get("buffer_stock")),
         "target_qty": None,
         "completed_qty": None,
         "remaining_qty": None,

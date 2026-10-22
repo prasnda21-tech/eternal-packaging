@@ -15,6 +15,7 @@ import DeliveryProofPanel from "./DeliveryProofPanel";
 import SuratJalanViewButton from "./SuratJalanViewButton";
 import AttachmentsPanel from "./AttachmentsPanel";
 import OperatorSplitPanel from "./OperatorSplitPanel";
+import PoIdentityBadges from "./PoIdentityBadges";
 import {
   canSubmitDivision,
   fallbackDivision,
@@ -55,6 +56,7 @@ function WorkHero({ order, title, itemLabel, testid, compactHeader }) {
       <div>
         <p className="eyebrow">{title}</p>
         <h1 data-testid="work-po-number">{order.po_number}</h1>
+        <PoIdentityBadges order={order} testIdPrefix="work-po-identity" />
         <p className="subhead">
           Customer: {order.customer_name || order.customer || "—"}
           {" · "}
@@ -152,6 +154,7 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
           <div>
             <p className="eyebrow">Pekerjaan Operator</p>
             <h1 data-testid="work-po-number">{order.po_number}</h1>
+            <PoIdentityBadges order={order} testIdPrefix="work-po-identity" />
             <p className="subhead">
               Customer: {order.customer_name || order.customer || "—"}
               {" · "}

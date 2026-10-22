@@ -19,12 +19,19 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatDisplayDate } from "../lib/constants";
+import { formatDesktopListDate } from "../lib/constants";
+import {
+  LOADING_DELETE_PERM,
+  MSG_LOADING_DELETE_SJ_UNRESOLVED,
+  deletableLoadingConfirmationsForCancelledSj,
+  loadingConfirmationsForSj,
+} from "../lib/loadingConfirm";
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import SjDeliveryLocationPicker, { sjOverridePayload } from "../components/SjDeliveryLocationPicker";
 import { SHIPPING_DATE_PRESET_OPTIONS } from "../lib/salesDatePresets";
 import { showLoadedDocumentCount } from "../lib/salesSubmenuDensity";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
@@ -115,6 +122,7 @@ export default function PengirimanPesanan() {
   const canCreate = hasPerm("sales.delivery.create") || hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
   const canPrint = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
   const canDelete = hasPerm("sales.delivery.delete") || hasPerm("sales.delivery.create") || hasPerm("po.edit") || user?.role === "admin";
+  const canDeleteLoading = hasPerm(LOADING_DELETE_PERM);
 
   // Navigation mode: 'list' | 'create' | 'detail'
   const queryPoId = searchParams.get("po_id") || "";
@@ -152,6 +160,12 @@ export default function PengirimanPesanan() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
   const [deleteSuccess, setDeleteSuccess] = useState("");
+  /** After soft-cancel SJ: related Loading still active (manual Hapus; never auto-cancel). */
+  const [loadingFollowUp, setLoadingFollowUp] = useState(null);
+  const [loadingFollowUpBusyId, setLoadingFollowUpBusyId] = useState("");
+  const [loadingFollowUpErr, setLoadingFollowUpErr] = useState("");
+  const [loadingFollowUpOk, setLoadingFollowUpOk] = useState("");
+  const [loadingFollowUpDeleteConfirm, setLoadingFollowUpDeleteConfirm] = useState(null);
   const requestSeq = useRef(0);
   const prevListUserRef = useRef(listUserId);
 
@@ -675,11 +689,121 @@ export default function PengirimanPesanan() {
     }
     return det || "Gagal menghapus.";
   };
+  const clearLoadingFollowUpUi = () => {
+    setLoadingFollowUp(null);
+    setLoadingFollowUpErr("");
+    setLoadingFollowUpOk("");
+    setLoadingFollowUpDeleteConfirm(null);
+    setLoadingFollowUpBusyId("");
+  };
+
+  const formatLoadingDeleteError = (err) => {
+    const status = err?.response?.status;
+    const detail = formatDeleteError(err?.response?.data?.detail);
+    if (status === 403) {
+      return detail || "Tidak punya permission loading.delete.";
+    }
+    if (status === 404) {
+      return detail || "Konfirmasi Loading tidak ditemukan.";
+    }
+    if (status === 409) {
+      return detail || "Konflik data — coba lagi. Loading mungkin sudah berubah.";
+    }
+    if (detail && /tidak dapat dibuktikan|ambigu|hilang/i.test(detail)) {
+      return detail;
+    }
+    return detail || err?.message || "Gagal menghapus Loading terkait.";
+  };
+
+  const refreshLoadingFollowUp = async (orderId, sjId, sjNumber) => {
+    if (!orderId || !sjId) {
+      clearLoadingFollowUpUi();
+      return;
+    }
+    try {
+      const payload = await api.getOrder(orderId, { view: "operational" });
+      const order = payload?.order || payload;
+      const confirmations = deletableLoadingConfirmationsForCancelledSj(order, sjId);
+      const related = loadingConfirmationsForSj(order, sjId);
+      // Unresolved SJ identity: related Loading stays fail-closed (no Hapus CTA).
+      const unresolvedBlocked = related.filter((c) => {
+        if (confirmations.some((d) => String(d.id) === String(c.id))) return false;
+        const token = String(c?.shipment_id || c?.surat_jalan_id || c?.sales_delivery_id || "").trim();
+        if (!token) return false;
+        const ships = Array.isArray(order?.shipments) ? order.shipments : [];
+        const exact = ships.filter((sh) => String(sh?.id || "").trim() === token);
+        if (exact.length === 1) return false;
+        const alias = ships.filter((sh) => (
+          String(sh?.sales_delivery_id || "").trim() === token
+          || String(sh?.sj_number || "").trim() === token
+          || String(sh?.number || "").trim() === token
+        ));
+        return alias.length !== 1;
+      });
+      if (!confirmations.length && !unresolvedBlocked.length) {
+        clearLoadingFollowUpUi();
+        return;
+      }
+      setLoadingFollowUp({
+        orderId,
+        sjId,
+        sjNumber: sjNumber || sjId,
+        confirmations,
+        unresolvedBlocked,
+      });
+      setLoadingFollowUpDeleteConfirm(null);
+    } catch (_) {
+      /* follow-up is advisory; cancel already succeeded */
+      clearLoadingFollowUpUi();
+    }
+  };
+
+  const requestDeleteRelatedLoading = (confirmation) => {
+    if (!loadingFollowUp || !confirmation?.id || !canDeleteLoading) return;
+    if (loadingFollowUpBusyId) return;
+    // Prevent opening a second Hapus confirm while one is already open.
+    if (loadingFollowUpDeleteConfirm) return;
+    setLoadingFollowUpErr("");
+    setLoadingFollowUpOk("");
+    setLoadingFollowUpDeleteConfirm({
+      id: confirmation.id,
+      sjNumber: confirmation.sj_number || confirmation.surat_jalan_name || loadingFollowUp.sjNumber,
+    });
+  };
+
+  const handleDeleteRelatedLoading = async () => {
+    const confirmationId = loadingFollowUpDeleteConfirm?.id;
+    const orderId = loadingFollowUp?.orderId;
+    const sjId = loadingFollowUp?.sjId;
+    const sjNumber = loadingFollowUp?.sjNumber;
+    if (!orderId || !confirmationId) return;
+    if (loadingFollowUpBusyId) return;
+    if (!canDeleteLoading) {
+      setLoadingFollowUpErr("Tidak punya permission loading.delete.");
+      return;
+    }
+    setLoadingFollowUpBusyId(String(confirmationId));
+    setLoadingFollowUpErr("");
+    setLoadingFollowUpOk("");
+    try {
+      await api.deleteLoadingConfirm(orderId, confirmationId);
+      setLoadingFollowUpOk("Konfirmasi Loading terkait dihapus.");
+      setLoadingFollowUpDeleteConfirm(null);
+      // Refresh Loading list from latest operational order source.
+      await refreshLoadingFollowUp(orderId, sjId, sjNumber);
+    } catch (e) {
+      setLoadingFollowUpErr(formatLoadingDeleteError(e));
+    } finally {
+      setLoadingFollowUpBusyId("");
+    }
+  };
+
   const handleDelete = async (id) => {
     if (deleteLoading) return;
     setDeleteLoading(true);
     setDeleteErr("");
     setDeleteSuccess("");
+    clearLoadingFollowUpUi();
     try {
       const result = await api.deleteSalesDelivery(id);
       setDeleteConfirm(null);
@@ -690,6 +814,9 @@ export default function PengirimanPesanan() {
       });
       if (result?.soft_cancelled || result?.cancelled) {
         setDeleteSuccess(result?.message || "Surat Jalan dibatalkan. Stok dan qty pesanan telah dikoreksi.");
+        const orderId = result?.order_id || result?.po_id;
+        const sjId = result?.id || id;
+        await refreshLoadingFollowUp(orderId, sjId, result?.sj_number);
       } else if (result?.deleted) {
         setDeleteSuccess("Surat Jalan dihapus.");
       } else {
@@ -1481,8 +1608,9 @@ export default function PengirimanPesanan() {
                         <Link to={`/po/${d.po_id}`} className="sd-doc" data-testid={`po-link-${d.po_number}`}>
                           {d.po_number}
                         </Link>
+                        <PoIdentityBadges order={d} testIdPrefix={`pp-po-${d.po_number || d.id}`} />
                       </td>
-                      <td>{formatDisplayDate(d.delivery_date) || "-"}</td>
+                      <td>{formatDesktopListDate(d.delivery_date) || "-"}</td>
                       <td className="sd-qty-cell">{Number(d.total_qty || 0).toLocaleString("id-ID")} pcs</td>
                       <td>
                         <span
@@ -1702,7 +1830,7 @@ export default function PengirimanPesanan() {
                 </div>
                 <div>
                   <span className="sd-delivery-detail-meta-label">Tanggal Kirim:</span>
-                  <strong>{formatDisplayDate(detailData.delivery?.delivery_date) || "-"}</strong>
+                  <strong>{formatDesktopListDate(detailData.delivery?.delivery_date) || "-"}</strong>
                 </div>
                 <div>
                   <span className="sd-delivery-detail-meta-label">Penerima (PIC):</span>
@@ -1791,7 +1919,7 @@ export default function PengirimanPesanan() {
                         }
                       >
                         <span>
-                          Surat Jalan <strong>{shipment.sj_number}</strong> (Kirim #{shipment.shipment_index}) - {formatDisplayDate(shipment.delivery_date)}
+                          Surat Jalan <strong>{shipment.sj_number}</strong> (Kirim #{shipment.shipment_index}) - {formatDesktopListDate(shipment.delivery_date)}
                         </span>
                         <span className="qty">
                           {Number(shipment.total_qty || 0).toLocaleString("id-ID")} pcs
@@ -1834,6 +1962,155 @@ export default function PengirimanPesanan() {
         <div data-testid="batal-success" style={{ position: "fixed", right: 16, bottom: 16, zIndex: 90, background: "#ecfdf5", color: "#065f46", border: "1px solid #6ee7b7", padding: "10px 14px", borderRadius: 10, maxWidth: 420, boxShadow: "0 8px 24px rgba(15,23,42,0.12)" }}>
           {deleteSuccess}
           <button type="button" onClick={() => setDeleteSuccess("")} style={{ marginLeft: 10, border: "none", background: "transparent", color: "#065f46", fontWeight: 700, cursor: "pointer" }}>Tutup</button>
+        </div>
+      )}
+
+      {loadingFollowUp && (
+        <div
+          className="modal-overlay"
+          data-testid="loading-followup-modal"
+          style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 85 }}
+        >
+          <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: "100%", maxWidth: 520 }}>
+            <h3 style={{ margin: "0 0 8px" }}>Loading terkait masih aktif</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: "0.9rem" }}>
+              Surat Jalan <strong>{loadingFollowUp.sjNumber}</strong> sudah dibatalkan.
+              Konfirmasi Loading berikut belum dihapus otomatis — hapus manual jika perlu.
+              Loading milik Surat Jalan lain tidak ditampilkan.
+            </p>
+            <ul data-testid="loading-followup-list" style={{ margin: "0 0 16px", paddingLeft: 0, listStyle: "none", display: "grid", gap: 8 }}>
+              {(loadingFollowUp.confirmations || []).map((c) => {
+                const qty = (c.lines || []).reduce(
+                  (s, ln) => s + Math.max(0, Number(ln.qty || ln.quantity || 0)),
+                  0,
+                );
+                const busy = loadingFollowUpBusyId === String(c.id);
+                return (
+                  <li
+                    key={c.id}
+                    data-testid={`loading-followup-row-${c.id}`}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 8,
+                      padding: "10px 12px",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{c.sj_number || c.surat_jalan_name || loadingFollowUp.sjNumber}</div>
+                      <div className="muted" style={{ fontSize: "0.85rem" }}>
+                        {c.id} · qty {qty.toLocaleString("id-ID")}
+                      </div>
+                    </div>
+                    {canDeleteLoading ? (
+                      <button
+                        type="button"
+                        data-testid={`btn-hapus-loading-followup-${c.id}`}
+                        disabled={Boolean(loadingFollowUpBusyId) || Boolean(loadingFollowUpDeleteConfirm)}
+                        onClick={() => requestDeleteRelatedLoading(c)}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 8,
+                          border: "none",
+                          background: busy ? "#94a3b8" : "#dc2626",
+                          color: "#fff",
+                          fontWeight: 600,
+                          cursor: (loadingFollowUpBusyId || loadingFollowUpDeleteConfirm) ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {busy ? "Menghapus..." : "Hapus Loading terkait"}
+                      </button>
+                    ) : (
+                      <span className="muted" data-testid="loading-followup-no-perm" style={{ fontSize: "0.85rem" }}>
+                        Butuh permission loading.delete
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+              {(loadingFollowUp.unresolvedBlocked || []).map((c) => (
+                <li
+                  key={`unresolved-${c.id}`}
+                  data-testid={`loading-followup-unresolved-${c.id}`}
+                  style={{
+                    border: "1px solid #fecaca",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    background: "#fef2f2",
+                  }}
+                >
+                  <div style={{ fontWeight: 700 }}>{c.sj_number || c.surat_jalan_name || loadingFollowUp.sjNumber}</div>
+                  <div className="muted" style={{ fontSize: "0.85rem", marginBottom: 4 }}>{c.id}</div>
+                  <div data-testid="loading-followup-unresolved-msg" style={{ color: "#b91c1c", fontSize: "0.85rem" }}>
+                    {MSG_LOADING_DELETE_SJ_UNRESOLVED}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {loadingFollowUpDeleteConfirm && (
+              <div
+                data-testid="loading-followup-delete-confirm"
+                style={{ background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}
+              >
+                <p style={{ margin: "0 0 10px", fontSize: "0.9rem" }}>
+                  Hapus konfirmasi Loading <strong>{loadingFollowUpDeleteConfirm.id}</strong> untuk Surat Jalan{" "}
+                  <strong>{loadingFollowUpDeleteConfirm.sjNumber}</strong>?
+                </p>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <button
+                    type="button"
+                    data-testid="btn-cancel-loading-followup-delete"
+                    disabled={Boolean(loadingFollowUpBusyId)}
+                    onClick={() => setLoadingFollowUpDeleteConfirm(null)}
+                    style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="btn-confirm-loading-followup-delete"
+                    disabled={Boolean(loadingFollowUpBusyId)}
+                    onClick={() => handleDeleteRelatedLoading()}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: loadingFollowUpBusyId ? "#94a3b8" : "#dc2626",
+                      color: "#fff",
+                      fontWeight: 600,
+                      cursor: loadingFollowUpBusyId ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {loadingFollowUpBusyId ? "Menghapus..." : "Ya, hapus Loading"}
+                  </button>
+                </div>
+              </div>
+            )}
+            {loadingFollowUpErr && (
+              <div data-testid="loading-followup-error" style={{ background: "#fef2f2", color: "#b91c1c", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
+                {loadingFollowUpErr}
+              </div>
+            )}
+            {loadingFollowUpOk && (
+              <div data-testid="loading-followup-success" style={{ background: "#ecfdf5", color: "#065f46", padding: "8px 12px", borderRadius: 8, marginBottom: 12, fontSize: "0.85rem" }}>
+                {loadingFollowUpOk}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                data-testid="btn-close-loading-followup"
+                disabled={Boolean(loadingFollowUpBusyId)}
+                onClick={() => clearLoadingFollowUpUi()}
+                style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff" }}
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

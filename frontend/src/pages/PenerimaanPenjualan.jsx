@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { formatDisplayDate } from "../lib/constants";
+import { formatDesktopListDate } from "../lib/constants";
 import { formatSalesInvoiceDate } from "../lib/salesInvoiceDate";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import LookupSearchSelect from "../components/LookupSearchSelect";
@@ -59,8 +59,14 @@ function formatRupiah(num) {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
-import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+import {
+  filterEligibleInvoices,
+  resolvePreselectedInvoiceId,
+  computeReceiptPreview,
+  formatCustomerCreditBlockedReason,
+} from "../lib/salesReceipts";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
+import PoIdentityBadges from "../components/PoIdentityBadges";
 import SalesReceiptProofViewer from "./SalesReceiptProofViewer";
 import {
   RECEIPT_PROOF_ACCEPT,
@@ -1327,8 +1333,9 @@ export default function PenerimaanPenjualan() {
                         {r.po_number ? ` · ${r.po_number}` : ""}
                         {r.notes ? ` · ${r.notes}` : ""}
                       </span>
+                      <PoIdentityBadges order={r} testIdPrefix={`rcp-po-${r.po_number || r.id}`} />
                     </td>
-                    <td>{formatDisplayDate(r.receipt_date)}</td>
+                    <td>{formatDesktopListDate(r.receipt_date)}</td>
                     <td className="sd-money is-zero">{formatRupiah(r.amount)}</td>
                     <td style={{ padding: "12px 16px", textAlign: "center" }}>
                       <span
@@ -1760,9 +1767,15 @@ export default function PenerimaanPenjualan() {
                         <div className="ux90-sr-credit" data-testid="receipt-use-credit">
                           {creditOfferErr && <p data-testid="credit-load-error" className="ux90-sr-hint is-err">{String(creditOfferErr)}</p>}
                           {creditOffer?.blocked_reason && (
-                            <p data-testid="credit-blocked-reason" className="ux90-sr-hint is-warn">{creditOffer.blocked_reason}</p>
+                            <p
+                              data-testid="credit-blocked-reason"
+                              className="ux90-sr-hint is-warn"
+                              role="status"
+                            >
+                              {formatCustomerCreditBlockedReason(creditOffer.blocked_reason)}
+                            </p>
                           )}
-                          {creditOffer?.loaded && Number(creditOffer.available) > 0 && (
+                          {creditOffer?.loaded && Number(creditOffer.available) > 0 && !creditOffer.blocked_reason && (
                             <button
                               type="button"
                               data-testid="btn-gunakan-saldo"
@@ -2001,7 +2014,7 @@ export default function PenerimaanPenjualan() {
                 <dd data-testid="receipt-detail-accounting-status" style={{ margin: 0, fontWeight: 700 }}>{accountingLabel(detailReceipt.accounting_status)}</dd>
                 <dt>Tanggal</dt>
                 <dd data-testid="receipt-detail-date" style={{ margin: 0 }}>
-                  {formatSalesInvoiceDate(detailReceipt.receipt_date) || formatDisplayDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}
+                  {formatSalesInvoiceDate(detailReceipt.receipt_date) || formatDesktopListDate(detailReceipt.receipt_date) || detailReceipt.receipt_date || "-"}
                 </dd>
                 <dt>Kas / Bank</dt>
                 <dd data-testid="receipt-detail-cash-bank" style={{ margin: 0 }}>{detailReceipt.cash_bank_name || "-"}</dd>

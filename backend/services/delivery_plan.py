@@ -3,7 +3,8 @@
 Reuses services.tanggal_pengiriman (no new estimation formula) and
 quantity_rules / terkirim_qty_summary for qty (no naive SJ summing).
 
-Exclude: cancelled, buffer_stock, fully delivered, missing/invalid date.
+Exclude: cancelled, fully delivered, missing/invalid date.
+Buffer Stock remains visible; schedule_status_code never marks it terlambat.
 SJ is NOT required for inclusion.
 """
 from __future__ import annotations
@@ -65,6 +66,7 @@ PLAN_PROJECTION = {
     "customer_approval": 1,
     "cancelled": 1,
     "buffer_stock": 1,
+    "priority": 1,
 }
 
 
@@ -87,8 +89,6 @@ def plan_row(
 ) -> Optional[dict]:
     """Build one plan row or None when excluded."""
     if order.get("cancelled"):
-        return None
-    if bool(order.get("buffer_stock")):
         return None
     if is_fully_delivered(order):
         return None
@@ -123,6 +123,9 @@ def plan_row(
         "design_bypassed": bool(order.get("design_bypassed")),
         "payment_bypassed": bool(order.get("payment_bypassed")),
         "delivery_status": order.get("delivery_status") or "",
+        "priority": order.get("priority") or "normal",
+        "urgent": str(order.get("priority") or "").lower() == "urgent",
+        "buffer_stock": bool(order.get("buffer_stock")),
     }
 
 
@@ -245,10 +248,12 @@ def paginate_rows(
 
 
 def mongo_match(extra: Optional[dict] = None) -> dict:
-    """Base Mongo filter — cancelled + buffer_stock excluded server-side."""
+    """Base Mongo filter — cancelled excluded server-side.
+
+    Buffer Stock stays in the plan; lateness is handled by schedule_status_code.
+    """
     q: Dict[str, Any] = {
         "cancelled": {"$ne": True},
-        "buffer_stock": {"$ne": True},
     }
     if extra:
         q.update(extra)

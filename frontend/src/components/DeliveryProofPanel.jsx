@@ -1030,7 +1030,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
           {deliverButtonVisible && deliveryWarehouses.length > 0 && (
             <label className="field" style={{ display: "block", marginTop: 12 }} data-testid="confirm-delivered-warehouse-field">
-              <span className="muted small">Gudang stok (R2)</span>
+              <span className="muted small">Gudang stok</span>
               <select
                 value={deliveryWarehouseId}
                 onChange={(e) => setDeliveryWarehouseId(e.target.value)}
@@ -1057,7 +1057,9 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
               <div><AlertCircle size={16} /><span>{stockPreflightErr}</span></div>
             </div>
           )}
-          {deliverButtonVisible && stockPreflight?.r2_authority_active && Array.isArray(stockPreflight.stock_warnings) && (
+          {deliverButtonVisible
+            && (stockPreflight?.r2_authority_active || stockPreflight?.warehouse_stock_standalone_active)
+            && Array.isArray(stockPreflight.stock_warnings) && (
             <div
               className={`signal-strip${stockPreflight.has_shortage_warning ? "" : " ok"}`}
               role="status"

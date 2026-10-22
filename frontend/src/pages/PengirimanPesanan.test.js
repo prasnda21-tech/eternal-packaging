@@ -130,6 +130,32 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/Tidak perlu mengisi alasan/);
   });
 
+  test("after soft-cancel SJ, shows related Loading follow-up and Hapus CTA gated by loading.delete", () => {
+    expect(src).toMatch(/deletableLoadingConfirmationsForCancelledSj/);
+    expect(src).toMatch(/refreshLoadingFollowUp/);
+    expect(src).toMatch(/loading-followup-modal/);
+    expect(src).toMatch(/btn-hapus-loading-followup-/);
+    expect(src).toMatch(/Hapus Loading terkait/);
+    expect(src).toMatch(/LOADING_DELETE_PERM/);
+    expect(src).toMatch(/canDeleteLoading/);
+    expect(src).toMatch(/api\.deleteLoadingConfirm/);
+    expect(src).toMatch(/if \(loadingFollowUpBusyId\) return/);
+    expect(src).toMatch(/payload\?\.order \|\| payload/);
+    expect(src).toMatch(/loading-followup-delete-confirm/);
+    expect(src).toMatch(/requestDeleteRelatedLoading/);
+    expect(src).toMatch(/if \(loadingFollowUpDeleteConfirm\) return/);
+    expect(src).toMatch(/btn-confirm-loading-followup-delete/);
+    expect(src).toMatch(/Hapus konfirmasi Loading/);
+    expect(src).toMatch(/formatLoadingDeleteError/);
+    expect(src).toMatch(/status === 403/);
+    expect(src).toMatch(/status === 404/);
+    expect(src).toMatch(/status === 409/);
+    expect(src).toMatch(/MSG_LOADING_DELETE_SJ_UNRESOLVED/);
+    expect(src).toMatch(/clearLoadingFollowUpUi/);
+    expect(src).toMatch(/formatDesktopListDate/);
+    expect(src).not.toMatch(/formatDisplayDate\(/);
+  });
+
   test("renders required helper texts and read-only attributes for PO and SJ numbers", () => {
     expect(src).toMatch(/ux90-pj-delivery/);
     expect(src).toMatch(/Alokasi Qty Surat Jalan/);
