@@ -619,6 +619,8 @@ async def test_create_does_not_write_journal_and_cash_bank_options():
 
             inv = await _create_invoice(client, po["id"])
             await _finalize(client, inv["id"])
+            await _post_invoice(client, inv["id"])
+            # Count receipt journals only — invoice journal is now required before create (P3).
             before = await server.db.journal_entries.count_documents({"source_type": SOURCE_TYPE})
             receipt = await _create_receipt(client, inv["id"], 1_000_000, cash_bank_id=bca["id"])
             assert receipt["accounting_status"] == "not_posted"

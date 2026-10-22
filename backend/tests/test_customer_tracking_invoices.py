@@ -121,7 +121,30 @@ async def _finalize(inv):
     return await finalize_sales_invoice(server.db, inv["id"], USER)
 
 
+async def _ensure_invoice_journal_posted(invoice_id: str) -> None:
+    """Minimal posted sales_invoice journal so CREATE penerimaan passes P3 gate."""
+    existing = await server.db.journal_entries.find_one(
+        {"source_type": "sales_invoice", "source_id": str(invoice_id), "status": "posted"},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        return
+    jid = str(uuid.uuid4())
+    await server.db.journal_entries.insert_one({
+        "id": jid,
+        "number": f"FIX-INV-{jid[:12]}",
+        "source_type": "sales_invoice",
+        "source_id": str(invoice_id),
+        "status": "posted",
+        "reversal_of": None,
+        "date": "2026-09-01",
+        "description": "fixture posted invoice journal",
+        "created_at": "2026-09-01T00:00:00Z",
+    })
+
+
 async def _pay(inv, amount):
+    await _ensure_invoice_journal_posted(inv["id"])
     return await create_sales_receipt(server.db, {
         "invoice_id": inv["id"],
         "amount": amount,
