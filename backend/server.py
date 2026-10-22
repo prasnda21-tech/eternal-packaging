@@ -11406,6 +11406,11 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
 
     from services.sales_order_prices import price_order_lines
     normalized_lines, selling_total, selling_prices_complete = await price_order_lines(db, normalized_lines)
+    # price_order_lines assigns new UUIDs and remaps parent_line_id; re-validate
+    # so a broken map never persists silently.
+    parent_err_after_price = validate_service_print_requires_parent(normalized_lines)
+    if parent_err_after_price:
+        raise HTTPException(400, parent_err_after_price)
 
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
