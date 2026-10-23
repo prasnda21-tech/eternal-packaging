@@ -35,6 +35,7 @@ from services.physical_stock import (  # noqa: E402
     MASTER_ITEMS_COLLECTION,
     MOVEMENT_OPENING_BALANCE,
     MOVEMENT_PURCHASE_RECEIPT,
+    PhysicalStockConflictError,
     PhysicalStockUnavailableError,
     WAREHOUSES_COLLECTION,
     ensure_indexes,
@@ -601,6 +602,163 @@ async def test_standalone_mid_batch_failure_resumes_idempotently(db, monkeypatch
     assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_OPENING_BALANCE}) == 2
     assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": a["id"]}))["physical_qty"] == 5
     assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": b["id"]}))["physical_qty"] == 9
+    catalog = await list_physical_stock_catalog(db, q="ST-F", branch_id=branch["id"], warehouse_id=warehouse["id"])
+    by_code = {row["item_code"]: row["physical_qty"] for row in catalog["items"]}
+    assert by_code["ST-F1"] == 5
+    assert by_code["ST-F2"] == 9
+
+
+async def test_standalone_expired_lease_takeover_resumes_without_double(db):
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    a = await _item(db, "ST-L1")
+    b = await _item(db, "ST-L2")
+    # Seed a crashed worker: line A posted, lease still held but expired.
+    from services.warehouse_stock_standalone import apply_standalone_movement
+    from services.physical_opening_import import _line_request, ENGINE_STANDALONE
+
+    batch_id = str(uuid.uuid4())
+    key = "st-lease-expired"
+    movement = await apply_standalone_movement(
+        db,
+        _line_request(
+            _line(a, branch, warehouse, 6),
+            actor_id="actor-st",
+            batch_id=batch_id,
+            idempotency_key=key,
+        ),
+        actor_id="actor-st",
+    )
+    source = [
+        _line(a, branch, warehouse, 6),
+        _line(b, branch, warehouse, 14),
+    ]
+    fingerprint = sorted([
+        [a["id"], branch["id"], warehouse["id"], 6],
+        [b["id"], branch["id"], warehouse["id"], 14],
+    ])
+    await db.physical_opening_imports.insert_one({
+        "id": batch_id,
+        "idempotency_key": key,
+        "fingerprint": fingerprint,
+        "actor_id": "actor-st",
+        "created_at": "2020-01-01T00:00:00+00:00",
+        "updated_at": "2020-01-01T00:00:00+00:00",
+        "status": "PROCESSING",
+        "engine": ENGINE_STANDALONE,
+        "source_lines": source,
+        "lines": [{
+            "master_item_id": a["id"],
+            "branch_id": branch["id"],
+            "warehouse_id": warehouse["id"],
+            "physical_qty": 6,
+            "movement_id": movement["id"],
+        }],
+        "lease_token": "dead-worker-lease",
+        "lease_expires_at": "2020-01-01T00:00:01+00:00",
+    })
+    payload = {"idempotency_key": key, "lines": source}
+    resumed = await confirm_opening_import(db, payload, actor_id="actor-st")
+    assert resumed["import"]["status"] == "CONFIRMED"
+    assert len(resumed["import"]["lines"]) == 2
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": a["id"]}) == 1
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": b["id"]}) == 1
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": a["id"]}))["physical_qty"] == 6
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": b["id"]}))["physical_qty"] == 14
+    batch = await db.physical_opening_imports.find_one({"idempotency_key": key}, {"_id": 0})
+    assert batch.get("lease_token") in (None, "")
+    assert "lease_token" not in batch or batch.get("lease_token") is None
+
+
+async def test_standalone_permanent_line_failure_keeps_batch_processing(db, monkeypatch):
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    a = await _item(db, "ST-P1")
+    b = await _item(db, "ST-P2")
+    import services.physical_opening_import as opening_mod
+
+    real = opening_mod._apply_standalone_opening_line
+
+    async def fail_second(db, line, *, actor_id, batch_id, idempotency_key):
+        if str(line.get("master_item_id")) == b["id"]:
+            raise PhysicalStockConflictError("injected permanent line failure")
+        return await real(
+            db,
+            line,
+            actor_id=actor_id,
+            batch_id=batch_id,
+            idempotency_key=idempotency_key,
+        )
+
+    monkeypatch.setattr(opening_mod, "_apply_standalone_opening_line", fail_second)
+    payload = {
+        "idempotency_key": "st-perm",
+        "lines": [_line(a, branch, warehouse, 3), _line(b, branch, warehouse, 7)],
+    }
+    with pytest.raises(OpeningImportError) as first:
+        await confirm_opening_import(db, payload, actor_id="actor-st")
+    assert first.value.status_code == 409
+    batch = await db.physical_opening_imports.find_one({"idempotency_key": "st-perm"}, {"_id": 0})
+    assert batch["status"] == "PROCESSING"
+    assert len(batch["lines"]) == 1
+    assert batch["lines"][0]["master_item_id"] == a["id"]
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 1
+    # Retry must not claim full-batch success while the failing line remains.
+    with pytest.raises(OpeningImportError) as second:
+        await confirm_opening_import(db, payload, actor_id="actor-st")
+    assert second.value.status_code == 409
+    batch2 = await db.physical_opening_imports.find_one({"idempotency_key": "st-perm"}, {"_id": 0})
+    assert batch2["status"] == "PROCESSING"
+    assert len(batch2["lines"]) == 1
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_OPENING_BALANCE}) == 1
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": a["id"]}))["physical_qty"] == 3
+    assert await db[BALANCE_COLLECTION].find_one({"master_item_id": b["id"]}) is None
+
+
+async def test_standalone_active_lease_blocks_second_worker_until_confirmed(db, monkeypatch):
+    import asyncio
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    item = await _item(db, "ST-LOCK")
+    import services.physical_opening_import as opening_mod
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    real = opening_mod._apply_standalone_opening_line
+
+    async def slow(db, line, *, actor_id, batch_id, idempotency_key):
+        started.set()
+        await release.wait()
+        return await real(
+            db,
+            line,
+            actor_id=actor_id,
+            batch_id=batch_id,
+            idempotency_key=idempotency_key,
+        )
+
+    monkeypatch.setattr(opening_mod, "_apply_standalone_opening_line", slow)
+    payload = {"idempotency_key": "st-lock", "lines": [_line(item, branch, warehouse, 11)]}
+
+    async def worker():
+        return await confirm_opening_import(db, payload, actor_id="actor-st")
+
+    first = asyncio.create_task(worker())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    # Second worker must not acquire the live lease / double-post while first holds it.
+    second_task = asyncio.create_task(worker())
+    await asyncio.sleep(0.15)
+    batch = await db.physical_opening_imports.find_one({"idempotency_key": "st-lock"}, {"_id": 0})
+    assert batch["status"] == "PROCESSING"
+    assert batch.get("lease_token")
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+    release.set()
+    results = await asyncio.gather(first, second_task, return_exceptions=True)
+    successes = [row for row in results if isinstance(row, dict)]
+    assert len(successes) == 2
+    assert all(row["import"]["status"] == "CONFIRMED" for row in successes)
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": item["id"]}) == 1
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": item["id"]}))["physical_qty"] == 11
 
 
 async def test_standalone_concurrent_confirm_does_not_double_stock(db):
