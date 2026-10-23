@@ -93,6 +93,11 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
     expect(container.querySelector('[data-testid="stock-mode-chip"]')?.textContent).toMatch(/Gudang/i);
+    expect(container.querySelector('[data-testid="stock-legend-toggle"]')?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="stock-context-info"]')?.hidden).toBe(true);
+    expect(container.querySelector('[data-testid="stock-legend-bar"]')?.querySelector(".stock-legend-items")).toBeNull();
+    expect(container.querySelector('[data-testid="stock-status-summary-detail-toggle"]')?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="stock-mutasi-nav-m-dual"]')?.getAttribute("href")).toMatch(/tab=mutasi/);
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/standalone|gudang/i);
     expect(container.querySelector('[data-testid="stock-item-m-dual"] .stock-item-primary')?.textContent)
       .toMatch(/Pouch Matte/i);

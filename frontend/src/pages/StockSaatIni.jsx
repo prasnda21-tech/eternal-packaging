@@ -612,11 +612,6 @@ export default function StockSaatIni() {
               <Info size={15} aria-hidden="true" />
               <span>Nilai negatif menunjukkan defisit stok.</span>
             </div>
-            <div className="stock-legend-items" aria-hidden="true">
-              <span><span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span> = belum ada saldo fisik</span>
-              <span><span className="stock-status-badge stock-status-badge--incomplete">Belum lengkap</span> = ada gudang belum valid</span>
-              <span><span className="stock-status-badge stock-status-badge--deficit">Defisit</span> = saldo fisik &lt; 0</span>
-            </div>
             <button
               type="button"
               className="stock-legend-toggle"
@@ -798,9 +793,25 @@ export default function StockSaatIni() {
                       </td>
                     )}
                     <td className="col-text" data-testid={`stock-item-${it.master_item_id}`}>
-                      <div className="stock-item-primary">{it.item_name || "—"}</div>
+                      <div className="stock-item-primary">
+                        <Link
+                          className="stock-item-link"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                          data-testid={`stock-item-mutasi-link-${it.master_item_id}`}
+                          title="Buka kartu stok / mutasi"
+                        >
+                          {it.item_name || "—"}
+                        </Link>
+                      </div>
                       <div className="stock-item-secondary muted small">
                         <span className="mono" data-testid={`stock-code-${it.master_item_id}`}>{it.item_code || "—"}</span>
+                        <Link
+                          className="stock-mutasi-chip"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                          data-testid={`stock-mutasi-nav-${it.master_item_id}`}
+                        >
+                          Mutasi
+                        </Link>
                       </div>
                     </td>
                     <td className="col-fit small" data-testid={`stock-unit-${it.master_item_id}`}>
@@ -959,8 +970,25 @@ export default function StockSaatIni() {
                 >
                   <div className="stock-mobile-card-head">
                     <div>
-                      <div className="stock-item-primary">{it.item_name || "—"}</div>
-                      <div className="stock-item-secondary muted small mono">{it.item_code || "—"}</div>
+                      <div className="stock-item-primary">
+                        <Link
+                          className="stock-item-link"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                          data-testid={`stock-mobile-mutasi-link-${it.master_item_id}`}
+                        >
+                          {it.item_name || "—"}
+                        </Link>
+                      </div>
+                      <div className="stock-item-secondary muted small">
+                        <span className="mono">{it.item_code || "—"}</span>
+                        {" · "}
+                        <Link
+                          className="stock-mutasi-chip"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                        >
+                          Mutasi
+                        </Link>
+                      </div>
                     </div>
                     <div className="stock-mobile-physical">
                       {renderPhysicalCell(it, primary, physicalText, book)}
@@ -1498,7 +1526,10 @@ function SaldoAwalModal({
 
   return (
     <div className="mutation-drawer-overlay saldo-awal-overlay" data-testid="saldo-awal-modal">
-      <div className="saldo-awal-panel" data-testid="saldo-awal-panel">
+      <div
+        className={`saldo-awal-panel${tab === "import" ? " saldo-awal-panel--import" : ""}`}
+        data-testid="saldo-awal-panel"
+      >
         <div className="saldo-awal-panel-head">
           <h2 data-testid="saldo-awal-title">Saldo Awal Stock Fisik</h2>
           <button type="button" className="ghost sm" onClick={onClose} aria-label="Tutup">Tutup</button>
@@ -1579,17 +1610,18 @@ function SaldoAwalModal({
                   <span data-testid="opening-import-count-selected">Terpilih: {importSummary.selectedCount}</span>
                   <span data-testid="opening-import-count-rejected">Ditolak: {importSummary.rejectedCount}</span>
                 </div>
-                <div className="saldo-awal-preview-wrap">
-                  <table className="prod-table" data-testid="opening-import-preview">
+                <div className="saldo-awal-preview-wrap" data-testid="opening-import-preview-wrap">
+                  <table className="prod-table saldo-awal-import-table" data-testid="opening-import-preview">
                     <thead>
                       <tr>
                         <th className="saldo-awal-import-check-col">Pilih</th>
                         <th>Kode</th>
                         <th>Nama Barang</th>
-                        <th>Satuan</th>
+                        <th className="saldo-awal-import-col-center">Satuan</th>
                         <th>Gudang</th>
-                        <th>Stock Fisik Excel</th>
+                        <th className="saldo-awal-import-col-center">Stock Fisik Excel</th>
                         <th>Status</th>
+                        <th>Alasan</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1599,7 +1631,7 @@ function SaldoAwalModal({
                         const checked = ready && selectedKeys.has(key);
                         return (
                           <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
-                            <td>
+                            <td className="saldo-awal-import-col-center">
                               <input
                                 type="checkbox"
                                 checked={checked}
@@ -1609,13 +1641,18 @@ function SaldoAwalModal({
                                 aria-label={ready ? `Pilih ${row.item_code || row.row_number}` : "Baris tidak dapat dipilih"}
                               />
                             </td>
-                            <td>{row.item_code || "—"}</td>
+                            <td className="mono">{row.item_code || "—"}</td>
                             <td>{row.item_name || "—"}</td>
-                            <td>{row.unit || "—"}</td>
+                            <td className="saldo-awal-import-col-center">{row.unit || "—"}</td>
                             <td>{row.warehouse_name || "—"}</td>
-                            <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
+                            <td className="saldo-awal-import-col-center mono">{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
                             <td data-testid={`opening-import-status-${row.row_number}`}>
-                              {row.status}{row.reason ? ` — ${row.reason}` : ""}
+                              <span className={`saldo-awal-import-status${ready ? " is-ready" : " is-rejected"}`}>
+                                {row.status || "—"}
+                              </span>
+                            </td>
+                            <td className="saldo-awal-import-reason" data-testid={`opening-import-reason-${row.row_number}`}>
+                              {row.reason || "—"}
                             </td>
                           </tr>
                         );
