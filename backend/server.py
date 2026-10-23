@@ -14709,17 +14709,30 @@ async def physical_opening_import_confirm(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Post validated opening lines as R2 OPENING_BALANCE in one transaction."""
+    """Post validated opening lines as OPENING_BALANCE on the active engine.
+
+    Prefers R2 transactional import when r2_authority_active. Otherwise uses
+    warehouse_stock_standalone (claim + idempotent per-line resume) when that
+    flag is enabled. Never bypasses either gate and never activates R2 here.
+    """
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active,
+        require_warehouse_stock_standalone,
+    )
     from services.physical_opening_import import OpeningImportError, confirm_opening_import
     from services.physical_stock import PhysicalStockUnavailableError
 
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+        else:
+            await require_r2_authority_active(db)
         return await confirm_opening_import(db, payload or {}, actor_id=actor_id)
     except OpeningImportError as exc:
         raise _opening_import_http(exc) from exc

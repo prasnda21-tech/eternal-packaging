@@ -1,18 +1,26 @@
-"""Bulk R2 physical opening balance import.
+"""Bulk physical opening balance import.
 
 Preview never writes stock. Confirm revalidates every row and posts
-OPENING_BALANCE through the existing physical-stock transaction. One
-request is one Mongo transaction. A later file for an identity that
-already has an opening is rejected and does not overwrite it.
+OPENING_BALANCE through the active warehouse engine:
+
+- R2 authority ON → one Mongo multi-document transaction (existing path).
+- Warehouse standalone ON / R2 OFF → claim batch + per-line standalone
+  writer with idempotent resume (no multi-doc transaction).
+
+A later file for an identity that already has an opening is rejected and
+does not overwrite it.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from services.physical_stock import (
@@ -23,6 +31,7 @@ from services.physical_stock import (
     MOVEMENT_OPENING_BALANCE,
     PhysicalStockAbortError,
     PhysicalStockConflictError,
+    PhysicalStockRetryError,
     PhysicalStockUnavailableError,
     PhysicalStockValidationError,
     StockOpnameInProgressError,
@@ -36,6 +45,21 @@ from services.physical_stock import (
     require_transaction_support,
     resolve_operational_branch,
 )
+
+STATUS_IMPORT_PROCESSING = "PROCESSING"
+STATUS_IMPORT_CONFIRMED = "CONFIRMED"
+ENGINE_R2 = "r2"
+ENGINE_STANDALONE = "warehouse_standalone"
+_STANDALONE_LEASE_SECONDS = 30
+_STANDALONE_POLL_ATTEMPTS = 80
+_STANDALONE_POLL_SLEEP_SEC = 0.05
+
+
+def _lease_expiry_iso(*, seconds: int = _STANDALONE_LEASE_SECONDS) -> str:
+    # Match services.physical_stock.now_iso() formatting so Mongo string compares work.
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=max(1, int(seconds)))
+    ).isoformat()
 
 IMPORTS = "physical_opening_imports"
 HEADERS = ("Kode Barang", "Nama Barang", "Satuan Dasar", "Gudang", "Stock Fisik")
@@ -559,8 +583,17 @@ async def revalidate_submitted_lines(db, lines: List[dict]) -> List[dict]:
     return rows
 
 
-async def confirm_opening_import(db, payload: dict, *, actor_id: str) -> dict:
-    await require_transaction_support(_client(db))
+def _public_import(doc: dict) -> dict:
+    public = dict(doc or {})
+    public.pop("_id", None)
+    return public
+
+
+def _line_identity(line: dict) -> Tuple[str, str]:
+    return (str(line.get("master_item_id") or ""), str(line.get("warehouse_id") or ""))
+
+
+async def _prepare_confirm_payload(db, payload: dict) -> Tuple[str, List[dict], List[list], Optional[dict]]:
     key = str((payload or {}).get("idempotency_key") or "").strip()
     if not key:
         raise OpeningImportError("idempotency_key wajib diisi.")
@@ -575,12 +608,20 @@ async def confirm_opening_import(db, payload: dict, *, actor_id: str) -> dict:
                 "Idempotency key sudah digunakan dengan payload yang berbeda",
                 status_code=409,
             )
-        return {"import": existing, "idempotent": True}
+        return key, [], list(existing.get("fingerprint") or []), existing
     rows = await revalidate_submitted_lines(db, incoming)
     ready = _ready_lines(rows)
     if len(ready) != len(rows):
         raise OpeningImportError("Impor ditolak. Tidak ada stok yang diubah.", rows=rows)
-    fingerprint = _fingerprint(ready)
+    return key, ready, _fingerprint(ready), None
+
+
+async def _confirm_opening_import_r2(db, payload: dict, *, actor_id: str) -> dict:
+    """Atomic multi-doc transaction path used when R2 authority is active."""
+    await require_transaction_support(_client(db))
+    key, ready, fingerprint, existing = await _prepare_confirm_payload(db, payload)
+    if existing:
+        return {"import": _public_import(existing), "idempotent": True, "engine": existing.get("engine") or ENGINE_R2}
     batch_id = str(uuid.uuid4())
     created: List[dict] = []
     try:
@@ -605,22 +646,341 @@ async def confirm_opening_import(db, payload: dict, *, actor_id: str) -> dict:
                     "fingerprint": fingerprint,
                     "actor_id": actor_id,
                     "created_at": now_iso(),
-                    "status": "CONFIRMED",
+                    "status": STATUS_IMPORT_CONFIRMED,
+                    "engine": ENGINE_R2,
                     "lines": created,
                 }
                 await db[IMPORTS].insert_one(dict(document), session=session)
-                document.pop("_id", None)
-                saved = document
+                saved = _public_import(document)
     except (PhysicalStockConflictError, PhysicalStockValidationError, StockOpnameInProgressError, PhysicalStockAbortError) as exc:
         raise OpeningImportError(str(exc), status_code=409) from exc
     except DuplicateKeyError:
         raced = await db[IMPORTS].find_one({"idempotency_key": key}, {"_id": 0})
         if raced and raced.get("fingerprint") == fingerprint:
-            return {"import": raced, "idempotent": True}
+            return {
+                "import": _public_import(raced),
+                "idempotent": True,
+                "engine": raced.get("engine") or ENGINE_R2,
+            }
         raise OpeningImportError(
             "Idempotency key sudah digunakan dengan payload yang berbeda",
             status_code=409,
         )
     except PyMongoError as exc:
         raise PhysicalStockUnavailableError("Impor saldo awal gagal.") from exc
-    return {"import": saved, "idempotent": False}
+    return {"import": saved, "idempotent": False, "engine": ENGINE_R2}
+
+
+async def _apply_standalone_opening_line(
+    db,
+    line: dict,
+    *,
+    actor_id: str,
+    batch_id: str,
+    idempotency_key: str,
+) -> dict:
+    from services.warehouse_stock_standalone import apply_standalone_movement
+
+    request = _line_request(
+        line,
+        actor_id=actor_id,
+        batch_id=batch_id,
+        idempotency_key=idempotency_key,
+    )
+    last_error: Optional[BaseException] = None
+    for _ in range(5):
+        try:
+            return await apply_standalone_movement(db, request, actor_id=actor_id)
+        except PhysicalStockRetryError as exc:
+            last_error = exc
+            continue
+    raise PhysicalStockUnavailableError(
+        f"Impor saldo awal gagal setelah retry: {last_error}"
+    )
+
+
+async def _release_standalone_lease(db, *, key: str, lease_token: str) -> None:
+    await db[IMPORTS].update_one(
+        {"idempotency_key": key, "lease_token": lease_token, "status": STATUS_IMPORT_PROCESSING},
+        {
+            "$set": {
+                "lease_expires_at": now_iso(),
+                "updated_at": now_iso(),
+            },
+            "$unset": {"lease_token": ""},
+        },
+    )
+
+
+async def _acquire_standalone_lease(db, *, key: str) -> Optional[dict]:
+    """Exclusive worker lease for a PROCESSING import batch."""
+    now = now_iso()
+    lease_token = str(uuid.uuid4())
+    doc = await db[IMPORTS].find_one_and_update(
+        {
+            "idempotency_key": key,
+            "status": STATUS_IMPORT_PROCESSING,
+            "$or": [
+                {"lease_token": {"$exists": False}},
+                {"lease_token": None},
+                {"lease_expires_at": {"$exists": False}},
+                {"lease_expires_at": None},
+                {"lease_expires_at": {"$lte": now}},
+            ],
+        },
+        {
+            "$set": {
+                "lease_token": lease_token,
+                "lease_expires_at": _lease_expiry_iso(),
+                "updated_at": now,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if not doc:
+        return None
+    public = _public_import(doc)
+    public["_lease_token"] = lease_token
+    return public
+
+
+async def _await_confirmed_or_lease(
+    db,
+    *,
+    key: str,
+    fingerprint: List[list],
+    actor_id: str,
+) -> dict:
+    """Wait for the lease holder to finish, or take over a stale PROCESSING batch."""
+    for _ in range(_STANDALONE_POLL_ATTEMPTS):
+        existing = await db[IMPORTS].find_one({"idempotency_key": key}, {"_id": 0})
+        if not existing:
+            raise OpeningImportError("Batch impor tidak ditemukan.", status_code=409)
+        if existing.get("fingerprint") != fingerprint:
+            raise OpeningImportError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda",
+                status_code=409,
+            )
+        if existing.get("status") == STATUS_IMPORT_CONFIRMED:
+            return {
+                "import": _public_import(existing),
+                "idempotent": True,
+                "engine": existing.get("engine") or ENGINE_STANDALONE,
+            }
+        if existing.get("status") != STATUS_IMPORT_PROCESSING:
+            raise OpeningImportError(
+                "Status batch impor tidak dikenali.",
+                status_code=409,
+            )
+        leased = await _acquire_standalone_lease(db, key=key)
+        if leased:
+            source = leased.get("source_lines") or []
+            if not source:
+                await _release_standalone_lease(
+                    db, key=key, lease_token=str(leased.get("_lease_token") or ""),
+                )
+                raise OpeningImportError(
+                    "Batch impor standalone tidak dapat dilanjutkan.",
+                    status_code=409,
+                )
+            saved = await _finalize_standalone_import_lines(
+                db,
+                key=key,
+                batch_id=str(leased.get("id") or ""),
+                fingerprint=list(leased.get("fingerprint") or fingerprint),
+                actor_id=actor_id,
+                ready=source,
+                created=list(leased.get("lines") or []),
+                lease_token=str(leased.get("_lease_token") or ""),
+            )
+            return {
+                "import": saved,
+                "idempotent": True,
+                "engine": ENGINE_STANDALONE,
+            }
+        await asyncio.sleep(_STANDALONE_POLL_SLEEP_SEC)
+    raise PhysicalStockUnavailableError(
+        "Impor saldo awal masih diproses oleh permintaan lain. Coba lagi."
+    )
+
+
+async def _finalize_standalone_import_lines(
+    db,
+    *,
+    key: str,
+    batch_id: str,
+    fingerprint: List[list],
+    actor_id: str,
+    ready: List[dict],
+    created: List[dict],
+    lease_token: str,
+) -> dict:
+    done = {_line_identity(row) for row in created}
+    working = list(created)
+    try:
+        for line in ready:
+            identity = _line_identity(line)
+            if identity in done:
+                continue
+            movement = await _apply_standalone_opening_line(
+                db,
+                line,
+                actor_id=actor_id,
+                batch_id=batch_id,
+                idempotency_key=key,
+            )
+            working.append({
+                "master_item_id": line["master_item_id"],
+                "branch_id": line["branch_id"],
+                "warehouse_id": line["warehouse_id"],
+                "physical_qty": line["physical_qty"],
+                "movement_id": movement.get("id"),
+            })
+            done.add(identity)
+            await db[IMPORTS].update_one(
+                {
+                    "idempotency_key": key,
+                    "status": STATUS_IMPORT_PROCESSING,
+                    "lease_token": lease_token,
+                },
+                {
+                    "$set": {
+                        "lines": working,
+                        "updated_at": now_iso(),
+                        "lease_expires_at": _lease_expiry_iso(),
+                    }
+                },
+            )
+    except (PhysicalStockConflictError, PhysicalStockValidationError, StockOpnameInProgressError) as exc:
+        await _release_standalone_lease(db, key=key, lease_token=lease_token)
+        raise OpeningImportError(str(exc), status_code=409) from exc
+    except PhysicalStockUnavailableError:
+        await _release_standalone_lease(db, key=key, lease_token=lease_token)
+        raise
+    except PyMongoError as exc:
+        await _release_standalone_lease(db, key=key, lease_token=lease_token)
+        raise PhysicalStockUnavailableError("Impor saldo awal gagal.") from exc
+
+    confirmed_at = now_iso()
+    await db[IMPORTS].update_one(
+        {"idempotency_key": key, "lease_token": lease_token},
+        {
+            "$set": {
+                "status": STATUS_IMPORT_CONFIRMED,
+                "lines": working,
+                "engine": ENGINE_STANDALONE,
+                "confirmed_at": confirmed_at,
+                "updated_at": confirmed_at,
+            },
+            "$unset": {"lease_token": "", "lease_expires_at": ""},
+        },
+    )
+    stored = await db[IMPORTS].find_one({"idempotency_key": key}, {"_id": 0})
+    if not stored:
+        return {
+            "id": batch_id,
+            "idempotency_key": key,
+            "fingerprint": fingerprint,
+            "actor_id": actor_id,
+            "status": STATUS_IMPORT_CONFIRMED,
+            "engine": ENGINE_STANDALONE,
+            "lines": working,
+            "confirmed_at": confirmed_at,
+        }
+    return _public_import(stored)
+
+
+async def _confirm_opening_import_standalone(db, payload: dict, *, actor_id: str) -> dict:
+    """Standalone path: claim batch first, post lines via pending-event writer, resume on retry.
+
+    Not multi-document atomic. Safety:
+    - unique idempotency_key claim prevents concurrent double-batch inserts
+    - worker lease ensures only one finalize runs at a time
+    - per-line movement idempotency_key prevents duplicate OPENING_BALANCE
+    - PROCESSING + source_lines enables idempotent resume after mid-batch failure
+    """
+    key, ready, fingerprint, existing = await _prepare_confirm_payload(db, payload)
+    if existing and existing.get("status") == STATUS_IMPORT_CONFIRMED:
+        return {
+            "import": _public_import(existing),
+            "idempotent": True,
+            "engine": existing.get("engine") or ENGINE_STANDALONE,
+        }
+    if existing:
+        return await _await_confirmed_or_lease(
+            db,
+            key=key,
+            fingerprint=fingerprint,
+            actor_id=actor_id,
+        )
+
+    batch_id = str(uuid.uuid4())
+    lease_token = str(uuid.uuid4())
+    created_at = now_iso()
+    source_lines = [
+        {
+            "master_item_id": line["master_item_id"],
+            "branch_id": line["branch_id"],
+            "warehouse_id": line["warehouse_id"],
+            "physical_qty": line["physical_qty"],
+            "item_code": line.get("item_code") or "",
+        }
+        for line in ready
+    ]
+    claim = {
+        "id": batch_id,
+        "idempotency_key": key,
+        "fingerprint": fingerprint,
+        "actor_id": actor_id,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "status": STATUS_IMPORT_PROCESSING,
+        "engine": ENGINE_STANDALONE,
+        "source_lines": source_lines,
+        "lines": [],
+        "lease_token": lease_token,
+        "lease_expires_at": _lease_expiry_iso(),
+    }
+    try:
+        await db[IMPORTS].insert_one(dict(claim))
+    except DuplicateKeyError:
+        raced = await db[IMPORTS].find_one({"idempotency_key": key}, {"_id": 0})
+        if not raced or raced.get("fingerprint") != fingerprint:
+            raise OpeningImportError(
+                "Idempotency key sudah digunakan dengan payload yang berbeda",
+                status_code=409,
+            ) from None
+        return await _await_confirmed_or_lease(
+            db,
+            key=key,
+            fingerprint=fingerprint,
+            actor_id=actor_id,
+        )
+
+    saved = await _finalize_standalone_import_lines(
+        db,
+        key=key,
+        batch_id=batch_id,
+        fingerprint=fingerprint,
+        actor_id=actor_id,
+        ready=source_lines,
+        created=[],
+        lease_token=lease_token,
+    )
+    return {"import": saved, "idempotent": False, "engine": ENGINE_STANDALONE}
+
+
+async def confirm_opening_import(db, payload: dict, *, actor_id: str) -> dict:
+    """Confirm validated opening lines on the active warehouse engine."""
+    from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
+    r2_on = await is_r2_authority_active(db)
+    if r2_on:
+        return await _confirm_opening_import_r2(db, payload, actor_id=actor_id)
+    if await is_warehouse_stock_standalone_active(db):
+        return await _confirm_opening_import_standalone(db, payload, actor_id=actor_id)
+    raise OpeningImportError(
+        "Impor saldo awal memerlukan r2_authority_active atau warehouse_stock_standalone.",
+        status_code=409,
+    )

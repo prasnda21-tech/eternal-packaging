@@ -35,6 +35,7 @@ from services.physical_stock import (  # noqa: E402
     MASTER_ITEMS_COLLECTION,
     MOVEMENT_OPENING_BALANCE,
     MOVEMENT_PURCHASE_RECEIPT,
+    PhysicalStockUnavailableError,
     WAREHOUSES_COLLECTION,
     ensure_indexes,
     list_physical_stock_catalog,
@@ -42,6 +43,9 @@ from services.physical_stock import (  # noqa: E402
     set_fail_after_balance,
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
+from services.warehouse_stock_standalone import (  # noqa: E402
+    set_warehouse_stock_standalone_enabled,
+)
 import server  # noqa: E402
 from server import app, current_user  # noqa: E402
 
@@ -461,3 +465,199 @@ async def test_http_preview_does_not_write_and_confirm_posts(db):
     assert movement["movement_type"] == MOVEMENT_OPENING_BALANCE
     assert movement["qty_delta"] == 12
     assert movement["warehouse_id"] == warehouse["id"]
+
+
+async def _enable_standalone(db):
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True, user={"id": "tester"})
+
+
+async def test_standalone_import_one_and_multi_item(db):
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    first = await _item(db, "ST-A")
+    second = await _item(db, "ST-B")
+    one = await confirm_opening_import(
+        db,
+        {"idempotency_key": "st-one", "lines": [_line(first, branch, warehouse, 33)]},
+        actor_id="actor-st",
+    )
+    assert one["idempotent"] is False
+    assert one["engine"] == "warehouse_standalone"
+    assert one["import"]["status"] == "CONFIRMED"
+    bal = await db[BALANCE_COLLECTION].find_one({"master_item_id": first["id"]}, {"_id": 0})
+    assert bal["physical_qty"] == 33
+    assert bal.get("pending_event") is None
+    led = await db[LEDGER_COLLECTION].find_one({"master_item_id": first["id"]}, {"_id": 0})
+    assert led["movement_type"] == MOVEMENT_OPENING_BALANCE
+    assert led["qty_delta"] == 33
+    assert led["balance_after"] == 33
+    assert led["metadata"]["import_batch_id"] == one["import"]["id"]
+
+    multi = await confirm_opening_import(
+        db,
+        {
+            "idempotency_key": "st-multi",
+            "lines": [
+                _line(second, branch, warehouse, 10),
+                _line(await _item(db, "ST-C"), branch, warehouse, 0),
+            ],
+        },
+        actor_id="actor-st",
+    )
+    assert multi["engine"] == "warehouse_standalone"
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_OPENING_BALANCE}) == 3
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": second["id"]}))["physical_qty"] == 10
+
+
+async def test_standalone_duplicate_invalid_and_idempotent_retry(db):
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    item = await _item(db, "ST-DUP")
+    preview = await preview_opening_import(
+        db,
+        _xlsx([
+            ["ST-DUP", "A", "PCS", "MAIN", 5],
+            ["ST-DUP", "A", "PCS", "MAIN", 7],
+            ["MISSING", "X", "PCS", "MAIN", 1],
+        ]),
+        "dup.xlsx",
+    )
+    assert [row["status"] for row in preview["rows"]] == [
+        STATUS_DUPLICATE,
+        STATUS_DUPLICATE,
+        STATUS_UNKNOWN,
+    ]
+    assert preview["can_confirm"] is False
+    with pytest.raises(OpeningImportError):
+        await confirm_opening_import(
+            db,
+            {
+                "idempotency_key": "st-bad",
+                "lines": [
+                    _line(item, branch, warehouse, 5),
+                    _line(item, branch, warehouse, 7),
+                ],
+            },
+            actor_id="actor-st",
+        )
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+
+    payload = {"idempotency_key": "st-same", "lines": [_line(item, branch, warehouse, 44)]}
+    first = await confirm_opening_import(db, payload, actor_id="actor-st")
+    second = await confirm_opening_import(db, payload, actor_id="actor-st")
+    assert second["idempotent"] is True
+    assert first["import"]["id"] == second["import"]["id"]
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 1
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": item["id"]}))["physical_qty"] == 44
+    with pytest.raises(OpeningImportError) as conflict:
+        await confirm_opening_import(
+            db,
+            {"idempotency_key": "st-same", "lines": [_line(item, branch, warehouse, 11)]},
+            actor_id="actor-st",
+        )
+    assert conflict.value.status_code == 409
+
+
+async def test_standalone_mid_batch_failure_resumes_idempotently(db, monkeypatch):
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    a = await _item(db, "ST-F1")
+    b = await _item(db, "ST-F2")
+    import services.physical_opening_import as opening_mod
+
+    calls = {"n": 0}
+    real = opening_mod._apply_standalone_opening_line
+
+    async def flaky(db, line, *, actor_id, batch_id, idempotency_key):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PhysicalStockUnavailableError("injected mid-batch failure")
+        return await real(
+            db,
+            line,
+            actor_id=actor_id,
+            batch_id=batch_id,
+            idempotency_key=idempotency_key,
+        )
+
+    monkeypatch.setattr(opening_mod, "_apply_standalone_opening_line", flaky)
+    payload = {
+        "idempotency_key": "st-resume",
+        "lines": [_line(a, branch, warehouse, 5), _line(b, branch, warehouse, 9)],
+    }
+    with pytest.raises(PhysicalStockUnavailableError):
+        await confirm_opening_import(db, payload, actor_id="actor-st")
+    batch = await db.physical_opening_imports.find_one({"idempotency_key": "st-resume"}, {"_id": 0})
+    assert batch["status"] == "PROCESSING"
+    assert len(batch["lines"]) == 1
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": a["id"]}))["physical_qty"] == 5
+    assert await db[BALANCE_COLLECTION].find_one({"master_item_id": b["id"]}) is None
+
+    monkeypatch.setattr(opening_mod, "_apply_standalone_opening_line", real)
+    resumed = await confirm_opening_import(db, payload, actor_id="actor-st")
+    assert resumed["import"]["status"] == "CONFIRMED"
+    assert len(resumed["import"]["lines"]) == 2
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_OPENING_BALANCE}) == 2
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": a["id"]}))["physical_qty"] == 5
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": b["id"]}))["physical_qty"] == 9
+
+
+async def test_standalone_concurrent_confirm_does_not_double_stock(db):
+    import asyncio
+
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    item = await _item(db, "ST-CON")
+    payload = {"idempotency_key": "st-con", "lines": [_line(item, branch, warehouse, 17)]}
+
+    async def once():
+        return await confirm_opening_import(db, payload, actor_id="actor-st")
+
+    results = await asyncio.gather(once(), once(), return_exceptions=True)
+    successes = [row for row in results if isinstance(row, dict)]
+    assert successes
+    assert all(row["import"]["id"] == successes[0]["import"]["id"] for row in successes)
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": item["id"]}) == 1
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": item["id"]}))["physical_qty"] == 17
+
+
+async def test_http_confirm_standalone_posts_without_r2(db):
+    await _enable_standalone(db)
+    branch, (warehouse,) = await _location(db)
+    item = await _item(db, "ST-HTTP")
+    app.dependency_overrides[current_user] = lambda: _admin()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/physical-opening-balances/import",
+            json={"idempotency_key": "st-http", "lines": [_line(item, branch, warehouse, 21)]},
+        )
+        retry = await client.post(
+            "/api/physical-opening-balances/import",
+            json={"idempotency_key": "st-http", "lines": [_line(item, branch, warehouse, 21)]},
+        )
+    app.dependency_overrides.clear()
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["engine"] == "warehouse_standalone"
+    assert body["import"]["status"] == "CONFIRMED"
+    assert retry.status_code == 200
+    assert retry.json()["idempotent"] is True
+    assert (await db[BALANCE_COLLECTION].find_one({"master_item_id": item["id"]}))["physical_qty"] == 21
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 1
+
+
+async def test_neither_engine_rejects_confirm(db):
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False, user={"id": "tester"})
+    branch, (warehouse,) = await _location(db)
+    item = await _item(db, "ST-NONE")
+    with pytest.raises(OpeningImportError) as exc:
+        await confirm_opening_import(
+            db,
+            {"idempotency_key": "st-none", "lines": [_line(item, branch, warehouse, 1)]},
+            actor_id="actor-st",
+        )
+    assert exc.value.status_code == 409
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
