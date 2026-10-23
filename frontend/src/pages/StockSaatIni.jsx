@@ -19,6 +19,15 @@ import {
   warehouseLocationLabel,
 } from "../lib/physicalStockView";
 import BranchScopeSelect from "../components/BranchScopeSelect";
+import {
+  IMPORT_RESUME_SAFE_MESSAGE,
+  buildConfirmLines,
+  classifyImportConfirmResponse,
+  defaultSelectedKeys,
+  isReadyRow,
+  rowSelectKey,
+  summarizeImportRows,
+} from "../lib/openingImportUi";
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
@@ -1240,8 +1249,13 @@ function SaldoAwalModal({
   const [idempotencyKey, setIdempotencyKey] = useState(newKey);
   const [preview, setPreview] = useState(null);
   const [importKey, setImportKey] = useState("");
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+  const [lockedLines, setLockedLines] = useState(null);
+  /** idle | submitting | needs_resume */
+  const [importTxn, setImportTxn] = useState("idle");
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
+  const [importNotice, setImportNotice] = useState("");
   const [templateWarehouseId, setTemplateWarehouseId] = useState("");
   const [showFieldErrors, setShowFieldErrors] = useState(false);
   const options = warehouseChoices(warehouses, branchId).filter(isOperationalWarehouse);
@@ -1342,15 +1356,47 @@ function SaldoAwalModal({
     }
   };
 
+  const importSummary = summarizeImportRows(preview?.rows || [], selectedKeys);
+  const selectionLocked = importTxn === "needs_resume" || importTxn === "submitting" || importing;
+  const canConfirmImport = Boolean(
+    importKey
+    && !importing
+    && importTxn !== "submitting"
+    && (
+      (importTxn === "needs_resume" && Array.isArray(lockedLines) && lockedLines.length > 0)
+      || (importTxn === "idle" && importSummary.selectedCount > 0)
+    ),
+  );
+
+  const toggleReadyRow = (row) => {
+    if (!isReadyRow(row) || selectionLocked) return;
+    const key = rowSelectKey(row);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const onImportFile = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    if (importTxn === "needs_resume" || importing) {
+      setImportError("Selesaikan atau lanjutkan transaksi impor yang belum selesai sebelum mengunggah file baru.");
+      return;
+    }
     setImportError("");
+    setImportNotice("");
     setPreview(null);
+    setSelectedKeys(new Set());
+    setLockedLines(null);
+    setImportTxn("idle");
     try {
       const result = await api.physicalOpeningImportPreview(file);
       setPreview(result);
+      setSelectedKeys(defaultSelectedKeys(result?.rows || []));
       setImportKey(newKey());
     } catch (ex) {
       setImportError(importMessage(ex, "File tidak dapat diperiksa"));
@@ -1358,25 +1404,52 @@ function SaldoAwalModal({
   };
 
   const confirmImport = async () => {
-    if (!preview?.can_confirm || !importKey || importing) return;
+    if (!canConfirmImport || !importKey || importing) return;
+    const lines = importTxn === "needs_resume" && Array.isArray(lockedLines)
+      ? lockedLines
+      : buildConfirmLines(importSummary.selectedRows);
+    if (!lines.length) return;
     setImporting(true);
     setImportError("");
+    setImportNotice("");
+    setImportTxn("submitting");
+    setLockedLines(lines);
     try {
-      await api.physicalOpeningImportConfirm({
+      const result = await api.physicalOpeningImportConfirm({
         idempotency_key: importKey,
-        lines: (preview.rows || []).filter((row) => row.status === "Siap").map((row) => ({
-          master_item_id: row.master_item_id,
-          branch_id: row.branch_id,
-          warehouse_id: row.warehouse_id,
-          physical_qty: row.physical_qty,
-          item_code: row.item_code,
-        })),
+        lines,
       });
-      setPreview(null);
-      setImportKey("");
-      await onSaved();
+      const kind = classifyImportConfirmResponse(result);
+      if (kind === "confirmed") {
+        setPreview(null);
+        setImportKey("");
+        setSelectedKeys(new Set());
+        setLockedLines(null);
+        setImportTxn("idle");
+        setImportNotice("Impor saldo awal berhasil dikonfirmasi.");
+        await onSaved();
+        return;
+      }
+      if (kind === "processing") {
+        setImportTxn("needs_resume");
+        setImportError("Status batch: PROCESSING. Klik Lanjutkan untuk menunggu/menyelesaikan transaksi yang sama.");
+        return;
+      }
+      // Backend did not return a terminal status we recognize — keep key/payload, do not invent success.
+      setImportTxn("needs_resume");
+      setImportError(IMPORT_RESUME_SAFE_MESSAGE);
     } catch (ex) {
-      setImportError(importMessage(ex, "Impor saldo awal gagal"));
+      setImportTxn("needs_resume");
+      const detail = ex?.response?.data?.detail;
+      const batchStatus = typeof detail === "object"
+        ? String(detail?.import?.status || detail?.status || "").toUpperCase()
+        : "";
+      if (batchStatus === "PROCESSING") {
+        setImportError(`Status batch: PROCESSING. ${importMessage(ex, "Impor terhenti.")} Klik Lanjutkan dengan key yang sama.`);
+      } else {
+        // Gap: most failures do not embed PROCESSING — keep safe resume copy + server message.
+        setImportError(`${importMessage(ex, "Impor saldo awal gagal")}. ${IMPORT_RESUME_SAFE_MESSAGE}`);
+      }
     } finally {
       setImporting(false);
     }
@@ -1457,8 +1530,8 @@ function SaldoAwalModal({
         {tab === "import" && (
           <div className="saldo-awal-import-panel" data-testid="saldo-awal-import-panel">
             <p className="muted small">
-              Unduh template per gudang, isi qty fisik, lalu impor. Hanya baris berstatus Siap yang dapat dikonfirmasi.
-              Saldo yang sudah ditetapkan tidak diinisialisasi ulang.
+              Unduh template per gudang, isi qty fisik, lalu impor. Hanya baris Siap yang dapat dipilih dan dikonfirmasi
+              (subset diizinkan meski file masih berisi baris ditolak). Saldo yang sudah ditetapkan tidak diinisialisasi ulang.
             </p>
             <div className="saldo-awal-fields saldo-awal-fields--import">
               <label className="saldo-awal-field">
@@ -1472,52 +1545,99 @@ function SaldoAwalModal({
               </label>
               <div className="saldo-awal-import-actions">
                 <button type="button" className="ghost" onClick={downloadTemplate} disabled={!templateWarehouseId} data-testid="opening-import-template">Download Template</button>
-                <label className="ghost saldo-awal-file-btn">
+                <label className={`ghost saldo-awal-file-btn${selectionLocked ? " is-disabled" : ""}`}>
                   Pilih File Excel
-                  <input type="file" accept=".xlsx,.csv,text/csv" onChange={onImportFile} data-testid="opening-import-file" />
+                  <input
+                    type="file"
+                    accept=".xlsx,.csv,text/csv"
+                    onChange={onImportFile}
+                    data-testid="opening-import-file"
+                    disabled={selectionLocked}
+                  />
                 </label>
               </div>
             </div>
-            {importError && <div className="signal-strip" role="alert" data-testid="opening-import-error"><div><AlertCircle size={16} /><span>{importError}</span></div></div>}
-            {preview && (
-              <div className="saldo-awal-preview-wrap">
-                <table className="prod-table" data-testid="opening-import-preview">
-                  <thead>
-                    <tr>
-                      <th>Kode</th>
-                      <th>Nama Barang</th>
-                      <th>Satuan</th>
-                      <th>Gudang</th>
-                      <th>Stock Fisik Excel</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(preview.rows || []).map((row) => (
-                      <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
-                        <td>{row.item_code || "—"}</td>
-                        <td>{row.item_name || "—"}</td>
-                        <td>{row.unit || "—"}</td>
-                        <td>{row.warehouse_name || "—"}</td>
-                        <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
-                        <td data-testid={`opening-import-status-${row.row_number}`}>
-                          {row.status}{row.reason ? ` — ${row.reason}` : ""}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {importNotice && !importError && (
+              <div className="signal-strip" role="status" data-testid="opening-import-notice">
+                <div><Info size={16} /><span>{importNotice}</span></div>
               </div>
             )}
-            <button
-              type="button"
-              className="primary"
-              disabled={!preview?.can_confirm || importing}
-              onClick={confirmImport}
-              data-testid="opening-import-confirm"
-            >
-              {importing ? "Menyimpan…" : "Konfirmasi Saldo Awal"}
-            </button>
+            {importError && (
+              <div className="signal-strip" role="alert" data-testid="opening-import-error">
+                <div><AlertCircle size={16} /><span>{importError}</span></div>
+              </div>
+            )}
+            {importTxn === "needs_resume" && (
+              <p className="muted small" data-testid="opening-import-resume-hint">
+                Transaksi impor menunggu penyelesaian. Pilihan baris dikunci. Idempotency key tetap sama.
+              </p>
+            )}
+            {preview && (
+              <>
+                <div className="saldo-awal-import-summary" data-testid="opening-import-summary">
+                  <span data-testid="opening-import-count-ready">Siap: {importSummary.readyCount}</span>
+                  <span data-testid="opening-import-count-selected">Terpilih: {importSummary.selectedCount}</span>
+                  <span data-testid="opening-import-count-rejected">Ditolak: {importSummary.rejectedCount}</span>
+                </div>
+                <div className="saldo-awal-preview-wrap">
+                  <table className="prod-table" data-testid="opening-import-preview">
+                    <thead>
+                      <tr>
+                        <th className="saldo-awal-import-check-col">Pilih</th>
+                        <th>Kode</th>
+                        <th>Nama Barang</th>
+                        <th>Satuan</th>
+                        <th>Gudang</th>
+                        <th>Stock Fisik Excel</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(preview.rows || []).map((row) => {
+                        const ready = isReadyRow(row);
+                        const key = rowSelectKey(row);
+                        const checked = ready && selectedKeys.has(key);
+                        return (
+                          <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!ready || selectionLocked}
+                                onChange={() => toggleReadyRow(row)}
+                                data-testid={`opening-import-check-${row.row_number}`}
+                                aria-label={ready ? `Pilih ${row.item_code || row.row_number}` : "Baris tidak dapat dipilih"}
+                              />
+                            </td>
+                            <td>{row.item_code || "—"}</td>
+                            <td>{row.item_name || "—"}</td>
+                            <td>{row.unit || "—"}</td>
+                            <td>{row.warehouse_name || "—"}</td>
+                            <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
+                            <td data-testid={`opening-import-status-${row.row_number}`}>
+                              {row.status}{row.reason ? ` — ${row.reason}` : ""}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            <div className="saldo-awal-import-confirm-row">
+              <button
+                type="button"
+                className="primary"
+                disabled={!canConfirmImport}
+                onClick={confirmImport}
+                data-testid="opening-import-confirm"
+              >
+                {importing
+                  ? "Menyimpan…"
+                  : (importTxn === "needs_resume" ? "Lanjutkan" : "Konfirmasi Saldo Awal")}
+              </button>
+            </div>
           </div>
         )}
 
