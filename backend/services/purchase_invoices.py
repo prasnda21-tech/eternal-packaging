@@ -18,24 +18,41 @@ from pymongo import ReturnDocument
 from services.purchase_common import (
     PREFIX_PURCHASE_INVOICE,
     actor_snapshot,
+    actor_user_id,
+    add_days_ymd,
     stamp_create,
+    stamp_update,
     cancellation_fields,
     derive_child_number,
     get_named_lock,
     insert_with_unique_number,
+    invoice_due_display_status,
     is_cancelled,
     line_subtotal,
     money_round,
     now_iso,
+    parse_optional_ymd,
+    parse_payment_term_days,
     parse_qty,
+    parse_required_ymd,
     qty_le,
     with_active_filter,
+)
+from services.purchase_branch import (
+    invoice_location_public,
+    resolve_invoice_location_from_gr,
+    resolve_invoice_location_from_po,
+    strip_client_invoice_location,
 )
 from services.purchase_orders import get_purchase_order
 
 COLLECTION = "purchase_invoices"
 PAY_COLLECTION = "purchase_payments"
 GR_COLLECTION = "purchase_goods_receipts"
+AUDIT_COLLECTION = "audit_logs"
+AUDIT_ACTION_TERMS = "purchase_invoice.payment_terms.update"
+HISTORY_FIELD = "payment_terms_history"
+HISTORY_CAP = 40
 
 
 def payment_status(grand_total: float, paid_total: float) -> str:
@@ -84,6 +101,8 @@ async def attach_payment_fields(db, inv: dict) -> dict:
     from services.purchase_return_finance import active_return_credit_breakdown
 
     out = dict(inv)
+    # LOC-B: normalize location snapshot for read model (legacy nulls stay null).
+    out.update(invoice_location_public(out))
     paid = await _paid_total(db, out["id"])
     applied = await _advance_applied_total(db, out["id"])
     credit = await active_return_credit_breakdown(db, out["id"])
@@ -117,7 +136,83 @@ async def attach_payment_fields(db, inv: dict) -> dict:
             out["cancel_block_reason"] = "Faktur tidak dapat dihapus karena masih memiliki alokasi uang muka."
         else:
             out["cancel_block_reason"] = ""
+    # Legacy invoices may omit due_date / payment_term_days — keep nullable contract.
+    if "due_date" not in out or out.get("due_date") in ("",):
+        out["due_date"] = out.get("due_date") or None
+    if out.get("payment_term_days") in ("", None):
+        out["payment_term_days"] = out.get("payment_term_days")
+    else:
+        try:
+            out["payment_term_days"] = int(out["payment_term_days"])
+        except (TypeError, ValueError):
+            out["payment_term_days"] = out.get("payment_term_days")
+    pay_status = str(out.get("payment_status") or "")
+    out["due_status"] = invoice_due_display_status(
+        due_date=out.get("due_date"),
+        payment_status=pay_status,
+    )
+    out["can_edit_payment_terms"] = (not is_cancelled(out)) and pay_status != "LUNAS"
+    if is_cancelled(out):
+        out["edit_payment_terms_block_reason"] = "Faktur yang dibatalkan tidak dapat diubah termin/jatuh temponya."
+    elif pay_status == "LUNAS":
+        out["edit_payment_terms_block_reason"] = "Faktur yang sudah lunas tidak dapat diubah termin/jatuh temponya."
+    else:
+        out["edit_payment_terms_block_reason"] = ""
     return out
+
+
+def _resolve_create_terms(payload: dict, invoice_date: str) -> tuple:
+    """Return (payment_term_days, due_date). New invoices always persist a concrete due_date.
+
+    Missing term defaults to COD (0) so legacy API callers still create a valid due_date
+    (= invoice_date). UI always sends an explicit term preset.
+    """
+    term_days = parse_payment_term_days(payload.get("payment_term_days"), required=False)
+    raw_due = payload.get("due_date")
+    if raw_due is None or str(raw_due).strip() == "":
+        due_date = add_days_ymd(invoice_date, term_days)
+    else:
+        due_date = parse_required_ymd(raw_due, "Tanggal jatuh tempo")
+    return term_days, due_date
+
+
+async def _write_terms_audit(
+    db,
+    *,
+    user: dict,
+    invoice_id: str,
+    invoice_number: str,
+    before: dict,
+    after: dict,
+    reason: str,
+) -> str:
+    """Insert audit_logs row. Caller must not mutate invoice if this raises."""
+    audit_id = str(uuid.uuid4())
+    actor = actor_snapshot(user)
+    reason_text = str(reason or "").strip()
+    await db[AUDIT_COLLECTION].insert_one({
+        "id": audit_id,
+        "action": AUDIT_ACTION_TERMS,
+        "entity_type": "purchase_invoice",
+        "entity_id": invoice_id,
+        "invoice_number": invoice_number,
+        "actor_email": actor.get("email"),
+        "actor_role": actor.get("role"),
+        "actor_name": actor.get("name"),
+        "actor_id": actor_user_id(user),
+        "before": before,
+        "after": after,
+        "reason": reason_text,
+        "note": reason_text,
+        "at": now_iso(),
+    })
+    return audit_id
+
+
+async def _delete_terms_audit(db, audit_id: str) -> None:
+    if not audit_id:
+        return
+    await db[AUDIT_COLLECTION].delete_one({"id": audit_id, "action": AUDIT_ACTION_TERMS})
 
 
 def _invoice_source_of(payload: dict) -> str:
@@ -163,6 +258,7 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
             "unit_price": unit_price,
             "line_subtotal": line_subtotal(qty, unit_price),
         })
+    location = await resolve_invoice_location_from_po(db, po)
     return {
         "purchase_order_id": po["id"],
         "po_number": po.get("po_number"),
@@ -175,6 +271,7 @@ async def get_po_invoice_preview(db, purchase_order_id: str, exclude_invoice_id:
         "receiving_progress": po.get("receiving_progress") or {},
         "receiving_status": po.get("receiving_status"),
         "invoice_status": po.get("invoice_status"),
+        **location,
     }
 
 
@@ -221,6 +318,8 @@ async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
             "invoice_qty": eligible,
             "line_subtotal": line_subtotal(eligible, unit_price),
         })
+    po_doc = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+    location = await resolve_invoice_location_from_gr(db, receipt, po_doc)
     return {
         "invoice_source": "receipt",
         "receipt_id": receipt["id"],
@@ -235,10 +334,12 @@ async def get_receipt_invoice_preview(db, receipt_id: str) -> dict:
         "lines": lines,
         "invoice_progress": po_preview.get("invoice_progress") or {},
         "receiving_progress": po_preview.get("receiving_progress") or {},
+        **location,
     }
 
 
 async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> dict:
+    payload = strip_client_invoice_location(payload)
     invoice_source = _invoice_source_of(payload)
     precedes_goods_receipt = bool(payload.get("precedes_goods_receipt"))
     receipt_id = str(payload.get("receipt_id") or payload.get("goods_receipt_id") or "").strip() or None
@@ -387,6 +488,15 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
 
         ts = now_iso()
         total = money_round(total)
+        invoice_date = parse_required_ymd(
+            payload.get("invoice_date") or ts[:10],
+            "Tanggal faktur",
+        )
+        term_days, due_date = _resolve_create_terms(payload, invoice_date)
+        if invoice_source == "receipt":
+            location = await resolve_invoice_location_from_gr(db, receipt_doc or {}, po_check)
+        else:
+            location = await resolve_invoice_location_from_po(db, po_check)
         existing_count = await db[COLLECTION].count_documents({"purchase_order_id": preview["purchase_order_id"]})
         doc = {
             "id": str(uuid.uuid4()),
@@ -399,11 +509,15 @@ async def create_purchase_invoice(db, payload: Dict[str, Any], user: dict) -> di
             "receipt_id": receipt_id if invoice_source == "receipt" else None,
             "receipt_number": (receipt_doc or {}).get("receipt_number") if invoice_source == "receipt" else None,
             "precedes_goods_receipt": bool(precedes_goods_receipt),
-            "invoice_date": str(payload.get("invoice_date") or ts[:10]).strip()[:10],
+            "invoice_date": invoice_date,
+            "payment_term_days": term_days,
+            "due_date": due_date,
+            HISTORY_FIELD: [],
             "notes": str(payload.get("notes") or "").strip(),
             "lines": calculated,
             "subtotal": total,
             "grand_total": total,
+            **location,
             **stamp_create(user),
         }
         if idem:
@@ -473,6 +587,137 @@ async def get_purchase_invoice(db, invoice_id: str) -> dict:
     await attach_invoice_accounting_fields(db, [inv])
     await attach_payment_accounting_fields(db, inv["payments"])
     return inv
+
+
+async def update_purchase_invoice_payment_terms(
+    db, invoice_id: str, payload: Optional[dict], user: dict
+) -> dict:
+    """Update only payment_term_days and/or due_date (+ stamp + audit).
+
+    Does not touch amounts, lines, PO/GR links, HPP, stock, payments, or accounting.
+    Rejects cancelled and LUNAS invoices. Re-checks payment status under lock.
+    Audit is written before the document mutation; on mutation failure the audit is removed.
+    """
+    data = dict(payload or {})
+    reason = str(data.get("reason") or data.get("note") or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "Alasan perubahan wajib diisi (minimal 3 karakter).")
+
+    async with get_named_lock("purchase_invoice"):
+        doc = await db[COLLECTION].find_one({"id": str(invoice_id)}, {"_id": 0})
+        if not doc:
+            doc = await db[COLLECTION].find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, f"Faktur Pembelian '{invoice_id}' tidak ditemukan.")
+        if is_cancelled(doc):
+            raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diubah termin/jatuh temponya.")
+
+        live = await attach_payment_fields(db, doc)
+        if str(live.get("payment_status") or "") == "LUNAS":
+            raise HTTPException(409, "Faktur yang sudah lunas tidak dapat diubah termin/jatuh temponya.")
+
+        invoice_date = parse_required_ymd(
+            live.get("invoice_date") or now_iso()[:10],
+            "Tanggal faktur",
+        )
+        has_term = "payment_term_days" in data
+        has_due = "due_date" in data
+        if not has_term and not has_due:
+            raise HTTPException(400, "Sertakan payment_term_days dan/atau due_date.")
+
+        if has_term:
+            term_days = parse_payment_term_days(data.get("payment_term_days"), required=True)
+        else:
+            raw_term = live.get("payment_term_days")
+            term_days = parse_payment_term_days(raw_term if raw_term is not None else 0, required=False)
+
+        if has_due:
+            due_raw = data.get("due_date")
+            if due_raw is None or str(due_raw).strip() == "":
+                # Explicit clear not allowed for post-create edits under PUR-INV-01
+                # (new invoices require due_date; legacy null stays until first edit sets it).
+                raise HTTPException(400, "Tanggal jatuh tempo wajib diisi.")
+            due_date = parse_required_ymd(due_raw, "Tanggal jatuh tempo")
+        else:
+            due_date = add_days_ymd(invoice_date, term_days)
+
+        before = {
+            "payment_term_days": live.get("payment_term_days"),
+            "due_date": live.get("due_date"),
+        }
+        after = {
+            "payment_term_days": term_days,
+            "due_date": due_date,
+        }
+        if before.get("payment_term_days") == after["payment_term_days"] and str(before.get("due_date") or "") == after["due_date"]:
+            return live
+
+        history_entry = {
+            "at": now_iso(),
+            "by": actor_snapshot(user),
+            "before": before,
+            "after": after,
+            "reason": reason,
+        }
+
+        audit_id = await _write_terms_audit(
+            db,
+            user=user,
+            invoice_id=live["id"],
+            invoice_number=str(live.get("invoice_number") or ""),
+            before=before,
+            after=after,
+            reason=reason,
+        )
+        try:
+            # Re-check LUNAS under the same lock immediately before write (race with settlement).
+            paid_now = await _paid_total(db, live["id"])
+            applied_now = await _advance_applied_total(db, live["id"])
+            from services.purchase_return_finance import active_return_credit_breakdown
+            from services.purchase_invoice_finance import invoice_financial_summary
+
+            credit_now = await active_return_credit_breakdown(db, live["id"])
+            status_now = invoice_financial_summary(
+                invoice_amount=live.get("grand_total"),
+                advance_applied=applied_now,
+                payments_applied=paid_now,
+                purchase_return_credit=credit_now["purchase_return_credit"],
+                cancelled=False,
+            )["payment_status"]
+            if status_now == "LUNAS":
+                await _delete_terms_audit(db, audit_id)
+                raise HTTPException(409, "Faktur yang sudah lunas tidak dapat diubah termin/jatuh temponya.")
+
+            updated = await db[COLLECTION].find_one_and_update(
+                {"id": live["id"], "cancelled": {"$ne": True}},
+                {
+                    "$set": {
+                        "payment_term_days": term_days,
+                        "due_date": due_date,
+                        **stamp_update(user),
+                    },
+                    "$push": {
+                        HISTORY_FIELD: {
+                            "$each": [history_entry],
+                            "$slice": -HISTORY_CAP,
+                        }
+                    },
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if updated is None:
+                await _delete_terms_audit(db, audit_id)
+                current = await db[COLLECTION].find_one({"id": live["id"]}, {"_id": 0})
+                if current and is_cancelled(current):
+                    raise HTTPException(409, "Faktur yang dibatalkan tidak dapat diubah termin/jatuh temponya.")
+                raise HTTPException(409, "Gagal mengubah termin/jatuh tempo karena perubahan bersamaan.")
+        except HTTPException:
+            raise
+        except Exception:
+            await _delete_terms_audit(db, audit_id)
+            raise
+
+        return await get_purchase_invoice(db, updated["id"])
 
 
 async def cancel_purchase_invoice(

@@ -19,6 +19,26 @@ function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+/**
+ * Map backend credit blocked_reason to operator-facing copy.
+ * Does not change eligibility — display only.
+ * Identity-unproven blocks saldo use only; normal invoice payment may continue.
+ */
+export function formatCustomerCreditBlockedReason(reason) {
+  const text = String(reason || "").trim();
+  if (!text) return "";
+  if (
+    /Identitas pelanggan tidak dapat dibuktikan/i.test(text)
+    || /Saldo tidak dapat dipakai lintas faktur/i.test(text)
+  ) {
+    return (
+      "Saldo pelanggan belum dapat digunakan untuk pembayaran ini. "
+      + "Silakan lanjutkan pembayaran sesuai faktur yang dipilih."
+    );
+  }
+  return text;
+}
+
 export function computeReceiptPreview(selectedInvoice, receiptAmount, allocatedAmount) {
   if (!selectedInvoice) return null;
   const grandTotal = Number(selectedInvoice.grand_total) || 0;

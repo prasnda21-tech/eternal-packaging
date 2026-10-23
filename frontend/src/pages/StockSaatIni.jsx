@@ -10,6 +10,7 @@ import {
   bookPhysicalDisplay,
   stockPhysicalPrimaryDisplay,
   isOperationalWarehouse,
+  openingFieldErrors,
   openingReady,
   operationalOpeningWarehouses,
   preselectedWarehouseId,
@@ -18,6 +19,15 @@ import {
   warehouseLocationLabel,
 } from "../lib/physicalStockView";
 import BranchScopeSelect from "../components/BranchScopeSelect";
+import {
+  IMPORT_RESUME_SAFE_MESSAGE,
+  buildConfirmLines,
+  classifyImportConfirmResponse,
+  defaultSelectedKeys,
+  isReadyRow,
+  rowSelectKey,
+  summarizeImportRows,
+} from "../lib/openingImportUi";
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
@@ -48,8 +58,12 @@ export default function StockSaatIni() {
   const [expandedRows, setExpandedRows] = useState(() => ({}));
   const [legendOpen, setLegendOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [statusSummary, setStatusSummary] = useState(null);
+  const [statusSummaryErr, setStatusSummaryErr] = useState("");
+  const [statusDetailOpen, setStatusDetailOpen] = useState(false);
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
+  const summarySeq = useRef(0);
 
   useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
 
@@ -106,6 +120,32 @@ export default function StockSaatIni() {
   }, [q, page, pageSize, branchId, warehouseId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const seq = ++summarySeq.current;
+    setStatusSummaryErr("");
+    const params = {};
+    if (branchId) params.branch_id = branchId;
+    if (warehouseId) params.warehouse_id = warehouseId;
+    const request = typeof api.physicalStockStatusSummary === "function"
+      ? api.physicalStockStatusSummary(params)
+      : null;
+    Promise.resolve(request)
+      .then((res) => {
+        if (seq !== summarySeq.current) return;
+        if (!res) {
+          setStatusSummary(null);
+          return;
+        }
+        setStatusSummary(res);
+      })
+      .catch((ex) => {
+        if (seq !== summarySeq.current) return;
+        setStatusSummary(null);
+        const det = ex?.response?.data?.detail;
+        setStatusSummaryErr(typeof det === "object" ? det.message : (det || "Ringkasan status gagal dimuat"));
+      });
+  }, [branchId, warehouseId, data?.total, data?.stock_read_mode]);
 
   const clearSearch = () => {
     clearQuery();
@@ -572,11 +612,6 @@ export default function StockSaatIni() {
               <Info size={15} aria-hidden="true" />
               <span>Nilai negatif menunjukkan defisit stok.</span>
             </div>
-            <div className="stock-legend-items" aria-hidden="true">
-              <span><span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span> = belum ada saldo fisik</span>
-              <span><span className="stock-status-badge stock-status-badge--incomplete">Belum lengkap</span> = ada gudang belum valid</span>
-              <span><span className="stock-status-badge stock-status-badge--deficit">Defisit</span> = saldo fisik &lt; 0</span>
-            </div>
             <button
               type="button"
               className="stock-legend-toggle"
@@ -588,6 +623,56 @@ export default function StockSaatIni() {
               <ChevronDown size={14} className={legendOpen ? "is-open" : undefined} aria-hidden="true" />
             </button>
           </div>
+
+          {(statusSummary || statusSummaryErr) && (
+            <div className="stock-status-summary" data-testid="stock-status-summary" role="status">
+              {statusSummaryErr ? (
+                <p className="muted small" data-testid="stock-status-summary-error">{statusSummaryErr}</p>
+              ) : (
+                <>
+                  <div className="stock-status-summary-bar">
+                    <p className="stock-status-summary-title">Diagnostik status (read-only)</p>
+                    <div className="stock-status-summary-grid" data-testid="stock-status-summary-counts">
+                      <span data-testid="summary-physical-ok">Fisik OK: {statusSummary.counts?.items_physical_ok ?? 0}</span>
+                      <span data-testid="summary-physical-incomplete">Belum lengkap: {statusSummary.counts?.items_physical_incomplete ?? 0}</span>
+                      <span data-testid="summary-physical-missing">Belum saldo: {statusSummary.counts?.items_physical_missing ?? 0}</span>
+                      <span data-testid="summary-slots-missing">Slot tanpa saldo: {statusSummary.counts?.warehouse_slots_missing_balance ?? 0}</span>
+                      <span data-testid="summary-slots-unreconciled">Slot unreconciled: {statusSummary.counts?.warehouse_slots_unreconciled ?? 0}</span>
+                      <span data-testid="summary-belum-unverified">Belum Terkirim unverified: {statusSummary.counts?.items_belum_terkirim_unverified ?? 0}</span>
+                      <span data-testid="summary-tersedia-invalid">Tersedia invalid: {statusSummary.counts?.items_qty_tersedia_invalid ?? 0}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="stock-status-summary-detail-toggle"
+                      data-testid="stock-status-summary-detail-toggle"
+                      aria-expanded={statusDetailOpen}
+                      onClick={() => setStatusDetailOpen((v) => !v)}
+                    >
+                      Detail
+                      <ChevronDown size={14} className={statusDetailOpen ? "is-open" : undefined} aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div
+                    className="stock-status-summary-detail"
+                    data-testid="stock-status-summary-detail"
+                    hidden={!statusDetailOpen}
+                  >
+                    {(statusSummary.operational_actions || []).length > 0 && (
+                      <ul className="stock-status-summary-actions" data-testid="stock-status-summary-actions">
+                        {statusSummary.operational_actions.map((line) => (
+                          <li key={line}>{line}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="muted small">
+                      Angka diagnostik tidak mengubah saldo dan tidak memaksa status verified/nol.
+                      {statusSummary.truncated ? " (Cuplikan terpotong — total item &gt; scan.)" : ""}
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {data && (
             <div
@@ -708,9 +793,25 @@ export default function StockSaatIni() {
                       </td>
                     )}
                     <td className="col-text" data-testid={`stock-item-${it.master_item_id}`}>
-                      <div className="stock-item-primary">{it.item_name || "—"}</div>
+                      <div className="stock-item-primary">
+                        <Link
+                          className="stock-item-link"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                          data-testid={`stock-item-mutasi-link-${it.master_item_id}`}
+                          title="Buka kartu stok / mutasi"
+                        >
+                          {it.item_name || "—"}
+                        </Link>
+                      </div>
                       <div className="stock-item-secondary muted small">
                         <span className="mono" data-testid={`stock-code-${it.master_item_id}`}>{it.item_code || "—"}</span>
+                        <Link
+                          className="stock-mutasi-chip"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                          data-testid={`stock-mutasi-nav-${it.master_item_id}`}
+                        >
+                          Mutasi
+                        </Link>
                       </div>
                     </td>
                     <td className="col-fit small" data-testid={`stock-unit-${it.master_item_id}`}>
@@ -869,8 +970,25 @@ export default function StockSaatIni() {
                 >
                   <div className="stock-mobile-card-head">
                     <div>
-                      <div className="stock-item-primary">{it.item_name || "—"}</div>
-                      <div className="stock-item-secondary muted small mono">{it.item_code || "—"}</div>
+                      <div className="stock-item-primary">
+                        <Link
+                          className="stock-item-link"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                          data-testid={`stock-mobile-mutasi-link-${it.master_item_id}`}
+                        >
+                          {it.item_name || "—"}
+                        </Link>
+                      </div>
+                      <div className="stock-item-secondary muted small">
+                        <span className="mono">{it.item_code || "—"}</span>
+                        {" · "}
+                        <Link
+                          className="stock-mutasi-chip"
+                          to={`/persediaan/master-barang-jasa/${encodeURIComponent(it.master_item_id)}?tab=mutasi`}
+                        >
+                          Mutasi
+                        </Link>
+                      </div>
                     </div>
                     <div className="stock-mobile-physical">
                       {renderPhysicalCell(it, primary, physicalText, book)}
@@ -1159,12 +1277,19 @@ function SaldoAwalModal({
   const [idempotencyKey, setIdempotencyKey] = useState(newKey);
   const [preview, setPreview] = useState(null);
   const [importKey, setImportKey] = useState("");
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+  const [lockedLines, setLockedLines] = useState(null);
+  /** idle | submitting | needs_resume */
+  const [importTxn, setImportTxn] = useState("idle");
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
+  const [importNotice, setImportNotice] = useState("");
   const [templateWarehouseId, setTemplateWarehouseId] = useState("");
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
   const options = warehouseChoices(warehouses, branchId).filter(isOperationalWarehouse);
   const selected = items.find((row) => row.id === itemId);
   const baseUnit = (selected?.unit || "PCS").toUpperCase();
+  const fieldErrors = openingFieldErrors({ itemId, branchId, warehouseId, qty });
 
   useEffect(() => {
     let cancelled = false;
@@ -1259,15 +1384,47 @@ function SaldoAwalModal({
     }
   };
 
+  const importSummary = summarizeImportRows(preview?.rows || [], selectedKeys);
+  const selectionLocked = importTxn === "needs_resume" || importTxn === "submitting" || importing;
+  const canConfirmImport = Boolean(
+    importKey
+    && !importing
+    && importTxn !== "submitting"
+    && (
+      (importTxn === "needs_resume" && Array.isArray(lockedLines) && lockedLines.length > 0)
+      || (importTxn === "idle" && importSummary.selectedCount > 0)
+    ),
+  );
+
+  const toggleReadyRow = (row) => {
+    if (!isReadyRow(row) || selectionLocked) return;
+    const key = rowSelectKey(row);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const onImportFile = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    if (importTxn === "needs_resume" || importing) {
+      setImportError("Selesaikan atau lanjutkan transaksi impor yang belum selesai sebelum mengunggah file baru.");
+      return;
+    }
     setImportError("");
+    setImportNotice("");
     setPreview(null);
+    setSelectedKeys(new Set());
+    setLockedLines(null);
+    setImportTxn("idle");
     try {
       const result = await api.physicalOpeningImportPreview(file);
       setPreview(result);
+      setSelectedKeys(defaultSelectedKeys(result?.rows || []));
       setImportKey(newKey());
     } catch (ex) {
       setImportError(importMessage(ex, "File tidak dapat diperiksa"));
@@ -1275,25 +1432,52 @@ function SaldoAwalModal({
   };
 
   const confirmImport = async () => {
-    if (!preview?.can_confirm || !importKey || importing) return;
+    if (!canConfirmImport || !importKey || importing) return;
+    const lines = importTxn === "needs_resume" && Array.isArray(lockedLines)
+      ? lockedLines
+      : buildConfirmLines(importSummary.selectedRows);
+    if (!lines.length) return;
     setImporting(true);
     setImportError("");
+    setImportNotice("");
+    setImportTxn("submitting");
+    setLockedLines(lines);
     try {
-      await api.physicalOpeningImportConfirm({
+      const result = await api.physicalOpeningImportConfirm({
         idempotency_key: importKey,
-        lines: (preview.rows || []).filter((row) => row.status === "Siap").map((row) => ({
-          master_item_id: row.master_item_id,
-          branch_id: row.branch_id,
-          warehouse_id: row.warehouse_id,
-          physical_qty: row.physical_qty,
-          item_code: row.item_code,
-        })),
+        lines,
       });
-      setPreview(null);
-      setImportKey("");
-      await onSaved();
+      const kind = classifyImportConfirmResponse(result);
+      if (kind === "confirmed") {
+        setPreview(null);
+        setImportKey("");
+        setSelectedKeys(new Set());
+        setLockedLines(null);
+        setImportTxn("idle");
+        setImportNotice("Impor saldo awal berhasil dikonfirmasi.");
+        await onSaved();
+        return;
+      }
+      if (kind === "processing") {
+        setImportTxn("needs_resume");
+        setImportError("Status batch: PROCESSING. Klik Lanjutkan untuk menunggu/menyelesaikan transaksi yang sama.");
+        return;
+      }
+      // Backend did not return a terminal status we recognize — keep key/payload, do not invent success.
+      setImportTxn("needs_resume");
+      setImportError(IMPORT_RESUME_SAFE_MESSAGE);
     } catch (ex) {
-      setImportError(importMessage(ex, "Impor saldo awal gagal"));
+      setImportTxn("needs_resume");
+      const detail = ex?.response?.data?.detail;
+      const batchStatus = typeof detail === "object"
+        ? String(detail?.import?.status || detail?.status || "").toUpperCase()
+        : "";
+      if (batchStatus === "PROCESSING") {
+        setImportError(`Status batch: PROCESSING. ${importMessage(ex, "Impor terhenti.")} Klik Lanjutkan dengan key yang sama.`);
+      } else {
+        // Gap: most failures do not embed PROCESSING — keep safe resume copy + server message.
+        setImportError(`${importMessage(ex, "Impor saldo awal gagal")}. ${IMPORT_RESUME_SAFE_MESSAGE}`);
+      }
     } finally {
       setImporting(false);
     }
@@ -1301,7 +1485,13 @@ function SaldoAwalModal({
 
   const submit = async (event) => {
     event.preventDefault();
-    if (!ready || saving) return;
+    setShowFieldErrors(true);
+    if (Object.keys(fieldErrors).length || !ready || saving) {
+      if (Object.keys(fieldErrors).length) {
+        setError("Lengkapi field yang ditandai sebelum menetapkan saldo awal.");
+      }
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -1335,14 +1525,17 @@ function SaldoAwalModal({
   })();
 
   return (
-    <div className="mutation-drawer-overlay" data-testid="saldo-awal-modal" style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <div data-testid="saldo-awal-panel" style={{ width: "min(960px, 100%)", maxHeight: "90vh", overflow: "auto", background: "#fff", borderRadius: 12, padding: 20, display: "grid", gap: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <h2 style={{ margin: 0 }} data-testid="saldo-awal-title">Saldo Awal Stock Fisik</h2>
+    <div className="mutation-drawer-overlay saldo-awal-overlay" data-testid="saldo-awal-modal">
+      <div
+        className={`saldo-awal-panel${tab === "import" ? " saldo-awal-panel--import" : ""}`}
+        data-testid="saldo-awal-panel"
+      >
+        <div className="saldo-awal-panel-head">
+          <h2 data-testid="saldo-awal-title">Saldo Awal Stock Fisik</h2>
           <button type="button" className="ghost sm" onClick={onClose} aria-label="Tutup">Tutup</button>
         </div>
 
-        <div className="stock-heading-actions" role="tablist" aria-label="Alur saldo awal" data-testid="saldo-awal-tabs">
+        <div className="stock-heading-actions saldo-awal-tabs" role="tablist" aria-label="Alur saldo awal" data-testid="saldo-awal-tabs">
           <button
             type="button"
             className={tab === "manual" ? "primary" : "ghost"}
@@ -1366,14 +1559,14 @@ function SaldoAwalModal({
         </div>
 
         {tab === "import" && (
-          <div data-testid="saldo-awal-import-panel" style={{ display: "grid", gap: 12 }}>
+          <div className="saldo-awal-import-panel" data-testid="saldo-awal-import-panel">
             <p className="muted small">
-              Unduh template per gudang, isi qty fisik, lalu impor. Hanya baris berstatus Siap yang dapat dikonfirmasi.
-              Saldo yang sudah ditetapkan tidak diinisialisasi ulang.
+              Unduh template per gudang, isi qty fisik, lalu impor. Hanya baris Siap yang dapat dipilih dan dikonfirmasi
+              (subset diizinkan meski file masih berisi baris ditolak). Saldo yang sudah ditetapkan tidak diinisialisasi ulang.
             </p>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
-              <label>
-                Gudang
+            <div className="saldo-awal-fields saldo-awal-fields--import">
+              <label className="saldo-awal-field">
+                <span className="saldo-awal-label">Gudang</span>
                 <select value={templateWarehouseId} onChange={(e) => setTemplateWarehouseId(e.target.value)} data-testid="opening-import-warehouse">
                   <option value="">Pilih gudang</option>
                   {templateWarehouses.map((row) => (
@@ -1381,60 +1574,115 @@ function SaldoAwalModal({
                   ))}
                 </select>
               </label>
-              <button type="button" className="ghost" onClick={downloadTemplate} disabled={!templateWarehouseId} data-testid="opening-import-template">Download Template</button>
-              <label className="ghost" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
-                Pilih File Excel
-                <input type="file" accept=".xlsx,.csv,text/csv" onChange={onImportFile} data-testid="opening-import-file" style={{ display: "none" }} />
-              </label>
+              <div className="saldo-awal-import-actions">
+                <button type="button" className="ghost" onClick={downloadTemplate} disabled={!templateWarehouseId} data-testid="opening-import-template">Download Template</button>
+                <label className={`ghost saldo-awal-file-btn${selectionLocked ? " is-disabled" : ""}`}>
+                  Pilih File Excel
+                  <input
+                    type="file"
+                    accept=".xlsx,.csv,text/csv"
+                    onChange={onImportFile}
+                    data-testid="opening-import-file"
+                    disabled={selectionLocked}
+                  />
+                </label>
+              </div>
             </div>
-            {importError && <div className="signal-strip" role="alert" data-testid="opening-import-error"><div><AlertCircle size={16} /><span>{importError}</span></div></div>}
-            {preview && (
-              <div style={{ overflowX: "auto" }}>
-                <table className="prod-table" data-testid="opening-import-preview">
-                  <thead>
-                    <tr>
-                      <th>Kode</th>
-                      <th>Nama Barang</th>
-                      <th>Satuan</th>
-                      <th>Gudang</th>
-                      <th>Stock Fisik Excel</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(preview.rows || []).map((row) => (
-                      <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
-                        <td>{row.item_code || "—"}</td>
-                        <td>{row.item_name || "—"}</td>
-                        <td>{row.unit || "—"}</td>
-                        <td>{row.warehouse_name || "—"}</td>
-                        <td>{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
-                        <td data-testid={`opening-import-status-${row.row_number}`}>
-                          {row.status}{row.reason ? ` — ${row.reason}` : ""}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {importNotice && !importError && (
+              <div className="signal-strip" role="status" data-testid="opening-import-notice">
+                <div><Info size={16} /><span>{importNotice}</span></div>
               </div>
             )}
-            <button
-              type="button"
-              className="primary"
-              disabled={!preview?.can_confirm || importing}
-              onClick={confirmImport}
-              data-testid="opening-import-confirm"
-            >
-              {importing ? "Menyimpan…" : "Konfirmasi Saldo Awal"}
-            </button>
+            {importError && (
+              <div className="signal-strip" role="alert" data-testid="opening-import-error">
+                <div><AlertCircle size={16} /><span>{importError}</span></div>
+              </div>
+            )}
+            {importTxn === "needs_resume" && (
+              <p className="muted small" data-testid="opening-import-resume-hint">
+                Transaksi impor menunggu penyelesaian. Pilihan baris dikunci. Idempotency key tetap sama.
+              </p>
+            )}
+            {preview && (
+              <>
+                <div className="saldo-awal-import-summary" data-testid="opening-import-summary">
+                  <span data-testid="opening-import-count-ready">Siap: {importSummary.readyCount}</span>
+                  <span data-testid="opening-import-count-selected">Terpilih: {importSummary.selectedCount}</span>
+                  <span data-testid="opening-import-count-rejected">Ditolak: {importSummary.rejectedCount}</span>
+                </div>
+                <div className="saldo-awal-preview-wrap" data-testid="opening-import-preview-wrap">
+                  <table className="prod-table saldo-awal-import-table" data-testid="opening-import-preview">
+                    <thead>
+                      <tr>
+                        <th className="saldo-awal-import-check-col">Pilih</th>
+                        <th>Kode</th>
+                        <th>Nama Barang</th>
+                        <th className="saldo-awal-import-col-center">Satuan</th>
+                        <th>Gudang</th>
+                        <th className="saldo-awal-import-col-center">Stock Fisik Excel</th>
+                        <th>Status</th>
+                        <th>Alasan</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(preview.rows || []).map((row) => {
+                        const ready = isReadyRow(row);
+                        const key = rowSelectKey(row);
+                        const checked = ready && selectedKeys.has(key);
+                        return (
+                          <tr key={`${row.row_number}-${row.item_code}`} data-testid={`opening-import-row-${row.row_number}`}>
+                            <td className="saldo-awal-import-col-center">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!ready || selectionLocked}
+                                onChange={() => toggleReadyRow(row)}
+                                data-testid={`opening-import-check-${row.row_number}`}
+                                aria-label={ready ? `Pilih ${row.item_code || row.row_number}` : "Baris tidak dapat dipilih"}
+                              />
+                            </td>
+                            <td className="mono">{row.item_code || "—"}</td>
+                            <td>{row.item_name || "—"}</td>
+                            <td className="saldo-awal-import-col-center">{row.unit || "—"}</td>
+                            <td>{row.warehouse_name || "—"}</td>
+                            <td className="saldo-awal-import-col-center mono">{row.physical_qty == null ? "—" : fmtQty(row.physical_qty)}</td>
+                            <td data-testid={`opening-import-status-${row.row_number}`}>
+                              <span className={`saldo-awal-import-status${ready ? " is-ready" : " is-rejected"}`}>
+                                {row.status || "—"}
+                              </span>
+                            </td>
+                            <td className="saldo-awal-import-reason" data-testid={`opening-import-reason-${row.row_number}`}>
+                              {row.reason || "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            <div className="saldo-awal-import-confirm-row">
+              <button
+                type="button"
+                className="primary"
+                disabled={!canConfirmImport}
+                onClick={confirmImport}
+                data-testid="opening-import-confirm"
+              >
+                {importing
+                  ? "Menyimpan…"
+                  : (importTxn === "needs_resume" ? "Lanjutkan" : "Konfirmasi Saldo Awal")}
+              </button>
+            </div>
           </div>
         )}
 
         {tab === "manual" && (
-          <form onSubmit={submit} data-testid="saldo-awal-form" style={{ display: "grid", gap: 12 }}>
+          <form onSubmit={submit} className="saldo-awal-form" data-testid="saldo-awal-form" noValidate>
             <p className="muted small">
-              Tetapkan saldo awal per barang pada cabang dan gudang yang dipilih. Tidak ada double posting;
-              kombinasi yang sudah established tidak dapat diinisialisasi ulang.
+              Urutan: Barang → Cabang → Gudang → Qty → Satuan → Catatan.
+              Tidak ada double posting; kombinasi yang sudah established tidak dapat diinisialisasi ulang.
             </p>
             {itemsStateMessage && (
               <p data-testid={itemsStateMessage.testId} className={itemsDenied || itemsError ? "signal-strip" : "muted"}>
@@ -1446,63 +1694,110 @@ function SaldoAwalModal({
                 <div><AlertCircle size={16} /><span>{itemsError} Menampilkan daftar dari katalog Stock Saat Ini.</span></div>
               </div>
             )}
-            {error && <div className="signal-strip" role="alert"><div><AlertCircle size={16} /><span>{error}</span></div></div>}
-            <label>
-              Barang
-              <select value={itemId} onChange={(e) => setItemId(e.target.value)} data-testid="saldo-awal-item" disabled={established || (itemsLoading && items.length === 0)}>
-                <option value="">{itemsLoading && items.length === 0 ? "Memuat…" : "Pilih barang"}</option>
-                {items.map((row) => (
-                  <option key={row.id} value={row.id}>{row.item_code || "—"} — {row.item_name || row.name || row.id}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Cabang
-              <select value={branchId} onChange={(e) => setBranchId(e.target.value)} data-testid="saldo-awal-branch" disabled={established}>
-                <option value="">Pilih cabang</option>
-                {branches.map((row) => (
-                  <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Gudang
-              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} data-testid="saldo-awal-warehouse" disabled={established}>
-                <option value="">Pilih gudang</option>
-                {options.map((row) => (
-                  <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
-                ))}
-              </select>
-            </label>
-            {established ? (
-              <div data-testid="saldo-awal-established">
-                <strong>SALDO AWAL SUDAH DITETAPKAN</strong>
-                <p>Barang: {selected?.item_name || selected?.item_code || itemId}</p>
-                <p>Cabang: {branch?.name || branch?.code || branchId}</p>
-                <p>Gudang: {warehouse?.name || warehouse?.code || warehouseId}</p>
-                <p>Saldo Awal: {fmtQty(status.opening_qty)} {baseUnit}</p>
-                <p>Satuan: {baseUnit}</p>
-                <p>Waktu Penetapan: {status.occurred_at ? formatDate(status.occurred_at) : "—"}</p>
+            {error && (
+              <div className="signal-strip" role="alert" data-testid="saldo-awal-form-error">
+                <div><AlertCircle size={16} /><span>{error}</span></div>
               </div>
-            ) : (
-              <>
-                <label>
-                  Qty Stok Fisik
-                  <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="decimal" data-testid="saldo-awal-qty" />
-                </label>
-                <label>
-                  Satuan Dasar
-                  <input value={baseUnit} readOnly data-testid="saldo-awal-unit" />
-                </label>
-                <label>
-                  Catatan
-                  <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="saldo-awal-reason" />
-                </label>
-                <button type="submit" className="primary" disabled={!ready || saving} data-testid="saldo-awal-submit">
-                  {saving ? "Menyimpan…" : "Tetapkan Saldo Awal"}
-                </button>
-              </>
             )}
+            <div className="saldo-awal-fields" data-testid="saldo-awal-fields">
+              <label className="saldo-awal-field saldo-awal-field--full">
+                <span className="saldo-awal-label">Barang</span>
+                <select
+                  value={itemId}
+                  onChange={(e) => { setItemId(e.target.value); setShowFieldErrors(false); }}
+                  data-testid="saldo-awal-item"
+                  aria-invalid={showFieldErrors && Boolean(fieldErrors.itemId)}
+                  disabled={established || (itemsLoading && items.length === 0)}
+                >
+                  <option value="">{itemsLoading && items.length === 0 ? "Memuat…" : "Pilih barang"}</option>
+                  {items.map((row) => (
+                    <option key={row.id} value={row.id}>{row.item_code || "—"} — {row.item_name || row.name || row.id}</option>
+                  ))}
+                </select>
+                {showFieldErrors && fieldErrors.itemId && (
+                  <span className="saldo-awal-field-error" data-testid="saldo-awal-error-item">{fieldErrors.itemId}</span>
+                )}
+              </label>
+              <label className="saldo-awal-field">
+                <span className="saldo-awal-label">Cabang</span>
+                <select
+                  value={branchId}
+                  onChange={(e) => { setBranchId(e.target.value); setShowFieldErrors(false); }}
+                  data-testid="saldo-awal-branch"
+                  aria-invalid={showFieldErrors && Boolean(fieldErrors.branchId)}
+                  disabled={established}
+                >
+                  <option value="">Pilih cabang</option>
+                  {branches.map((row) => (
+                    <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+                  ))}
+                </select>
+                {showFieldErrors && fieldErrors.branchId && (
+                  <span className="saldo-awal-field-error" data-testid="saldo-awal-error-branch">{fieldErrors.branchId}</span>
+                )}
+              </label>
+              <label className="saldo-awal-field">
+                <span className="saldo-awal-label">Gudang</span>
+                <select
+                  value={warehouseId}
+                  onChange={(e) => { setWarehouseId(e.target.value); setShowFieldErrors(false); }}
+                  data-testid="saldo-awal-warehouse"
+                  aria-invalid={showFieldErrors && Boolean(fieldErrors.warehouseId)}
+                  disabled={established}
+                >
+                  <option value="">Pilih gudang</option>
+                  {options.map((row) => (
+                    <option key={row.id} value={row.id}>{warehouseLocationLabel(row, branches)}</option>
+                  ))}
+                </select>
+                {showFieldErrors && fieldErrors.warehouseId && (
+                  <span className="saldo-awal-field-error" data-testid="saldo-awal-error-warehouse">{fieldErrors.warehouseId}</span>
+                )}
+              </label>
+              {established ? (
+                <div className="saldo-awal-established" data-testid="saldo-awal-established">
+                  <strong>SALDO AWAL SUDAH DITETAPKAN</strong>
+                  <dl className="saldo-awal-established-grid">
+                    <div><dt>Barang</dt><dd>{selected?.item_name || selected?.item_code || itemId}</dd></div>
+                    <div><dt>Cabang</dt><dd>{branch?.name || branch?.code || branchId}</dd></div>
+                    <div><dt>Gudang</dt><dd>{warehouse?.name || warehouse?.code || warehouseId}</dd></div>
+                    <div><dt>Saldo Awal</dt><dd>{fmtQty(status.opening_qty)} {baseUnit}</dd></div>
+                    <div><dt>Satuan</dt><dd>{baseUnit}</dd></div>
+                    <div><dt>Waktu Penetapan</dt><dd>{status.occurred_at ? formatDate(status.occurred_at) : "—"}</dd></div>
+                  </dl>
+                </div>
+              ) : (
+                <>
+                  <label className="saldo-awal-field">
+                    <span className="saldo-awal-label">Qty</span>
+                    <input
+                      value={qty}
+                      onChange={(e) => { setQty(e.target.value); setShowFieldErrors(false); }}
+                      inputMode="decimal"
+                      data-testid="saldo-awal-qty"
+                      aria-invalid={showFieldErrors && Boolean(fieldErrors.qty)}
+                      placeholder="0"
+                    />
+                    {showFieldErrors && fieldErrors.qty && (
+                      <span className="saldo-awal-field-error" data-testid="saldo-awal-error-qty">{fieldErrors.qty}</span>
+                    )}
+                  </label>
+                  <label className="saldo-awal-field">
+                    <span className="saldo-awal-label">Satuan</span>
+                    <input value={baseUnit} readOnly data-testid="saldo-awal-unit" />
+                  </label>
+                  <label className="saldo-awal-field saldo-awal-field--full">
+                    <span className="saldo-awal-label">Catatan</span>
+                    <input value={reason} onChange={(e) => setReason(e.target.value)} data-testid="saldo-awal-reason" placeholder="Opsional" />
+                  </label>
+                  <div className="saldo-awal-actions">
+                    <button type="submit" className="primary" disabled={saving || statusLoading || !canSubmit} data-testid="saldo-awal-submit">
+                      {saving ? "Menyimpan…" : "Tetapkan Saldo Awal"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </form>
         )}
       </div>

@@ -147,7 +147,7 @@ describe("Penerimaan Barang manual create", () => {
     expect(pageSrc).toMatch(/>\s*Batalkan\s*</);
     expect(pageSrc).not.toMatch(/Alasan pembatalan wajib diisi/);
     expect(pageSrc).not.toMatch(/requireReason/);
-    expect(pageSrc).toMatch(/api\.cancelPurchaseGoodsReceipt\(cancelTarget\.id, ""\)/);
+    expect(pageSrc).toMatch(/api\.cancelPurchaseGoodsReceipt\((gate\.receipt\.id|cancelTarget\.id), ""\)/);
     expect(pageSrc).toMatch(/menangani reversal secara otomatis/);
     expect(pageSrc).not.toMatch(/purchase-cancel-reason/);
     expect(apiSrc).toMatch(/cancelPurchaseGoodsReceipt: \(id, reason = ""\)/);

@@ -35,11 +35,13 @@ def bind_motor():
 async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
     """Purchase flow tests isolate cancel/payment/docs; stock V2 has its own suite."""
     from services.physical_stock_settings import SETTINGS_KEY
+    from tests.purchase_ygy_fixtures import ensure_active_ygy
     await server.db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {"key": SETTINGS_KEY, "enabled": False, "stock_in_trigger": "goods_receipt", "stock_out_trigger": "sales_delivery"}},
         upsert=True,
     )
+    await ensure_active_ygy(server.db)
 
 
 @pytest.fixture(autouse=True)
@@ -236,7 +238,7 @@ async def test_payment_submit_targets_and_personal_chat_once():
             assert payment["workflow_status"] == "BELUM DIAJUKAN"
             assert payment["settlement_status"] == "UNPAID"
             inv_check = (await c.get(f"/api/purchase-invoices/{invoice['id']}")).json()["invoice"]
-            assert inv_check["payment_status"] == "BELUM DIBAYAR"
+            assert inv_check["payment_status"] == "BELUM_DIBAYAR"
             assert inv_check["paid_total"] == 0
 
             sub1 = await c.post(f"/api/purchase-payments/{payment['id']}/submit", json={
@@ -254,7 +256,7 @@ async def test_payment_submit_targets_and_personal_chat_once():
             assert p1["settlement_status"] == "UNPAID"
             inv_after = (await c.get(f"/api/purchase-invoices/{invoice['id']}")).json()["invoice"]
             assert inv_after["paid_total"] == 0
-            assert inv_after["payment_status"] == "BELUM DIBAYAR"
+            assert inv_after["payment_status"] == "BELUM_DIBAYAR"
             assert body1["chat_room_id"]
             assert body1["message_id"]
             assert await db[COLL_MESSAGES].count_documents({"id": body1["message_id"]}) == 1

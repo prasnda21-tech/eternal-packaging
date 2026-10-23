@@ -13,9 +13,10 @@ describe("PO goods receipt post-save UI refresh", () => {
     // Must not leave only loadPoOrders without detail invalidation.
     expect(page).toMatch(/createPurchaseGoodsReceipt/);
     const saveIdx = page.indexOf("const savePoReceipt");
-    const saveBlock = page.slice(saveIdx, saveIdx + 1800);
+    const saveEnd = page.indexOf("const pageCount", saveIdx);
+    const saveBlock = page.slice(saveIdx, saveEnd > saveIdx ? saveEnd : saveIdx + 4000);
     expect(saveBlock).toMatch(/await refreshAfterPoGoodsReceipt\(poId\)/);
-    expect(saveBlock).toMatch(/closeReceive\(\)/);
+    expect(saveBlock).toMatch(/closeReceive\(\{ force: true \}\)/);
   });
 
   test("fully received PO does not offer another receive action", () => {

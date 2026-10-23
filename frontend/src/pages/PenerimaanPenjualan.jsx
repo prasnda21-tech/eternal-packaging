@@ -59,7 +59,12 @@ function formatRupiah(num) {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
-import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "../lib/salesReceipts";
+import {
+  filterEligibleInvoices,
+  resolvePreselectedInvoiceId,
+  computeReceiptPreview,
+  formatCustomerCreditBlockedReason,
+} from "../lib/salesReceipts";
 import { clickableDocumentRowProps } from "../lib/clickableListRow";
 import PoIdentityBadges from "../components/PoIdentityBadges";
 import SalesReceiptProofViewer from "./SalesReceiptProofViewer";
@@ -1762,9 +1767,15 @@ export default function PenerimaanPenjualan() {
                         <div className="ux90-sr-credit" data-testid="receipt-use-credit">
                           {creditOfferErr && <p data-testid="credit-load-error" className="ux90-sr-hint is-err">{String(creditOfferErr)}</p>}
                           {creditOffer?.blocked_reason && (
-                            <p data-testid="credit-blocked-reason" className="ux90-sr-hint is-warn">{creditOffer.blocked_reason}</p>
+                            <p
+                              data-testid="credit-blocked-reason"
+                              className="ux90-sr-hint is-warn"
+                              role="status"
+                            >
+                              {formatCustomerCreditBlockedReason(creditOffer.blocked_reason)}
+                            </p>
                           )}
-                          {creditOffer?.loaded && Number(creditOffer.available) > 0 && (
+                          {creditOffer?.loaded && Number(creditOffer.available) > 0 && !creditOffer.blocked_reason && (
                             <button
                               type="button"
                               data-testid="btn-gunakan-saldo"

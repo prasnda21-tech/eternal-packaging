@@ -240,6 +240,22 @@ export function openingReady({ itemId, branchId, warehouseId, qty }) {
   return Number.isFinite(parsed) && parsed >= 0;
 }
 
+/** Field-level validation for Saldo Awal Stock Fisik (manual). Empty strings = valid. */
+export function openingFieldErrors({ itemId, branchId, warehouseId, qty }) {
+  const errors = {};
+  if (!itemId) errors.itemId = "Pilih barang.";
+  if (!branchId) errors.branchId = "Pilih cabang.";
+  if (!warehouseId) errors.warehouseId = "Pilih gudang.";
+  if (qty === "" || qty === null || qty === undefined) {
+    errors.qty = "Isi qty stok fisik (≥ 0).";
+  } else {
+    const parsed = Number(String(qty).replace(",", "."));
+    if (!Number.isFinite(parsed)) errors.qty = "Qty harus berupa angka.";
+    else if (parsed < 0) errors.qty = "Qty tidak boleh negatif.";
+  }
+  return errors;
+}
+
 export const PHYSICAL_MOVEMENT_LABELS = {
   OPENING_BALANCE: "Saldo Awal",
   PURCHASE_RECEIPT: "Penerimaan Pembelian",

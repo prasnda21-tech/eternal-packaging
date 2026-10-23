@@ -442,12 +442,18 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       customer_id: container.querySelector('[data-testid="badge-customer-registered"]') ? "selected" : null,
       customer_phone: value("input-customer-phone"),
       address: value("input-address"),
-      line_items: rows.map((_, index) => ({
-        name: container.querySelector(`[data-testid="line-name-${index}"]`)?.value
-          || container.querySelector(`[data-testid="line-item-search-${index}-input"]`)?.value
-          || "",
-        quantity: container.querySelector(`[data-testid="line-qty-${index}"]`)?.value,
-      })),
+      line_items: rows.map((_, index) => {
+        const codeText = container.querySelector(`[data-testid="line-item-row-${index}"] .so-line-code`)?.textContent?.trim() || "";
+        const hasMaster = Boolean(codeText && codeText !== "Kode barang");
+        return {
+          name: container.querySelector(`[data-testid="line-name-${index}"]`)?.value
+            || container.querySelector(`[data-testid="line-item-search-${index}-input"]`)?.value
+            || "",
+          quantity: container.querySelector(`[data-testid="line-qty-${index}"]`)?.value,
+          master_item_id: hasMaster ? `m${index}` : null,
+          accurate_item_id: hasMaster ? `a${index}` : null,
+        };
+      }),
     };
   }
 

@@ -1,11 +1,43 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { AlertCircle, Plus, Search } from "lucide-react";
+import {
+  AlertCircle,
+  Building2,
+  CalendarDays,
+  ClipboardList,
+  CreditCard,
+  FileText,
+  Hash,
+  MapPin,
+  Plus,
+  Search,
+  Warehouse,
+  Wallet,
+} from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, purchasePaymentStatusLabel, invoiceSourceLabel, todayYmd, purchaseRowInteractionProps, formatPurchaseDateTime} from "../lib/purchaseUi";
+import {
+  errDetail,
+  formatRupiah,
+  friendlyLoadError,
+  newIdempotencyKey,
+  purchaseStatusPillClass,
+  purchasePaymentStatusLabel,
+  purchaseBranchLabel,
+  purchaseInvoiceWarehouseLabel,
+  todayYmd,
+  purchaseRowInteractionProps,
+  formatPurchaseDateTime,
+  PURCHASE_TERM_PRESETS,
+  addDaysYmd,
+  termPresetFromDays,
+  paymentTermLabel,
+  dueDateLabel,
+  formatPurchaseDateId,
+  invoiceAgeLabel,
+  canEditPurchaseInvoicePaymentTerms,
+} from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
-import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
@@ -24,6 +56,7 @@ export default function FakturPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_invoices.create");
+  const canEditTerms = hasPerm("purchase_invoices.edit");
   const canPostAccounting = hasPerm("purchase_accounting.post");
   const canReverseAccounting = hasPerm("purchase_accounting.reverse");
   const queryPoId = searchParams.get("purchase_order_id") || "";
@@ -34,6 +67,8 @@ export default function FakturPembelian() {
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [detail, setDetail] = useState(null);
@@ -55,6 +90,10 @@ export default function FakturPembelian() {
   const [receiptId, setReceiptId] = useState(canCreate ? queryReceiptId : "");
   const [preview, setPreview] = useState(null);
   const [invoiceDate, setInvoiceDate] = useState(todayYmd());
+  const [termPreset, setTermPreset] = useState("NET30");
+  const [paymentTermDays, setPaymentTermDays] = useState(30);
+  const [dueDate, setDueDate] = useState(() => addDaysYmd(todayYmd(), 30));
+  const [dueManual, setDueManual] = useState(false);
   const [qty, setQty] = useState({});
   const [precedesGoodsReceipt, setPrecedesGoodsReceipt] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -63,14 +102,43 @@ export default function FakturPembelian() {
   const [allocAmount, setAllocAmount] = useState("");
   const [allocErr, setAllocErr] = useState("");
   const [allocBusy, setAllocBusy] = useState(false);
+  const [editingTerms, setEditingTerms] = useState(false);
+  const [editTermPreset, setEditTermPreset] = useState("NET30");
+  const [editTermDays, setEditTermDays] = useState(30);
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editDueManual, setEditDueManual] = useState(false);
+  const [editReason, setEditReason] = useState("");
+  const [termsBusy, setTermsBusy] = useState(false);
+  const [termsErr, setTermsErr] = useState("");
+  const visualDemo10 = searchParams.get("visual_demo") === "10";
 
-  const load = useCallback(async () => {
-    setLoading(true); setErr("");
-    try { setRows((await api.listPurchaseInvoices({ q })).invoices || []); }
-    catch (ex) { setErr(friendlyLoadError(ex, "Tidak dapat memuat faktur. Periksa koneksi server lalu coba lagi.")); }
-    finally { setLoading(false); }
+  /**
+   * List fetch: blocking loader only when no cached rows.
+   * Soft/background revalidation keeps existing rows (no "Memuat…" flicker).
+   * On error, keep cached rows and show a light error.
+   */
+  const load = useCallback(async (opts = {}) => {
+    const hasCached = rowsRef.current.length > 0;
+    const soft = opts.soft === true || (opts.soft !== false && hasCached && opts.force !== true);
+    if (!soft) setLoading(true);
+    setErr("");
+    try {
+      setRows((await api.listPurchaseInvoices({ q })).invoices || []);
+    } catch (ex) {
+      setErr(friendlyLoadError(ex, "Tidak dapat memuat faktur. Periksa koneksi server lalu coba lagi."));
+    } finally {
+      setLoading(false);
+    }
   }, [q]);
-  useEffect(() => { if (view === "list") load(); }, [load, view]);
+  useEffect(() => {
+    if (view !== "list") return;
+    load({ soft: rowsRef.current.length > 0 });
+  }, [load, view]);
+
+  const backToList = useCallback(() => {
+    setView("list");
+    // Soft revalidate via view effect; do not clear rows or force blocking loader.
+  }, []);
 
   useEffect(() => {
     if (!queryInvoiceId || wantCreate) return;
@@ -142,10 +210,86 @@ export default function FakturPembelian() {
     return { grand };
   }, [preview, qty]);
 
+  const createDisplayLines = useMemo(() => {
+    const base = preview?.lines || [];
+    if (!visualDemo10 || base.length === 0) return base.map((l, idx) => ({ ...l, _rowNo: idx + 1 }));
+    const seed = base[0];
+    return Array.from({ length: 10 }, (_, i) => ({
+      ...seed,
+      purchase_order_line_id: i === 0 ? seed.purchase_order_line_id : `${seed.purchase_order_line_id}__visual_${i}`,
+      item_name: i === 0 ? seed.item_name : `${seed.item_name} · demo ${i + 1}`,
+      item_code: i === 0 ? (seed.item_code || "—") : `${seed.item_code || "DEMO"}-${i + 1}`,
+      _visualDemo: i > 0,
+      _rowNo: i + 1,
+    }));
+  }, [preview, visualDemo10]);
+
+  const detailDisplayLines = useMemo(() => {
+    const base = detail?.lines || [];
+    if (!visualDemo10 || base.length === 0) return base.map((l, idx) => ({ ...l, _rowNo: idx + 1 }));
+    const seed = base[0];
+    return Array.from({ length: 10 }, (_, i) => ({
+      ...seed,
+      line_id: i === 0 ? (seed.line_id || `d0`) : `visual_${i}`,
+      item_name: i === 0 ? seed.item_name : `${seed.item_name} · demo ${i + 1}`,
+      item_code: i === 0 ? (seed.item_code || "—") : `${seed.item_code || "DEMO"}-${i + 1}`,
+      _visualDemo: i > 0,
+      _rowNo: i + 1,
+    }));
+  }, [detail, visualDemo10]);
+
+  const createLineCount = createDisplayLines.length;
+  const detailLineCount = detailDisplayLines.length;
+  const createDisplayGrand = useMemo(() => {
+    if (!visualDemo10) return totals.grand;
+    return createDisplayLines.reduce((sum, l) => {
+      const key = l.purchase_order_line_id;
+      const qv = l._visualDemo ? (Number(l.remaining_invoice_qty) || 1) : (Number(qty[key]) || 0);
+      return sum + qv * (Number(l.unit_price) || 0);
+    }, 0);
+  }, [visualDemo10, createDisplayLines, qty, totals.grand]);
+
+  useEffect(() => {
+    if (dueManual) return;
+    setDueDate(addDaysYmd(invoiceDate, paymentTermDays));
+  }, [invoiceDate, paymentTermDays, dueManual]);
+
+  const applyTermPreset = (presetId, { edit = false } = {}) => {
+    const preset = PURCHASE_TERM_PRESETS.find((p) => p.id === presetId) || PURCHASE_TERM_PRESETS[0];
+    if (edit) {
+      setEditTermPreset(preset.id);
+      if (preset.days !== null) {
+        setEditTermDays(preset.days);
+        // Changing termin always recomputes due; manual override only via date input.
+        setEditDueManual(false);
+        setEditDueDate(addDaysYmd(detail?.invoice_date || invoiceDate, preset.days));
+      }
+      return;
+    }
+    setTermPreset(preset.id);
+    if (preset.days !== null) {
+      setPaymentTermDays(preset.days);
+      setDueManual(false);
+      setDueDate(addDaysYmd(invoiceDate, preset.days));
+    }
+  };
+
   const save = async () => {
     if (busy || !preview || !canCreate) return;
     if (invoiceSource === "purchase_order" && earlyNeeded && !precedesGoodsReceipt) {
       setErr("Centang acknowledgement 'Faktur mendahului penerimaan barang' untuk menyimpan.");
+      return;
+    }
+    if (!invoiceDate) {
+      setErr("Tanggal faktur wajib diisi.");
+      return;
+    }
+    if (!dueDate) {
+      setErr("Tanggal jatuh tempo wajib diisi.");
+      return;
+    }
+    if (!Number.isFinite(Number(paymentTermDays)) || Number(paymentTermDays) < 0) {
+      setErr("Termin pembayaran tidak valid.");
       return;
     }
     setBusy(true); setErr(""); setOk("");
@@ -160,13 +304,65 @@ export default function FakturPembelian() {
         receipt_id: invoiceSource === "receipt" ? (preview.receipt_id || receiptId) : undefined,
         precedes_goods_receipt: invoiceSource === "purchase_order" ? precedesGoodsReceipt : false,
         invoice_date: invoiceDate,
+        payment_term_days: Number(paymentTermDays),
+        due_date: dueDate,
         lines,
         idempotency_key: newIdempotencyKey(),
       });
-      setDetail(res.invoice); setView("detail");
+      setDetail(res.invoice);
+      setView("detail");
       setOk(`Faktur ${res.invoice?.invoice_number || ""} berhasil disimpan.`);
     } catch (ex) { setErr(errDetail(ex)); }
     finally { setBusy(false); }
+  };
+
+  const startEditTerms = () => {
+    if (!detail) return;
+    const days = Number(detail.payment_term_days);
+    const preset = termPresetFromDays(Number.isFinite(days) ? days : 0);
+    setEditTermPreset(preset);
+    setEditTermDays(Number.isFinite(days) ? days : 0);
+    setEditDueDate(String(detail.due_date || addDaysYmd(detail.invoice_date, days || 0) || "").slice(0, 10));
+    setEditDueManual(false);
+    setEditReason("");
+    setTermsErr("");
+    setEditingTerms(true);
+  };
+
+  const saveTerms = async () => {
+    if (!detail || termsBusy || !canEditPurchaseInvoicePaymentTerms(detail, canEditTerms)) return;
+    if (!editDueDate) {
+      setTermsErr("Tanggal jatuh tempo wajib diisi.");
+      return;
+    }
+    if (!Number.isFinite(Number(editTermDays)) || Number(editTermDays) < 0) {
+      setTermsErr("Termin pembayaran tidak valid.");
+      return;
+    }
+    if (String(editReason || "").trim().length < 3) {
+      setTermsErr("Alasan perubahan wajib diisi (minimal 3 karakter).");
+      return;
+    }
+    setTermsBusy(true);
+    setTermsErr("");
+    try {
+      const res = await api.updatePurchaseInvoicePaymentTerms(detail.id, {
+        payment_term_days: Number(editTermDays),
+        due_date: editDueDate,
+        reason: String(editReason).trim(),
+      });
+      setDetail(res.invoice);
+      setEditingTerms(false);
+      setOk("Termin / jatuh tempo diperbarui.");
+      // Refresh from API so history survives client state and matches post-reload view.
+      const fresh = (await api.getPurchaseInvoice(detail.id)).invoice;
+      setDetail(fresh);
+      if (view === "list") load({ soft: true });
+    } catch (ex) {
+      setTermsErr(errDetail(ex));
+    } finally {
+      setTermsBusy(false);
+    }
   };
 
   const loadEligibleAdvances = useCallback(async (invoice) => {
@@ -184,6 +380,7 @@ export default function FakturPembelian() {
     try {
       const invoice = (await api.getPurchaseInvoice(id)).invoice;
       setDetail(invoice);
+      setEditingTerms(false);
       setView("detail");
       await loadEligibleAdvances(invoice);
     } catch (ex) { setErr(errDetail(ex)); }
@@ -258,7 +455,7 @@ export default function FakturPembelian() {
       setReverseConfirm(false);
       setReverseReason("");
       setOk(res.message || "Faktur di-reverse dari accounting.");
-      await load();
+      await load({ soft: true });
     } catch (ex) {
       setAcctErr(errDetail(ex));
     } finally {
@@ -275,10 +472,10 @@ export default function FakturPembelian() {
       setOk(`Faktur ${cancelTarget.invoice_number || ""} dihapus dari daftar aktif.`);
       setCancelTarget(null);
       if (view === "detail" && detail?.id === cancelTarget.id) {
-        setView("list");
         setDetail(null);
+        setView("list");
       }
-      await load();
+      await load({ soft: true, force: false });
     } catch (ex) {
       setCancelErr(errDetail(ex));
     } finally {
@@ -287,27 +484,35 @@ export default function FakturPembelian() {
   };
 
   return (
-    <div className="prod-page purchase-page" data-testid="faktur-pembelian-page">
+    <div className={`prod-page purchase-page${view === "create" || view === "detail" ? " is-fpb-doc" : ""}`} data-testid="faktur-pembelian-page">
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Pembelian</p>
           <h1>{view === "create" ? "Buat Faktur Pembelian" : "Faktur Pembelian"}</h1>
           <p className="subhead">
-            {view === "create"
-              ? "Pilih sumber faktur dari penerimaan barang atau dari PO jika faktur datang lebih dahulu."
-              : "Catat tagihan supplier dari penerimaan barang atau dari PO jika faktur datang lebih dahulu."}
+            {view === "list"
+              ? "Catat tagihan supplier dari penerimaan barang atau dari PO jika faktur datang lebih dahulu."
+              : "Catat tagihan supplier dari penerimaan barang atau pesanan pembelian."}
           </p>
         </div>
-        {view === "list" && canCreate && <button className="primary" data-testid="btn-create-invoice" onClick={() => setView("create")}><Plus size={14} /> Buat Faktur</button>}
-        {view !== "list" && <button className="ghost" onClick={() => { setView("list"); load(); }}>Kembali ke daftar</button>}
+        {view === "list" && canCreate && (
+          <button
+            className="primary"
+            data-testid="btn-create-invoice"
+            onClick={() => setView("create")}
+          >
+            <Plus size={14} /> Buat Faktur
+          </button>
+        )}
+        {view !== "list" && <button className="ghost" onClick={backToList}>Kembali ke Daftar</button>}
       </div>
       <PurchasingFlowNav />
       {err && (
-        <div className="purchase-error-panel" role="alert">
+        <div className="purchase-error-panel" role="alert" data-testid="invoice-list-error">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <AlertCircle size={16} color="#a53f2b" /><span>{err}</span>
           </div>
-          {view === "list" && <button type="button" className="ghost sm" onClick={load}>Coba Lagi</button>}
+          {view === "list" && <button type="button" className="ghost sm" onClick={() => load({ force: true })}>Coba Lagi</button>}
         </div>
       )}
       {ok && <p className="purchase-inline-ok" data-testid="invoice-success">{ok}</p>}
@@ -315,7 +520,7 @@ export default function FakturPembelian() {
       {view === "list" && (
         <>
           <div className="purchase-search-bar is-toolbar">
-            <form className="search-inline" onSubmit={(e) => { e.preventDefault(); load(); }}>
+            <form className="search-inline" onSubmit={(e) => { e.preventDefault(); load({ soft: rowsRef.current.length > 0 }); }}>
               <Search size={14} /><input value={q} onChange={(e) => setQ(e.target.value)} data-testid="search-invoice-input" placeholder="Cari no faktur / PO / supplier" />
             </form>
           </div>
@@ -323,414 +528,512 @@ export default function FakturPembelian() {
             <table className="prod-table purchase-table purchase-table-inv" data-testid="invoices-table">
               <colgroup>
                 <col className="col-inv" />
-                <col className="col-source" />
-                <col className="col-ref" />
                 <col className="col-supplier" />
+                <col className="col-age" />
                 <col className="col-date" />
                 <col className="col-money" />
                 <col className="col-money" />
-                <col className="col-money" />
-                <col className="col-status" />
               </colgroup>
               <thead>
                 <tr>
-                  <th>No Faktur</th>
-                  <th>Sumber</th>
-                  <th>Referensi</th>
-                  <th>Supplier</th>
-                  <th>Tanggal</th>
-                  <th className="num">Grand Total</th>
-                  <th className="num">Dibayar</th>
-                  <th className="num">Sisa</th>
-                  <th className="cell-status">Status</th>
+                  <th className="cell-inv">No. Faktur</th>
+                  <th className="cell-supplier">Supplier</th>
+                  <th className="cell-age">Umur Faktur</th>
+                  <th className="cell-due">Jatuh Tempo</th>
+                  <th className="cell-money">Total</th>
+                  <th className="cell-money">Sisa Tagihan</th>
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr className="purchase-empty-row"><td colSpan={9} className="muted small">Memuat…</td></tr>}
-                {!loading && rows.length === 0 && (
-                  <tr className="purchase-empty-row">
-                    <td colSpan={9} className="muted">Belum ada faktur.</td>
+                {loading && rows.length === 0 && (
+                  <tr className="purchase-empty-row" data-testid="invoices-loading-row">
+                    <td colSpan={6} className="muted small">Memuat…</td>
                   </tr>
                 )}
-                {rows.map((r) => {
-                  const refParts = [r.po_number, r.receipt_number].filter(Boolean);
-                  const refLabel = refParts.length ? refParts.join(" / ") : "—";
-                  return (
-                    <tr
-                      key={r.id}
-                      {...purchaseRowInteractionProps(() => openDetail(r.id), { testId: `invoice-row-${r.id}` })}
-                    >
-                      <td className="mono cell-clip">
-                        {r.invoice_number}
-                        {r.precedes_goods_receipt && <span className="purchase-badge-early">Faktur mendahului barang</span>}
-                      </td>
-                      <td className="cell-clip">{invoiceSourceLabel(r.invoice_source)}</td>
-                      <td className="mono cell-clip" title={refLabel}>{refLabel}</td>
-                      <td className="cell-clip" title={r.supplier}>{r.supplier}</td>
-                      <td className="nowrap">{r.invoice_date || "—"}</td>
-                      <td className="num">{formatRupiah(r.grand_total)}</td>
-                      <td className="num">{formatRupiah(r.paid_total)}</td>
-                      <td className="num">{formatRupiah(r.outstanding_amount)}</td>
-                      <td className="cell-status">
-                        <span className={`purchase-status-badge ${purchaseStatusPillClass(r.payment_status)}`}>
-                          {purchasePaymentStatusLabel(r.payment_status)}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {!loading && rows.length === 0 && (
+                  <tr className="purchase-empty-row">
+                    <td colSpan={6} className="muted">Belum ada faktur.</td>
+                  </tr>
+                )}
+                {rows.map((r) => (
+                  <tr
+                    key={r.id}
+                    {...purchaseRowInteractionProps(() => openDetail(r.id), { testId: `invoice-row-${r.id}` })}
+                  >
+                    <td className="mono cell-inv" title={r.invoice_number}>{r.invoice_number}</td>
+                    <td className="cell-supplier" title={r.supplier}>{r.supplier || "—"}</td>
+                    <td className="nowrap cell-age" data-testid={`invoice-age-${r.id}`}>{invoiceAgeLabel(r.invoice_date)}</td>
+                    <td className="nowrap cell-due" data-testid={`invoice-due-${r.id}`}>{r.due_date ? formatPurchaseDateId(r.due_date) : dueDateLabel(r.due_date)}</td>
+                    <td className="nowrap cell-money" data-testid={`invoice-total-${r.id}`}><span className="inv-money">{formatRupiah(r.grand_total)}</span></td>
+                    <td className="nowrap cell-money" data-testid={`invoice-outstanding-${r.id}`}><span className="inv-money">{formatRupiah(r.outstanding_amount)}</span></td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         </>
       )}
 
+
       {view === "create" && (
-        <div className="card purchase-detail-card" data-testid="invoice-create-form">
-          <div className="purchase-mode-toggle" role="tablist" aria-label="Sumber faktur">
-            <button
-              type="button"
-              className={invoiceSource === "receipt" ? "is-active" : ""}
-              data-testid="invoice-source-receipt"
-              onClick={() => { setInvoiceSource("receipt"); setPreview(null); }}
-            >
-              Penerimaan Barang
-            </button>
-            <button
-              type="button"
-              className={invoiceSource === "purchase_order" ? "is-active" : ""}
-              data-testid="invoice-source-po"
-              onClick={() => { setInvoiceSource("purchase_order"); setPreview(null); }}
-            >
-              Pesanan Pembelian
-            </button>
+        <div className="fpb-final" data-testid="invoice-create-form">
+          <section className="fpb-meta" data-testid="po-snapshot-card">
+            <div className="fpb-meta-fields">
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><FileText size={12} aria-hidden /> No Faktur</span>
+                <span className="fpb-v mono">Otomatis saat simpan</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Hash size={12} aria-hidden /> No PO / GR</span>
+                <span className="fpb-v mono">
+                  <span data-testid="snapshot-po-number">{preview?.po_number || "—"}</span>
+                  {preview?.receipt_number ? <span> / {preview.receipt_number}</span> : null}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Building2 size={12} aria-hidden /> Pemasok</span>
+                <span className="fpb-v" data-testid="create-supplier">{preview?.supplier || "— ambil sumber"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><MapPin size={12} aria-hidden /> Cabang</span>
+                <span className="fpb-v" data-testid="create-branch" aria-readonly="true">
+                  {preview ? purchaseBranchLabel(preview) : "—"}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Warehouse size={12} aria-hidden /> Gudang</span>
+                <span className="fpb-v" data-testid="create-warehouse" aria-readonly="true">
+                  {preview ? purchaseInvoiceWarehouseLabel(preview, invoiceSource) : "—"}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Tanggal</span>
+                <input type="date" className="fpb-meta-input" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><CreditCard size={12} aria-hidden /> Syarat Pembayaran</span>
+                <span className="fpb-v">{paymentTermLabel(paymentTermDays)}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Jatuh Tempo</span>
+                <span className="fpb-v">{dueDateLabel(dueDate)}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Wallet size={12} aria-hidden /> Status Pembayaran</span>
+                <span className="fpb-v muted">Draft</span>
+              </div>
+            </div>
+            <div className="fpb-meta-ambil">
+              <span className="fpb-k"><ClipboardList size={12} aria-hidden /> Ambil sumber</span>
+              <div className="fpb-ambil-row">
+                <div className="purchase-mode-toggle" role="tablist" aria-label="Sumber faktur">
+                  <button type="button" className={invoiceSource === "receipt" ? "is-active" : ""} data-testid="invoice-source-receipt" onClick={() => { if (invoiceSource !== "receipt") { setInvoiceSource("receipt"); setPreview(null); } else if (receiptId) loadReceiptPreview(receiptId); }}>Penerimaan</button>
+                  <button type="button" className={invoiceSource === "purchase_order" ? "is-active" : ""} data-testid="invoice-source-po" onClick={() => { if (invoiceSource !== "purchase_order") { setInvoiceSource("purchase_order"); setPreview(null); } else if (poId) loadPoPreview(poId); }}>Pesanan</button>
+                </div>
+                {invoiceSource === "receipt" ? (
+                  <select value={receiptId} onChange={(e) => setReceiptId(e.target.value)} data-testid="receipt-selector" aria-label="Pilih penerimaan">
+                    <option value="">Pilih penerimaan…</option>
+                    {eligibleReceipts.map((r) => <option key={r.id} value={r.id}>{r.receipt_number} · {r.po_number || "—"}</option>)}
+                  </select>
+                ) : (
+                  <select value={poId} onChange={(e) => setPoId(e.target.value)} data-testid="po-selector" aria-label="Pilih PO" disabled={Boolean(queryPoId)}>
+                    <option value="">Pilih PO…</option>
+                    {eligiblePos.map((o) => <option key={o.id} value={o.id}>{o.po_number} · {o.supplier}</option>)}
+                  </select>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <div className="fpb-body">
+            <section className={`fpb-lines${createLineCount > 10 ? " is-scrollable" : ""}`} aria-label="Rincian Barang">
+              <div className="fpb-lines-head">
+                <h3>Rincian Barang <span className="fpb-lines-count" data-testid="create-line-count">({createLineCount} item)</span></h3>
+              </div>
+              <div className="fpb-table-scroll">
+                <table className="fpb-lines-table">
+                  <thead>
+                    <tr>
+                      <th className="col-no">No</th>
+                      <th className="col-name">Nama Barang</th>
+                      <th className="col-code">Kode Barang</th>
+                      <th className="col-qty num">Qty</th>
+                      <th className="col-unit">Satuan</th>
+                      <th className="col-price num">Harga (Rp)</th>
+                      <th className="col-total num">Total (Rp)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {!preview && (
+                      <tr><td colSpan={7} className="muted">Ambil Pesanan atau Penerimaan untuk memuat barang.</td></tr>
+                    )}
+                    {preview && createDisplayLines.length === 0 && (
+                      <tr><td colSpan={7} className="muted">Belum ada baris item.</td></tr>
+                    )}
+                    {createDisplayLines.map((l) => {
+                      const key = l.purchase_order_line_id;
+                      const qv = l._visualDemo ? (Number(l.remaining_invoice_qty) || 1) : (Number(qty[key]) || 0);
+                      const price = Number(l.unit_price) || 0;
+                      return (
+                        <tr key={key} className={l._visualDemo ? "is-visual-demo" : undefined}>
+                          <td className="col-no num">{l._rowNo}</td>
+                          <td className="col-name" title={l.item_name}>{l.item_name || "—"}</td>
+                          <td className="col-code mono">{l.item_code || "—"}</td>
+                          <td className="col-qty">
+                            {l._visualDemo ? (
+                              <span className="num">{fmtQty(qv)}</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min="0"
+                                className="fpb-qty"
+                                value={qty[key] ?? ""}
+                                title={`Sisa: ${fmtQty(l.remaining_invoice_qty)}`}
+                                onChange={(e) => setQty((p) => ({ ...p, [key]: e.target.value }))}
+                                data-testid="qty-input"
+                              />
+                            )}
+                          </td>
+                          <td className="col-unit">{l.unit || "pcs"}</td>
+                          <td className="col-price num">{formatRupiah(price)}</td>
+                          <td className="col-total num">{formatRupiah(qv * price)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside className="fpb-side">
+              <section className="fpb-side-card" data-testid="create-summary">
+                <h3>Ringkasan Nilai</h3>
+                <dl>
+                  <div><dt>Nilai Faktur</dt><dd data-testid="invoice-grand-total">{formatRupiah(createDisplayGrand)}</dd></div>
+                  <div><dt>Uang Muka Dialokasikan</dt><dd>Rp 0</dd></div>
+                  <div><dt>Pembayaran</dt><dd>Rp 0</dd></div>
+                  <div><dt>Sisa Tagihan</dt><dd>{formatRupiah(createDisplayGrand)}</dd></div>
+                  <div className="is-total"><dt>Total</dt><dd>{formatRupiah(createDisplayGrand)}</dd></div>
+                </dl>
+              </section>
+              <section className="fpb-side-card" data-testid="create-panel-info">
+                <h3>Info Lainnya</h3>
+                <div className="fpb-side-fields">
+                  <label>Syarat Pembayaran <span className="fpb-req">*</span></label>
+                  <div className="purchase-term-row" data-testid="invoice-term-presets">
+                    {PURCHASE_TERM_PRESETS.map((p) => (
+                      <button key={p.id} type="button" className={`ghost sm${termPreset === p.id ? " is-active" : ""}`} data-testid={`term-preset-${p.id.toLowerCase()}`} onClick={() => applyTermPreset(p.id)}>{p.label}</button>
+                    ))}
+                  </div>
+                  {termPreset === "CUSTOM" && (
+                    <input type="number" min="0" value={paymentTermDays} onChange={(e) => { setPaymentTermDays(e.target.value); setDueManual(false); }} data-testid="invoice-term-days-input" />
+                  )}
+                  <label htmlFor="invoice-due-date-input">Jatuh Tempo <span className="fpb-req">*</span></label>
+                  <div className="purchase-due-row">
+                    <input id="invoice-due-date-input" type="date" value={dueDate} onChange={(e) => { setDueManual(true); setDueDate(e.target.value); }} data-testid="invoice-due-date-input" />
+                    <button type="button" className="ghost sm" data-testid="invoice-due-recalc" onClick={() => { setDueManual(false); setDueDate(addDaysYmd(invoiceDate, paymentTermDays)); }}>Hitung ulang</button>
+                  </div>
+                  {invoiceSource === "purchase_order" && earlyNeeded && (
+                    <label className="purchase-ack" data-testid="early-invoice-ack">
+                      <input type="checkbox" checked={precedesGoodsReceipt} onChange={(e) => setPrecedesGoodsReceipt(e.target.checked)} data-testid="precedes-goods-receipt" />
+                      <span>Tagihan Dimuka (Mendahului Terima Barang)</span>
+                    </label>
+                  )}
+                </div>
+              </section>
+            </aside>
           </div>
 
-          {invoiceSource === "receipt" && (
-            <FormField id="inv-receipt" label="Penerimaan Barang" isRequired value={receiptId}>
-              <select value={receiptId} onChange={(e) => setReceiptId(e.target.value)} data-testid="receipt-selector">
-                <option value="">Pilih penerimaan</option>
-                {eligibleReceipts.map((r) => (
-                  <option key={r.id} value={r.id}>{r.receipt_number} · {r.po_number || "—"} · {r.supplier || ""}</option>
-                ))}
-              </select>
-            </FormField>
-          )}
+          <footer className="fpb-actions-bar">
+            <div className="fpb-actions-left">
+              <button className="ghost" type="button" onClick={() => setView("list")}>Batal</button>
+            </div>
+            <div className="fpb-actions-right">
+              <button className="primary" disabled={busy || !preview || visualDemo10} onClick={save} data-testid="save-invoice-btn" title={visualDemo10 ? "Mode visual_demo: tidak menyimpan." : undefined}>
+                {busy ? "Menyimpan…" : "Simpan Faktur"}
+              </button>
+            </div>
+          </footer>
+        </div>
+      )}
 
-          {invoiceSource === "purchase_order" && !queryPoId && (
-            <FormField id="inv-po" label="Pesanan Pembelian" isRequired value={poId}>
-              <select value={poId} onChange={(e) => setPoId(e.target.value)} data-testid="po-selector">
-                <option value="">Pilih PO</option>
-                {eligiblePos.map((o) => <option key={o.id} value={o.id}>{o.po_number} · {o.supplier}</option>)}
-              </select>
-            </FormField>
-          )}
-
-          {preview && (
-            <div className="po-snapshot-card" data-testid="po-snapshot-card">
-              <div className="purchase-detail-meta">
-                <div>
-                  <span className="label">No PO</span>
-                  <span className="value mono" data-testid="snapshot-po-number">{preview.po_number}</span>
-                </div>
-                {preview.receipt_number && (
-                  <div>
-                    <span className="label">Penerimaan</span>
-                    <span className="value mono">{preview.receipt_number}</span>
-                  </div>
-                )}
-                <div>
-                  <span className="label">Supplier</span>
-                  <span className="value">{preview.supplier}</span>
-                </div>
+      {view === "detail" && detail && (
+        <div className="fpb-final" data-testid="invoice-detail">
+          <section className="fpb-meta" data-testid="invoice-detail-header">
+            <div className="fpb-meta-fields">
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><FileText size={12} aria-hidden /> No Faktur</span>
+                <span className="fpb-v mono" data-testid="detail-invoice-number">
+                  {detail.invoice_number}
+                  {detail.precedes_goods_receipt && <span className="purchase-badge-early">Faktur mendahului barang</span>}
+                </span>
               </div>
-              <FormProgress
-                percentage={Math.round(([invoiceDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length / 2) * 100)}
-                completed={[invoiceDate, Object.values(qty).some(v => Number(v) > 0)].filter(Boolean).length}
-                total={2}
-              />
-              <FormSection id="invoice-header" title="Informasi Faktur" status={computeStatus([{ value: invoiceDate, isRequired: true }])}>
-                <FormField id="invoice-date" label="Tanggal faktur" isRequired value={invoiceDate}>
-                  <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
-                </FormField>
-              </FormSection>
-              <FormSection id="invoice-lines" title="Detail Item" status={Object.values(qty).some(v => Number(v) > 0) ? "complete" : "incomplete"}>
-                <div className="purchase-table-wrap">
-                  <table className="prod-table">
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Hash size={12} aria-hidden /> No PO / GR</span>
+                <span className="fpb-v mono">
+                  <span data-testid="detail-po-number">{detail.po_number || "—"}</span>
+                  {detail.receipt_number ? <span> / {detail.receipt_number}</span> : null}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Building2 size={12} aria-hidden /> Pemasok</span>
+                <span className="fpb-v" data-testid="detail-supplier">{detail.supplier || "—"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><MapPin size={12} aria-hidden /> Cabang</span>
+                <span className="fpb-v" data-testid="detail-branch" aria-readonly="true">
+                  {purchaseBranchLabel(detail)}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Warehouse size={12} aria-hidden /> Gudang</span>
+                <span className="fpb-v" data-testid="detail-warehouse" aria-readonly="true">
+                  {purchaseInvoiceWarehouseLabel(detail, detail.invoice_source)}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Tanggal</span>
+                <span className="fpb-v" data-testid="detail-invoice-date">{detail.invoice_date || "—"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><CreditCard size={12} aria-hidden /> Syarat Pembayaran</span>
+                <span className="fpb-v" data-testid="detail-payment-term">{paymentTermLabel(detail.payment_term_days)}</span>
+              </div>
+              <div className="fpb-meta-item" data-testid="detail-due-date-block">
+                <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Jatuh Tempo</span>
+                <span className="fpb-v">
+                  <span data-testid="detail-due-date">{dueDateLabel(detail.due_date)}</span>
+                  {detail.due_status && detail.due_status !== "LUNAS" ? <span className="muted small" data-testid="detail-due-status"> · {detail.due_status}</span> : null}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Wallet size={12} aria-hidden /> Status Pembayaran</span>
+                <span className={`purchase-status-badge ${purchaseStatusPillClass(detail.payment_status)}`} data-testid="detail-payment-status">{purchasePaymentStatusLabel(detail.payment_status)}</span>
+              </div>
+            </div>
+          </section>
+
+          <div className="fpb-body">
+            <section className={`fpb-lines${detailLineCount > 10 ? " is-scrollable" : ""}`} aria-label="Rincian Barang">
+              <div className="fpb-lines-head">
+                <h3>Rincian Barang <span className="fpb-lines-count" data-testid="detail-line-count">({detailLineCount} item)</span></h3>
+              </div>
+              <div className="fpb-table-scroll">
+                <table className="fpb-lines-table" data-testid="invoice-detail-lines">
+                  <thead>
+                    <tr>
+                      <th className="col-no">No</th>
+                      <th className="col-name">Nama Barang</th>
+                      <th className="col-code">Kode Barang</th>
+                      <th className="col-qty num">Qty</th>
+                      <th className="col-unit">Satuan</th>
+                      <th className="col-price num">Harga (Rp)</th>
+                      <th className="col-total num">Total (Rp)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detailDisplayLines.length === 0 && (
+                      <tr><td colSpan={7} className="muted">Tidak ada baris item.</td></tr>
+                    )}
+                    {detailDisplayLines.map((l) => (
+                      <tr key={l.line_id || `${l.item_name}-${l._rowNo}`} className={l._visualDemo ? "is-visual-demo" : undefined}>
+                        <td className="col-no num">{l._rowNo}</td>
+                        <td className="col-name" title={l.item_name}>{l.item_name || "—"}</td>
+                        <td className="col-code mono">{l.item_code || "—"}</td>
+                        <td className="col-qty num">{fmtQty(l.invoice_qty || l.quantity)}</td>
+                        <td className="col-unit">{l.unit || "pcs"}</td>
+                        <td className="col-price num">{formatRupiah(l.unit_price)}</td>
+                        <td className="col-total num">{formatRupiah(l.line_subtotal)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside className="fpb-side">
+              <section className="fpb-side-card" data-testid="invoice-detail-summary">
+                <h3>Ringkasan Nilai</h3>
+                <dl>
+                  <div><dt>Nilai Faktur</dt><dd data-testid="detail-grand-total">{formatRupiah(detail.grand_total)}</dd></div>
+                  <div><dt>Uang Muka Dialokasikan</dt><dd data-testid="detail-advance-applied">{formatRupiah(detail.advance_applied_amount || 0)}</dd></div>
+                  <div><dt>Pembayaran</dt><dd data-testid="detail-normal-payment">{formatRupiah(detail.paid_total)}</dd></div>
+                  <div><dt>Sisa Tagihan</dt><dd data-testid="detail-outstanding">{formatRupiah(detail.outstanding_amount)}</dd></div>
+                  <div className="is-total"><dt>Total</dt><dd>{formatRupiah(detail.grand_total)}</dd></div>
+                </dl>
+              </section>
+
+              <section className="fpb-side-card" data-testid="detail-panel-info">
+                <h3>Info Lainnya</h3>
+                <div className="fpb-side-fields">
+                  <div className="fpb-kv"><span>No. Referensi</span><b className="mono">{[detail.po_number, detail.receipt_number].filter(Boolean).join(" / ") || "—"}</b></div>
+                  <div className="fpb-kv"><span>Mata Uang</span><b>IDR</b></div>
+                  <div className="fpb-kv"><span>Syarat Pembayaran</span><b>{paymentTermLabel(detail.payment_term_days)}</b></div>
+                  <div className="fpb-kv"><span>Jatuh Tempo</span><b>{dueDateLabel(detail.due_date)}</b></div>
+                  {detail.notes ? (
+                    <div className="fpb-notes">
+                      <span>Keterangan</span>
+                      <p>{detail.notes}</p>
+                    </div>
+                  ) : null}
+                  {!editingTerms && canEditPurchaseInvoicePaymentTerms(detail, canEditTerms) && (
+                    <button type="button" className="ghost sm" data-testid="btn-ubah-termin-jatuh-tempo" onClick={startEditTerms}>Ubah Termin / Jatuh Tempo</button>
+                  )}
+                  {editingTerms && (
+                    <div className="purchase-due-date-edit" data-testid="detail-terms-edit">
+                      <div className="purchase-term-row">
+                        {PURCHASE_TERM_PRESETS.map((p) => (
+                          <button key={p.id} type="button" className={`ghost sm${editTermPreset === p.id ? " is-active" : ""}`} data-testid={`edit-term-preset-${p.id.toLowerCase()}`} disabled={termsBusy} onClick={() => applyTermPreset(p.id, { edit: true })}>{p.label}</button>
+                        ))}
+                      </div>
+                      {editTermPreset === "CUSTOM" && (
+                        <input type="number" min="0" value={editTermDays} disabled={termsBusy} onChange={(e) => { setEditTermDays(e.target.value); setEditDueManual(false); setEditDueDate(addDaysYmd(detail.invoice_date, e.target.value)); }} data-testid="edit-term-days-input" />
+                      )}
+                      <input type="date" value={editDueDate} disabled={termsBusy} onChange={(e) => { setEditDueManual(true); setEditDueDate(e.target.value); }} data-testid="detail-due-date-input" />
+                      <input type="text" value={editReason} disabled={termsBusy} onChange={(e) => setEditReason(e.target.value)} placeholder="Alasan perubahan (wajib, min. 3 karakter)" data-testid="edit-terms-reason" required />
+                      <div className="fpb-inline-actions">
+                        <button type="button" className="primary sm" disabled={termsBusy || String(editReason || "").trim().length < 3} onClick={saveTerms} data-testid="btn-simpan-termin-jatuh-tempo">{termsBusy ? "Menyimpan…" : "Simpan"}</button>
+                        <button type="button" className="ghost sm" disabled={termsBusy} onClick={() => setEditingTerms(false)} data-testid="btn-batal-termin-jatuh-tempo">Batal</button>
+                      </div>
+                    </div>
+                  )}
+                  {termsErr ? <p className="error" data-testid="terms-edit-error">{termsErr}</p> : null}
+                  {!canEditPurchaseInvoicePaymentTerms(detail, canEditTerms) && detail.edit_payment_terms_block_reason ? (
+                    <p className="muted small" data-testid="terms-edit-blocked">{detail.edit_payment_terms_block_reason}</p>
+                  ) : null}
+                </div>
+              </section>
+            </aside>
+          </div>
+
+          <section className="fpb-lower" aria-label="Dokumen dan riwayat aktivitas">
+            <div className="fpb-lower-card" data-testid="detail-panel-docs">
+              <PurchaseDocuments entityType="purchase_invoice" entityId={detail.id} canEdit={canCreate} testId="inv-documents" />
+            </div>
+            <div className="fpb-lower-card" data-testid="detail-panel-history">
+              <PurchaseActivityHistory doc={detail} testId="invoice-activity" />
+            </div>
+          </section>
+
+          <section className="fpb-terms-audit" data-testid="invoice-terms-panel" aria-label="Riwayat perubahan termin">
+            <div className="fpb-lower-card fpb-terms-audit-card">
+              <h4>Riwayat Perubahan Termin</h4>
+              {(detail.payment_terms_history || []).length > 0 ? (
+                <div className="purchase-table-wrap" data-testid="invoice-terms-history">
+                  <table className="fpb-terms-audit-table">
                     <thead>
                       <tr>
-                        <th>Item</th>
-                        <th className="num">Sisa</th>
-                        {invoiceSource === "purchase_order" && <th className="num">Diterima</th>}
-                        <th className="num">Qty faktur</th>
-                        <th className="num">Harga</th>
-                        <th className="num">Subtotal</th>
+                        <th>Waktu</th>
+                        <th>Oleh</th>
+                        <th>Termin Lama → Baru</th>
+                        <th>Jatuh Tempo Lama → Baru</th>
+                        <th>Alasan</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(preview.lines || []).map((l) => (
-                        <tr key={l.purchase_order_line_id}>
-                          <td>{l.item_name}</td>
-                          <td className="num">{fmtQty(l.remaining_invoice_qty)}</td>
-                          {invoiceSource === "purchase_order" && (
-                            <td className="num">{fmtQty(l.cumulative_received_qty)}</td>
-                          )}
+                      {[...(detail.payment_terms_history || [])].reverse().map((entry, idx) => (
+                        <tr key={`${entry.at || "h"}-${idx}`} data-testid={`terms-history-row-${idx}`}>
+                          <td className="nowrap">{formatPurchaseDateTime(entry.at)}</td>
+                          <td>{entry?.by?.name || entry?.by?.email || "—"}</td>
                           <td>
-                            <input
-                              type="number"
-                              min="0"
-                              value={qty[l.purchase_order_line_id] ?? ""}
-                              onChange={(e) => setQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))}
-                              data-testid="qty-input"
-                            />
+                            {paymentTermLabel(entry?.before?.payment_term_days)}
+                            {" → "}
+                            {paymentTermLabel(entry?.after?.payment_term_days)}
                           </td>
-                          <td className="num">{formatRupiah(l.unit_price)}</td>
-                          <td className="num">{formatRupiah((Number(qty[l.purchase_order_line_id]) || 0) * (Number(l.unit_price) || 0))}</td>
+                          <td className="nowrap">
+                            {dueDateLabel(entry?.before?.due_date)}
+                            {" → "}
+                            {dueDateLabel(entry?.after?.due_date)}
+                          </td>
+                          <td>{entry.reason ? entry.reason : "—"}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              </FormSection>
-
-              {invoiceSource === "purchase_order" && earlyNeeded && (
-                <label className="purchase-ack" data-testid="early-invoice-ack">
-                  <input
-                    type="checkbox"
-                    checked={precedesGoodsReceipt}
-                    onChange={(e) => setPrecedesGoodsReceipt(e.target.checked)}
-                    data-testid="precedes-goods-receipt"
-                  />
-                  <span>
-                    Faktur mendahului penerimaan barang
-                    <span className="hint">Gunakan jika faktur supplier diterima sebelum barang.</span>
-                  </span>
-                </label>
+              ) : (
+                <p className="muted small" data-testid="invoice-terms-history-empty">Belum ada perubahan termin / jatuh tempo.</p>
               )}
+              {(detail.payments || []).length > 0 && (
+                <div className="fpb-payment-history-wrap" data-testid="invoice-payment-history">
+                  <h5>Riwayat Pengajuan Pembayaran</h5>
+                  <div className="purchase-table-wrap">
+                    <table className="prod-table">
+                      <thead><tr><th>No Bayar</th><th>Tgl Pengajuan</th><th>Status</th><th className="num">Jumlah</th></tr></thead>
+                      <tbody>
+                        {(detail.payments || []).map((p) => (
+                          <tr key={p.id}>
+                            <td className="mono">{p.payment_number}</td>
+                            <td>{p.submitted_at ? formatPurchaseDateTime(p.submitted_at) : (p.payment_date || "—")}</td>
+                            <td>{p.submission_status_label || p.list_status || p.workflow_status || "—"}</td>
+                            <td className="num">{formatRupiah(p.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
 
-              <p data-testid="invoice-grand-total"><b>Grand total:</b> {formatRupiah(totals.grand)}</p>
-              <div className="purchase-form-actions">
-                <button className="ghost" type="button" onClick={() => setView("list")}>Batal</button>
-                <button className="primary" disabled={busy} onClick={save} data-testid="save-invoice-btn">{busy ? "Menyimpan…" : "Simpan Faktur"}</button>
-              </div>
+          <section className="fpb-extra" aria-label="Informasi sekunder uang muka dan accounting">
+            <div className="fpb-lower-card fpb-extra-card" data-testid="gunakan-uang-muka">
+              <h4>Gunakan Uang Muka</h4>
+              {eligibleAdvances.length === 0 && <p className="muted small">Tidak ada uang muka tersedia untuk pesanan ini.</p>}
+              {eligibleAdvances.map((row) => (
+                <div key={row.id} data-testid="eligible-advance-row" className="fpb-advance-row">
+                  <span>{row.advance_number}</span>
+                  <span data-testid="eligible-advance-available">{formatRupiah(row.available_amount)}</span>
+                </div>
+              ))}
+              {eligibleAdvances.length > 0 && (
+                <div className="purchase-form-actions">
+                  <select value={allocAdvanceId} onChange={(e) => setAllocAdvanceId(e.target.value)} data-testid="alloc-advance-select">
+                    <option value="">Pilih uang muka</option>
+                    {eligibleAdvances.map((row) => <option key={row.id} value={row.id}>{row.advance_number} — {formatRupiah(row.available_amount)}</option>)}
+                  </select>
+                  <input type="number" min="1" value={allocAmount} onChange={(e) => setAllocAmount(e.target.value)} data-testid="alloc-amount" placeholder="Nilai alokasi" />
+                  <button type="button" className="primary sm" disabled={allocBusy} onClick={allocateAdvance} data-testid="alloc-submit">Alokasikan</button>
+                </div>
+              )}
+              {allocErr && <p data-testid="alloc-error">{allocErr}</p>}
             </div>
-          )}
-        </div>
-      )}
+            <div className="fpb-lower-card fpb-extra-card" data-testid="invoice-accounting-section">
+              <h4>Accounting</h4>
+              <div className="fpb-kv"><span>Status</span><b data-testid="invoice-detail-accounting-status">{accountingLabel(detail.accounting_status)}</b></div>
+              {detail.accounting_journal_id ? <div className="fpb-kv"><span>Journal</span><b className="mono" data-testid="invoice-detail-accounting-journal">{detail.accounting_journal_id}</b></div> : null}
+              {detail.accounting_ready === false && String(detail.accounting_status || "not_posted") === "not_posted" ? (
+                <p className="muted small" data-testid="invoice-accounting-not-ready">Pengaturan Akuntansi Pembelian belum siap. Post Accounting dinonaktifkan.</p>
+              ) : null}
+            </div>
+          </section>
 
-      {view === "detail" && detail && (
-        <div className="card purchase-detail-card" data-testid="invoice-detail">
-          <div className="purchase-detail-meta" data-testid="invoice-detail-header">
-            <div>
-              <span className="label">No Faktur</span>
-              <span className="value mono" data-testid="detail-invoice-number">
-                {detail.invoice_number}
-                {detail.precedes_goods_receipt && <span className="purchase-badge-early">Faktur mendahului barang</span>}
-              </span>
+          <footer className="fpb-actions-bar purchase-detail-actions">
+            <div className="fpb-actions-left">
+              <button type="button" className="ghost" onClick={backToList}>Batal</button>
             </div>
-            <div>
-              <span className="label">No PO</span>
-              <span className="value mono" data-testid="detail-po-number">{detail.po_number}</span>
+            <div className="fpb-actions-right">
+              {canPostAccounting && String(detail.accounting_status || "not_posted") === "not_posted" && (
+                <button type="button" className="ghost" data-testid="btn-post-invoice-accounting" disabled={acctBusy || detail.can_post_accounting === false} title={detail.can_post_accounting === false ? (detail.accounting_ready === false ? "Pengaturan Akuntansi Pembelian belum dikonfigurasi." : "") : undefined} onClick={() => { setAcctErr(""); setPostConfirm(true); }}>Post Accounting</button>
+              )}
+              {canReverseAccounting && String(detail.accounting_status || "") === "posted" && (
+                <button type="button" className="ghost" data-testid="btn-reverse-invoice-accounting" disabled={acctBusy || detail.can_reverse_accounting === false} title={detail.can_reverse_accounting === false ? "Faktur tidak dapat di-reverse karena masih memiliki pembayaran aktif." : undefined} onClick={() => { setAcctErr(""); setReverseReason(""); setReverseConfirm(true); }}>Reverse Accounting</button>
+              )}
+              {canCreate && (
+                <button type="button" className="ghost danger" data-testid="btn-hapus-inv-detail" disabled={detail.can_cancel === false} title={detail.can_cancel === false ? (detail.cancel_block_reason || "") : undefined} onClick={() => openCancel(detail)}>Hapus</button>
+              )}
+              {Number(detail.outstanding_amount) > 0 && detail.payment_status !== "LUNAS" && hasPerm("purchase_payments.create") && (
+                <button type="button" className="primary" data-testid="btn-ajukan-pembayaran-inv-detail" onClick={() => setAjukanOpen(true)}>Ajukan Pembayaran</button>
+              )}
+              {Number(detail.outstanding_amount) > 0 && (
+                <span className="muted small" data-testid="payment-max">Maksimum pembayaran {formatRupiah(detail.outstanding_amount)}</span>
+              )}
+              {lastChatRoomId ? (
+                <Link className="ghost" data-testid="btn-buka-chat-after-ajukan" to={`/chat/${encodeURIComponent(lastChatRoomId)}`}>Buka Chat</Link>
+              ) : null}
             </div>
-            <div>
-              <span className="label">Sumber</span>
-              <span className="value">{detail.invoice_source === "receipt" ? "Penerimaan" : "Pesanan Pembelian"}</span>
-            </div>
-            <div>
-              <span className="label">Supplier</span>
-              <span className="value" data-testid="detail-supplier">{detail.supplier || "—"}</span>
-            </div>
-            <div>
-              <span className="label">Tanggal</span>
-              <span className="value" data-testid="detail-invoice-date">{detail.invoice_date || "—"}</span>
-            </div>
-            <div>
-              <span className="label">Status Pembayaran</span>
-              <span className={purchaseStatusPillClass(detail.payment_status)} data-testid="detail-payment-status">{purchasePaymentStatusLabel(detail.payment_status)}</span>
-            </div>
-          </div>
-
-          <div className="purchase-table-wrap">
-            <table className="prod-table" data-testid="invoice-detail-lines">
-              <thead>
-                <tr>
-                  <th>Barang</th>
-                  <th className="num">Qty</th>
-                  <th className="num">Harga</th>
-                  <th className="num">Subtotal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(detail.lines || []).length === 0 && (
-                  <tr><td colSpan={4} className="muted small">Tidak ada baris item.</td></tr>
-                )}
-                {(detail.lines || []).map((l) => (
-                  <tr key={l.line_id || `${l.item_name}-${l.invoice_qty}`}>
-                    <td>{l.item_name}</td>
-                    <td className="num">{fmtQty(l.invoice_qty || l.quantity)} {l.unit || ""}</td>
-                    <td className="num">{formatRupiah(l.unit_price)}</td>
-                    <td className="num">{formatRupiah(l.line_subtotal)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-detail-summary">
-            <div>
-              <span className="label">Nilai Faktur</span>
-              <span className="value" data-testid="detail-grand-total">{formatRupiah(detail.grand_total)}</span>
-            </div>
-            <div>
-              <span className="label">Uang Muka Dialokasikan</span>
-              <span className="value" data-testid="detail-advance-applied">{formatRupiah(detail.advance_applied_amount || 0)}</span>
-            </div>
-            <div>
-              <span className="label">Pembayaran</span>
-              <span className="value" data-testid="detail-normal-payment">{formatRupiah(detail.paid_total)}</span>
-            </div>
-            <div>
-              <span className="label">Sisa Tagihan</span>
-              <span className="value" data-testid="detail-outstanding">{formatRupiah(detail.outstanding_amount)}</span>
-            </div>
-          </div>
-          <div data-testid="gunakan-uang-muka" style={{ marginTop: 12 }}>
-            <h3>Gunakan Uang Muka</h3>
-            {eligibleAdvances.length === 0 && <p className="muted">Tidak ada uang muka tersedia untuk pesanan ini.</p>}
-            {eligibleAdvances.map((row) => (
-              <div key={row.id} data-testid="eligible-advance-row">
-                <span>{row.advance_number}</span>
-                <span>{row.po_number}</span>
-                <span data-testid="eligible-advance-available">{formatRupiah(row.available_amount)}</span>
-              </div>
-            ))}
-            {eligibleAdvances.length > 0 && (
-              <div className="purchase-form-actions">
-                <select value={allocAdvanceId} onChange={(e) => setAllocAdvanceId(e.target.value)} data-testid="alloc-advance-select">
-                  <option value="">Pilih uang muka</option>
-                  {eligibleAdvances.map((row) => (
-                    <option key={row.id} value={row.id}>{row.advance_number} — {formatRupiah(row.available_amount)}</option>
-                  ))}
-                </select>
-                <input type="number" min="1" value={allocAmount} onChange={(e) => setAllocAmount(e.target.value)} data-testid="alloc-amount" placeholder="Nilai alokasi" />
-                <button type="button" className="primary" disabled={allocBusy} onClick={allocateAdvance} data-testid="alloc-submit">Alokasikan</button>
-              </div>
-            )}
-            {allocErr && <p data-testid="alloc-error">{allocErr}</p>}
-          </div>
-
-          <div className="purchase-detail-meta" style={{ marginTop: 12 }} data-testid="invoice-accounting-section">
-            <div>
-              <span className="label">Accounting Status</span>
-              <span className="value" data-testid="invoice-detail-accounting-status">{accountingLabel(detail.accounting_status)}</span>
-            </div>
-            {detail.accounting_journal_id ? (
-              <div>
-                <span className="label">Journal</span>
-                <span className="value mono" data-testid="invoice-detail-accounting-journal">{detail.accounting_journal_id}</span>
-              </div>
-            ) : null}
-            {detail.accounting_ready === false && String(detail.accounting_status || "not_posted") === "not_posted" ? (
-              <div>
-                <span className="label">Kesiapan</span>
-                <span className="value muted" data-testid="invoice-accounting-not-ready">
-                  Pengaturan Akuntansi Pembelian belum siap. Post Accounting dinonaktifkan.
-                </span>
-              </div>
-            ) : null}
-          </div>
-          <div className="purchase-detail-actions" style={{ marginTop: 8 }}>
-            {canPostAccounting && String(detail.accounting_status || "not_posted") === "not_posted" && (
-              <button
-                type="button"
-                className="primary"
-                data-testid="btn-post-invoice-accounting"
-                disabled={acctBusy || detail.can_post_accounting === false}
-                title={detail.can_post_accounting === false ? (detail.accounting_ready === false ? "Pengaturan Akuntansi Pembelian belum dikonfigurasi." : "") : undefined}
-                onClick={() => { setAcctErr(""); setPostConfirm(true); }}
-              >
-                Post Accounting
-              </button>
-            )}
-            {canReverseAccounting && String(detail.accounting_status || "") === "posted" && (
-              <button
-                type="button"
-                className="ghost"
-                data-testid="btn-reverse-invoice-accounting"
-                disabled={acctBusy || detail.can_reverse_accounting === false}
-                title={detail.can_reverse_accounting === false ? "Faktur tidak dapat di-reverse karena masih memiliki pembayaran aktif." : undefined}
-                onClick={() => { setAcctErr(""); setReverseReason(""); setReverseConfirm(true); }}
-              >
-                Reverse Accounting
-              </button>
-            )}
-          </div>
-
-          {(detail.payments || []).length > 0 && (
-            <div className="purchase-table-wrap" style={{ marginTop: 12 }} data-testid="invoice-payment-history">
-              <table className="prod-table">
-                <thead>
-                  <tr>
-                    <th>No Bayar</th>
-                    <th>Tgl Pengajuan</th>
-                    <th>Status Pengajuan</th>
-                    <th className="num">Jumlah</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detail.payments || []).map((p) => (
-                    <tr key={p.id}>
-                      <td className="mono">{p.payment_number}</td>
-                      <td>{p.submitted_at ? formatPurchaseDateTime(p.submitted_at) : (p.payment_date || "—")}</td>
-                      <td>{p.submission_status_label || p.list_status || p.workflow_status || "—"}</td>
-                      <td className="num">{formatRupiah(p.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <PurchaseDocuments
-            entityType="purchase_invoice"
-            entityId={detail.id}
-            canEdit={canCreate}
-            hint="Invoice supplier / lampiran faktur."
-            testId="inv-documents"
-          />
-          <PurchaseActivityHistory doc={detail} testId="invoice-activity" />
-          <div className="purchase-detail-actions">
-            {canCreate && (
-              <button
-                type="button"
-                className="ghost danger"
-                data-testid="btn-hapus-inv-detail"
-                disabled={detail.can_cancel === false}
-                title={detail.can_cancel === false ? (detail.cancel_block_reason || "") : undefined}
-                onClick={() => openCancel(detail)}
-              >
-                Hapus
-              </button>
-            )}
-            {Number(detail.outstanding_amount) > 0 && detail.payment_status !== "LUNAS" && hasPerm("purchase_payments.create") && (
-              <button
-                type="button"
-                className="primary"
-                data-testid="btn-ajukan-pembayaran-inv-detail"
-                onClick={() => setAjukanOpen(true)}
-              >
-                Ajukan Pembayaran
-              </button>
-            )}
-            {Number(detail.outstanding_amount) > 0 && (
-              <span data-testid="payment-max">Maksimum pembayaran {formatRupiah(detail.outstanding_amount)}</span>
-            )}
-            {lastChatRoomId ? (
-              <Link className="ghost" data-testid="btn-buka-chat-after-ajukan" to={`/chat/${encodeURIComponent(lastChatRoomId)}`}>
-                Buka Chat
-              </Link>
-            ) : null}
-          </div>
+          </footer>
         </div>
       )}
 

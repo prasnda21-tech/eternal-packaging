@@ -11505,22 +11505,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     
     from services.master_items import resolve_line_production_process
     from services.order_line_addon import validate_service_print_requires_parent
-
-    master_ids_for_type = [
-        (li.master_item_id or "").strip()
-        for li in payload.line_items
-        if (li.master_item_id or "").strip()
-    ]
-    item_type_by_master: Dict[str, str] = {}
-    if master_ids_for_type:
-        type_rows = await db.master_items.find(
-            {"id": {"$in": list(set(master_ids_for_type))}},
-            {"_id": 0, "id": 1, "item_type": 1},
-        ).to_list(len(set(master_ids_for_type)))
-        for row in type_rows:
-            mid_key = str(row.get("id") or "").strip()
-            if mid_key:
-                item_type_by_master[mid_key] = str(row.get("item_type") or "").strip().upper()
+    from services.line_product_replacement import require_po_create_line_master
 
     normalized_lines = []
     seen_line_ids = set()
@@ -11535,8 +11520,16 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         if q <= 0:
             raise HTTPException(400, f"Line item #{i+1}: Quantity harus > 0.")
 
-        mid = (li.master_item_id or "").strip() or None
-        aid = (li.accurate_item_id or "").strip() or None
+        # Owner policy: every new PO goods line must resolve to a valid Master Produk.
+        # Name alone is never identity. Empty unit_price remains allowed.
+        master, mapped = await require_po_create_line_master(
+            db,
+            master_item_id=li.master_item_id,
+            accurate_item_id=li.accurate_item_id,
+            line_no=i + 1,
+        )
+        mid = mapped.get("master_item_id")
+        aid = mapped.get("accurate_item_id")
         proc = await resolve_line_production_process(
             db,
             master_item_id=mid,
@@ -11549,12 +11542,13 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             raise HTTPException(400, f"Line item #{i+1}: line_id duplikat '{line_id}'.")
         seen_line_ids.add(line_id)
 
+        unit = (li.unit or "").strip() or (mapped.get("unit") or "pcs")
         row = {
             "line_id": line_id,
-            "item_code": (li.item_code or "").strip() or None,
+            "item_code": (li.item_code or "").strip() or mapped.get("item_code") or None,
             "name": name,
             "quantity": q,
-            "unit": (li.unit or "pcs").strip() or "pcs",
+            "unit": unit.strip() or "pcs",
             "color": (li.color or "").strip() or None,
             "production_process": proc,
             "notes": (li.notes or "").strip() or None,
@@ -11564,7 +11558,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
             "price_source": li.price_source,
             "price_review": bool(li.price_review),
         }
-        stamped_type = item_type_by_master.get(mid or "")
+        stamped_type = str(master.get("item_type") or "").strip().upper()
         if stamped_type:
             row["item_type"] = stamped_type
         parent_id = (li.parent_line_id or "").strip() if li.parent_line_id is not None else ""
@@ -11622,6 +11616,11 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
 
     from services.sales_order_prices import price_order_lines
     normalized_lines, selling_total, selling_prices_complete = await price_order_lines(db, normalized_lines)
+    # price_order_lines assigns new UUIDs and remaps parent_line_id; re-validate
+    # so a broken map never persists silently.
+    parent_err_after_price = validate_service_print_requires_parent(normalized_lines)
+    if parent_err_after_price:
+        raise HTTPException(400, parent_err_after_price)
 
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
@@ -14927,22 +14926,72 @@ async def physical_opening_import_confirm(
     payload: dict = Body(...),
     user=Depends(current_user),
 ):
-    """Post validated opening lines as R2 OPENING_BALANCE in one transaction."""
+    """Post validated opening lines as OPENING_BALANCE on the active engine.
+
+    Prefers R2 transactional import when r2_authority_active. Otherwise uses
+    warehouse_stock_standalone (claim + idempotent per-line resume) when that
+    flag is enabled. Never bypasses either gate and never activates R2 here.
+    """
     await _require_any_perm(user, "current_stock.update", "permissions.manage")
-    from services.r2_go_live import require_r2_authority_active
-    await require_r2_authority_active(db)
+    from services.r2_go_live import is_r2_authority_active, require_r2_authority_active
+    from services.warehouse_stock_standalone import (
+        is_warehouse_stock_standalone_active,
+        require_warehouse_stock_standalone,
+    )
     from services.physical_opening_import import OpeningImportError, confirm_opening_import
     from services.physical_stock import PhysicalStockUnavailableError
 
     actor_id = str((user or {}).get("id") or (user or {}).get("user_id") or "").strip()
     if not actor_id:
         raise HTTPException(401, "Aktor tidak dikenal")
+    use_standalone = (not await is_r2_authority_active(db)) and await is_warehouse_stock_standalone_active(db)
     try:
+        if use_standalone:
+            await require_warehouse_stock_standalone(db)
+        else:
+            await require_r2_authority_active(db)
         return await confirm_opening_import(db, payload or {}, actor_id=actor_id)
     except OpeningImportError as exc:
         raise _opening_import_http(exc) from exc
     except PhysicalStockUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/physical-stock/status-summary")
+async def physical_stock_status_summary_get(
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read-only Stock Saat Ini status counts. No item identities; no writes."""
+    from services.branch_access import (
+        require_warehouse_access,
+        resolve_stock_catalog_branch_id,
+    )
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        summarize_physical_stock_status,
+    )
+    try:
+        resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        if warehouse_id:
+            await require_warehouse_access(
+                db, user, warehouse_id, expected_branch_id=effective_branch_id,
+            )
+        summary = await summarize_physical_stock_status(
+            db,
+            branch_id=effective_branch_id,
+            warehouse_id=warehouse_id,
+        )
+        summary["effective_branch_id"] = effective_branch_id
+        summary["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        return summary
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @api_router.get("/physical-stock")

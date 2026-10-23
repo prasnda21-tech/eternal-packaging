@@ -301,6 +301,8 @@ export const api = {
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
   physicalStockCatalog: (params = {}) => client.get(`/physical-stock`, { params }).then((r) => r.data),
+  physicalStockStatusSummary: (params = {}) =>
+    client.get(`/physical-stock/status-summary`, { params }).then((r) => r.data),
   physicalStock: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-stock`, { params }).then((r) => r.data),
   physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
   physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),
@@ -525,6 +527,10 @@ export const api = {
   getPurchaseInvoice: (id) => client.get(`/purchase-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   purchaseInvoicePreview: (poId) => client.get(`/purchase-invoices/from-po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   createPurchaseInvoice: (payload) => client.post(`/purchase-invoices`, payload).then((r) => r.data),
+  updatePurchaseInvoicePaymentTerms: (id, payload) =>
+    client
+      .patch(`/purchase-invoices/${encodeURIComponent(id)}/payment-terms`, payload || {})
+      .then((r) => r.data),
   listPurchasePayments: (params = {}) => client.get(`/purchase-payments`, { params }).then((r) => r.data),
   getPurchasePayment: (id) => client.get(`/purchase-payments/${encodeURIComponent(id)}`).then((r) => r.data),
   createPurchasePayment: (payload) => client.post(`/purchase-payments`, payload).then((r) => r.data),
@@ -544,6 +550,11 @@ export const api = {
     client.post(`/purchase-requests/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   cancelPurchaseOrder: (id, reason = "") =>
     client.post(`/purchase-orders/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  /** Legacy PO once-only: PATCH /purchase-orders/{id}/branch — body { branch_id, reason }. */
+  setPurchaseOrderBranch: (id, payload) =>
+    client
+      .patch(`/purchase-orders/${encodeURIComponent(id)}/branch`, payload || {})
+      .then((r) => r.data),
   getPurchaseGoodsReceipt: (id) => client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   listPurchaseReturns: (params = {}) => client.get(`/purchase-returns`, { params }).then((r) => r.data),
   getPurchaseReturn: (id) => client.get(`/purchase-returns/${encodeURIComponent(id)}`).then((r) => r.data),

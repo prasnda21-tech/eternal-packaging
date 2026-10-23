@@ -35,6 +35,28 @@ import server
 from server import app, current_user
 
 
+async def _ensure_invoice_journal_posted(invoice_id: str) -> None:
+    """Minimal posted sales_invoice journal so CREATE penerimaan passes P3 gate."""
+    existing = await server.db.journal_entries.find_one(
+        {"source_type": "sales_invoice", "source_id": str(invoice_id), "status": "posted"},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        return
+    jid = str(uuid.uuid4())
+    await server.db.journal_entries.insert_one({
+        "id": jid,
+        "number": f"FIX-INV-{jid[:12]}",
+        "source_type": "sales_invoice",
+        "source_id": str(invoice_id),
+        "status": "posted",
+        "reversal_of": None,
+        "date": "2026-08-31",
+        "description": "fixture posted invoice journal",
+        "created_at": "2026-08-31T00:00:00Z",
+    })
+
+
 @pytest.fixture
 def anyio_backend():
     return 'asyncio'
@@ -43,8 +65,10 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 async def bind_motor_and_clean():
     from motor.motor_asyncio import AsyncIOMotorClient
+    # Pin DB: other suites (e.g. customer_credit) may mutate os.environ["DB_NAME"].
+    os.environ["DB_NAME"] = "eternal_packaging_test"
     server.client = AsyncIOMotorClient(os.environ['MONGO_URL'])
-    server.db = server.client[os.environ['DB_NAME']]
+    server.db = server.client["eternal_packaging_test"]
     await server.db.sales_invoices.delete_many({"po_number": {"$regex": r"^TEST-"}})
     await server.db.sales_receipts.delete_many({"po_number": {"$regex": r"^TEST-"}})
     await server.db.orders.delete_many({"po_number": {"$regex": r"^TEST-"}})
@@ -344,6 +368,8 @@ async def test_case_14_to_21_sales_receipts_and_overpayment_protections():
             assert invB["grand_total"] == 500000.0
             assert (await client.post(f"/api/sales-invoices/{invA['id']}/finalize")).status_code == 200
             assert (await client.post(f"/api/sales-invoices/{invB['id']}/finalize")).status_code == 200
+            await _ensure_invoice_journal_posted(invA["id"])
+            await _ensure_invoice_journal_posted(invB["id"])
 
             # Case 16, 17: Amount 0 & Negative
             r0 = await client.post("/api/sales-receipts", json={
@@ -445,6 +471,7 @@ async def test_case_22_23_24_workflow_payment_auto_approval():
             })
             inv = inv_res.json()["invoice"]
             assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
+            await _ensure_invoice_journal_posted(inv["id"])
 
             # Create DP receipt (Case 24: DP is sufficient, does not require LUNAS)
             rec_res = await client.post("/api/sales-receipts", json={
@@ -493,6 +520,7 @@ async def test_case_25_26_design_pending_does_not_skip_and_resolves_later():
             })
             inv = inv_res.json()["invoice"]
             assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
+            await _ensure_invoice_journal_posted(inv["id"])
 
             rec_res = await client.post("/api/sales-receipts", json={
                 "invoice_id": inv["id"],
@@ -548,6 +576,7 @@ async def test_case_27_28_29_30_idempotency_and_no_unrelated_stage_mutations():
             })
             inv = inv_res.json()["invoice"]
             assert (await client.post(f"/api/sales-invoices/{inv['id']}/finalize")).status_code == 200
+            await _ensure_invoice_journal_posted(inv["id"])
 
             # First receipt -> approves payment
             await client.post("/api/sales-receipts", json={

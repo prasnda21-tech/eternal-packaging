@@ -15,12 +15,21 @@ jest.mock("../lib/api", () => ({
     branches: jest.fn(),
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
+    physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
   },
 }));
 
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("Stock Saat Ini compatibility mode", () => {
+  beforeEach(() => {
+    api.physicalStockStatusSummary.mockResolvedValue({
+      counts: {},
+      operational_actions: [],
+      read_only: true,
+    });
+  });
+
   let container;
   let root;
 

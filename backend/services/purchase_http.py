@@ -25,6 +25,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         get_purchase_order,
         get_request_po_preview,
         list_purchase_orders,
+        set_purchase_order_branch,
     )
     from services.purchase_goods_receipts import (
         allocate_accurate_receipt_line,
@@ -41,6 +42,7 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         get_purchase_invoice,
         get_receipt_invoice_preview,
         list_purchase_invoices,
+        update_purchase_invoice_payment_terms,
     )
     from services.purchase_payments import (
         cancel_purchase_payment,
@@ -194,6 +196,17 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         data = _dump(payload) if payload is not None else {}
         doc = await cancel_purchase_order(get_db(), po_id, user, reason=str(data.get("reason") or ""))
         return {"order": doc, "message": "Pesanan Pembelian dibatalkan"}
+
+    @api_router.patch("/purchase-orders/{po_id}/branch")
+    async def set_purchase_order_branch_endpoint(
+        po_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_orders.edit_branch")
+        data = _dump(payload) if payload is not None else {}
+        doc = await set_purchase_order_branch(get_db(), po_id, data, user)
+        return {"order": doc, "message": "Cabang Pembelian berhasil dilengkapi"}
 
     @api_router.get("/purchase-goods-receipts")
     async def list_po_goods_receipts_endpoint(
@@ -374,6 +387,17 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         await require_any_perm(user, "purchase_invoices.create")
         doc = await create_purchase_invoice(get_db(), _dump(payload), user)
         return {"invoice": doc, "message": "Faktur Pembelian berhasil dibuat"}
+
+    @api_router.patch("/purchase-invoices/{invoice_id}/payment-terms")
+    async def update_purchase_invoice_payment_terms_endpoint(
+        invoice_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
+        await require_any_perm(user, "purchase_invoices.edit")
+        data = _dump(payload) if payload is not None else {}
+        doc = await update_purchase_invoice_payment_terms(get_db(), invoice_id, data, user)
+        return {"invoice": doc, "message": "Termin / jatuh tempo faktur diperbarui"}
 
     @api_router.post("/purchase-invoices/{invoice_id}/cancel")
     async def cancel_purchase_invoice_endpoint(

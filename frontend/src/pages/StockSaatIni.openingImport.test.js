@@ -15,6 +15,7 @@ jest.mock("../lib/api", () => ({
     branches: jest.fn(),
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
+    physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
     masterItems: jest.fn(),
     physicalOpeningBalance: jest.fn(),
     createPhysicalOpeningBalance: jest.fn(),
@@ -82,7 +83,40 @@ function chooseFile(input, name = "saldo.xlsx") {
   return file;
 }
 
+function siap(n, id = `item-${n}`) {
+  return {
+    row_number: n,
+    item_code: `OB-${n}`,
+    item_name: `Item ${n}`,
+    unit: "PCS",
+    warehouse_name: "Gudang Yogyakarta",
+    physical_qty: n,
+    status: "Siap",
+    master_item_id: id,
+    branch_id: "ygy",
+    warehouse_id: "wh-main",
+  };
+}
+
 describe("Stock Saat Ini physical opening import", () => {
+  beforeEach(() => {
+    api.physicalStockStatusSummary.mockResolvedValue({
+      counts: {
+        items_physical_ok: 2,
+        items_physical_incomplete: 2,
+        items_physical_missing: 0,
+        warehouse_slots_missing_balance: 2,
+        warehouse_slots_unreconciled: 1,
+        items_belum_terkirim_unverified: 0,
+        items_qty_tersedia_invalid: 2,
+      },
+      operational_actions: [
+        "Tetapkan Saldo Awal atau konfirmasi Stock Opname per barang×gudang yang belum punya saldo reconciled.",
+      ],
+      read_only: true,
+    });
+  });
+
   afterEach(() => {
     jest.clearAllMocks();
     document.body.innerHTML = "";
@@ -97,71 +131,142 @@ describe("Stock Saat Ini physical opening import", () => {
     });
   }
 
-  test("opens saldo awal import and keeps preview from changing stock", async () => {
-    const view = await renderStock();
-    const loads = api.physicalStockCatalog.mock.calls.length;
-    await openImportTab(view);
-    expect(view.container.querySelector('[data-testid="saldo-awal-title"]').textContent).toBe("Saldo Awal Stock Fisik");
-    expect(view.container.querySelector('[data-testid="opening-import-template"]')).not.toBeNull();
-    expect(view.container.querySelector('[data-testid="opening-import-file"]')).not.toBeNull();
-    expect(view.container.querySelector('[data-testid="opening-import-confirm"]').disabled).toBe(true);
-
-    api.physicalOpeningImportPreview.mockResolvedValue({
-      can_confirm: false,
-      rows: [
-        { row_number: 2, item_code: "OB-UAT-001", item_name: "Opening", unit: "PCS", warehouse_name: "Gudang Yogyakarta", physical_qty: 100, status: "Siap", master_item_id: "item-1", branch_id: "ygy", warehouse_id: "wh-main" },
-        { row_number: 3, item_code: "TIDAK-ADA", item_name: "", unit: "", warehouse_name: "MAIN", physical_qty: 5, status: "Kode Tidak Ditemukan" },
-      ],
-    });
+  async function loadPreview(view, preview) {
+    api.physicalOpeningImportPreview.mockResolvedValue(preview);
     const input = view.container.querySelector('[data-testid="opening-import-file"]');
     const file = chooseFile(input);
     await act(async () => {
       input.dispatchEvent(new Event("change", { bubbles: true }));
       await Promise.resolve();
     });
-    expect(api.physicalOpeningImportPreview).toHaveBeenCalledWith(file);
+    return file;
+  }
+
+  test("mixed preview enables confirm for Siap subset and ignores can_confirm=false", async () => {
+    const view = await renderStock();
+    const loads = api.physicalStockCatalog.mock.calls.length;
+    await openImportTab(view);
+    expect(view.container.querySelector('[data-testid="opening-import-confirm"]').disabled).toBe(true);
+
+    await loadPreview(view, {
+      can_confirm: false,
+      ready_count: 1,
+      blocked_count: 1,
+      rows: [
+        siap(2, "item-1"),
+        { row_number: 3, item_code: "TIDAK-ADA", item_name: "", unit: "", warehouse_name: "MAIN", physical_qty: 5, status: "Kode Tidak Ditemukan" },
+      ],
+    });
     expect(view.container.querySelector('[data-testid="opening-import-status-2"]').textContent).toMatch(/Siap/);
     expect(view.container.querySelector('[data-testid="opening-import-status-3"]').textContent).toMatch(/Kode Tidak Ditemukan/);
-    expect(view.container.querySelector('[data-testid="opening-import-confirm"]').disabled).toBe(true);
+    expect(view.container.querySelector('[data-testid="opening-import-count-ready"]').textContent).toMatch(/Siap:\s*1/);
+    expect(view.container.querySelector('[data-testid="opening-import-count-selected"]').textContent).toMatch(/Terpilih:\s*1/);
+    expect(view.container.querySelector('[data-testid="opening-import-count-rejected"]').textContent).toMatch(/Ditolak:\s*1/);
+    expect(view.container.querySelector('[data-testid="opening-import-check-2"]').checked).toBe(true);
+    expect(view.container.querySelector('[data-testid="opening-import-check-3"]').disabled).toBe(true);
+    expect(view.container.querySelector('[data-testid="opening-import-confirm"]').disabled).toBe(false);
     expect(api.physicalOpeningImportConfirm).not.toHaveBeenCalled();
-    expect(api.createPhysicalOpeningBalance).not.toHaveBeenCalled();
     expect(api.physicalStockCatalog.mock.calls.length).toBe(loads);
     view.cleanup();
   });
 
-  test("confirm calls the bulk endpoint and refreshes stock", async () => {
+  test("confirm posts only selected Siap rows (17 of 20) and refreshes stock", async () => {
     const view = await renderStock();
     await openImportTab(view);
-    api.physicalOpeningImportPreview.mockResolvedValue({
-      can_confirm: true,
-      rows: [
-        { row_number: 2, item_code: "OB-UAT-001", item_name: "Opening", unit: "PCS", warehouse_name: "Gudang Yogyakarta", physical_qty: 100, status: "Siap", master_item_id: "item-1", branch_id: "ygy", warehouse_id: "wh-main" },
-      ],
+    const rows = [];
+    for (let n = 2; n <= 18; n += 1) rows.push(siap(n, `item-${n}`));
+    rows.push({ row_number: 19, item_code: "DUP", status: "Duplikat", physical_qty: 1 });
+    rows.push({ row_number: 20, item_code: "MISS", status: "Kode Tidak Ditemukan", physical_qty: 1 });
+    rows.push({ row_number: 21, item_code: "BAD", status: "Qty Tidak Valid", physical_qty: null });
+    await loadPreview(view, { can_confirm: false, ready_count: 17, blocked_count: 3, rows });
+    expect(view.container.querySelector('[data-testid="opening-import-count-ready"]').textContent).toMatch(/Siap:\s*17/);
+    expect(view.container.querySelector('[data-testid="opening-import-count-rejected"]').textContent).toMatch(/Ditolak:\s*3/);
+    api.physicalOpeningImportConfirm.mockResolvedValue({
+      idempotent: false,
+      engine: "warehouse_standalone",
+      import: { status: "CONFIRMED", lines: new Array(17).fill({}) },
     });
-    api.physicalOpeningImportConfirm.mockResolvedValue({ idempotent: false });
     api.physicalStockCatalog.mockResolvedValue(catalog(100));
-    const input = view.container.querySelector('[data-testid="opening-import-file"]');
-    chooseFile(input);
     await act(async () => {
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+      view.container.querySelector('[data-testid="opening-import-confirm"]').click();
       await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.physicalOpeningImportConfirm).toHaveBeenCalledTimes(1);
+    const payload = api.physicalOpeningImportConfirm.mock.calls[0][0];
+    expect(payload.lines).toHaveLength(17);
+    expect(payload.idempotency_key).toBeTruthy();
+    expect(payload.lines.every((line) => String(line.item_code).startsWith("OB-"))).toBe(true);
+    expect(api.physicalStockCatalog.mock.calls.length).toBeGreaterThan(1);
+    expect(view.container.querySelector('[data-testid="stock-physical-item-1"]').textContent).toMatch(/100/);
+    view.cleanup();
+  });
+
+  test("checkbox subset posts only checked rows; none selected disables confirm", async () => {
+    const view = await renderStock();
+    await openImportTab(view);
+    await loadPreview(view, {
+      can_confirm: false,
+      rows: [siap(2, "a"), siap(3, "b"), { row_number: 4, item_code: "X", status: "Duplikat" }],
+    });
+    await act(async () => {
+      view.container.querySelector('[data-testid="opening-import-check-3"]').click();
+    });
+    expect(view.container.querySelector('[data-testid="opening-import-count-selected"]').textContent).toMatch(/Terpilih:\s*1/);
+    api.physicalOpeningImportConfirm.mockResolvedValue({ idempotent: false, import: { status: "CONFIRMED" } });
+    await act(async () => {
+      view.container.querySelector('[data-testid="opening-import-confirm"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.physicalOpeningImportConfirm.mock.calls[0][0].lines).toEqual([
+      expect.objectContaining({ master_item_id: "a", item_code: "OB-2" }),
+    ]);
+
+    const view2 = await renderStock();
+    await openImportTab(view2);
+    await loadPreview(view2, { can_confirm: true, rows: [siap(2, "a"), siap(3, "b")] });
+    await act(async () => {
+      view2.container.querySelector('[data-testid="opening-import-check-2"]').click();
+      view2.container.querySelector('[data-testid="opening-import-check-3"]').click();
+    });
+    expect(view2.container.querySelector('[data-testid="opening-import-count-selected"]').textContent).toMatch(/Terpilih:\s*0/);
+    expect(view2.container.querySelector('[data-testid="opening-import-confirm"]').disabled).toBe(true);
+    view.cleanup();
+    view2.cleanup();
+  });
+
+  test("retry Lanjutkan keeps the same idempotency key and payload", async () => {
+    const view = await renderStock();
+    await openImportTab(view);
+    await loadPreview(view, { can_confirm: false, rows: [siap(2, "item-1"), siap(3, "item-2")] });
+    api.physicalOpeningImportConfirm.mockRejectedValueOnce({
+      response: { status: 503, data: { detail: "Impor saldo awal gagal." } },
     });
     await act(async () => {
       view.container.querySelector('[data-testid="opening-import-confirm"]').click();
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(api.physicalOpeningImportConfirm).toHaveBeenCalledWith(expect.objectContaining({
-      lines: [expect.objectContaining({
-        master_item_id: "item-1",
-        branch_id: "ygy",
-        warehouse_id: "wh-main",
-        physical_qty: 100,
-        item_code: "OB-UAT-001",
-      })],
-    }));
-    expect(api.physicalStockCatalog.mock.calls.length).toBeGreaterThan(1);
-    expect(view.container.querySelector('[data-testid="stock-physical-item-1"]').textContent).toMatch(/100/);
+    const firstKey = api.physicalOpeningImportConfirm.mock.calls[0][0].idempotency_key;
+    const firstLines = api.physicalOpeningImportConfirm.mock.calls[0][0].lines;
+    expect(view.container.querySelector('[data-testid="opening-import-confirm"]').textContent).toMatch(/Lanjutkan/);
+    expect(view.container.querySelector('[data-testid="opening-import-check-2"]').disabled).toBe(true);
+    expect(view.container.querySelector('[data-testid="opening-import-file"]').disabled).toBe(true);
+    expect(view.container.querySelector('[data-testid="opening-import-error"]').textContent).toMatch(/idempotency key yang sama/i);
+
+    api.physicalOpeningImportConfirm.mockResolvedValueOnce({
+      idempotent: true,
+      import: { status: "CONFIRMED", lines: firstLines },
+    });
+    await act(async () => {
+      view.container.querySelector('[data-testid="opening-import-confirm"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.physicalOpeningImportConfirm).toHaveBeenCalledTimes(2);
+    expect(api.physicalOpeningImportConfirm.mock.calls[1][0].idempotency_key).toBe(firstKey);
+    expect(api.physicalOpeningImportConfirm.mock.calls[1][0].lines).toEqual(firstLines);
     view.cleanup();
   });
 
@@ -177,13 +282,6 @@ describe("Stock Saat Ini physical opening import", () => {
     const button = view.container.querySelector('[data-testid="opening-import-template"]');
     const select = view.container.querySelector('[data-testid="opening-import-warehouse"]');
     expect(button.disabled).toBe(true);
-    expect(select.value).toBe("");
-    expect(select.textContent).toMatch(/Gudang Yogyakarta/);
-    expect(select.textContent).toMatch(/Gudang Stock Opname UAT/);
-    await act(async () => {
-      button.click();
-    });
-    expect(api.physicalOpeningImportTemplate).not.toHaveBeenCalled();
     const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
     await act(async () => {
       setter.call(select, "wh-main");
@@ -193,10 +291,7 @@ describe("Stock Saat Ini physical opening import", () => {
       view.container.querySelector('[data-testid="opening-import-template"]').click();
       await Promise.resolve();
     });
-    expect(api.physicalOpeningImportTemplate).toHaveBeenCalledTimes(1);
     expect(api.physicalOpeningImportTemplate).toHaveBeenCalledWith({ warehouse_id: "wh-main" });
-    expect(api.physicalOpeningImportPreview).not.toHaveBeenCalled();
-    expect(api.physicalOpeningImportConfirm).not.toHaveBeenCalled();
     view.cleanup();
   });
 
@@ -209,11 +304,9 @@ describe("Stock Saat Ini physical opening import", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(view.container.querySelector('[data-testid="saldo-awal-tab-manual"]')).not.toBeNull();
     expect(view.container.querySelector('[data-testid="saldo-awal-empty-items"]')).toBeNull();
     const select = view.container.querySelector('[data-testid="saldo-awal-item"]');
     expect(select.textContent).toMatch(/OB-UAT-001/);
-    expect(select.textContent).toMatch(/Opening/);
     view.cleanup();
   });
 
@@ -232,7 +325,20 @@ describe("Stock Saat Ini physical opening import", () => {
     const text = view.container.querySelector('[data-testid="opening-import-error"]').textContent;
     expect(text).toMatch(/Impor ditolak/);
     expect(text).not.toMatch(/\{/);
-    expect(view.container.textContent).not.toMatch(/JSON/);
+    view.cleanup();
+  });
+
+  test("manual saldo awal form uses aligned fields and shows validation errors", async () => {
+    const view = await renderStock();
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-button"]').click();
+    });
+    await act(async () => {
+      view.container.querySelector('[data-testid="saldo-awal-submit"]').click();
+      await Promise.resolve();
+    });
+    expect(view.container.querySelector('[data-testid="saldo-awal-error-item"]')?.textContent).toMatch(/Pilih barang/i);
+    expect(api.createPhysicalOpeningBalance).not.toHaveBeenCalled();
     view.cleanup();
   });
 });

@@ -162,7 +162,7 @@ export default function UangMukaPembelian() {
         </form>
       </div>
       <div className="purchase-table-wrap">
-        <table className="prod-table" data-testid="uang-muka-table">
+        <table className="prod-table purchase-table purchase-table-advance" data-testid="uang-muka-table">
           <thead>
             <tr>
               <th>No. Uang Muka</th>

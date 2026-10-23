@@ -546,6 +546,7 @@ async def rebuild_cutover_valuation(
     requested_method: str = METHOD_AVG,
     requested_recognition: str = RECOG_GR,
     activate_cutover: bool = False,
+    reconcile_master_item_ids: Optional[List[str]] = None,
 ) -> dict:
     if normalize_method(requested_method) != METHOD_AVG or normalize_recognition(requested_recognition) != RECOG_GR:
         raise _http(409, "SETTINGS_CONFLICT", "Cutover aktif hanya dihitung sebagai RATA-RATA pada penerimaan barang.")
@@ -608,10 +609,21 @@ async def rebuild_cutover_valuation(
         if activate_cutover and (blocking or negative_block):
             raise RuntimeError("reconciliation blocked activation")
         if not activate_cutover:
+            # Incremental GR/return recognition must not fail-closed on unrelated
+            # baseline SKUs that already drifted outside this document. Full-cutover
+            # recalculation / activation keep checking every participant.
+            scope = None
+            if reconcile_master_item_ids is not None:
+                scope = {
+                    str(mid).strip()
+                    for mid in reconcile_master_item_ids
+                    if str(mid or "").strip()
+                }
             bad_positive = [
                 row for row in rows
                 if row["hpp_status"] == STATUS_QTY_MISMATCH and _dec(row["stock_fisik"]) >= 0
                 and not _return_relief_explains_legacy_gap(recognitions, row)
+                and (scope is None or str(row.get("master_item_id") or "") in scope)
             ]
             if bad_positive:
                 raise RuntimeError("valuation qty does not match stock fisik")
@@ -1735,6 +1747,12 @@ async def _recognize_for_cutover(
             },
             {"$set": {"status": STATUS_RECOGNIZED, "recognized_at": posted_at, "updated_at": posted_at}},
         )
+        affected_mids = sorted({
+            str(row.get("master_item_id") or "").strip()
+            for row in stored
+            if str(row.get("event_id") or "") in set(ready_ids)
+            and str(row.get("master_item_id") or "").strip()
+        })
         try:
             await rebuild_cutover_valuation(
                 db,
@@ -1743,6 +1761,8 @@ async def _recognize_for_cutover(
                 requested_method=METHOD_AVG,
                 requested_recognition=RECOG_GR,
                 activate_cutover=activate_cutover,
+                # New cutover activation still validates the full baseline set.
+                reconcile_master_item_ids=None if activate_cutover else affected_mids,
             )
         except Exception as exc:
             await db[EVENTS].update_many(
@@ -1887,6 +1907,7 @@ async def reverse_goods_receipt_hpp(
     stamp = now_iso()
     reversal_ids: List[str] = []
     original_ids: List[str] = []
+    affected_mids: List[str] = []
     requires_rebuild = False
     for line in receipt.get("lines") or []:
         line_id = str(line.get("line_id") or line.get("purchase_order_line_id") or "").strip()
@@ -1955,6 +1976,9 @@ async def reverse_goods_receipt_hpp(
         )
         reversal_ids.append(reversal_id)
         original_ids.append(original["event_id"])
+        mid = str(original.get("master_item_id") or "").strip()
+        if mid:
+            affected_mids.append(mid)
         requires_rebuild = requires_rebuild or was_recognized
     if not reversal_ids:
         return []
@@ -1967,6 +1991,7 @@ async def reverse_goods_receipt_hpp(
                 requested_method=METHOD_AVG,
                 requested_recognition=RECOG_GR,
                 activate_cutover=False,
+                reconcile_master_item_ids=sorted(set(affected_mids)),
             )
     except Exception as exc:
         await db[EVENTS].update_many(

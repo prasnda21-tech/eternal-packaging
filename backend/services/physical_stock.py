@@ -3689,7 +3689,10 @@ async def list_physical_stock_catalog(
         }
     else:
         delivered, delivery_provenance = aggregate_legacy_delivered_qty(
-            orders, [], owners,
+            orders,
+            [],
+            owners,
+            process_master_ids=service_master_ids,
         )
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
     balance_docs = []
@@ -3907,6 +3910,133 @@ async def list_physical_stock_catalog(
         standalone_on=standalone_on,
         selected_warehouse=selected_warehouse,
     )
+
+
+async def summarize_physical_stock_status(
+    db,
+    *,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+) -> dict:
+    """Read-only status counts for Stock Saat Ini diagnostics.
+
+    Returns aggregate counts and reason buckets only — never item codes, names,
+    quantities, actors, or other sensitive row payloads. Does not write.
+    """
+    catalog = await list_physical_stock_catalog(
+        db,
+        q=None,
+        branch_id=branch_id,
+        warehouse_id=warehouse_id,
+        page=1,
+        limit=1000,
+    )
+    items = list(catalog.get("items") or [])
+    total = int(catalog.get("total") or 0)
+    truncated = total > len(items)
+
+    missing_balance_slots = 0
+    unreconciled_balance_slots = 0
+    items_physical_incomplete = 0
+    items_physical_missing = 0
+    items_belum_unverified = 0
+    items_tersedia_invalid = 0
+    items_tersedia_invalid_baseline = 0
+    items_tersedia_invalid_belum = 0
+    items_physical_ok = 0
+
+    for row in items:
+        wh_rows = list(row.get("warehouse_balances") or [])
+        if wh_rows:
+            slot_missing = 0
+            slot_unrec = 0
+            for wb in wh_rows:
+                present = bool(wb.get("balance_present"))
+                status = str(wb.get("baseline_status") or "").strip()
+                if not present:
+                    slot_missing += 1
+                elif status == BASELINE_UNRECONCILED:
+                    slot_unrec += 1
+            missing_balance_slots += slot_missing
+            unreconciled_balance_slots += slot_unrec
+            if slot_missing and slot_missing == len(wh_rows):
+                items_physical_missing += 1
+            elif slot_missing or slot_unrec:
+                items_physical_incomplete += 1
+            else:
+                items_physical_ok += 1
+        else:
+            # Compatibility / single-scope rows without warehouse_balances.
+            status = str(row.get("baseline_status") or "").strip()
+            if status == BASELINE_UNRECONCILED:
+                items_physical_incomplete += 1
+            else:
+                items_physical_ok += 1
+
+        belum_status = str(row.get("belum_terkirim_status") or "").strip()
+        if belum_status in ("BELUM_TERVERIFIKASI", "CUTOVER_PENDING"):
+            items_belum_unverified += 1
+
+        if row.get("qty_tersedia_valid") is False:
+            items_tersedia_invalid += 1
+            if belum_status in ("BELUM_TERVERIFIKASI", "CUTOVER_PENDING"):
+                items_tersedia_invalid_belum += 1
+            if str(row.get("baseline_status") or "").strip() != BASELINE_RECONCILED:
+                items_tersedia_invalid_baseline += 1
+
+    operational_actions: List[str] = []
+    if missing_balance_slots or items_physical_missing or items_physical_incomplete:
+        operational_actions.append(
+            "Tetapkan Saldo Awal atau konfirmasi Stock Opname per barang×gudang "
+            "yang belum punya saldo reconciled — jangan memaksa angka 0 di UI."
+        )
+    if unreconciled_balance_slots:
+        operational_actions.append(
+            "Saldo buku unreconciled biasanya dari mutasi outbound tanpa "
+            "Saldo Awal/Opname; rekonsiliasi lewat Opname (count=book) atau "
+            "penetapan opening yang sah."
+        )
+    if items_belum_unverified:
+        operational_actions.append(
+            "Qty Belum Terkirim BELUM_TERVERIFIKASI berasal dari bukti pengiriman "
+            "ambigu / cutover legacy — perbaiki provenance pengiriman, bukan "
+            "mengarang qty 0."
+        )
+
+    return {
+        "read_only": True,
+        "writes": False,
+        "stock_read_mode": catalog.get("stock_read_mode"),
+        "r2_authority_active": bool(catalog.get("r2_authority_active")),
+        "warehouse_stock_standalone": bool(catalog.get("warehouse_stock_standalone")),
+        "effective_branch_id": catalog.get("effective_branch_id") or branch_id,
+        "effective_warehouse_id": catalog.get("effective_warehouse_id") or warehouse_id,
+        "warehouse_count": int(catalog.get("warehouse_count") or 0),
+        "items_scanned": len(items),
+        "items_total": total,
+        "truncated": truncated,
+        "counts": {
+            "items_physical_ok": items_physical_ok,
+            "items_physical_incomplete": items_physical_incomplete,
+            "items_physical_missing": items_physical_missing,
+            "warehouse_slots_missing_balance": missing_balance_slots,
+            "warehouse_slots_unreconciled": unreconciled_balance_slots,
+            "items_belum_terkirim_unverified": items_belum_unverified,
+            "items_qty_tersedia_invalid": items_tersedia_invalid,
+            "items_qty_tersedia_invalid_baseline": items_tersedia_invalid_baseline,
+            "items_qty_tersedia_invalid_belum": items_tersedia_invalid_belum,
+        },
+        "reason_codes": {
+            "BASELINE_MISSING_OR_UNRECONCILED": (
+                items_physical_incomplete + items_physical_missing
+            ),
+            "BELUM_TERVERIFIKASI": items_belum_unverified,
+            "QTY_TERSEDIA_INVALID": items_tersedia_invalid,
+        },
+        "operational_actions": operational_actions,
+        # Explicit: diagnostics never invent verified zeros.
+        "never_forces_verified_zero": True,
+    }
 
 
 def _movement_sort_key(movement: dict) -> Tuple[str, str]:

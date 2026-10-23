@@ -17,6 +17,7 @@ jest.mock("../lib/api", () => ({
     branches: jest.fn(),
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
+    physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
     createPhysicalAdjustment: jest.fn(),
     masterItems: jest.fn(),
     physicalOpeningBalance: jest.fn(),
@@ -87,6 +88,14 @@ async function renderStock(warehouses) {
 }
 
 describe("Stock Saat Ini inline physical correction", () => {
+  beforeEach(() => {
+    api.physicalStockStatusSummary.mockResolvedValue({
+      counts: {},
+      operational_actions: [],
+      read_only: true,
+    });
+  });
+
   afterEach(() => {
     jest.clearAllMocks();
     mockHasPerm.mockImplementation(() => false);

@@ -50,7 +50,7 @@ export function salesOrderIssuePlacement(message) {
   if (/Customer wajib diisi/i.test(msg)) return { field: "customer", region: "main" };
   if (/No\. HP \/ WhatsApp/i.test(msg)) return { field: "customer_phone", region: "main" };
   if (/Alamat lengkap pengiriman/i.test(msg)) return { field: "address", region: "main" };
-  if (/Baris #|Minimal harus ada 1 line item|Quantity harus/i.test(msg)) {
+  if (/Baris #|Minimal harus ada 1 line item|Quantity harus|Master Produk wajib/i.test(msg)) {
     return { field: "line_items", region: "lines" };
   }
   const drawerRules = [

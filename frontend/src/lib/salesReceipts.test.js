@@ -1,4 +1,9 @@
-import { filterEligibleInvoices, resolvePreselectedInvoiceId, computeReceiptPreview } from "./salesReceipts";
+import {
+  filterEligibleInvoices,
+  resolvePreselectedInvoiceId,
+  computeReceiptPreview,
+  formatCustomerCreditBlockedReason,
+} from "./salesReceipts";
 
 describe("Sales Receipts Eligibility & Preselection Domain Suite", () => {
   describe("filterEligibleInvoices - Exact 5 Strict Business Cases", () => {
@@ -146,6 +151,27 @@ describe("Sales Receipts Eligibility & Preselection Domain Suite", () => {
 
     test("handles null or undefined invoice gracefully", () => {
       expect(computeReceiptPreview(null, 100000)).toBeNull();
+    });
+  });
+
+  describe("formatCustomerCreditBlockedReason — display-only copy", () => {
+    test("maps identity / cross-invoice saldo block to operator-friendly warning", () => {
+      const raw =
+        "Identitas pelanggan tidak dapat dibuktikan. Saldo tidak dapat dipakai lintas faktur.";
+      const out = formatCustomerCreditBlockedReason(raw);
+      expect(out).toMatch(/Saldo pelanggan belum dapat digunakan/);
+      expect(out).toMatch(/lanjutkan pembayaran sesuai faktur/);
+      expect(out).not.toMatch(/tidak dapat dibuktikan/);
+    });
+
+    test("passes through unknown blocked reasons unchanged", () => {
+      expect(formatCustomerCreditBlockedReason("Saldo belum tersedia sebelum penerimaan diposting."))
+        .toBe("Saldo belum tersedia sebelum penerimaan diposting.");
+    });
+
+    test("empty reason yields empty string (no false warning)", () => {
+      expect(formatCustomerCreditBlockedReason("")).toBe("");
+      expect(formatCustomerCreditBlockedReason(null)).toBe("");
     });
   });
 });

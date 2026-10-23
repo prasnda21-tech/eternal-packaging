@@ -527,6 +527,23 @@ jobs:
         run: >-
           python -m pytest -vv -n 0 --tb=short
           tests/test_r2_inventory_e2e.py
+      # Purchasing × Inventory post-#640 contracts (LOC-A CAS/branch, LOC-B invoice
+      # location, PUR-INV-01 payment terms, GR/HPP atomicity same-key recovery).
+      # Each file pins its own TEST_DB; never preview/production.
+      - name: Run purchasing LOC-A/B payment-terms HPP suite (replica set)
+        working-directory: backend
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs
+          JWT_SECRET: ci-only-secret
+          APP_ENV: test
+        run: >-
+          python -m pytest -vv -n 0 --tb=short
+          tests/test_purchase_loc_a_branch.py
+          tests/test_purchase_loc_b_invoice_location.py
+          tests/test_purchase_loc_b_report_branch.py
+          tests/test_purchase_invoice_payment_terms.py
+          tests/test_purchase_goods_receipt_hpp_atomicity.py
+          tests/test_purchase_safe_cancel.py
 
   # Warehouse standalone engine must run on mongod WITHOUT --replSet (no multi-doc txn).
   backend-warehouse-standalone:
@@ -721,10 +738,17 @@ jobs:
           src/lib/stockOpnameTime.test.js
           src/lib/physicalStockView.test.js
           src/lib/purchaseUi.receiveRefresh.test.js
+          src/lib/purchaseUi.goodsReceiptLocC2.test.js
+          src/lib/purchaseUi.location.test.js
+          src/lib/purchaseUi.paymentTerms.test.js
           src/pages/StockSaatIni.compatibility.test.js
           src/pages/StockSaatIni.inlineAdjust.test.js
           src/pages/PenerimaanBarang.warehouse.test.js
           src/pages/PenerimaanBarang.receiveRefresh.test.js
+          src/pages/PenerimaanBarang.locC2.test.js
+          src/pages/PesananPembelian.location.test.js
+          src/pages/FakturPembelian.location.test.js
+          src/pages/FakturPembelian.paymentTerms.test.js
           src/pages/ProductDetail.test.js
           src/pages/FakturPenjualan.test.js
           src/pages/FakturPenjualan.listFilters.test.js
