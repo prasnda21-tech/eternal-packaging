@@ -9245,9 +9245,23 @@ button.ghost.sm.icon{padding:4px 6px}
 .stock-opname-field input,
 .stock-opname-input{
   width:100%;min-width:0;height:38px;padding:0 10px;border:1px solid #c5d4cc;border-radius:8px;
-  background:#fff;font:500 13px/1.2 'IBM Plex Sans',sans-serif;color:#0f172a;box-sizing:border-box
+  background:#fff;font:500 13px/1.2 'IBM Plex Sans',sans-serif;color:#0f172a;box-sizing:border-box;
+  -webkit-appearance:none;appearance:none
 }
-.stock-opname-input--dt{min-width:190px;font-size:12px}
+.stock-opname-input--dt{
+  min-width:190px;font-size:12px;padding-right:8px;
+  color-scheme:light
+}
+.stock-opname-input--dt::-webkit-calendar-picker-indicator{
+  opacity:.55;cursor:pointer;margin-left:4px
+}
+.stock-opname-table .stock-opname-input{
+  max-width:110px;margin:0 auto;display:block;text-align:center;
+  background:#f4faf6;border-color:#b7d4c2
+}
+.stock-opname-table .stock-opname-input--dt{
+  max-width:200px;background:#fff;border-color:#c5d4cc;text-align:left
+}
 .stock-opname-field select:focus,
 .stock-opname-field input:focus,
 .stock-opname-input:focus{outline:none;border-color:#17613b;box-shadow:0 0 0 3px rgba(23,97,59,.12)}
