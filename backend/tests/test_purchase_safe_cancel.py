@@ -37,11 +37,13 @@ def bind_motor():
 async def disable_physical_stock_for_purchase_flow_tests(bind_motor):
     """Purchase flow tests isolate cancel/payment/docs; stock V2 has its own suite."""
     from services.physical_stock_settings import SETTINGS_KEY
+    from tests.purchase_ygy_fixtures import ensure_active_ygy
     await server.db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {"key": SETTINGS_KEY, "enabled": False, "stock_in_trigger": "goods_receipt", "stock_out_trigger": "sales_delivery"}},
         upsert=True,
     )
+    await ensure_active_ygy(server.db)
 
 
 @pytest.fixture(autouse=True)
@@ -271,7 +273,7 @@ async def test_h_unpaid_invoice_cancel_recalc_po_invoice_status():
                 "precedes_goods_receipt": True,
                 "lines": [{"purchase_order_line_id": lid, "invoice_qty": 10}],
             })).json()["invoice"]
-            assert inv["payment_status"] == "BELUM DIBAYAR"
+            assert inv["payment_status"] == "BELUM_DIBAYAR"
             po_mid = (await c.get(f"/api/purchase-orders/{po['id']}")).json()["order"]
             assert po_mid["invoice_status"] == "DIFAKTUR"
             assert po_mid["receiving_status"] == "BELUM DITERIMA"
@@ -335,7 +337,7 @@ async def test_j_payment_cancel_recalculates_invoice():
             })).json()["payment"]
             # Drafts must not settle invoice
             draft_inv = (await c.get(f"/api/purchase-invoices/{inv['id']}")).json()["invoice"]
-            assert draft_inv["payment_status"] == "BELUM DIBAYAR"
+            assert draft_inv["payment_status"] == "BELUM_DIBAYAR"
             assert draft_inv["paid_total"] == 0
 
             await server.db.users.update_one(

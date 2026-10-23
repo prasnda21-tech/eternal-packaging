@@ -24,11 +24,12 @@ from openpyxl.styles import Alignment, Font
 from services.accounts_payable import supplier_identity_key
 from services.purchase_common import is_cancelled, item_identity, line_subtotal
 from services.sales_reports import (
+    BRANCH_JOGJA,
     BRANCH_OPTIONS,
+    BRANCH_SEMARANG,
     BRANCH_SEMUA,
     _dec,
     _display_number,
-    _invoice_branch,
     _iter_docs,
     _load_user_doc,
     _money,
@@ -36,12 +37,20 @@ from services.sales_reports import (
     _page,
     _text,
     assert_branch_allowed,
+    explicit_branch_id,
     format_period_date,
     format_row_date,
     parse_report_date,
     user_branch_options,
 )
 from services.sales_user_mapping import is_sales_pwa_role
+
+# Purchase LOC-B snapshots use master codes (YGY/SMG). Report UI still filters
+# by legacy jogja/semarang labels — map codes only, never invent YGY for unknowns.
+_PURCHASE_BRANCH_CODE_ALIASES = {
+    "ygy": BRANCH_JOGJA,
+    "smg": BRANCH_SEMARANG,
+}
 
 PERM_VIEW = "reports.purchase.view"
 PERM_EXPORT = "reports.purchase.export"
@@ -218,8 +227,37 @@ def _posting_label(invoice: dict) -> str:
     return status
 
 
+def _purchase_branch_label(value: Any) -> str:
+    """Map one token to report filter id. Opaque master ids stay unmapped ('')."""
+    found = explicit_branch_id(value)
+    if found and found != BRANCH_SEMUA:
+        return found
+    text = " ".join(_text(value).lower().split())
+    if not text:
+        return ""
+    return _PURCHASE_BRANCH_CODE_ALIASES.get(text, "")
+
+
+def _branch_from_doc(doc: Optional[dict]) -> str:
+    """Prefer code/name evidence before raw branch_id (avoids blanking on master ids)."""
+    if not isinstance(doc, dict):
+        return ""
+    for key in ("branch_code", "branch_name", "branch", "cabang", "branch_id"):
+        if key not in doc:
+            continue
+        mapped = _purchase_branch_label(doc.get(key))
+        if mapped:
+            return mapped
+    return ""
+
+
 def _branch_for_invoice(invoice: dict, po: Optional[dict], request: Optional[dict]) -> str:
-    return _invoice_branch(invoice, po) or _invoice_branch(invoice, request) or _invoice_branch(invoice, None)
+    """LOC-B aware: unmapped invoice.branch_id must not block code/name/PO fallback."""
+    for doc in (invoice, po, request):
+        mapped = _branch_from_doc(doc)
+        if mapped:
+            return mapped
+    return ""
 
 
 def _is_pcs_uom(value: Any) -> bool:

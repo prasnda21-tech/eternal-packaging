@@ -1206,14 +1206,23 @@ async def test_mode_a_po_receipt_posts_pss_without_r2_409(db):
     }, user)
     assert (po.get("physical_stock_snapshot") or {}).get("enabled") is True
 
+    # Two active YGY warehouses (_seed); omit warehouse_id — Mode A must not auto-pin.
+    assert await db[WAREHOUSES_COLLECTION].count_documents(
+        {"branch_id": branch["id"], "active": True},
+    ) == 2
     receipt = await create_purchase_goods_receipt(db, {
         "purchase_order_id": po["id"],
         "idempotency_key": f"gr-ma-{uuid.uuid4().hex[:8]}",
         "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 4}],
     }, user)
     assert receipt.get("legacy_pss") is True
+    assert receipt.get("stock_authority") == "legacy_pss"
     assert receipt.get("r2_physical") is not True
     assert receipt.get("warehouse_standalone") is not True
+    stored = await db.purchase_goods_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert stored is not None
+    assert stored.get("warehouse_id") in (None, "")
+    assert str(stored.get("branch_id") or "") == str(po.get("branch_id") or "")
 
     state = await get_product_stock_state(db, item["id"])
     assert float(state["total_qty"]) == 24.0
@@ -1376,10 +1385,229 @@ async def test_mode_a_service_line_skips_pss(db):
         ],
     }, user)
     assert len(receipt["lines"]) == 2
+    stored = await db.purchase_goods_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert stored.get("warehouse_id") in (None, "")
+    assert stored.get("legacy_pss") is True
     state = await get_product_stock_state(db, item["id"])
     assert float(state["total_qty"]) == 8.0
     assert await db.stock_movements.count_documents({"master_item_id": service["id"]}) == 0
     assert await get_product_stock_state(db, service["id"]) is None
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+
+
+async def test_mode_a_explicit_ygy_warehouse_allowed(db):
+    """Mode A: explicit warehouse ∈ PO.branch is pinned; stock stays company PSS."""
+    from services.physical_stock_settings import update_physical_stock_settings
+    from services.product_stock_state import get_product_stock_state, initialize_opening_balance
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, branch, wh_a, wh_b = await _seed(db, code="MAX")
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    await update_physical_stock_settings(
+        db,
+        {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        user={"email": "t@test"},
+    )
+    await initialize_opening_balance(
+        db,
+        item["id"],
+        {"unprinted_qty": 10.0, "printed_qty": 0.0, "base_uom": "PCS"},
+        user={"email": "t@test"},
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier Mode A",
+        "idempotency_key": f"po-max-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": item["id"],
+            "item_code": "MAX",
+            "item_name": "Barang MAX",
+            "unit": "PCS",
+            "ordered_qty": 5,
+            "unit_price": 1000,
+        }],
+    }, user)
+    receipt = await create_purchase_goods_receipt(db, {
+        "purchase_order_id": po["id"],
+        "warehouse_id": wh_a["id"],
+        "idempotency_key": f"gr-max-{uuid.uuid4().hex[:8]}",
+        "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 2}],
+    }, user)
+    stored = await db.purchase_goods_receipts.find_one({"id": receipt["id"]}, {"_id": 0})
+    assert stored.get("warehouse_id") == wh_a["id"]
+    assert stored.get("branch_id") == po["branch_id"] == branch["id"]
+    assert stored.get("legacy_pss") is True
+    assert stored.get("warehouse_standalone") is not True
+    state = await get_product_stock_state(db, item["id"])
+    assert float(state["total_qty"]) == 12.0
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+    assert await _qty(db, item["id"], wh_a["id"]) == 0
+    assert await _qty(db, item["id"], wh_b["id"]) == 0
+
+
+async def test_mode_a_explicit_foreign_warehouse_rejected(db):
+    """Mode A: explicit warehouse outside PO.branch fails closed; no stock write."""
+    from fastapi import HTTPException
+    from services.physical_stock_settings import update_physical_stock_settings
+    from services.product_stock_state import get_product_stock_state, initialize_opening_balance
+    from services.purchase_branch import CROSS_PO_WAREHOUSE_MSG
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, branch, wh_a, _ = await _seed(db, code="MAF")
+    smg = {
+        "id": f"br-smg-{uuid.uuid4().hex[:8]}",
+        "code": "SMG",
+        "name": "Semarang",
+        "active": True,
+    }
+    wh_smg = {
+        "id": f"wh-smg-{uuid.uuid4().hex[:8]}",
+        "branch_id": smg["id"],
+        "code": "SMG-A",
+        "name": "Gudang SMG",
+        "active": True,
+    }
+    await db[BRANCHES_COLLECTION].insert_one(dict(smg))
+    await db[WAREHOUSES_COLLECTION].insert_one(dict(wh_smg))
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    await update_physical_stock_settings(
+        db,
+        {
+            "enabled": True,
+            "stock_in_trigger": "goods_receipt",
+            "stock_out_trigger": "delivery_confirmed",
+        },
+        user={"email": "t@test"},
+    )
+    await initialize_opening_balance(
+        db,
+        item["id"],
+        {"unprinted_qty": 10.0, "printed_qty": 0.0, "base_uom": "PCS"},
+        user={"email": "t@test"},
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier Mode A",
+        "idempotency_key": f"po-maf-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": item["id"],
+            "item_code": "MAF",
+            "item_name": "Barang MAF",
+            "unit": "PCS",
+            "ordered_qty": 5,
+            "unit_price": 1000,
+        }],
+    }, user)
+    assert po.get("branch_id") == branch["id"]
+    before_mov = await db.stock_movements.count_documents({})
+    before_gr = await db.purchase_goods_receipts.count_documents({})
+    with pytest.raises(HTTPException) as ei:
+        await create_purchase_goods_receipt(db, {
+            "purchase_order_id": po["id"],
+            "warehouse_id": wh_smg["id"],
+            "branch_id": smg["id"],
+            "idempotency_key": f"gr-maf-{uuid.uuid4().hex[:8]}",
+            "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 1}],
+        }, user)
+    assert ei.value.status_code == 400
+    detail = str(ei.value.detail).lower()
+    assert ("cabang" in detail) or (CROSS_PO_WAREHOUSE_MSG.lower() in detail)
+    assert await db.purchase_goods_receipts.count_documents({}) == before_gr
+    assert await db.stock_movements.count_documents({}) == before_mov
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
+    state = await get_product_stock_state(db, item["id"])
+    assert float(state["total_qty"]) == 10.0
+    assert await _qty(db, item["id"], wh_a["id"]) == 0
+
+
+async def test_mode_b_po_gr_omitted_warehouse_fails_with_two_warehouses(db):
+    """Mode B: omitted warehouse_id must not skip authorize when two YGY warehouses exist."""
+    from fastapi import HTTPException
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, branch, wh_a, _ = await _seed(db, code="MBW")
+    await set_r2_authority_active(db, active=False)
+    await set_warehouse_stock_standalone_enabled(db, enabled=True)
+    assert await is_warehouse_stock_standalone_active(db) is True
+    await post_opening_balance_standalone(
+        db,
+        item["id"],
+        {
+            "branch_id": branch["id"],
+            "warehouse_id": wh_a["id"],
+            "physical_qty": 10,
+            "idempotency_key": f"open-mbw-{uuid.uuid4().hex[:8]}",
+        },
+        actor_id="u1",
+    )
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier Mode B",
+        "idempotency_key": f"po-mbw-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": item["id"],
+            "item_code": "MBW",
+            "item_name": "Barang MBW",
+            "unit": "PCS",
+            "ordered_qty": 3,
+            "unit_price": 1000,
+        }],
+    }, user)
+    before_bal = await db[BALANCE_COLLECTION].count_documents({})
+    with pytest.raises(HTTPException) as ei:
+        await create_purchase_goods_receipt(db, {
+            "purchase_order_id": po["id"],
+            "idempotency_key": f"gr-mbw-{uuid.uuid4().hex[:8]}",
+            "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 1}],
+        }, user)
+    assert ei.value.status_code == 400
+    assert "pilih gudang" in str(ei.value.detail).lower()
+    assert await db[BALANCE_COLLECTION].count_documents({}) == before_bal
+    assert await _qty(db, item["id"], wh_a["id"]) == 10
+
+
+async def test_mode_c_po_gr_omitted_warehouse_fails_with_two_warehouses(db):
+    """Mode C (R2 ON): omitted warehouse_id still requires resolve/authorize (pre-commit)."""
+    from fastapi import HTTPException
+    from services.purchase_goods_receipts import create_purchase_goods_receipt
+    from services.purchase_orders import create_purchase_order
+
+    item, _, _, _ = await _seed(db, code="MCW")
+    await set_r2_authority_active(db, active=True)
+    await set_warehouse_stock_standalone_enabled(db, enabled=False)
+    user = {"id": "admin-1", "email": "admin@test.local", "name": "Admin", "role": "admin"}
+    po = await create_purchase_order(db, {
+        "supplier": "Supplier Mode C",
+        "idempotency_key": f"po-mcw-{uuid.uuid4().hex[:8]}",
+        "lines": [{
+            "master_item_id": item["id"],
+            "item_code": "MCW",
+            "item_name": "Barang MCW",
+            "unit": "PCS",
+            "ordered_qty": 3,
+            "unit_price": 1000,
+        }],
+    }, user)
+    before_gr = await db.purchase_goods_receipts.count_documents({})
+    with pytest.raises(HTTPException) as ei:
+        await create_purchase_goods_receipt(db, {
+            "purchase_order_id": po["id"],
+            "idempotency_key": f"gr-mcw-{uuid.uuid4().hex[:8]}",
+            "lines": [{"purchase_order_line_id": po["lines"][0]["line_id"], "received_qty": 1}],
+        }, user)
+    assert ei.value.status_code == 400
+    assert "pilih gudang" in str(ei.value.detail).lower()
+    assert await db.purchase_goods_receipts.count_documents({}) == before_gr
+    assert await db[LEDGER_COLLECTION].count_documents({}) == 0
 
 
 async def test_mode_b_langsung_posts_warehouse_skips_service_and_pss(db):

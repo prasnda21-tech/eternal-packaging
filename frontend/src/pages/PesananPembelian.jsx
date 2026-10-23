@@ -1,9 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Plus, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { errDetail, formatRupiah, friendlyLoadError, newIdempotencyKey, purchaseStatusPillClass, shortReceivingStatus, todayYmd, purchaseRowInteractionProps } from "../lib/purchaseUi";
+import {
+  applyCreatePoBranchFetchResult,
+  errDetail,
+  formatRupiah,
+  friendlyLoadError,
+  newIdempotencyKey,
+  PO_CREATE_BRANCH,
+  purchaseBranchLabel,
+  purchaseStatusPillClass,
+  shortReceivingStatus,
+  todayYmd,
+  purchaseRowInteractionProps,
+} from "../lib/purchaseUi";
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
@@ -48,6 +60,9 @@ export default function PesananPembelian() {
   const [mode, setMode] = useState(queryRequestId ? "from_request" : "direct");
   const [eligible, setEligible] = useState([]);
   const [requestId, setRequestId] = useState(canCreate ? queryRequestId : "");
+  /** YGY-first create display from master branches API (code/name only — never hardcode id). */
+  const [createBranchLabel, setCreateBranchLabel] = useState(PO_CREATE_BRANCH.loading);
+  const createBranchFetchGen = useRef(0);
   const [supplier, setSupplier] = useState("");
   const [orderDate, setOrderDate] = useState(todayYmd());
   const [lines, setLines] = useState([emptyPoLine()]);
@@ -121,6 +136,30 @@ export default function PesananPembelian() {
       setLines([emptyPoLine()]);
     }
   }, [view, mode, requestId, loadEligible, applyRequestPrefill, canCreate]);
+
+  useEffect(() => {
+    if (view !== "create") return undefined;
+    const gen = ++createBranchFetchGen.current;
+    let cancelled = false;
+    setCreateBranchLabel(PO_CREATE_BRANCH.loading);
+    api.branches()
+      .then((res) => {
+        const next = applyCreatePoBranchFetchResult(gen, createBranchFetchGen.current, cancelled, {
+          kind: "ok",
+          items: res?.items || [],
+        });
+        if (next != null) setCreateBranchLabel(next);
+      })
+      .catch((ex) => {
+        const status = ex?.response?.status;
+        const outcome = Number(status) === 403
+          ? { kind: "http", status: 403 }
+          : { kind: "error" };
+        const next = applyCreatePoBranchFetchResult(gen, createBranchFetchGen.current, cancelled, outcome);
+        if (next != null) setCreateBranchLabel(next);
+      });
+    return () => { cancelled = true; };
+  }, [view]);
 
   const setLine = (i, patch) => setLines((p) => p.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   const addLine = () => setLines((p) => [...p, emptyPoLine()]);
@@ -422,6 +461,15 @@ export default function PesananPembelian() {
               <FormField id="po-date-field" label="Tanggal" isRequired value={orderDate}>
                 <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} data-testid="po-date" />
               </FormField>
+              <FormField id="po-branch-field" label="Cabang Pembelian" value={createBranchLabel}>
+                <input
+                  value={createBranchLabel}
+                  readOnly
+                  tabIndex={-1}
+                  data-testid="po-create-branch"
+                  aria-readonly="true"
+                />
+              </FormField>
             </div>
           </FormSection>
           <FormSection
@@ -528,6 +576,10 @@ export default function PesananPembelian() {
             <div>
               <span className="label">Supplier</span>
               <span className="value">{detail.supplier}</span>
+            </div>
+            <div>
+              <span className="label">Cabang Pembelian</span>
+              <span className="value" data-testid="po-detail-branch">{purchaseBranchLabel(detail)}</span>
             </div>
             <div>
               <span className="label">Total</span>

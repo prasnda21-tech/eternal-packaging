@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
 
@@ -82,6 +82,74 @@ def stamp_update(user: Optional[dict]) -> Dict[str, Any]:
         "updated_at": now_iso(),
         "updated_by": actor_snapshot(user),
     }
+
+
+def parse_optional_ymd(value: Any) -> Optional[str]:
+    """Accept optional YYYY-MM-DD (or longer ISO). Blank/missing → None. Invalid → HTTP 400."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    stamp = raw[:10]
+    try:
+        datetime.strptime(stamp, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(400, f"Tanggal tidak valid: '{raw}'. Gunakan format YYYY-MM-DD.") from exc
+    return stamp
+
+
+def parse_required_ymd(value: Any, field_label: str = "Tanggal") -> str:
+    stamp = parse_optional_ymd(value)
+    if not stamp:
+        raise HTTPException(400, f"{field_label} wajib diisi (YYYY-MM-DD).")
+    return stamp
+
+
+def parse_payment_term_days(value: Any, *, required: bool = True) -> int:
+    """Non-negative integer payment term (COD=0, Net N)."""
+    if value is None or str(value).strip() == "":
+        if required:
+            raise HTTPException(400, "Termin pembayaran (payment_term_days) wajib diisi.")
+        return 0
+    try:
+        days = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"Termin pembayaran '{value}' tidak valid.") from exc
+    if days < 0:
+        raise HTTPException(400, "Termin pembayaran tidak boleh negatif.")
+    if days > 3650:
+        raise HTTPException(400, "Termin pembayaran terlalu besar (maks. 3650 hari).")
+    return days
+
+
+def add_days_ymd(start_ymd: str, days: int) -> str:
+    base = datetime.strptime(str(start_ymd)[:10], "%Y-%m-%d")
+    return (base + timedelta(days=int(days))).strftime("%Y-%m-%d")
+
+
+def invoice_due_display_status(
+    *,
+    due_date: Any,
+    payment_status: Any,
+    today: Optional[str] = None,
+) -> str:
+    """Derived display status only — does not replace payment_status / accounting state."""
+    pay = str(payment_status or "").strip().upper()
+    if pay in {"LUNAS", "DIBAYAR"} or "LUNAS" in pay:
+        return "LUNAS"
+    if pay == "DIBATALKAN" or "BATAL" in pay:
+        return "DIBATALKAN"
+    raw = str(due_date or "").strip()
+    due = raw[:10] if raw else ""
+    if len(due) != 10:
+        return "BELUM ADA JATUH TEMPO"
+    ref = (today or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
+    if due < ref:
+        return "TERLAMBAT"
+    if due == ref:
+        return "JATUH TEMPO HARI INI"
+    return "BELUM JATUH TEMPO"
 
 
 # ---- Soft cancellation (safe delete) ----

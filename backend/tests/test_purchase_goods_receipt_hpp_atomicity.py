@@ -142,12 +142,16 @@ async def _open_cutover(db, mid: str, aid: str, cost: float, request_id: str):
 
 
 async def _po(db, *, po_id: str, lines: list):
+    # LOC-A: GR requires PO.branch_id; keep YGY snapshot aligned with fixture warehouse.
     await db.purchase_orders.insert_one(
         {
             "id": po_id,
             "po_number": f"PB-{po_id}",
             "supplier": "Supplier",
             "cancelled": False,
+            "branch_id": "branch-ygy",
+            "branch_code": "YGY",
+            "branch_name": "Yogyakarta",
             "physical_stock_snapshot": {
                 "enabled": True,
                 "stock_in_trigger": "goods_receipt",

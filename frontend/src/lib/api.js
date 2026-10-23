@@ -525,6 +525,10 @@ export const api = {
   getPurchaseInvoice: (id) => client.get(`/purchase-invoices/${encodeURIComponent(id)}`).then((r) => r.data),
   purchaseInvoicePreview: (poId) => client.get(`/purchase-invoices/from-po/${encodeURIComponent(poId)}/preview`).then((r) => r.data),
   createPurchaseInvoice: (payload) => client.post(`/purchase-invoices`, payload).then((r) => r.data),
+  updatePurchaseInvoicePaymentTerms: (id, payload) =>
+    client
+      .patch(`/purchase-invoices/${encodeURIComponent(id)}/payment-terms`, payload || {})
+      .then((r) => r.data),
   listPurchasePayments: (params = {}) => client.get(`/purchase-payments`, { params }).then((r) => r.data),
   getPurchasePayment: (id) => client.get(`/purchase-payments/${encodeURIComponent(id)}`).then((r) => r.data),
   createPurchasePayment: (payload) => client.post(`/purchase-payments`, payload).then((r) => r.data),

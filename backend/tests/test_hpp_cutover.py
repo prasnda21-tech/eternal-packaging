@@ -217,6 +217,9 @@ async def test_b_future_receipt_updates_average(db):
         "po_number": "PB-B",
         "supplier": "S",
         "cancelled": False,
+        "branch_id": "branch-ygy",
+        "branch_code": "YGY",
+        "branch_name": "Yogyakarta",
         "physical_stock_snapshot": {
             "enabled": True,
             "stock_in_trigger": "goods_receipt",
@@ -272,6 +275,9 @@ async def test_c_retry_same_receipt_does_not_duplicate(db):
         "po_number": "PB-C",
         "supplier": "S",
         "cancelled": False,
+        "branch_id": "branch-ygy",
+        "branch_code": "YGY",
+        "branch_name": "Yogyakarta",
         "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
         "lines": [{
             "line_id": po_line,
@@ -315,6 +321,9 @@ async def test_d_backdated_receipt_included_once(db):
         "po_number": "PB-D",
         "supplier": "S",
         "cancelled": False,
+        "branch_id": "branch-ygy",
+        "branch_code": "YGY",
+        "branch_name": "Yogyakarta",
         "physical_stock_snapshot": {"enabled": True, "stock_in_trigger": "goods_receipt"},
         "lines": [{
             "line_id": po_line,
@@ -581,6 +590,9 @@ async def _po(
         "po_number": f"PB-{po_id}",
         "supplier": "Supplier",
         "cancelled": False,
+        "branch_id": "branch-ygy",
+        "branch_code": "YGY",
+        "branch_name": "Yogyakarta",
         "physical_stock_snapshot": {
             "enabled": True,
             "stock_in_trigger": "goods_receipt",
