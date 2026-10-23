@@ -8,6 +8,7 @@ describe("LOC-C2 PenerimaanBarang recovery safety contracts", () => {
   test("filters warehouses by PO.branch_id via purchase order fetch", () => {
     expect(page).toMatch(/goodsReceiptWarehouseChoiceForPo/);
     expect(page).toMatch(/api\.getPurchaseOrder\(recvPoId\)/);
+    expect(page).toMatch(/poRes\?\.order \|\| poRes/);
     expect(page).toMatch(/po\?\.branch_id/);
     expect(page).not.toMatch(/goodsReceiptWarehouseChoice\(/);
   });

@@ -548,6 +548,11 @@ export const api = {
     client.post(`/purchase-requests/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
   cancelPurchaseOrder: (id, reason = "") =>
     client.post(`/purchase-orders/${encodeURIComponent(id)}/cancel`, reason ? { reason } : {}).then((r) => r.data),
+  /** Legacy PO once-only: PATCH /purchase-orders/{id}/branch — body { branch_id, reason }. */
+  setPurchaseOrderBranch: (id, payload) =>
+    client
+      .patch(`/purchase-orders/${encodeURIComponent(id)}/branch`, payload || {})
+      .then((r) => r.data),
   getPurchaseGoodsReceipt: (id) => client.get(`/purchase-goods-receipts/${encodeURIComponent(id)}`).then((r) => r.data),
   listPurchaseReturns: (params = {}) => client.get(`/purchase-returns`, { params }).then((r) => r.data),
   getPurchaseReturn: (id) => client.get(`/purchase-returns/${encodeURIComponent(id)}`).then((r) => r.data),

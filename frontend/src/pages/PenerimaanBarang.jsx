@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Download, MoreHorizontal, Plus, RefreshCw, Search, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, Download, MoreHorizontal, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -194,8 +194,9 @@ export default function PenerimaanBarang() {
     if (!receiveOpen || !recvPoId) return undefined;
     let cancelled = false;
     Promise.all([api.getPurchaseOrder(recvPoId), api.branches(), api.warehouses()])
-      .then(([po, branchRes, warehouseRes]) => {
+      .then(([poRes, branchRes, warehouseRes]) => {
         if (cancelled) return;
+        const po = poRes?.order || poRes;
         const poBranchId = String(po?.branch_id || "").trim();
         setRecvPoBranch(po || null);
         const choice = goodsReceiptWarehouseChoiceForPo(
@@ -205,7 +206,8 @@ export default function PenerimaanBarang() {
         );
         setRecvWarehouseChoice(choice);
         setRecvWarehouseId(choice.warehouseId || "");
-        if (choice.blocked) {
+        if (choice.blocked && choice.reason !== "legacy_branch_missing") {
+          // legacy_branch_missing uses dedicated purchase-receive-warn UI (avoid duplicate banners)
           setRecvErr(goodsReceiptWarehouseBlockMessage(choice));
         } else {
           setRecvErr((prev) => (
@@ -1481,15 +1483,33 @@ export default function PenerimaanBarang() {
 
       {receiveOpen && (
         <div className="modal" role="dialog" aria-modal="true" data-testid="po-receive-modal" onClick={closeReceive}>
-          <div className="modal-inner modal-wide" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-inner purchase-receive-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <div>
                 <h3>Terima Barang</h3>
-                <p className="purchase-modal-helper">Masukkan jumlah barang yang diterima pada tanggal ini.</p>
+                <p className="purchase-modal-helper">Catat penerimaan dari pesanan pembelian dengan cabang dan gudang yang valid.</p>
               </div>
               <button type="button" className="ghost sm" onClick={closeReceive} aria-label="Tutup">×</button>
             </div>
             <div className="purchase-modal-body" data-testid="po-receive-form">
+              {recvWarehouseChoice.reason === "legacy_branch_missing" ? (
+                <div className="purchase-receive-warn" data-testid="po-receive-branch-warn">
+                  <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                    <AlertTriangle size={16} aria-hidden />
+                    Lengkapi Cabang PO terlebih dahulu sebelum membuat penerimaan barang.
+                  </span>
+                  {recvPoId ? (
+                    <Link
+                      className="ghost sm"
+                      data-testid="po-receive-open-po"
+                      to={`/pembelian/pesanan-pembelian`}
+                      onClick={closeReceive}
+                    >
+                      Buka Pesanan Pembelian
+                    </Link>
+                  ) : null}
+                </div>
+              ) : null}
               {recvErr && (
                 <div className="purchase-error-panel" role="alert" data-testid="po-receive-error">
                   <AlertCircle size={16} color="#a53f2b" />
@@ -1504,97 +1524,111 @@ export default function PenerimaanBarang() {
               {recvMsg && <p className="purchase-inline-ok">{recvMsg}</p>}
               {recvPreview ? (
                 <>
-                  <div className="purchase-detail-meta purchase-recv-meta">
-                    <div>
-                      <span className="label">No PO</span>
-                      <span className="value mono">{recvPreview.po_number}</span>
-                    </div>
-                    <div>
-                      <span className="label">Supplier</span>
-                      <span className="value">{recvPreview.supplier || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="label">Cabang PO</span>
-                      <span className="value" data-testid="receive-po-branch">
-                        {purchaseBranchLabel(recvPoBranch)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="label">Tanggal Terima</span>
-                      <input
-                        type="date"
-                        value={recvDate}
-                        onChange={(e) => setRecvDate(e.target.value)}
-                        disabled={recvBusy || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)}
-                      />
-                    </div>
-                    <div>
-                      <span className="label">Gudang</span>
-                      {recvWarehouseChoice.reason === "legacy_branch_missing" ? (
-                        <span className="value" data-testid="receive-warehouse">
-                          Cabang PO belum dilengkapi
+                  <section className="purchase-receive-panel" data-testid="po-receive-info-panel">
+                    <h4>Informasi Purchase Order</h4>
+                    <div className="purchase-receive-meta">
+                      <div>
+                        <span className="label">No PO</span>
+                        <span className="value mono">{recvPreview.po_number}</span>
+                      </div>
+                      <div>
+                        <span className="label">Supplier</span>
+                        <span className="value">{recvPreview.supplier || "—"}</span>
+                      </div>
+                      <div>
+                        <span className="label">Cabang PO</span>
+                        <span className="value" data-testid="receive-po-branch">
+                          {purchaseBranchLabel(recvPoBranch)}
                         </span>
-                      ) : recvWarehouseChoice.explicit ? (
-                        <select
-                          value={recvWarehouseId}
-                          onChange={(e) => setRecvWarehouseId(e.target.value)}
-                          data-testid="receive-warehouse"
+                      </div>
+                      <div>
+                        <span className="label">Tanggal Terima</span>
+                        <input
+                          type="date"
+                          value={recvDate}
+                          onChange={(e) => setRecvDate(e.target.value)}
                           disabled={recvBusy || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)}
-                        >
-                          <option value="">Pilih gudang</option>
-                          {recvWarehouseChoice.rows.map((row) => (
-                            <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="value" data-testid="receive-warehouse">
-                          {recvWarehouseChoice.rows[0]
-                            ? `${recvWarehouseChoice.rows[0].code} — ${recvWarehouseChoice.rows[0].name}`
-                            : "Belum ada gudang aktif"}
-                        </span>
-                      )}
+                        />
+                      </div>
+                      <div>
+                        <span className="label">Gudang</span>
+                        {recvWarehouseChoice.reason === "legacy_branch_missing" ? (
+                          <select data-testid="receive-warehouse" disabled value="">
+                            <option value="">Cabang PO belum dilengkapi</option>
+                          </select>
+                        ) : recvWarehouseChoice.explicit ? (
+                          <select
+                            value={recvWarehouseId}
+                            onChange={(e) => setRecvWarehouseId(e.target.value)}
+                            data-testid="receive-warehouse"
+                            disabled={
+                              recvBusy
+                              || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)
+                              || recvWarehouseChoice.blocked
+                            }
+                          >
+                            <option value="">Pilih gudang</option>
+                            {recvWarehouseChoice.rows.map((row) => (
+                              <option key={row.id} value={row.id}>{row.code} — {row.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="value" data-testid="receive-warehouse">
+                            {recvWarehouseChoice.rows[0]
+                              ? `${recvWarehouseChoice.rows[0].code} — ${recvWarehouseChoice.rows[0].name}`
+                              : "Belum ada gudang aktif"}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <div className="purchase-table-wrap purchase-modal-table-wrap">
-                    <table className="prod-table purchase-table purchase-table-recv-modal">
-                      <colgroup>
-                        <col className="col-item" />
-                        <col className="col-qty" />
-                        <col className="col-qty-wide" />
-                        <col className="col-qty" />
-                        <col className="col-recv-now" />
-                      </colgroup>
-                      <thead>
-                        <tr>
-                          <th>Item</th>
-                          <th className="num">Qty Pesan</th>
-                          <th className="num th-wrap">Sudah Diterima</th>
-                          <th className="num">Sisa</th>
-                          <th className="num th-wrap">Terima Sekarang</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(recvPreview.lines || []).map((l) => (
-                          <tr key={l.purchase_order_line_id}>
-                            <td className="cell-clip" title={l.item_name}>{l.item_name}</td>
-                            <td className="num">{fmtQty(l.ordered_qty)}</td>
-                            <td className="num">{fmtQty(l.cumulative_received_qty)}</td>
-                            <td className="num">{fmtQty(l.remaining_receivable_qty)}</td>
-                            <td className="qty-cell">
-                              <input
-                                type="number"
-                                min="0"
-                                value={recvQty[l.purchase_order_line_id] ?? ""}
-                                onChange={(e) => setRecvQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))}
-                                data-testid="receive-qty-input"
-                                disabled={recvBusy || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)}
-                              />
-                            </td>
+                  </section>
+                  <section className="purchase-receive-panel" data-testid="po-receive-lines-panel">
+                    <h4>Rincian Barang</h4>
+                    <div className="purchase-table-wrap purchase-modal-table-wrap">
+                      <table className="prod-table purchase-table purchase-table-recv-modal purchase-table-excel">
+                        <colgroup>
+                          <col className="col-item" />
+                          <col className="col-qty" />
+                          <col className="col-qty-wide" />
+                          <col className="col-qty" />
+                          <col className="col-recv-now" />
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th>Item</th>
+                            <th className="num">Qty Pesan</th>
+                            <th className="num th-wrap">Sudah Diterima</th>
+                            <th className="num">Sisa</th>
+                            <th className="num th-wrap">Terima Sekarang</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {(recvPreview.lines || []).map((l) => (
+                            <tr key={l.purchase_order_line_id}>
+                              <td className="cell-clip" title={l.item_name}>{l.item_name}</td>
+                              <td className="num">{fmtQty(l.ordered_qty)}</td>
+                              <td className="num">{fmtQty(l.cumulative_received_qty)}</td>
+                              <td className="num">{fmtQty(l.remaining_receivable_qty)}</td>
+                              <td className="qty-cell">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={recvQty[l.purchase_order_line_id] ?? ""}
+                                  onChange={(e) => setRecvQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))}
+                                  data-testid="receive-qty-input"
+                                  disabled={
+                                    recvBusy
+                                    || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)
+                                    || recvWarehouseChoice.blocked
+                                  }
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                 </>
               ) : (
                 <p className="muted small">Memuat detail pesanan…</p>
@@ -1616,7 +1650,7 @@ export default function PenerimaanBarang() {
               {recvRecovery?.showRetrySameKey ? (
                 <button
                   className="primary"
-                  disabled={recvBusy || !recvPreview}
+                  disabled={recvBusy || !recvPreview || recvWarehouseChoice.blocked}
                   data-testid="po-receive-retry-same-key"
                   onClick={() => savePoReceipt({ retrySameKey: true })}
                 >

@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { AlertCircle, Plus, Search } from "lucide-react";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Building2,
+  CalendarDays,
+  FileText,
+  MapPin,
+  Plus,
+  Search,
+  Wallet,
+} from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
   applyCreatePoBranchFetchResult,
+  canShowLegacyPoBranchComplete,
   errDetail,
+  filterActiveBranchesForPoComplete,
   formatRupiah,
   friendlyLoadError,
   newIdempotencyKey,
@@ -44,11 +56,14 @@ export default function PesananPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_orders.create");
+  const canEditBranch = hasPerm("purchase_orders.edit_branch");
   const queryRequestId = searchParams.get("request_id") || "";
   const wantCreate = searchParams.get("action") === "create" || Boolean(queryRequestId);
   const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
@@ -56,6 +71,17 @@ export default function PesananPembelian() {
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
+
+  const [branchModalOpen, setBranchModalOpen] = useState(false);
+  const [branchOptions, setBranchOptions] = useState([]);
+  const [branchOptionsErr, setBranchOptionsErr] = useState("");
+  const [branchOptionsLoading, setBranchOptionsLoading] = useState(false);
+  const [branchIdPick, setBranchIdPick] = useState("");
+  const [branchReason, setBranchReason] = useState("");
+  const [branchConfirmReady, setBranchConfirmReady] = useState(false);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [branchErr, setBranchErr] = useState("");
+  const branchSubmitLockRef = useRef(false);
 
   const [mode, setMode] = useState(queryRequestId ? "from_request" : "direct");
   const [eligible, setEligible] = useState([]);
@@ -84,6 +110,7 @@ export default function PesananPembelian() {
   }, [q]);
 
   useEffect(() => { if (view === "list") load(); }, [load, view]);
+  useEffect(() => { setPage(1); }, [q]);
 
   const loadEligible = useCallback(async () => {
     try {
@@ -307,6 +334,114 @@ export default function PesananPembelian() {
     }
   };
 
+  const closeBranchModal = () => {
+    if (branchBusy) return;
+    setBranchModalOpen(false);
+    setBranchOptions([]);
+    setBranchOptionsErr("");
+    setBranchIdPick("");
+    setBranchReason("");
+    setBranchConfirmReady(false);
+    setBranchErr("");
+    branchSubmitLockRef.current = false;
+  };
+
+  const openBranchComplete = async () => {
+    if (!canShowLegacyPoBranchComplete(detail, canEditBranch) || branchBusy) return;
+    setBranchModalOpen(true);
+    setBranchIdPick("");
+    setBranchReason("");
+    setBranchConfirmReady(false);
+    setBranchErr("");
+    setBranchOptionsErr("");
+    setBranchOptions([]);
+    setBranchOptionsLoading(true);
+    try {
+      const res = await api.branches();
+      setBranchOptions(filterActiveBranchesForPoComplete(res?.items || []));
+    } catch (ex) {
+      const status = ex?.response?.status;
+      setBranchOptionsErr(
+        Number(status) === 403
+          ? "Anda tidak memiliki akses daftar cabang."
+          : errDetail(ex),
+      );
+    } finally {
+      setBranchOptionsLoading(false);
+    }
+  };
+
+  const onBranchFieldChange = (patch) => {
+    if (patch.branchIdPick != null) setBranchIdPick(patch.branchIdPick);
+    if (patch.branchReason != null) setBranchReason(patch.branchReason);
+    setBranchConfirmReady(false);
+    setBranchErr("");
+  };
+
+  const submitBranchComplete = async () => {
+    if (branchBusy || branchSubmitLockRef.current || !detail?.id) return;
+    const pick = String(branchIdPick || "").trim();
+    const reason = String(branchReason || "").trim();
+    if (!pick) {
+      setBranchErr("Pilih cabang terlebih dahulu.");
+      return;
+    }
+    if (reason.length < 3) {
+      setBranchErr("Alasan perubahan wajib diisi (minimal 3 karakter).");
+      return;
+    }
+    if (!branchConfirmReady) {
+      setBranchConfirmReady(true);
+      setBranchErr("");
+      return;
+    }
+    branchSubmitLockRef.current = true;
+    setBranchBusy(true);
+    setBranchErr("");
+    setErr("");
+    try {
+      const res = await api.setPurchaseOrderBranch(detail.id, {
+        branch_id: pick,
+        reason,
+      });
+      const order = res?.order || null;
+      if (order) setDetail(order);
+      else {
+        const refreshed = await api.getPurchaseOrder(detail.id);
+        setDetail(refreshed.order || refreshed);
+      }
+      setOk(res?.message || "Cabang Pembelian berhasil dilengkapi");
+      setBranchModalOpen(false);
+      setBranchOptions([]);
+      setBranchIdPick("");
+      setBranchReason("");
+      setBranchConfirmReady(false);
+      await load();
+    } catch (ex) {
+      const status = Number(ex?.response?.status);
+      setBranchErr(errDetail(ex));
+      if (status === 400 || status === 409) {
+        try {
+          const refreshed = await api.getPurchaseOrder(detail.id);
+          const order = refreshed.order || refreshed;
+          if (order) setDetail(order);
+          if (String(order?.branch_id || "").trim()) {
+            setBranchModalOpen(false);
+            setOk("Cabang Pembelian sudah terisi. Tampilan diperbarui.");
+          }
+        } catch {
+          /* keep modal error */
+        }
+      }
+      if (status === 403) {
+        setBranchErr(errDetail(ex) || "Anda tidak memiliki izin melengkapi cabang.");
+      }
+    } finally {
+      setBranchBusy(false);
+      branchSubmitLockRef.current = false;
+    }
+  };
+
   const openCreate = () => {
     setMode(queryRequestId ? "from_request" : "direct");
     setRequestId(queryRequestId || "");
@@ -316,17 +451,29 @@ export default function PesananPembelian() {
     setView("create");
   };
 
+  const detailLineCount = (detail?.lines || []).length;
+  const recvProgress = detail?.receiving_progress || {};
+  const invProgress = detail?.invoice_progress || {};
+  const pageCount = Math.max(1, Math.ceil((rows.length || 0) / pageSize) || 1);
+  const safePage = Math.min(page, pageCount);
+  const pageRows = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
+
   return (
-    <div className="prod-page purchase-page" data-testid="pesanan-pembelian-page">
+    <div
+      className={`prod-page purchase-page${view === "detail" ? " is-po-doc" : ""}`}
+      data-testid="pesanan-pembelian-page"
+    >
       <div className="page-heading prod-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Pembelian</p>
           <h1 data-testid="pesanan-pembelian-title">
-            {view === "create" ? "Buat Pesanan Pembelian" : "Pesanan Pembelian"}
+            {view === "create" ? "Buat Pesanan Pembelian" : view === "detail" ? "Detail Pesanan Pembelian" : "Pesanan Pembelian"}
           </h1>
           <p className="subhead">
             {view === "create"
               ? "Pilih sumber pesanan dan tentukan barang yang akan dibeli."
+              : view === "detail"
+                ? "Ringkasan pesanan, progress penerimaan/faktur, uang muka, dan dokumen."
               : "Buat pesanan langsung atau berdasarkan permintaan pembelian."}
           </p>
         </div>
@@ -353,9 +500,19 @@ export default function PesananPembelian() {
               <Search size={14} />
               <input value={q} onChange={(e) => setQ(e.target.value)} data-testid="po-search" placeholder="Cari no PO / supplier / permintaan" />
             </form>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              data-testid="po-page-size"
+              aria-label="Jumlah baris per halaman"
+            >
+              <option value={25}>25 / halaman</option>
+              <option value={50}>50 / halaman</option>
+              <option value={100}>100 / halaman</option>
+            </select>
           </div>
           <div className="purchase-table-wrap">
-            <table className="prod-table purchase-table purchase-table-po" data-testid="po-table">
+            <table className="prod-table purchase-table purchase-table-po purchase-table-excel" data-testid="po-table">
               <colgroup>
                 <col className="col-po" />
                 <col className="col-supplier" />
@@ -381,7 +538,7 @@ export default function PesananPembelian() {
                     <td colSpan={6} className="muted small">Belum ada pesanan pembelian.</td>
                   </tr>
                 )}
-                {rows.map((r) => (
+                {!loading && pageRows.map((r) => (
                   <tr
                     key={r.id}
                     {...purchaseRowInteractionProps(() => openDetail(r.id), { testId: `po-row-${r.id}` })}
@@ -407,6 +564,34 @@ export default function PesananPembelian() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="purchase-pager" data-testid="po-pager">
+            <span className="muted small" data-testid="po-pager-summary">
+              {rows.length === 0
+                ? "0 pesanan"
+                : `Menampilkan ${(safePage - 1) * pageSize + 1}–${Math.min(safePage * pageSize, rows.length)} dari ${rows.length}`}
+            </span>
+            <div className="purchase-pager-nav">
+              <button
+                type="button"
+                className="ghost sm"
+                disabled={safePage <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                data-testid="po-pager-prev"
+              >
+                Sebelumnya
+              </button>
+              <span className="muted small" data-testid="po-pager-page">{safePage} / {pageCount}</span>
+              <button
+                type="button"
+                className="ghost sm"
+                disabled={safePage >= pageCount || loading}
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                data-testid="po-pager-next"
+              >
+                Berikutnya
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -560,125 +745,312 @@ export default function PesananPembelian() {
       )}
 
       {view === "detail" && detail && (
-        <div className="card purchase-detail-card" data-testid="po-detail">
-          <div className="purchase-detail-meta">
-            <div>
-              <span className="label">No PO</span>
-              <span className="value mono" data-testid="detail-po-number">
-                {detail.po_number}
-                {detail.has_early_invoice && <span className="purchase-badge-early">Faktur mendahului barang</span>}
-              </span>
+        <div className="fpb-final" data-testid="po-detail">
+          <section className="fpb-meta" data-testid="po-detail-header">
+            <div className="fpb-meta-fields">
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><FileText size={12} aria-hidden /> No PO</span>
+                <span className="fpb-v mono" data-testid="detail-po-number">
+                  {detail.po_number}
+                  {detail.has_early_invoice && <span className="purchase-badge-early">Faktur mendahului barang</span>}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><FileText size={12} aria-hidden /> Permintaan</span>
+                <span className="fpb-v mono">{detail.request_number || "—"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Building2 size={12} aria-hidden /> Pemasok</span>
+                <span className="fpb-v">{detail.supplier || "—"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><MapPin size={12} aria-hidden /> Cabang</span>
+                <span className="fpb-v" data-testid="po-detail-branch">{purchaseBranchLabel(detail)}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Tanggal</span>
+                <span className="fpb-v">{detail.order_date || "—"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Wallet size={12} aria-hidden /> Status Penerimaan</span>
+                <span className={`purchase-status-badge ${purchaseStatusPillClass(detail.receiving_status)}`}>
+                  {shortReceivingStatus(detail.receiving_status)}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Wallet size={12} aria-hidden /> Status Faktur</span>
+                <span className={`purchase-status-badge ${purchaseStatusPillClass(detail.invoice_status)}`}>
+                  {detail.invoice_status}
+                </span>
+              </div>
             </div>
-            <div>
-              <span className="label">Permintaan</span>
-              <span className="value mono">{detail.request_number || "—"}</span>
-            </div>
-            <div>
-              <span className="label">Supplier</span>
-              <span className="value">{detail.supplier}</span>
-            </div>
-            <div>
-              <span className="label">Cabang Pembelian</span>
-              <span className="value" data-testid="po-detail-branch">{purchaseBranchLabel(detail)}</span>
-            </div>
-            <div>
-              <span className="label">Total</span>
-              <span className="value">{formatRupiah(detail.grand_total)}</span>
-            </div>
-            <div>
-              <span className="label">Status Penerimaan</span>
-              <span className={purchaseStatusPillClass(detail.receiving_status)}>{shortReceivingStatus(detail.receiving_status)}</span>
-            </div>
-            <div>
-              <span className="label">Status Faktur</span>
-              <span className={purchaseStatusPillClass(detail.invoice_status)}>{detail.invoice_status}</span>
-            </div>
+          </section>
+
+          <div className="fpb-body">
+            <section className={`fpb-lines${detailLineCount > 10 ? " is-scrollable" : ""}`} aria-label="Rincian Barang">
+              <div className="fpb-lines-head">
+                <h3>Rincian Barang <span className="fpb-lines-count">({detailLineCount} item)</span></h3>
+              </div>
+              <div className="fpb-table-scroll">
+                <table className="fpb-lines-table" data-testid="po-detail-lines">
+                  <thead>
+                    <tr>
+                      <th className="col-no">No</th>
+                      <th className="col-name">Nama Barang</th>
+                      <th className="col-code">Kode</th>
+                      <th className="col-qty num">Qty</th>
+                      <th className="col-unit">Satuan</th>
+                      <th className="col-price num">Harga (Rp)</th>
+                      <th className="col-total num">Subtotal (Rp)</th>
+                      <th className="col-recv num">Diterima</th>
+                      <th className="col-inv num">Difaktur</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(detail.lines || []).length === 0 && (
+                      <tr><td colSpan={9} className="muted">Tidak ada baris item.</td></tr>
+                    )}
+                    {(detail.lines || []).map((l, idx) => (
+                      <tr key={l.line_id}>
+                        <td className="col-no num">{idx + 1}</td>
+                        <td className="col-name" title={l.item_name}>{l.item_name || "—"}</td>
+                        <td className="col-code mono">{l.item_code || "—"}</td>
+                        <td className="col-qty num">{fmtQty(l.ordered_qty)}</td>
+                        <td className="col-unit">{l.unit || "pcs"}</td>
+                        <td className="col-price num">{formatRupiah(l.unit_price)}</td>
+                        <td className="col-total num">{formatRupiah(l.line_subtotal)}</td>
+                        <td className="col-recv num">{fmtQty(l.cumulative_received_qty)} / sisa {fmtQty(l.remaining_receivable_qty)}</td>
+                        <td className="col-inv num">{fmtQty(l.cumulative_invoiced_qty)} / sisa {fmtQty(l.remaining_invoice_qty)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside className="fpb-side">
+              <section className="fpb-side-card" data-testid="po-detail-summary">
+                <h3>Ringkasan Nilai</h3>
+                <dl>
+                  <div><dt>Nilai Pesanan</dt><dd data-testid="po-summary-grand">{formatRupiah(detail.grand_total)}</dd></div>
+                  <div>
+                    <dt>Qty Diterima</dt>
+                    <dd data-testid="po-summary-received">
+                      {fmtQty(recvProgress.received_qty)} / {fmtQty(recvProgress.ordered_qty)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Qty Difaktur</dt>
+                    <dd data-testid="po-summary-invoiced">
+                      {fmtQty(invProgress.invoiced_qty)} / {fmtQty(invProgress.ordered_qty)}
+                    </dd>
+                  </div>
+                  <div className="is-total"><dt>Total</dt><dd>{formatRupiah(detail.grand_total)}</dd></div>
+                </dl>
+              </section>
+              <section className="fpb-side-card" data-testid="po-detail-info">
+                <h3>Info Lainnya</h3>
+                <div className="fpb-side-fields">
+                  <div className="fpb-kv"><span>No. Referensi</span><b className="mono">{detail.request_number || detail.po_number || "—"}</b></div>
+                  <div className="fpb-kv"><span>Mata Uang</span><b>IDR</b></div>
+                  {detail.notes ? (
+                    <div className="fpb-notes">
+                      <span>Keterangan</span>
+                      <p>{detail.notes}</p>
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            </aside>
           </div>
-          <div className="purchase-table-wrap">
-            <table className="prod-table">
-              <thead><tr><th>Item</th><th>Kode</th><th className="num">Qty</th><th className="num">Harga</th><th className="num">Subtotal</th><th className="num">Diterima</th><th className="num">Difaktur</th></tr></thead>
-              <tbody>
-                {(detail.lines || []).map((l) => (
-                  <tr key={l.line_id}>
-                    <td>{l.item_name}</td>
-                    <td className="mono">{l.item_code || "—"}</td>
-                    <td className="num">{fmtQty(l.ordered_qty)} {l.unit}</td>
-                    <td className="num">{formatRupiah(l.unit_price)}</td>
-                    <td className="num">{formatRupiah(l.line_subtotal)}</td>
-                    <td className="num">{fmtQty(l.cumulative_received_qty)} / sisa {fmtQty(l.remaining_receivable_qty)}</td>
-                    <td className="num">{fmtQty(l.cumulative_invoiced_qty)} / sisa {fmtQty(l.remaining_invoice_qty)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="purchase-detail-card" data-testid="po-uang-muka">
-            <h3>Uang Muka</h3>
-            <div className="purchase-detail-meta">
-              <div>
-                <span className="label">Nilai Uang Muka</span>
-                <span className="value" data-testid="uang-muka-paid">{formatRupiah(advanceSummary?.total_paid_amount || 0)}</span>
-              </div>
-              <div>
-                <span className="label">Tersedia / Belum Dialokasikan</span>
-                <span className="value" data-testid="uang-muka-available">{formatRupiah(advanceSummary?.available_amount || 0)}</span>
-              </div>
+
+          <section className="fpb-lower is-po-lower" aria-label="Uang muka dan dokumen">
+            <div className="fpb-lower-card" data-testid="po-uang-muka">
+              <h4>Uang Muka</h4>
+              <div className="fpb-kv"><span>Nilai Uang Muka</span><b data-testid="uang-muka-paid">{formatRupiah(advanceSummary?.total_paid_amount || 0)}</b></div>
+              <div className="fpb-kv"><span>Tersedia / Belum Dialokasikan</span><b data-testid="uang-muka-available">{formatRupiah(advanceSummary?.available_amount || 0)}</b></div>
+              {(advances || []).map((row) => (
+                <div key={row.id} className="fpb-advance-row" data-testid="uang-muka-row">
+                  <span>{formatRupiah(row.original_amount)}</span>
+                  <span data-testid="uang-muka-status">{row.status_label}</span>
+                  <span>{row.payment_date || "—"}</span>
+                  <span data-testid="uang-muka-row-available">{formatRupiah(row.available_amount || 0)}</span>
+                  <span>
+                    {row.can_submit && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "submit")}>Ajukan</button>}
+                    {row.can_confirm_paid && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "confirm")}>Konfirmasi</button>}
+                    {row.can_cancel && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "cancel")}>Batalkan</button>}
+                  </span>
+                </div>
+              ))}
+              {canCreate && (
+                <div className="fpb-advance-create">
+                  <input
+                    type="number"
+                    min="1"
+                    value={advanceAmount}
+                    onChange={(e) => setAdvanceAmount(e.target.value)}
+                    placeholder="Nilai uang muka"
+                    data-testid="uang-muka-amount"
+                  />
+                  <input type="date" value={advanceDate} onChange={(e) => setAdvanceDate(e.target.value)} data-testid="uang-muka-date" />
+                  <button type="button" className="primary" disabled={advanceBusy} onClick={createAdvance} data-testid="uang-muka-create">
+                    Buat Uang Muka
+                  </button>
+                </div>
+              )}
             </div>
-            {(advances || []).map((row) => (
-              <div key={row.id} data-testid="uang-muka-row">
-                <span>{formatRupiah(row.original_amount)}</span>
-                <span data-testid="uang-muka-status">{row.status_label}</span>
-                <span>{row.payment_date || "—"}</span>
-                <span data-testid="uang-muka-row-available">{formatRupiah(row.available_amount || 0)}</span>
-                {row.can_submit && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "submit")}>Ajukan</button>}
-                {row.can_confirm_paid && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "confirm")}>Konfirmasi Dibayar</button>}
-                {row.can_cancel && <button type="button" className="ghost sm" onClick={() => advanceAction(row, "cancel")}>Batalkan</button>}
-              </div>
-            ))}
-            {canCreate && (
-              <div className="purchase-form-actions">
-                <input
-                  type="number"
-                  min="1"
-                  value={advanceAmount}
-                  onChange={(e) => setAdvanceAmount(e.target.value)}
-                  placeholder="Nilai uang muka"
-                  data-testid="uang-muka-amount"
-                />
-                <input type="date" value={advanceDate} onChange={(e) => setAdvanceDate(e.target.value)} data-testid="uang-muka-date" />
-                <button type="button" className="primary" disabled={advanceBusy} onClick={createAdvance} data-testid="uang-muka-create">
-                  Buat Uang Muka
+            <div className="fpb-lower-card" data-testid="detail-panel-docs">
+              <PurchaseDocuments
+                entityType="purchase_order"
+                entityId={detail.id}
+                canEdit={canCreate}
+                hint="Nota / penawaran supplier."
+                testId="po-documents"
+              />
+            </div>
+          </section>
+
+          <section className="fpb-lower is-po-activity" aria-label="Riwayat aktivitas">
+            <div className="fpb-lower-card" data-testid="detail-panel-history">
+              <PurchaseActivityHistory doc={detail} testId="po-activity" />
+            </div>
+          </section>
+
+          <footer className="fpb-actions-bar" data-testid="po-detail-actions">
+            <div className="fpb-actions-left">
+              <button type="button" className="ghost" onClick={() => { setView("list"); load(); }}>Kembali</button>
+            </div>
+            <div className="fpb-actions-right">
+              {canShowLegacyPoBranchComplete(detail, canEditBranch) && (
+                <button
+                  type="button"
+                  className="primary"
+                  data-testid="btn-lengkapi-cabang-po"
+                  disabled={branchBusy}
+                  onClick={openBranchComplete}
+                >
+                  Lengkapi Cabang
                 </button>
+              )}
+              {canCreate && (
+                <button
+                  type="button"
+                  className="ghost danger"
+                  data-testid="btn-hapus-po-detail"
+                  disabled={detail.can_cancel === false}
+                  title={detail.can_cancel === false ? (detail.cancel_block_reason || "") : undefined}
+                  onClick={() => openCancel(detail)}
+                >
+                  Hapus
+                </button>
+              )}
+              {Number(detail.invoice_progress?.remaining_qty) > 0 && hasPerm("purchase_invoices.create") && (
+                <Link className="primary" data-testid="btn-buat-faktur" to={`/pembelian/faktur-pembelian?purchase_order_id=${detail.id}&action=create`}>Buat Faktur</Link>
+              )}
+              {Number(detail.receiving_progress?.remaining_qty) > 0 && (
+                <Link className="ghost" to={`/pembelian/penerimaan-barang?purchase_order_id=${detail.id}&action=receive`}>Terima Barang</Link>
+              )}
+            </div>
+          </footer>
+        </div>
+      )}
+
+      {branchModalOpen && (
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          data-testid="po-lengkapi-cabang-modal"
+          onClick={branchBusy ? undefined : closeBranchModal}
+        >
+          <div className="modal-inner purchase-branch-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <h3><MapPin size={18} aria-hidden /> Lengkapi Cabang Pembelian</h3>
+                <p className="purchase-modal-helper">
+                  Tetapkan cabang operasional untuk PO lama. Cabang tidak dapat diubah lagi setelah disimpan.
+                </p>
               </div>
-            )}
-          </div>
-          <PurchaseDocuments
-            entityType="purchase_order"
-            entityId={detail.id}
-            canEdit={canCreate}
-            hint="Nota / penawaran supplier."
-            testId="po-documents"
-          />
-          <PurchaseActivityHistory doc={detail} testId="po-activity" />
-          <div className="purchase-detail-actions">
-            {canCreate && (
+              <button type="button" className="ghost sm" onClick={closeBranchModal} disabled={branchBusy} aria-label="Tutup">×</button>
+            </div>
+            <div className="purchase-modal-body">
+              <div className="purchase-branch-warn" data-testid="po-branch-legacy-warn">
+                <AlertTriangle size={16} aria-hidden />
+                <span>Khusus PO legacy tanpa cabang. Pastikan cabang sesuai lokasi penerimaan barang.</span>
+              </div>
+              {branchOptionsLoading ? (
+                <p className="muted small" data-testid="po-branch-options-loading">Memuat cabang…</p>
+              ) : null}
+              {branchOptionsErr ? (
+                <p className="error" data-testid="po-branch-options-error">{branchOptionsErr}</p>
+              ) : null}
+              {!branchOptionsLoading && !branchOptionsErr && branchOptions.length === 0 ? (
+                <p className="muted small" data-testid="po-branch-options-empty">Tidak ada cabang aktif yang dapat dipilih.</p>
+              ) : null}
+              <div className="purchase-branch-stack">
+                <label htmlFor="po-complete-branch-select">
+                  Cabang
+                  <select
+                    id="po-complete-branch-select"
+                    data-testid="po-complete-branch-select"
+                    value={branchIdPick}
+                    disabled={branchBusy || branchOptionsLoading || Boolean(branchOptionsErr)}
+                    onChange={(e) => onBranchFieldChange({ branchIdPick: e.target.value })}
+                  >
+                    <option value="">Pilih cabang…</option>
+                    {branchOptions.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {purchaseBranchLabel(b)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label htmlFor="po-complete-branch-reason">
+                  Alasan
+                  <textarea
+                    id="po-complete-branch-reason"
+                    data-testid="po-complete-branch-reason"
+                    value={branchReason}
+                    disabled={branchBusy}
+                    rows={3}
+                    placeholder="Minimal 3 karakter"
+                    onChange={(e) => onBranchFieldChange({ branchReason: e.target.value })}
+                  />
+                </label>
+              </div>
+              {branchConfirmReady ? (
+                <p className="muted small" data-testid="po-branch-confirm-summary">
+                  Konfirmasi: cabang{" "}
+                  <strong>{purchaseBranchLabel(branchOptions.find((b) => b.id === branchIdPick) || { id: branchIdPick })}</strong>
+                  {" "}akan disimpan. Tindakan ini tidak dapat diulang.
+                </p>
+              ) : null}
+              {branchErr ? (
+                <p className="error" data-testid="po-branch-complete-error">{branchErr}</p>
+              ) : null}
+            </div>
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" onClick={closeBranchModal} disabled={branchBusy} data-testid="po-branch-complete-batal">
+                Batal
+              </button>
               <button
                 type="button"
-                className="ghost danger"
-                data-testid="btn-hapus-po-detail"
-                disabled={detail.can_cancel === false}
-                title={detail.can_cancel === false ? (detail.cancel_block_reason || "") : undefined}
-                onClick={() => openCancel(detail)}
+                className="primary"
+                data-testid="po-branch-complete-save"
+                disabled={
+                  branchBusy
+                  || branchOptionsLoading
+                  || Boolean(branchOptionsErr)
+                  || !String(branchIdPick || "").trim()
+                  || String(branchReason || "").trim().length < 3
+                }
+                onClick={submitBranchComplete}
               >
-                Hapus
+                {branchBusy
+                  ? "Menyimpan…"
+                  : (branchConfirmReady ? "Simpan dan Lanjutkan" : "Lanjutkan")}
               </button>
-            )}
-            {Number(detail.invoice_progress?.remaining_qty) > 0 && hasPerm("purchase_invoices.create") && (
-              <Link className="primary" data-testid="btn-buat-faktur" to={`/pembelian/faktur-pembelian?purchase_order_id=${detail.id}&action=create`}>Buat Faktur</Link>
-            )}
-            {Number(detail.receiving_progress?.remaining_qty) > 0 && (
-              <Link className="ghost" to={`/pembelian/penerimaan-barang?purchase_order_id=${detail.id}&action=receive`}>Terima Barang</Link>
-            )}
+            </div>
           </div>
         </div>
       )}
