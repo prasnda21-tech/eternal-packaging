@@ -31,6 +31,51 @@ const scheduleDraftFromOrder = (order) => (
   }))
 );
 
+function ScheduleTargetLock({ order, busy, canEdit, onUpdated, setErr }) {
+  const target = order?.production_finish_target || {};
+  const finalized = order?.production_schedule?.state === "finalized";
+  const [finishDate, setFinishDate] = useState(target.date || "");
+  useEffect(() => {
+    setFinishDate(target.date || "");
+  }, [order?.id, target.date, order?.production_schedule?.version]);
+  const run = async (kind) => {
+    setErr("");
+    try {
+      const res = kind === "lock"
+        ? await api.finalizeProductionSchedule(order.id, newActionId(), finishDate || null)
+        : await api.setProductionFinishTarget(order.id, newActionId(), finishDate);
+      onUpdated(res.order);
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      setErr(typeof detail === "string" ? detail : (detail?.detail || detail?.message || "Gagal menyimpan target jadwal"));
+    }
+  };
+  const history = !finalized
+    ? "Target belum dikunci"
+    : (target.revised_date ? `Target Revisi ${target.revised_date}. Target Awal ${target.initial_date || ""}.` : "Belum ada revisi");
+  return (
+    <div className="split-target-lock" data-testid="schedule-target-lock">
+      <label className="qty-field">
+        <span className="qty-field-label">Target selesai produksi</span>
+        <input
+          type="date"
+          value={finishDate}
+          disabled={!canEdit || busy}
+          onChange={(e) => setFinishDate(e.target.value)}
+          data-testid="schedule-finish-date"
+        />
+      </label>
+      <p className="muted small" data-testid="schedule-target-status">{history}</p>
+      {canEdit && !finalized ? (
+        <button type="button" className="ghost sm" disabled={busy} onClick={() => run("lock")} data-testid="schedule-finalize">Kunci Target Awal</button>
+      ) : null}
+      {canEdit && finalized ? (
+        <button type="button" className="ghost sm" disabled={busy || !finishDate} onClick={() => run("revise")} data-testid="schedule-revise-finish">Simpan target selesai</button>
+      ) : null}
+    </div>
+  );
+}
+
 export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerActions = null, mode = "all", focusLineIdx = null }) {
   const { user, hasPerm } = useAuth();
   const [operators, setOperators] = useState([]);
@@ -164,7 +209,8 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     setErr("");
     setBusy(true);
     try {
-      const res = await api.cancelOperatorSplit(order.id, split.id, remaining);
+      const finalized = order?.production_schedule?.state === "finalized";
+      const res = await api.cancelOperatorSplit(order.id, split.id, remaining, "", finalized ? newActionId() : undefined);
       onUpdated(res.order);
     } catch (e) {
       const d = e.response?.data?.detail;
@@ -205,6 +251,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
     }
     setBusy(true);
     try {
+      const finalized = order?.production_schedule?.state === "finalized";
       const res = await api.assignOperators(order.id, splits.map((s) => {
         const row = {
           id: s.id || undefined,
@@ -217,7 +264,7 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
         };
         if (s.operator_user_id) row.operator_user_id = s.operator_user_id;
         return row;
-      }));
+      }), finalized ? newActionId() : undefined);
       scheduleDraftDirtyRef.current = false;
       onUpdated(res.order);
     } catch (e) {
@@ -545,12 +592,13 @@ export default function OperatorSplitPanel({ order, canEdit, onUpdated, footerAc
             );
           })}
           {err && <div className="error" data-testid="split-error">{err}</div>}
+          <ScheduleTargetLock order={order} busy={busy} canEdit={canEdit && !scheduleLocked} onUpdated={onUpdated} setErr={setErr} />
           <div className="split-actions qty-ops-foot" style={{ borderTop: splits.length ? undefined : "none", marginTop: splits.length ? undefined : 0, paddingTop: splits.length ? undefined : 0 }}>
             <button className="ghost" onClick={addRow} disabled={visiblePrintLines.length === 0 || scheduleLocked} data-testid="split-add-row">
               <Plus size={14} /> Tambah operator
             </button>
             <button className="primary" onClick={save} disabled={busy || visiblePrintLines.length === 0 || scheduleLocked} data-testid="split-save">
-              Simpan pembagian
+              {order?.production_schedule?.state === "finalized" ? "Simpan sebagai revisi" : "Simpan pembagian"}
             </button>
           </div>
         </div>

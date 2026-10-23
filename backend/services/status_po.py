@@ -589,6 +589,10 @@ def status_po_row(order: dict) -> dict:
         "workflow_reasons": reasons,
         "age_closed": age["age_closed"],
         "age_end_at": age["age_end_at"],
+        "delivery_sla_effective": order.get("delivery_sla_effective"),
+        "delivery_deadline_status": order.get("delivery_deadline_status"),
+        "delivery_deadline_status_basis": order.get("delivery_deadline_status_basis"),
+        "tanggal_pengiriman": order.get("tanggal_pengiriman"),
     }
 
 

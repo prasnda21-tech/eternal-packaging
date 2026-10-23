@@ -426,7 +426,12 @@ export default function DeliverySchedulePage() {
                       ) : null}
                     </td>
                   )}
-                  <td className="mono">{formatDate(r.effective_delivery_date, { dateOnly: true })}</td>
+                  <td className="mono">
+                    {formatDate(r.sj_delivery_date || r.effective_delivery_date, { dateOnly: true })}
+                    {r.sj_delivery_date && r.po_sla_date && r.sj_delivery_date !== r.po_sla_date ? (
+                      <div className="muted small" data-testid={`ds-sla-${r.order_number}`}>SLA PO {formatDate(r.po_sla_date, { dateOnly: true })}</div>
+                    ) : null}
+                  </td>
                   <td className="mono">
                     {r.id ? (
                       <Link

@@ -28,11 +28,13 @@ describe("owner analytics access", () => {
     expect(canAccessOwnerDashboard({ role: "direktur_utama", permissions: [] }, has([]))).toBe(false);
   });
 
-  test("sidebar owner item only for allowed roles", () => {
+  test("owner-only director gets the owner fallback and admin does not", () => {
     const director = dashboardMenuItems(has([OWNER_PERM, "nav.dashboard.owner"]), { role: "direktur_utama", permissions: [OWNER_PERM] });
-    expect(director.some((item) => item.to === "/dashboard/owner")).toBe(true);
+    expect(director.map((item) => item.to)).toEqual(["/dashboard/owner"]);
+    expect(canAccessOwnerDashboard({ role: "direktur_utama", permissions: [OWNER_PERM] }, has([OWNER_PERM]))).toBe(true);
     const admin = dashboardMenuItems(has([OWNER_PERM, "nav.dashboard.owner"]), { role: "admin", permissions: [OWNER_PERM] });
     expect(admin.some((item) => item.to === "/dashboard/owner")).toBe(false);
+    expect(admin.some((item) => item.to === "/dashboard/keuangan")).toBe(false);
   });
 });
 

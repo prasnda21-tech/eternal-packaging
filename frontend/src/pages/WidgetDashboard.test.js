@@ -135,7 +135,7 @@ test("penjualan is the primary widget route and widget is a replace alias", () =
   expect(app).toContain('path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>}');
   expect(app).toContain('path="/dashboard/widget" element={<WidgetDashboardAlias />}');
   expect(app).toContain("<Navigate to={widgetDashboardAliasTarget(location)} replace />");
-  expect(app).toContain('path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>}');
+  expect(app).toContain('path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><ProductionDashboard /></PermGate>}');
   expect(app).not.toContain("<SalesFinanceDashboard />");
   expect(app).toContain("WidgetDashboardGate");
   expect(app).toContain("canOpenWidgetDashboard");

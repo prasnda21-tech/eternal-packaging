@@ -637,6 +637,7 @@ export default function ProductionSchedule() {
         <div className="prod-schedule-heading" data-testid="prod-schedule-heading">
           <div className="prod-schedule-heading-main">
             <h1 className="prod-schedule-title" data-testid="prod-schedule-title">Jadwal Produksi</h1>
+            <p className="muted small" data-testid="prod-schedule-target-hint">Target Awal dikunci dari editor pembagian operator. Tanggal baris jadwal tidak mengunci target.</p>
             {hasLoadedOnce && Number.isFinite(Number(total)) && (
               <span className="prod-schedule-count-pill" data-testid="prod-schedule-count">
                 {Number(total).toLocaleString("id-ID")} pekerjaan

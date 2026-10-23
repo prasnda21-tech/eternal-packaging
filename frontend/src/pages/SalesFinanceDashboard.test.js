@@ -95,9 +95,10 @@ function financePayload() {
 describe("merged dashboard route", () => {
   test("keeps the finance bookmark as a replace redirect into the widget dashboard", () => {
     expect(appSrc).toContain('path="/dashboard/keuangan"');
-    expect(appSrc).toContain("<WidgetDashboardFinanceAlias />");
+    expect(appSrc).toContain("<FinanceDashboardGate><FinanceDashboard /></FinanceDashboardGate>");
+    expect(appSrc).not.toContain("<WidgetDashboardFinanceAlias />");
     expect(appSrc).toContain('path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>}');
-    expect(appSrc).toContain('path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>}');
+    expect(appSrc).toContain('path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><ProductionDashboard /></PermGate>}');
     expect(appSrc).not.toContain("<SalesFinanceDashboard />");
     expect(appSrc).not.toContain("<FinancialDashboard />");
     expect(appSrc).not.toContain("<SalesDashboard />");

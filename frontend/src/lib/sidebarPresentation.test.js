@@ -185,8 +185,12 @@ describe("desktop sidebar presentation", () => {
     expect(group(rails, "pengiriman").sections[0].items.find((item) => item.label === "Optimasi Rute").to).toBe("/optimasi-rute");
     expect(labels(group(rails, "sales"))).toContain("Pengiriman Pesanan");
     expect(labels(group(rails, "reports"))).toEqual(["Daftar Laporan", "Laporan Tersimpan"]);
-    expect(sidebarLeaves(rails).some((leaf) => leaf.to === "/dashboard/penjualan" && leaf.label === "Dashboard Bisnis")).toBe(true);
-    expect(dashboardMenuItems(allow, { role: "admin" }).some((item) => item.label === "Dashboard Penjualan")).toBe(true);
+    expect(sidebarLeaves(rails).some((leaf) => leaf.to === "/dashboard/keuangan" && leaf.label === "Dashboard Keuangan")).toBe(true);
+    expect(sidebarLeaves(rails).some((leaf) => leaf.to === "/dashboard/penjualan" || leaf.to === "/dashboard/owner")).toBe(false);
+    expect(dashboardMenuItems(allow, { role: "admin" }).map((item) => item.label)).toEqual([
+      "Dashboard Produksi",
+      "Dashboard Keuangan",
+    ]);
   });
 
   test("hides empty parents and does not invent a keuangan permission", () => {
@@ -213,8 +217,26 @@ describe("desktop sidebar presentation", () => {
     expect(labels(group(modelFrom(has("delivery_note.manage")), "pengiriman"))).toEqual(["Surat Jalan"]);
     expect(labels(group(modelFrom(has("loading.view")), "pengiriman"))).toEqual(["Loading"]);
     const widget = modelFrom(has("dashboard.finance.view"));
-    expect(labels(group(widget, "dashboard"))).toEqual(["Dashboard Bisnis"]);
+    expect(labels(group(widget, "dashboard"))).toEqual(["Dashboard Keuangan"]);
     expect(group(widget, "sales")).toBeNull();
+  });
+
+  test("dashboard fallback appears only without a main dashboard", () => {
+    expect(dashboardMenuItems(has("po.view"), { role: "sales" }).map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+    expect(dashboardMenuItems(has("dashboard.owner.view"), { role: "direktur_utama" }).map((item) => item.to)).toEqual(["/dashboard/owner"]);
+    expect(dashboardMenuItems(has("dashboard.owner.view"), { role: "admin" }).map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+    expect(dashboardMenuItems(has("dashboard.owner.view"), { role: "finance" })).toEqual([]);
+    expect(dashboardMenuItems(has("po.view", "dashboard.owner.view"), { role: "holding_team" }).map((item) => item.to)).toEqual([
+      "/dashboard/owner",
+      "/dashboard/penjualan",
+    ]);
+    expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "po.view"), { role: "sales" }).map((item) => item.label)).toEqual([
+      "Dashboard Produksi",
+    ]);
+    expect(dashboardMenuItems(has("dashboard.finance.view", "dashboard.owner.view"), { role: "direktur_utama" }).map((item) => item.label)).toEqual([
+      "Dashboard Keuangan",
+    ]);
+    expect(dashboardMenuItems(has("sales_order.view"), { role: "sales" })).toEqual([]);
   });
 
   test("active rails split production from delivery and keep sales report paths", () => {

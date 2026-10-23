@@ -20,11 +20,12 @@ from services.shipment_status import shipment_status_row
 from services.workflow_stage_status import role_status_for_schedule_row, _sj_loaded_vs_need
 from services.tanggal_pengiriman import (
     DEFAULT_LEAD_TIME_DAYS,
+    delivery_sla_effective,
     effective_tanggal_pengiriman,
     manual_tanggal_pengiriman,
     parse_calendar_date,
 )
-from quantity_rules import qty_packed, qty_delivered_for_shipment, delivery_batch_qty
+from quantity_rules import is_fully_delivered, qty_packed, qty_delivered_for_shipment, delivery_batch_qty
 
 STATUS_PENDING = "pending"
 STATUS_SCHEDULED = "scheduled"
@@ -49,6 +50,7 @@ SCHEDULE_PROJECTION = {
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "delivery_sla_v2": 1,
     "delivery_reschedules": 1,
     "delivery_status": 1,
     "current_stage": 1,
@@ -173,13 +175,33 @@ def is_delivered(order: dict) -> bool:
     return stage >= 14 and str(order.get("delivery_status") or "") == "Terkirim"
 
 
+def _qty_disproves_text_close(order: dict) -> bool:
+    """Explicit qty that is not a full delivery overrides a stage or text close."""
+    explicit = order.get("qty_delivered")
+    if explicit is None or str(explicit).strip() == "":
+        return False
+    text_closed = order.get("delivery_status") == "Terkirim"
+    try:
+        text_closed = text_closed or int(order.get("current_stage") or 0) >= 14
+    except (TypeError, ValueError):
+        pass
+    if not text_closed:
+        return False
+    return not is_fully_delivered(order)
+
+
 def schedule_status_code(
     order: dict,
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     schedule_date: Optional[str] = None,
 ) -> str:
-    if is_delivered(order):
+    stamp = isinstance(order.get("delivery_sla_v2"), dict)
+    urgent = str(order.get("priority") or "").lower() == "urgent"
+    if stamp or urgent or _qty_disproves_text_close(order):
+        if is_fully_delivered(order):
+            return "terkirim"
+    elif is_delivered(order):
         return "terkirim"
     eff = parse_date_key(schedule_date) or effective_delivery_date(order, lead_time_days)
     if not eff:
@@ -394,6 +416,17 @@ def apply_effective_location_to_atom(atom: dict, shipment_override: Any) -> dict
     return atom
 
 
+def _public_delivery_sla(order: dict, lead_time_days: int, today: Optional[str]) -> dict:
+    fact = delivery_sla_effective(order, lead_time_days, today=today)
+    return {
+        "date": fact.get("date"),
+        "source": fact.get("source"),
+        "state": fact.get("state"),
+        "contract": fact.get("contract"),
+        "countable": bool(fact.get("countable")),
+    }
+
+
 def schedule_row(
     order: dict,
     today: Optional[str] = None,
@@ -402,7 +435,8 @@ def schedule_row(
 ) -> dict:
     sh = shipment if isinstance(shipment, dict) else None
     batch_date = shipment_delivery_date(sh)
-    tanggal = batch_date or effective_delivery_date(order, lead_time_days)
+    sla_public = _public_delivery_sla(order, lead_time_days, today)
+    tanggal = batch_date or sla_public.get("date") or effective_delivery_date(order, lead_time_days)
     code = schedule_status_code(order, today, lead_time_days, schedule_date=tanggal)
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
@@ -459,6 +493,9 @@ def schedule_row(
         "priority": order.get("priority") or "normal",
         "buffer_stock": bool(order.get("buffer_stock")),
         "role_status": role_status_for_schedule_row(order, sh),
+        "po_sla_date": sla_public.get("date"),
+        "sj_delivery_date": batch_date,
+        "delivery_sla_effective": sla_public,
     }
 
 

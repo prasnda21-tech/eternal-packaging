@@ -80,9 +80,11 @@ export const api = {
   updateHelperPrep: (id, payload) => client.post(`/orders/${id}/helper-prep`, payload).then((r) => r.data),
   updateHelperPrepItems: (id, items, notes = "", config) => client.post(`/orders/${id}/helper-prep/items`, { items, notes }, config).then((r) => r.data),
   updateScreenerInfo: (id, payload, config) => client.post(`/orders/${id}/screener-info`, payload, config).then((r) => r.data),
-  assignOperators: (id, splits) => client.post(`/orders/${id}/assign-operators`, { splits }).then((r) => r.data),
-  cancelOperatorSplit: (id, splitId, qty, reason = "") =>
-    client.post(`/orders/${id}/operator-splits/${splitId}/cancel`, { qty, reason }).then((r) => r.data),
+  assignOperators: (id, splits, actionId) => client.post(`/orders/${id}/assign-operators`, { splits, ...(actionId ? { action_id: actionId } : {}) }).then((r) => r.data),
+  cancelOperatorSplit: (id, splitId, qty, reason = "", actionId) =>
+    client.post(`/orders/${id}/operator-splits/${splitId}/cancel`, { qty, reason, ...(actionId ? { action_id: actionId } : {}) }).then((r) => r.data),
+  finalizeProductionSchedule: (id, actionId, finishTargetDate) => client.post(`/orders/${id}/production-schedule/finalize`, { action_id: actionId, finish_target_date: finishTargetDate || null }).then((r) => r.data),
+  setProductionFinishTarget: (id, actionId, date) => client.post(`/orders/${id}/production-schedule/finish-target`, { action_id: actionId, date }).then((r) => r.data),
   /** @deprecated Legacy direct toggle — server returns 410. Use urgent-requests. */
   setUrgent: (id, urgent) => client.post(`/orders/${id}/urgent`, { urgent }).then((r) => r.data),
   submitUrgentRequest: (id, payload, config) =>
@@ -873,6 +875,19 @@ export const api = {
   // ---- Production dashboard (Req 6) ----
   productionDashboard: (params = {}) => client.get(`/dashboard/production`, { params }).then((r) => r.data),
   financialDashboard: (params = {}) => client.get(`/dashboard/keuangan`, { params }).then((r) => r.data),
+  financeDashboardLayout: () => client.get(`/dashboard/keuangan/layout`).then((r) => r.data),
+  saveFinanceDashboardLayout: (body) => client.put(`/dashboard/keuangan/layout`, body).then((r) => r.data),
+  resetFinanceDashboardLayout: () => client.post(`/dashboard/keuangan/layout/reset`).then((r) => r.data),
+  productionSnapshot: () => client.get(`/dashboard/produksi/snapshot`).then((r) => r.data),
+  operationalHolidays: () => client.get(`/settings/operational-holidays`).then((r) => r.data),
+  addOperationalHoliday: (payload) => client.post(`/settings/operational-holidays`, payload).then((r) => r.data),
+  updateOperationalHoliday: (day, payload) => client.patch(`/settings/operational-holidays/${encodeURIComponent(day)}`, payload).then((r) => r.data),
+  deleteOperationalHoliday: (day, payload) => client.delete(`/settings/operational-holidays/${encodeURIComponent(day)}`, { data: payload }).then((r) => r.data),
+  productionAnalytics: (days = 7) => client.get(`/dashboard/produksi/analytics`, { params: { days } }).then((r) => r.data),
+  productionOperatorAnalytics: (days = 7) => client.get(`/dashboard/produksi/operator-analytics`, { params: { days } }).then((r) => r.data),
+  productionDashboardLayout: () => client.get(`/dashboard/produksi/layout`).then((r) => r.data),
+  saveProductionDashboardLayout: (body) => client.put(`/dashboard/produksi/layout`, body).then((r) => r.data),
+  resetProductionDashboardLayout: () => client.post(`/dashboard/produksi/layout/reset`).then((r) => r.data),
   salesDashboard: (params = {}) => client.get(`/dashboard/penjualan`, { params }).then((r) => r.data),
   ownerDashboard: (params = {}) => client.get(`/dashboard/owner`, { params }).then((r) => r.data),
   purchasePeriodSummary: (params = {}) => client.get(`/dashboard/pembelian`, { params }).then((r) => r.data),

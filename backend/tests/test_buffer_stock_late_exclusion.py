@@ -202,7 +202,11 @@ def test_non_buffer_h1_h6_unknown_terkirim_unchanged():
     )
     assert _attach(server, no_date)["delivery_deadline_status"] == "unknown"
     done = _po(buffer_stock=False, delivery_status="Terkirim", current_stage=14)
-    assert _attach(server, done)["delivery_deadline_status"] == "terkirim"
+    done_snap = _attach(server, done)
+    assert done_snap["delivery_deadline_status_basis"] == "qty"
+    assert done_snap["delivery_deadline_status"] == "overdue"
+    closed = _po(buffer_stock=False, delivery_status="Terkirim", current_stage=14, qty_delivered=100)
+    assert _attach(server, closed)["delivery_deadline_status"] == "terkirim"
     soon = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
     later = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
     h6 = {"id": "h6", "current_stage": 5, "delivery_status": "Belum", "buffer_stock": False}

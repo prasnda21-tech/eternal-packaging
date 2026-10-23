@@ -8,6 +8,7 @@ import {
   CreditCard,
   Package,
   Printer,
+  CalendarClock,
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
@@ -38,6 +39,7 @@ import SalesAccountingSettings from "./SalesAccountingSettings";
 import PurchaseAccountingSettings from "./PurchaseAccountingSettings";
 import PayrollAccountingSettings from "./PayrollAccountingSettings";
 import FormAccessMatrix from "../components/FormAccessMatrix";
+import OperationalHolidaySettings, { OperationalHolidayReadonly } from "../components/OperationalHolidaySettings";
 import EmployeeAdminSettings from "../components/EmployeeAdminSettings";
 import HrPayrollSettings from "../components/HrPayrollSettings";
 import SalesActivitySettings from "../components/SalesActivitySettings";
@@ -1917,7 +1919,7 @@ function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
     try {
       const r = await api.updateDeliveryDeadlineSettings({ lead_time_days: days });
       setState(r.settings);
-      notify?.(`Lead time Tanggal Pengiriman diatur ke ${days} hari`);
+      notify?.(`Estimasi PO Normal diatur ke ${days} hari kerja`);
     } catch (e) {
       setErr(e?.response?.data?.detail || "Gagal menyimpan");
     } finally { setSaving(false); }
@@ -1926,10 +1928,12 @@ function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
   return (
     <div data-testid="dd-settings-tab" style={{ display: "grid", gap: 12, maxWidth: 560 }}>
       <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-        <h3 style={{ marginTop: 0 }}>Tanggal Pengiriman setelah Approval Lengkap</h3>
-        <p className="muted small" style={{ marginTop: 0 }}>
-          Tanggal Pengiriman otomatis dihitung dari <b>approval terakhir</b> (Design ATAU Payment yang lebih akhir, termasuk bypass) + jumlah hari di bawah.
-          Satuan: <b>calendar days</b> (bukan working days). Manual Tanggal Pengiriman di Detail Informasi PO selalu menang.
+        <h3 style={{ marginTop: 0 }}>Estimasi Pengiriman PO Normal</h3>
+        <p className="muted small" style={{ marginTop: 0 }} data-testid="dd-unit-copy">
+          Durasi dihitung sebagai <b>hari kerja</b> setelah kedua approval Design dan Payment selesai.
+          Senin–Sabtu dihitung. Minggu dan tanggal pada Kalender Libur Operasional tidak dihitung.
+          Pilihan: 1, 3, atau 5 hari kerja. Default 3. Tanggal yang sudah dikunci pada PO tidak berubah
+          saat pengaturan ini diganti. Tanggal manual tetap lebih dulu.
         </p>
         <div style={{ display: "flex", gap: 8, marginTop: 8 }} data-testid="dd-choices">
           {choices.map((d) => (
@@ -1941,10 +1945,15 @@ function DeliveryDeadlineSettingsTab({ notify, canEdit }) {
               disabled={!canEdit || saving}
               data-testid={`dd-choice-${d}`}
             >
-              {d} hari
+              {d} hari kerja
             </button>
           ))}
         </div>
+        {state.legacy?.unit === "calendar_days" && (
+          <p className="muted small" data-testid="dd-legacy-note" style={{ marginTop: 8 }}>
+            Pengaturan lama: {state.legacy.lead_time_days} hari kalender. Dipakai hanya untuk PO tanpa stempel SLA. Tidak mengubah PO yang sudah dikunci.
+          </p>
+        )}
         {err && <p style={{ color: "#8f1f1f", marginTop: 8 }} data-testid="dd-settings-error">{err}</p>}
         {!canEdit && <p className="muted small" style={{ marginTop: 8 }}>Butuh permission <code>delivery.deadline.settings</code>.</p>}
       </div>
@@ -2429,7 +2438,8 @@ const SETTINGS_NAV_ITEMS = [
   { id: "pricing-catalog", label: "Harga & Katalog", description: "Harga customer & katalog publik", Icon: Tags, tone: "emerald", testid: "settings-tab-pricing-catalog" },
   { id: "customer-approval", label: "Customer Approval", description: "Alur persetujuan", Icon: ClipboardCheck, tone: "teal", testid: "settings-tab-customer-approval" },
   { id: "notifications", label: "Notifikasi", description: "Notifikasi operasional", Icon: Bell, tone: "cyan", testid: "settings-tab-notifications" },
-  { id: "delivery-deadline", label: "Tanggal Pengiriman", description: "Lead time otomatis setelah approval", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
+  { id: "delivery-deadline", label: "Estimasi Pengiriman", description: "1, 3, atau 5 hari kerja", Icon: Truck, tone: "rose", testid: "settings-tab-delivery-deadline" },
+  { id: "operational-calendar", label: "Kalender Libur Operasional", description: "Libur manual, Minggu tetap libur", Icon: CalendarClock, tone: "rose", testid: "settings-tab-operational-calendar" },
   { id: "operator-target", label: "Target Output Operator", description: "Target harian/mingguan", Icon: TargetIcon, tone: "cyan", testid: "settings-tab-operator-target" },
   { id: "work-panel", label: "Form Pekerjaan Divisi", description: "Form & akses divisi", Icon: ClipboardList, tone: "violet", testid: "settings-tab-work-panel" },
   { id: "employee-admin", label: "Administrasi Karyawan", description: "Data administrasi", Icon: IdCard, tone: "fuchsia", testid: "settings-tab-employee-admin" },
@@ -2553,6 +2563,7 @@ export default function Settings() {
     "customer-approval": canViewCaSettings,
     notifications: canViewCaSettings,
     "delivery-deadline": canViewDdSettings,
+    "operational-calendar": hasPerm("settings.operational_calendar.manage"),
     "operator-target": canViewOpTarget,
     "work-panel": canViewWorkPanel,
     "employee-admin": canViewEmployeeAdmin,
@@ -2711,6 +2722,8 @@ export default function Settings() {
       {tab === "customer-approval" && canViewCaSettings && <CustomerApprovalSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "notifications" && canViewCaSettings && <NotificationsSettingsTab notify={notify} canEdit={canEditCaSettings}/>}
       {tab === "delivery-deadline" && canViewDdSettings && <DeliveryDeadlineSettingsTab notify={notify} canEdit={canEditDdSettings}/>}
+      {tab === "operational-calendar" && hasPerm("settings.operational_calendar.manage") && <OperationalHolidaySettings canManage />}
+      {tab === "operational-calendar" && !hasPerm("settings.operational_calendar.manage") && <OperationalHolidayReadonly />}
       {tab === "operator-target" && canViewOpTarget && <OperatorTargetSettingsTab notify={notify} canEdit={canEditOpTarget}/>}
       {tab === "work-panel" && canViewWorkPanel && (
         <WorkPanelSettingsTab notify={notify} canEdit={canEditWorkPanel} canManagePerms={canManagePerms} canListRoles={canViewUsers}/>

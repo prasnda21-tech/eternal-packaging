@@ -48,6 +48,7 @@ PLAN_PROJECTION = {
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "delivery_sla_v2": 1,
     "delivery_reschedules": 1,
     "delivery_status": 1,
     "current_stage": 1,
@@ -126,6 +127,7 @@ def plan_row(
         "priority": order.get("priority") or "normal",
         "urgent": str(order.get("priority") or "").lower() == "urgent",
         "buffer_stock": bool(order.get("buffer_stock")),
+        "delivery_sla_effective": snap.get("delivery_sla_effective"),
     }
 
 
