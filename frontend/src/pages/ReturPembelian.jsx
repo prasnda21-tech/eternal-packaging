@@ -313,7 +313,7 @@ export default function ReturPembelian() {
       </div>
       {loading && <p className="muted small" data-testid="retur-loading">Memuat retur pembelian…</p>}
       <div className="purchase-table-wrap">
-        <table className="prod-table" data-testid="retur-table">
+        <table className="prod-table purchase-table purchase-table-retur" data-testid="retur-table">
           <thead>
             <tr>
               <th>Nomor Retur</th>
@@ -370,7 +370,7 @@ export default function ReturPembelian() {
           </label>
           {receipt && (
             <div className="purchase-table-wrap">
-              <table className="prod-table" data-testid="retur-create-lines">
+              <table className="prod-table purchase-table purchase-table-excel" data-testid="retur-create-lines">
                 <thead>
                   <tr>
                     <th>Barang</th>
@@ -484,7 +484,7 @@ export default function ReturPembelian() {
             </div>
           )}
           <div className="purchase-table-wrap">
-            <table className="prod-table" data-testid="retur-detail-lines">
+            <table className="prod-table purchase-table purchase-table-excel" data-testid="retur-detail-lines">
               <thead>
                 <tr>
                   <th>Barang</th>

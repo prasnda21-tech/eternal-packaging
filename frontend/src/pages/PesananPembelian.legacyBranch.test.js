@@ -49,7 +49,7 @@ describe("PesananPembelian legacy PO Lengkapi Cabang", () => {
     expect(page).toMatch(/reason\.length < 3/);
     expect(page).toMatch(/Alasan perubahan wajib diisi \(minimal 3 karakter\)/);
     expect(page).toMatch(/if \(!branchConfirmReady\)/);
-    expect(page).toMatch(/Konfirmasi Simpan/);
+    expect(page).toMatch(/Simpan dan Lanjutkan/);
   });
 
   test("success refreshes detail from response order; 409/400 refreshes getPurchaseOrder", () => {

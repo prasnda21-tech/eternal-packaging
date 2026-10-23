@@ -336,6 +336,59 @@
 .purchase-page .purchase-table-wrap table.purchase-table-history col.col-qty-wide { width: 14% !important; }
 .purchase-page .purchase-table-wrap table.purchase-table-history col.col-status { width: 12% !important; }
 
+/* Purchasing lists — dense Excel-style grid (shared across submenus except HPP) */
+.purchase-page .purchase-table-wrap table.purchase-table,
+.purchase-page .purchase-table-wrap table.purchase-table-excel,
+.purchase-page .purchase-table-wrap table.purchase-table-inv {
+  border: 1px solid var(--line, #d7e0e4) !important;
+  border-collapse: collapse !important;
+  background: var(--surface, #fff);
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table thead th,
+.purchase-page .purchase-table-wrap table.purchase-table-excel thead th {
+  height: 40px;
+  padding: 0 12px !important;
+  background: var(--ep-dark, #0b2d22) !important;
+  color: #fff !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.18);
+  border-bottom: 1px solid var(--ep-dark, #0b2d22);
+  vertical-align: middle;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table thead th:last-child,
+.purchase-page .purchase-table-wrap table.purchase-table-excel thead th:last-child {
+  border-right: 0;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table tbody td,
+.purchase-page .purchase-table-wrap table.purchase-table-excel tbody td {
+  height: 40px;
+  padding: 0 12px !important;
+  border-right: 1px solid var(--line, #d7e0e4);
+  border-bottom: 1px solid var(--line, #d7e0e4);
+  vertical-align: middle;
+  background: #fff;
+  font-size: 13px;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table tbody td:last-child,
+.purchase-page .purchase-table-wrap table.purchase-table-excel tbody td:last-child {
+  border-right: 0;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table tbody tr:hover td,
+.purchase-page .purchase-table-wrap table.purchase-table-excel tbody tr:hover td {
+  background: #f3faf6;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table tbody tr.is-row-selected td,
+.purchase-page .purchase-table-wrap table.purchase-table-excel tbody tr.is-row-selected td {
+  background: #eaf6ef;
+}
+
 /* PUR-INV list — dense spreadsheet grid (list-only) */
 .purchase-page .purchase-table-wrap table.purchase-table-inv {
   border: 1px solid var(--line, #d7e0e4) !important;
@@ -2636,4 +2689,197 @@
   .purchase-page .fpb-lines.is-scrollable .fpb-table-scroll {
     max-height: min(360px, 50vh);
   }
+}
+
+/* ---- P1 Lengkapi Cabang modal (stacked fields) ---- */
+.purchase-page .purchase-branch-modal.modal-inner,
+.modal .purchase-branch-modal.modal-inner {
+  width: min(520px, calc(100vw - 32px));
+  max-width: 520px;
+}
+
+.purchase-page .purchase-branch-modal .modal-head h3,
+.modal .purchase-branch-modal .modal-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.purchase-page .purchase-branch-warn,
+.modal .purchase-branch-warn {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f0c9a0;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.purchase-page .purchase-branch-stack,
+.modal .purchase-branch-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.purchase-page .purchase-branch-stack > label,
+.modal .purchase-branch-stack > label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--soft, #5b6b73);
+}
+
+.purchase-page .purchase-branch-stack select,
+.purchase-page .purchase-branch-stack textarea,
+.modal .purchase-branch-stack select,
+.modal .purchase-branch-stack textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+  background: #fff;
+}
+
+.purchase-page .purchase-branch-stack textarea,
+.modal .purchase-branch-stack textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+/* ---- Terima Barang modal (structured panels) ---- */
+.purchase-page .purchase-receive-modal.modal-inner,
+.modal .purchase-receive-modal.modal-inner {
+  width: min(920px, calc(100vw - 24px));
+  max-width: 920px;
+}
+
+.purchase-page .purchase-receive-warn,
+.modal .purchase-receive-warn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f1b4a8;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 13px;
+}
+
+.purchase-page .purchase-receive-panel,
+.modal .purchase-receive-panel {
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.purchase-page .purchase-receive-panel h4,
+.modal .purchase-receive-panel h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ep-dark, #0b2d22);
+}
+
+.purchase-page .purchase-receive-meta,
+.modal .purchase-receive-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+@media (max-width: 720px) {
+  .purchase-page .purchase-receive-meta,
+  .modal .purchase-receive-meta {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.purchase-page .purchase-receive-meta .label,
+.modal .purchase-receive-meta .label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--soft, #5b6b73);
+  margin-bottom: 4px;
+}
+
+.purchase-page .purchase-receive-meta .value,
+.modal .purchase-receive-meta .value,
+.purchase-page .purchase-receive-meta input,
+.purchase-page .purchase-receive-meta select,
+.modal .purchase-receive-meta input,
+.modal .purchase-receive-meta select {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+}
+
+.purchase-page .purchase-receive-meta select:disabled,
+.modal .purchase-receive-meta select:disabled {
+  background: #f3f4f6;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+
+/* PO detail uses Faktur document shell */
+.purchase-page.is-po-doc .page-heading {
+  margin-bottom: 8px;
+}
+
+.purchase-page .fpb-lower.is-po-lower {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .purchase-page .fpb-lower.is-po-lower {
+    grid-template-columns: 1fr;
+  }
+}
+
+.purchase-page .fpb-advance-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.purchase-page .fpb-advance-create input {
+  min-width: 140px;
+  flex: 1 1 140px;
+}
+
+.purchase-page .fpb-advance-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line, #d7e0e4);
+  font-size: 13px;
+}
+
+.purchase-page .fpb-advance-row:last-child {
+  border-bottom: 0;
+}
+
+.purchase-page .fpb-lines-table .col-recv,
+.purchase-page .fpb-lines-table .col-inv {
+  width: 12%;
 }
