@@ -38,9 +38,15 @@ export default function ProductDetail() {
   const canEditOpeningBalance = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canManageMaster = hasPerm("master_items.manage");
 
-  // Active tab: 'umum' | 'stok' | 'mutasi'
+  // Active tab: 'umum' | 'stok' | 'mutasi' (deep-link: ?tab=mutasi)
   const tabParam = searchParams.get("tab");
   const [activeTab, setActiveTab] = useState(tabParam && ["umum", "stok", "mutasi"].includes(tabParam) ? tabParam : "umum");
+
+  useEffect(() => {
+    if (tabParam && ["umum", "stok", "mutasi"].includes(tabParam) && tabParam !== activeTab) {
+      setActiveTab(tabParam);
+    }
+  }, [tabParam, activeTab]);
 
   const setTab = (tab) => {
     setActiveTab(tab);
@@ -435,8 +441,9 @@ export default function ProductDetail() {
           className={`product-tab-btn ${activeTab === "mutasi" ? "is-active" : ""}`}
           onClick={() => setTab("mutasi")}
           data-testid="tab-btn-mutasi"
+          title="Kartu stok / riwayat mutasi fisik"
         >
-          Mutasi
+          Mutasi / Kartu Stok
         </button>
       </div>
 

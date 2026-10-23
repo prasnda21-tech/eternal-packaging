@@ -17,13 +17,18 @@ describe("Stock Opname operational workflow", () => {
     expect(src).toMatch(/opnameLocationLabel/);
     expect(src).toMatch(/data-testid="opname-start"/);
     expect(src).toMatch(/Mulai Stock Opname/);
-    expect(src).toMatch(/Download Excel Hitung Fisik/);
-    expect(src).toMatch(/Import Excel Hitung Fisik/);
-    expect(src).toMatch(/Review Stock Opname/);
+    expect(src).toMatch(/Download Excel/);
+    expect(src).toMatch(/Import Excel/);
+    expect(src).toMatch(/data-testid="opname-review"/);
+    expect(src).toMatch(/>Review</);
     expect(src).toMatch(/Konfirmasi akan menyesuaikan Stock Fisik sesuai hasil hitung/);
     expect(src).toMatch(/Konfirmasi Stock Opname/);
-    expect(src).toMatch(/Batalkan Stock Opname/);
+    expect(src).toMatch(/data-testid="opname-cancel"/);
+    expect(src).toMatch(/>Batalkan</);
     expect(src).toMatch(/data-testid="opname-history"/);
+    expect(src).toMatch(/stock-opname-summary/);
+    expect(src).toMatch(/stock-opname-toolbar/);
+    expect(src).toMatch(/stock-opname-table-wrap/);
     for (const label of [
       "Kode",
       "Nama Barang",

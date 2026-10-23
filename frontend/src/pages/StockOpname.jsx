@@ -320,23 +320,23 @@ export default function StockOpname() {
   const isOperational = mode === "operational";
 
   return (
-    <div className="prod-page stock-page" data-testid="stock-opname-page">
-      <div className="page-heading prod-heading">
+    <div className="prod-page stock-page stock-opname-page" data-testid="stock-opname-page">
+      <div className="page-heading prod-heading stock-opname-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1>Stock Opname</h1>
           <p className="subhead">Isi Stock Fisik hasil hitung. Selisih dan target dihitung oleh ERP (bukan rumus di layar).</p>
         </div>
-        <Link className="ghost" to="/persediaan/stock-saat-ini" data-testid="stock-opname-back">Kembali</Link>
+        <Link className="ghost stock-opname-back" to="/persediaan/stock-saat-ini" data-testid="stock-opname-back">Kembali</Link>
       </div>
 
       {error && <div className="signal-strip" role="alert" data-testid="stock-opname-error">{error}</div>}
       {successNote && <div className="signal-strip" data-testid="stock-opname-success">{successNote}</div>}
 
       {!session && (
-        <div className="prod-filters" data-testid="stock-opname-start">
-          <label>
-            Gudang
+        <div className="stock-opname-start prod-filters" data-testid="stock-opname-start">
+          <label className="stock-opname-field">
+            <span>Gudang</span>
             <select
               value={warehouseId}
               onChange={(event) => setWarehouseId(event.target.value)}
@@ -354,7 +354,7 @@ export default function StockOpname() {
             ));
             if (activeForWarehouse) {
               return (
-                <div data-testid="opname-existing-active" style={{ display: "grid", gap: 6 }}>
+                <div className="stock-opname-existing" data-testid="opname-existing-active">
                   <p className="muted small" data-testid="opname-mode-hint">
                     Sesi aktif ditemukan: {activeForWarehouse.opname_number || activeForWarehouse.id}
                     {" — "}Mode {modeLabel(sessionMode(activeForWarehouse))} (terkunci).
@@ -368,8 +368,8 @@ export default function StockOpname() {
             }
             return (
               <>
-                <label>
-                  Mode sesi baru
+                <label className="stock-opname-field">
+                  <span>Mode sesi baru</span>
                   <select
                     value={createMode}
                     onChange={(event) => setCreateMode(event.target.value === "operational" ? "operational" : "freeze")}
@@ -389,17 +389,16 @@ export default function StockOpname() {
             );
           })()}
           {sessions.length > 0 && (
-            <div data-testid="opname-session-list" style={{ display: "grid", gap: 4, width: "100%" }}>
+            <div className="stock-opname-session-list" data-testid="opname-session-list">
               <p className="muted small">Sesi tersimpan</p>
               {sessions.map((row) => (
                 <button
                   key={row.id}
                   type="button"
-                  className="ghost"
+                  className="ghost stock-opname-session-btn"
                   data-testid={`opname-session-${row.opname_number || row.id}`}
                   onClick={() => openSession(row.id)}
                   disabled={busy}
-                  style={{ justifyContent: "flex-start", textAlign: "left" }}
                 >
                   {row.opname_number || row.id} — {statusLabel(row.status)} — {modeLabel(sessionMode(row))}
                   {" — "}{row.warehouse_code || row.warehouse_id}
@@ -411,63 +410,63 @@ export default function StockOpname() {
       )}
 
       {session && (
-        <section data-testid="stock-opname-session">
-          <p data-testid="opname-status">Status: {statusLabel(session.status)}</p>
-          <p data-testid="opname-mode">Mode: {modeLabel(mode)}</p>
-          <p data-testid="opname-warehouse-name">Lokasi: {opnameLocationLabel(session)}</p>
-          <p data-testid="opname-cutoff">Tanggal Cutoff: {session.cutoff_at ? formatDate(session.cutoff_at) : "-"}</p>
-          <p data-testid="opname-item-count">Jumlah Barang: {session.item_count ?? lines.length}</p>
-          <p data-testid="opname-number">Nomor: {session.opname_number}</p>
+        <section className="stock-opname-session" data-testid="stock-opname-session">
+          <div className="stock-opname-summary" data-testid="opname-session-summary">
+            <div className="stock-opname-summary-item">
+              <span className="stock-opname-summary-label">Nomor</span>
+              <strong data-testid="opname-number">{session.opname_number}</strong>
+            </div>
+            <div className="stock-opname-summary-item">
+              <span className="stock-opname-summary-label">Status</span>
+              <strong data-testid="opname-status">{statusLabel(session.status)}</strong>
+            </div>
+            <div className="stock-opname-summary-item">
+              <span className="stock-opname-summary-label">Mode</span>
+              <strong data-testid="opname-mode">{modeLabel(mode)}</strong>
+            </div>
+            <div className="stock-opname-summary-item stock-opname-summary-item--wide">
+              <span className="stock-opname-summary-label">Cabang / Gudang</span>
+              <strong data-testid="opname-warehouse-name">{opnameLocationLabel(session)}</strong>
+            </div>
+            <div className="stock-opname-summary-item">
+              <span className="stock-opname-summary-label">Cutoff</span>
+              <strong data-testid="opname-cutoff">{session.cutoff_at ? formatDate(session.cutoff_at) : "-"}</strong>
+            </div>
+            <div className="stock-opname-summary-item">
+              <span className="stock-opname-summary-label">Jumlah barang</span>
+              <strong data-testid="opname-item-count">{session.item_count ?? lines.length}</strong>
+            </div>
+          </div>
+
           {(counting || reviewState) && !isOperational && (
-            <p data-testid="opname-freeze">Gudang dibekukan. Pergerakan fisik gudang ini ditahan sampai konfirmasi atau pembatalan.</p>
-          )}
-          {(counting || reviewState) && isOperational && (
-            <p data-testid="opname-operational-banner">
-              Mode operational: pergerakan gudang tetap berjalan. Target = hasil hitung + net pergerakan setelah waktu hitung.
-              Angka review dari API; final diverifikasi ulang saat konfirmasi.
+            <p className="stock-opname-banner stock-opname-banner--freeze" data-testid="opname-freeze">
+              Mode Freeze: gudang dibekukan. Pergerakan fisik gudang ini ditahan sampai konfirmasi atau pembatalan.
             </p>
           )}
-          <div className="stock-heading-actions">
+          {(counting || reviewState) && isOperational && (
+            <p className="stock-opname-banner stock-opname-banner--ops" data-testid="opname-operational-banner">
+              Mode Operational: pergerakan gudang tetap berjalan. Target = hasil hitung + net pergerakan setelah waktu hitung.
+              Angka review dari API; final diverifikasi ulang saat konfirmasi. Waktu hitung memakai {STOCK_OPNAME_TZ_LABEL}.
+            </p>
+          )}
+
+          <div className="stock-opname-toolbar" data-testid="opname-toolbar">
             {counting && (
               <>
                 <button type="button" className="ghost" onClick={downloadTemplate} disabled={busy} data-testid="opname-download">
-                  Download Excel Hitung Fisik
+                  Download Excel
                 </button>
-                <label className="ghost" data-testid="opname-import-label">
-                  Import Excel Hitung Fisik
+                <label className="ghost stock-opname-file-btn" data-testid="opname-import-label">
+                  Import Excel
                   <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={importFile} disabled={busy} data-testid="opname-import" />
                 </label>
-                {(isOperational || counting) && (
-                  <div data-testid="opname-bulk-time" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                    <label className="muted small" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={applyBulkTime}
-                        onChange={(event) => setApplyBulkTime(event.target.checked)}
-                        data-testid="opname-apply-bulk-time"
-                      />
-                      Terapkan satu waktu hitung ke baris yang diisi qty (pilihan eksplisit)
-                    </label>
-                    <label className="muted small">
-                      Waktu hitung massal ({STOCK_OPNAME_TZ_LABEL})
-                      <input
-                        type="datetime-local"
-                        value={bulkCountAt}
-                        onChange={(event) => setBulkCountAt(event.target.value)}
-                        onInput={(event) => setBulkCountAt(event.target.value)}
-                        disabled={!applyBulkTime || busy}
-                        data-testid="opname-bulk-count-at"
-                      />
-                    </label>
-                  </div>
-                )}
                 <button type="button" className="primary" onClick={saveCounts} disabled={busy} data-testid="opname-save-counts">Simpan Hitung</button>
-                <button type="button" className="primary" onClick={review} disabled={busy} data-testid="opname-review">Review Stock Opname</button>
+                <button type="button" className="primary" onClick={review} disabled={busy} data-testid="opname-review">Review</button>
               </>
             )}
             {reviewState && (
               <>
-                <p data-testid="opname-confirm-warning">
+                <p className="stock-opname-confirm-warn" data-testid="opname-confirm-warning">
                   {isOperational
                     ? "Konfirmasi memposting adjustment dari target API (hitung + net setelah waktu hitung − buku saat posting). Angka di tabel adalah pratinjau API; final diverifikasi ulang saat konfirmasi."
                     : "Konfirmasi akan menyesuaikan Stock Fisik sesuai hasil hitung."}
@@ -485,117 +484,150 @@ export default function StockOpname() {
               </>
             )}
             {["DRAFT", "COUNTING", "REVIEW"].includes(session.status) && (
-              <button type="button" className="ghost" onClick={cancel} disabled={busy} data-testid="opname-cancel">Batalkan Stock Opname</button>
+              <button type="button" className="ghost" onClick={cancel} disabled={busy} data-testid="opname-cancel">Batalkan</button>
             )}
             <button type="button" className="ghost" onClick={() => setSession(null)} data-testid="opname-back-list">Daftar Sesi</button>
           </div>
 
-          <table className="prod-table" data-testid="opname-count-table">
-            <thead>
-              <tr>
-                <th>Kode</th>
-                <th>Nama Barang</th>
-                <th>Satuan Dasar</th>
-                <th>Stock Buku</th>
-                {isOperational && <th>Buku Saat Review</th>}
-                <th>Qty Pesanan</th>
-                <th>Qty Belum Terkirim</th>
-                <th>Stock Fisik</th>
-                <th>Waktu Hitung ({STOCK_OPNAME_TZ_LABEL})</th>
-                <th>Waktu Impor</th>
-                {isOperational && <th>Net Setelah Hitung</th>}
-                {isOperational && <th>Target Fisik</th>}
-                <th>{isOperational ? "Adjustment (perkiraan)" : "Selisih"}</th>
-                <th>Qty Tersedia Setelah Opname</th>
-                <th>Status Hitung</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((line) => {
-                const raw = drafts[line.line_id] ?? "";
-                const timeRaw = timeDrafts[line.line_id] ?? "";
-                const previewCount = raw === "" ? null : Number(raw);
-                const bookForFreezeDiff = Number(line.book_qty || 0);
-                const previewDifference = previewCount === null || Number.isNaN(previewCount)
-                  ? null
-                  : previewCount - bookForFreezeDiff;
-                const previewAvailable = previewCount === null || Number.isNaN(previewCount)
-                  ? null
-                  : previewCount - Number(line.qty_pesanan || 0) - Number(line.qty_belum_terkirim || 0);
-                const apiDifference = line.difference_qty;
-                const difference = editable && !isOperational ? previewDifference : apiDifference;
-                const available = editable && !isOperational ? previewAvailable : line.qty_tersedia_setelah;
-                const counted = raw !== "" && line.physical_count_qty !== null && line.physical_count_qty !== undefined
-                  ? true
-                  : line.physical_count_qty !== null && line.physical_count_qty !== undefined && !editable;
-                const bookLive = line.book_qty_live ?? line.book_qty_at_posting;
-                return (
-                  <tr key={line.line_id} data-testid={`opname-row-${line.item_code}`} style={difference ? { background: "#fff6e8" } : undefined}>
-                    <td>{line.item_code}</td>
-                    <td>{line.item_name}</td>
-                    <td>{line.base_uom}</td>
-                    <td data-testid={`opname-book-${line.item_code}`}>{fmtQty(line.book_qty)}</td>
-                    {isOperational && (
-                      <td data-testid={`opname-book-live-${line.item_code}`}>
-                        {bookLive === null || bookLive === undefined ? "—" : fmtQty(bookLive)}
-                      </td>
-                    )}
-                    <td data-testid={`opname-pesanan-${line.item_code}`}>{fmtQty(line.qty_pesanan)}</td>
-                    <td data-testid={`opname-belum-${line.item_code}`}>{fmtQty(line.qty_belum_terkirim)}</td>
-                    <td>
-                      {editable ? (
-                        <input
-                          value={raw}
-                          onChange={(event) => setDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
-                          inputMode="numeric"
-                          aria-label={`Stock Fisik ${line.item_code}`}
-                          data-testid={`opname-count-${line.item_code}`}
-                          placeholder="kosong ≠ 0"
-                        />
-                      ) : (
-                        <span data-testid={`opname-count-value-${line.item_code}`}>{fmtQty(line.physical_count_qty)}</span>
+          {counting && (
+            <div className="stock-opname-bulk-time" data-testid="opname-bulk-time">
+              <label className="stock-opname-bulk-check">
+                <input
+                  type="checkbox"
+                  checked={applyBulkTime}
+                  onChange={(event) => setApplyBulkTime(event.target.checked)}
+                  data-testid="opname-apply-bulk-time"
+                />
+                Terapkan satu waktu hitung ke baris yang diisi qty (pilihan eksplisit)
+              </label>
+              <label className="stock-opname-field stock-opname-field--inline">
+                <span>Waktu hitung massal ({STOCK_OPNAME_TZ_LABEL})</span>
+                <input
+                  type="datetime-local"
+                  value={bulkCountAt}
+                  onChange={(event) => setBulkCountAt(event.target.value)}
+                  onInput={(event) => setBulkCountAt(event.target.value)}
+                  disabled={!applyBulkTime || busy}
+                  data-testid="opname-bulk-count-at"
+                />
+              </label>
+            </div>
+          )}
+
+          <div className="stock-opname-table-wrap">
+            <table className="prod-table stock-opname-table" data-testid="opname-count-table">
+              <thead>
+                <tr>
+                  <th>Kode</th>
+                  <th>Nama Barang</th>
+                  <th>Satuan Dasar</th>
+                  <th>Stock Buku</th>
+                  {isOperational && <th>Buku Saat Review</th>}
+                  <th>Qty Pesanan</th>
+                  <th>Qty Belum Terkirim</th>
+                  <th>Stock Fisik</th>
+                  <th>Waktu Hitung ({STOCK_OPNAME_TZ_LABEL})</th>
+                  <th>Waktu Impor</th>
+                  {isOperational && <th>Net Setelah Hitung</th>}
+                  {isOperational && <th>Target Fisik</th>}
+                  <th>{isOperational ? "Adjustment (perkiraan)" : "Selisih"}</th>
+                  <th>Qty Tersedia Setelah Opname</th>
+                  <th>Status Hitung</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line) => {
+                  const raw = drafts[line.line_id] ?? "";
+                  const timeRaw = timeDrafts[line.line_id] ?? "";
+                  const previewCount = raw === "" ? null : Number(raw);
+                  const bookForFreezeDiff = Number(line.book_qty || 0);
+                  const previewDifference = previewCount === null || Number.isNaN(previewCount)
+                    ? null
+                    : previewCount - bookForFreezeDiff;
+                  const previewAvailable = previewCount === null || Number.isNaN(previewCount)
+                    ? null
+                    : previewCount - Number(line.qty_pesanan || 0) - Number(line.qty_belum_terkirim || 0);
+                  const apiDifference = line.difference_qty;
+                  const difference = editable && !isOperational ? previewDifference : apiDifference;
+                  const available = editable && !isOperational ? previewAvailable : line.qty_tersedia_setelah;
+                  const counted = raw !== "" && line.physical_count_qty !== null && line.physical_count_qty !== undefined
+                    ? true
+                    : line.physical_count_qty !== null && line.physical_count_qty !== undefined && !editable;
+                  const bookLive = line.book_qty_live ?? line.book_qty_at_posting;
+                  return (
+                    <tr
+                      key={line.line_id}
+                      data-testid={`opname-row-${line.item_code}`}
+                      className={difference ? "is-diff" : undefined}
+                    >
+                      <td className="opname-col-code mono">{line.item_code}</td>
+                      <td className="opname-col-name">{line.item_name}</td>
+                      <td className="opname-col-center">{line.base_uom}</td>
+                      <td className="opname-col-center mono" data-testid={`opname-book-${line.item_code}`}>{fmtQty(line.book_qty)}</td>
+                      {isOperational && (
+                        <td className="opname-col-center mono" data-testid={`opname-book-live-${line.item_code}`}>
+                          {bookLive === null || bookLive === undefined ? "—" : fmtQty(bookLive)}
+                        </td>
                       )}
-                    </td>
-                    <td>
-                      {editable ? (
-                        <input
-                          type="datetime-local"
-                          value={timeRaw}
-                          onChange={(event) => setTimeDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
-                          onInput={(event) => setTimeDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
-                          aria-label={`Waktu hitung ${line.item_code} ${STOCK_OPNAME_TZ_LABEL}`}
-                          data-testid={`opname-count-at-${line.item_code}`}
-                          disabled={applyBulkTime}
-                        />
-                      ) : (
-                        <span data-testid={`opname-count-at-value-${line.item_code}`}>{formatWibDateTime(line.physical_count_at)}</span>
+                      <td className="opname-col-center mono" data-testid={`opname-pesanan-${line.item_code}`}>{fmtQty(line.qty_pesanan)}</td>
+                      <td className="opname-col-center mono" data-testid={`opname-belum-${line.item_code}`}>{fmtQty(line.qty_belum_terkirim)}</td>
+                      <td className="opname-col-center">
+                        {editable ? (
+                          <input
+                            className="stock-opname-input"
+                            value={raw}
+                            onChange={(event) => setDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
+                            inputMode="numeric"
+                            aria-label={`Stock Fisik ${line.item_code}`}
+                            data-testid={`opname-count-${line.item_code}`}
+                            placeholder="kosong ≠ 0"
+                          />
+                        ) : (
+                          <span className="mono" data-testid={`opname-count-value-${line.item_code}`}>{fmtQty(line.physical_count_qty)}</span>
+                        )}
+                      </td>
+                      <td className="opname-col-center">
+                        {editable ? (
+                          <input
+                            className="stock-opname-input stock-opname-input--dt"
+                            type="datetime-local"
+                            value={timeRaw}
+                            onChange={(event) => setTimeDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
+                            onInput={(event) => setTimeDrafts((prev) => ({ ...prev, [line.line_id]: event.target.value }))}
+                            aria-label={`Waktu hitung ${line.item_code} ${STOCK_OPNAME_TZ_LABEL}`}
+                            data-testid={`opname-count-at-${line.item_code}`}
+                            disabled={applyBulkTime}
+                          />
+                        ) : (
+                          <span data-testid={`opname-count-at-value-${line.item_code}`}>{formatWibDateTime(line.physical_count_at)}</span>
+                        )}
+                      </td>
+                      <td className="opname-col-center" data-testid={`opname-imported-at-${line.item_code}`}>
+                        {line.imported_at ? formatWibDateTime(line.imported_at) : "—"}
+                      </td>
+                      {isOperational && (
+                        <td className="opname-col-center mono" data-testid={`opname-net-${line.item_code}`}>
+                          {line.net_movement_after_count === null || line.net_movement_after_count === undefined
+                            ? "—"
+                            : fmtQty(line.net_movement_after_count)}
+                        </td>
                       )}
-                    </td>
-                    <td data-testid={`opname-imported-at-${line.item_code}`}>
-                      {line.imported_at ? formatWibDateTime(line.imported_at) : "—"}
-                    </td>
-                    {isOperational && (
-                      <td data-testid={`opname-net-${line.item_code}`}>
-                        {line.net_movement_after_count === null || line.net_movement_after_count === undefined
-                          ? "—"
-                          : fmtQty(line.net_movement_after_count)}
+                      {isOperational && (
+                        <td className="opname-col-center mono" data-testid={`opname-target-${line.item_code}`}>
+                          {line.target_qty === null || line.target_qty === undefined ? "—" : fmtQty(line.target_qty)}
+                        </td>
+                      )}
+                      <td className="opname-col-center mono" data-testid={`opname-diff-${line.item_code}`}>
+                        {difference === null || difference === undefined || Number.isNaN(difference) ? "" : fmtQty(difference)}
                       </td>
-                    )}
-                    {isOperational && (
-                      <td data-testid={`opname-target-${line.item_code}`}>
-                        {line.target_qty === null || line.target_qty === undefined ? "—" : fmtQty(line.target_qty)}
-                      </td>
-                    )}
-                    <td data-testid={`opname-diff-${line.item_code}`}>
-                      {difference === null || difference === undefined || Number.isNaN(difference) ? "" : fmtQty(difference)}
-                    </td>
-                    <td>{available === null || available === undefined || Number.isNaN(available) ? "" : fmtQty(available)}</td>
-                    <td>{(editable ? raw !== "" : counted) ? "Sudah dihitung" : "Belum dihitung"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      <td className="opname-col-center mono">{available === null || available === undefined || Number.isNaN(available) ? "" : fmtQty(available)}</td>
+                      <td className="opname-col-center">{(editable ? raw !== "" : counted) ? "Sudah dihitung" : "Belum dihitung"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           {isOperational && (counting || reviewState) && (
             <p className="muted small" data-testid="opname-api-calc-note">
               Net / target / adjustment ditampilkan dari respons backend. Waktu di form adalah {STOCK_OPNAME_TZ_LABEL}; API menerima ISO UTC.
@@ -605,36 +637,40 @@ export default function StockOpname() {
         </section>
       )}
 
-      <section data-testid="opname-history">
+      <section className="stock-opname-history" data-testid="opname-history">
         <h2>Riwayat Stock Opname</h2>
-        <table className="prod-table">
-          <thead>
-            <tr>
-              <th>Nomor / Session</th>
-              <th>Lokasi</th>
-              <th>Mode</th>
-              <th>Tanggal Cutoff</th>
-              <th>Status</th>
-              <th>Jumlah Barang</th>
-              <th>Jumlah Selisih</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sessions.map((row) => (
-              <tr key={row.id} data-testid={`opname-history-${row.opname_number}`}>
-                <td>{row.opname_number}</td>
-                <td data-testid={`opname-history-location-${row.opname_number}`}>{opnameLocationLabel(row)}</td>
-                <td>{modeLabel(sessionMode(row))}</td>
-                <td>{row.cutoff_at ? formatDate(row.cutoff_at) : "-"}</td>
-                <td>{statusLabel(row.status)}</td>
-                <td>{row.item_count ?? (row.lines || []).length}</td>
-                <td>{row.difference_count ?? ""}</td>
-                <td><button type="button" className="ghost sm" onClick={() => openSession(row.id)} data-testid={`opname-detail-${row.opname_number}`}>Detail</button></td>
+        <div className="stock-opname-table-wrap">
+          <table className="prod-table stock-opname-table stock-opname-table--history">
+            <thead>
+              <tr>
+                <th>Nomor / Session</th>
+                <th>Lokasi</th>
+                <th>Mode</th>
+                <th>Tanggal Cutoff</th>
+                <th>Status</th>
+                <th>Jumlah Barang</th>
+                <th>Jumlah Selisih</th>
+                <th>Detail</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {sessions.map((row) => (
+                <tr key={row.id} data-testid={`opname-history-${row.opname_number}`}>
+                  <td className="opname-col-name">{row.opname_number}</td>
+                  <td data-testid={`opname-history-location-${row.opname_number}`}>{opnameLocationLabel(row)}</td>
+                  <td className="opname-col-center">{modeLabel(sessionMode(row))}</td>
+                  <td className="opname-col-center">{row.cutoff_at ? formatDate(row.cutoff_at) : "-"}</td>
+                  <td className="opname-col-center">{statusLabel(row.status)}</td>
+                  <td className="opname-col-center">{row.item_count ?? (row.lines || []).length}</td>
+                  <td className="opname-col-center">{row.difference_count ?? ""}</td>
+                  <td className="opname-col-center">
+                    <button type="button" className="ghost sm" onClick={() => openSession(row.id)} data-testid={`opname-detail-${row.opname_number}`}>Detail</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );
