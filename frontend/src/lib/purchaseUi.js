@@ -393,3 +393,329 @@ export function purchaseInvoiceWarehouseLabel(doc, invoiceSource) {
   }
   return purchaseWarehouseLabel(doc);
 }
+
+/** LOC-C2: legacy PO without branch_id — never invent YGY on the client. */
+export const LEGACY_PO_BRANCH_REQUIRED_MSG =
+  "Lengkapi Cabang PO terlebih dahulu sebelum membuat penerimaan barang.";
+
+/**
+ * Warehouse choices for PO-linked GR: filter by PO.branch_id only.
+ * branches/warehouses must already be access-scoped by API (permission).
+ * Does not invent YGY; empty/missing PO branch → blocked.
+ */
+export function goodsReceiptWarehouseChoiceForPo(branches, warehouses, poBranchId) {
+  const branchId = String(poBranchId || "").trim();
+  if (!branchId) {
+    return {
+      rows: [],
+      warehouseId: "",
+      blocked: true,
+      explicit: false,
+      reason: "legacy_branch_missing",
+    };
+  }
+  const allowedBranchIds = new Set(
+    (Array.isArray(branches) ? branches : [])
+      .filter((row) => row?.id && row.active !== false)
+      .map((row) => row.id),
+  );
+  if (!allowedBranchIds.has(branchId)) {
+    return {
+      rows: [],
+      warehouseId: "",
+      blocked: true,
+      explicit: false,
+      reason: "branch_forbidden",
+    };
+  }
+  const rows = (Array.isArray(warehouses) ? warehouses : []).filter((row) => (
+    Boolean(row?.id)
+    && row.active !== false
+    && row?.is_operational !== false
+    && String(row.branch_id || "") === branchId
+  ));
+  if (rows.length === 1) {
+    return {
+      rows,
+      warehouseId: rows[0].id,
+      blocked: false,
+      explicit: false,
+      reason: "",
+    };
+  }
+  if (!rows.length) {
+    return {
+      rows,
+      warehouseId: "",
+      blocked: true,
+      explicit: false,
+      reason: "no_warehouse",
+    };
+  }
+  return {
+    rows,
+    warehouseId: "",
+    blocked: false,
+    explicit: true,
+    reason: "",
+  };
+}
+
+export function goodsReceiptWarehouseBlockMessage(choice) {
+  const reason = String(choice?.reason || "");
+  if (reason === "legacy_branch_missing") return LEGACY_PO_BRANCH_REQUIRED_MSG;
+  if (reason === "branch_forbidden") {
+    return "Anda tidak memiliki akses gudang pada cabang PO ini.";
+  }
+  if (reason === "no_warehouse") {
+    return "Penerimaan tidak dapat disimpan: belum ada gudang aktif pada cabang PO.";
+  }
+  if (choice?.explicit) return "Pilih gudang sebelum menyimpan penerimaan.";
+  if (choice?.blocked) {
+    return "Penerimaan tidak dapat disimpan: belum ada gudang aktif.";
+  }
+  return "";
+}
+
+/** Stable signature for one receive intent (qty/date/warehouse/po). */
+export function purchaseGoodsReceiptPayloadSignature(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const lines = (Array.isArray(payload.lines) ? payload.lines : [])
+    .map((line) => ({
+      purchase_order_line_id: String(line?.purchase_order_line_id || ""),
+      received_qty: Number(line?.received_qty),
+    }))
+    .filter((line) => line.purchase_order_line_id && Number.isFinite(line.received_qty) && line.received_qty > 0)
+    .sort((a, b) => a.purchase_order_line_id.localeCompare(b.purchase_order_line_id));
+  return JSON.stringify({
+    purchase_order_id: String(payload.purchase_order_id || ""),
+    receipt_date: String(payload.receipt_date || ""),
+    warehouse_id: String(payload.warehouse_id || ""),
+    lines,
+  });
+}
+
+/** Deep-clone + normalize GR create body fields used for identity. */
+export function normalizePurchaseGoodsReceiptPayload(payload) {
+  const lines = (Array.isArray(payload?.lines) ? payload.lines : [])
+    .map((line) => ({
+      purchase_order_line_id: String(line?.purchase_order_line_id || ""),
+      received_qty: Number(line?.received_qty),
+    }))
+    .filter((line) => line.purchase_order_line_id && Number.isFinite(line.received_qty) && line.received_qty > 0);
+  return {
+    purchase_order_id: String(payload?.purchase_order_id || ""),
+    receipt_date: String(payload?.receipt_date || ""),
+    warehouse_id: String(payload?.warehouse_id || ""),
+    lines,
+  };
+}
+
+/**
+ * Immutable snapshot taken before the first create request.
+ * Retry must POST this body + key — never rebuild from live form.
+ */
+export function freezePurchaseGoodsReceiptRequest({ idempotency_key, payload }) {
+  const frozenPayload = normalizePurchaseGoodsReceiptPayload(payload);
+  const key = String(idempotency_key || "").trim();
+  return {
+    idempotency_key: key,
+    payload: frozenPayload,
+    signature: purchaseGoodsReceiptPayloadSignature(frozenPayload),
+    frozen_at: Date.now(),
+  };
+}
+
+/** Exact POST body for same-key retry from a frozen snapshot. */
+export function buildRetryPurchaseGoodsReceiptBody(frozen) {
+  if (!frozen?.idempotency_key || !frozen?.payload) {
+    throw new Error("Frozen GR recovery identity missing.");
+  }
+  return {
+    ...normalizePurchaseGoodsReceiptPayload(frozen.payload),
+    idempotency_key: String(frozen.idempotency_key),
+  };
+}
+
+export const GR_RECOVERY_HOLD_KINDS = ["recoverable", "uncertain", "ambiguous"];
+
+export function shouldHoldGrRecoveryIdentity(parsed) {
+  return GR_RECOVERY_HOLD_KINDS.includes(String(parsed?.kind || ""));
+}
+
+const GR_RECOVERY_STORAGE_KEY = "eternal.pur.gr_receive_recovery.v1";
+let grRecoveryMemory = null;
+
+/** In-memory + sessionStorage only (not localStorage; no secrets). */
+export function saveGrRecoveryIdentity(state) {
+  grRecoveryMemory = state || null;
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      if (state) sessionStorage.setItem(GR_RECOVERY_STORAGE_KEY, JSON.stringify(state));
+      else sessionStorage.removeItem(GR_RECOVERY_STORAGE_KEY);
+    }
+  } catch {
+    /* sessionStorage may be unavailable — memory still holds identity for SPA session */
+  }
+  return grRecoveryMemory;
+}
+
+export function loadGrRecoveryIdentity() {
+  if (grRecoveryMemory?.frozen?.idempotency_key) return grRecoveryMemory;
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const raw = sessionStorage.getItem(GR_RECOVERY_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.frozen?.idempotency_key) {
+          grRecoveryMemory = parsed;
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    /* ignore corrupt session blob */
+  }
+  return null;
+}
+
+export function clearGrRecoveryIdentity() {
+  return saveGrRecoveryIdentity(null);
+}
+
+/** Test/helper: reset module memory without touching sessionStorage quirks. */
+export function __resetGrRecoveryIdentityForTests() {
+  grRecoveryMemory = null;
+  try {
+    if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(GR_RECOVERY_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Live cancel gate from GET /purchase-goods-receipts/:id body.receipt.
+ * Fail closed when can_cancel is missing or false.
+ */
+export function evaluateLiveReceiptCancelEligibility(receipt) {
+  if (!receipt || typeof receipt !== "object") {
+    return { allowed: false, reason: "Data penerimaan tidak tersedia dari server.", receipt: null };
+  }
+  const status = String(receipt.status || "").toUpperCase();
+  if (status === "CANCELLED" || receipt.cancelled === true) {
+    return { allowed: false, reason: "Penerimaan sudah dibatalkan.", receipt };
+  }
+  if (String(receipt.accounting_status || "").toLowerCase() === "posted") {
+    return { allowed: false, reason: "Penerimaan sudah diposting accounting.", receipt };
+  }
+  if (receipt.can_cancel === true) {
+    return { allowed: true, reason: "", receipt };
+  }
+  if (receipt.can_cancel === false) {
+    return {
+      allowed: false,
+      reason: receipt.cancel_block_reason || "Penerimaan tidak dapat dibatalkan.",
+      receipt,
+    };
+  }
+  return {
+    allowed: false,
+    reason: "Status pembatalan tidak dapat dipastikan dari server.",
+    receipt,
+  };
+}
+
+/**
+ * Parse create GR API errors for recovery UI.
+ * Never invites a new idempotency key for recovery / uncertain failures.
+ * Hold kinds keep same-key retry available when a frozen identity exists.
+ */
+export function parsePurchaseGoodsReceiptCreateError(ex) {
+  const status = Number(ex?.response?.status) || 0;
+  const detail = ex?.response?.data?.detail;
+  const obj = (detail && typeof detail === "object" && !Array.isArray(detail)) ? detail : null;
+  const code = String(obj?.code || "").trim();
+  const receiptId = String(obj?.receipt_id || "").trim();
+  const recoverable = obj?.recoverable === true;
+  const baseMessage = obj?.message
+    || (typeof detail === "string" ? detail : "")
+    || ex?.message
+    || "Terjadi kesalahan";
+
+  if (code === "IDEMPOTENCY_CANCELLED") {
+    return {
+      kind: "idempotency_cancelled",
+      code,
+      receipt_id: receiptId,
+      recoverable: false,
+      message: baseMessage,
+      status,
+      inviteNewKey: false,
+      showRetrySameKey: false,
+      mayProbeCancel: Boolean(receiptId),
+    };
+  }
+  if (recoverable && receiptId) {
+    return {
+      kind: "recoverable",
+      code: code || "FAILED",
+      receipt_id: receiptId,
+      recoverable: true,
+      message: baseMessage,
+      status,
+      inviteNewKey: false,
+      showRetrySameKey: true,
+      mayProbeCancel: Boolean(receiptId),
+    };
+  }
+  if (!ex?.response) {
+    return {
+      kind: "uncertain",
+      code: "",
+      receipt_id: receiptId,
+      recoverable: false,
+      message: "Status penerimaan tidak dapat dipastikan. Stok mungkin sudah terposting. Jangan buat penerimaan baru dengan kunci baru — lanjutkan transaksi yang sama.",
+      status: 0,
+      inviteNewKey: false,
+      showRetrySameKey: true,
+      mayProbeCancel: Boolean(receiptId),
+    };
+  }
+  if (obj && receiptId && obj.recoverable == null) {
+    return {
+      kind: "ambiguous",
+      code: code || "FAILED",
+      receipt_id: receiptId,
+      recoverable: false,
+      message: "Penerimaan mungkin sudah tercatat, tetapi status stok/HPP belum jelas. Jangan buat penerimaan baru. Lanjutkan kunci yang sama atau periksa riwayat.",
+      status,
+      inviteNewKey: false,
+      showRetrySameKey: true,
+      mayProbeCancel: Boolean(receiptId),
+    };
+  }
+  return {
+    kind: "generic",
+    code,
+    receipt_id: receiptId,
+    recoverable: false,
+    message: baseMessage,
+    status,
+    inviteNewKey: false,
+    showRetrySameKey: false,
+    mayProbeCancel: false,
+  };
+}
+
+export function purchaseGoodsReceiptRecoveryPanelMessage(parsed) {
+  if (!parsed) return "";
+  if (parsed.kind === "recoverable") {
+    const mid = parsed.receipt_id ? ` (ID: ${parsed.receipt_id})` : "";
+    return `Penerimaan mungkin sudah tercatat${mid}. Stok bisa sudah terposting; perhitungan HPP/cutover gagal. Ulangi transaksi yang sama (kunci idempotensi sama) — jangan buat penerimaan baru. ${parsed.message || ""}`.trim();
+  }
+  if (parsed.kind === "idempotency_cancelled") {
+    const mid = parsed.receipt_id ? ` (ID: ${parsed.receipt_id})` : "";
+    return `Kunci idempotensi merujuk penerimaan yang sudah dibatalkan${mid}. Jangan mengulang kunci ini untuk penerimaan baru. ${parsed.message || ""}`.trim();
+  }
+  return parsed.message || "";
+}

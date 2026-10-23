@@ -1,22 +1,34 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Download, MoreHorizontal, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
-import { goodsReceiptWarehouseChoice } from "../lib/physicalStockView";
 import {
+  buildRetryPurchaseGoodsReceiptBody,
   canOfferPurchaseReceive,
+  clearGrRecoveryIdentity,
   errDetail,
+  evaluateLiveReceiptCancelEligibility,
+  freezePurchaseGoodsReceiptRequest,
   friendlyLoadError,
+  goodsReceiptWarehouseBlockMessage,
+  goodsReceiptWarehouseChoiceForPo,
+  loadGrRecoveryIdentity,
   mergePurchaseOrderIntoList,
   newIdempotencyKey,
+  normalizePurchaseGoodsReceiptPayload,
+  parsePurchaseGoodsReceiptCreateError,
+  purchaseBranchLabel,
+  purchaseGoodsReceiptRecoveryPanelMessage,
   purchaseStatusPillClass,
   purchaseRowInteractionProps,
   formatRupiah,
   receiptSourceBadge,
+  saveGrRecoveryIdentity,
   shortReceivingStatus,
+  shouldHoldGrRecoveryIdentity,
   todayYmd,
 } from "../lib/purchaseUi";
 
@@ -94,12 +106,21 @@ export default function PenerimaanBarang() {
   const [recvPoId, setRecvPoId] = useState("");
   const [recvPreview, setRecvPreview] = useState(null);
   const [recvQty, setRecvQty] = useState({});
-  const [recvWarehouseChoice, setRecvWarehouseChoice] = useState({ rows: [], warehouseId: "", blocked: false, explicit: false });
+  const [recvPoBranch, setRecvPoBranch] = useState(null);
+  const [recvWarehouseChoice, setRecvWarehouseChoice] = useState({
+    rows: [], warehouseId: "", blocked: false, explicit: false, reason: "",
+  });
   const [recvWarehouseId, setRecvWarehouseId] = useState("");
   const [recvDate, setRecvDate] = useState(todayYmd());
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvErr, setRecvErr] = useState("");
   const [recvMsg, setRecvMsg] = useState("");
+  const [recvRecovery, setRecvRecovery] = useState(null);
+  /** Frozen create identity — never rebuild retry body from live form. */
+  const recvFrozenRef = useRef(null);
+  const recvSubmitLockRef = useRef(false);
+  const [heldRecovery, setHeldRecovery] = useState(() => loadGrRecoveryIdentity());
+  const [cancelProbeBusy, setCancelProbeBusy] = useState(false);
   const [poDetail, setPoDetail] = useState(null);
   const [poDetailLoading, setPoDetailLoading] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
@@ -170,20 +191,27 @@ export default function PenerimaanBarang() {
   }, [refreshSideData, recvMsg, ok]);
 
   useEffect(() => {
-    if (!receiveOpen) return undefined;
+    if (!receiveOpen || !recvPoId) return undefined;
     let cancelled = false;
-    Promise.all([api.branches(), api.warehouses()])
-      .then(([branchRes, warehouseRes]) => {
+    Promise.all([api.getPurchaseOrder(recvPoId), api.branches(), api.warehouses()])
+      .then(([po, branchRes, warehouseRes]) => {
         if (cancelled) return;
-        const choice = goodsReceiptWarehouseChoice(branchRes.items || [], warehouseRes.items || []);
+        const poBranchId = String(po?.branch_id || "").trim();
+        setRecvPoBranch(po || null);
+        const choice = goodsReceiptWarehouseChoiceForPo(
+          branchRes.items || [],
+          warehouseRes.items || [],
+          poBranchId,
+        );
         setRecvWarehouseChoice(choice);
         setRecvWarehouseId(choice.warehouseId || "");
         if (choice.blocked) {
-          setRecvErr("Penerimaan tidak dapat disimpan: belum ada gudang aktif pada cabang yang diizinkan.");
+          setRecvErr(goodsReceiptWarehouseBlockMessage(choice));
         } else {
           setRecvErr((prev) => (
             String(prev || "").startsWith("Gagal memuat gudang")
-            || String(prev || "").includes("belum ada gudang aktif")
+            || String(prev || "").includes("belum ada gudang")
+            || String(prev || "").includes("Lengkapi Cabang PO")
               ? ""
               : prev
           ));
@@ -191,13 +219,15 @@ export default function PenerimaanBarang() {
       })
       .catch((ex) => {
         if (cancelled) return;
-        // Do not disguise API/network failures as “no warehouse”.
-        setRecvWarehouseChoice({ rows: [], warehouseId: "", blocked: true, explicit: false });
+        setRecvPoBranch(null);
+        setRecvWarehouseChoice({
+          rows: [], warehouseId: "", blocked: true, explicit: false, reason: "load_failed",
+        });
         setRecvWarehouseId("");
         setRecvErr(`Gagal memuat gudang penerimaan. ${errDetail(ex)}`.trim());
       });
     return () => { cancelled = true; };
-  }, [receiveOpen]);
+  }, [receiveOpen, recvPoId]);
 
   useEffect(() => {
     if (!receiveOpen || !recvPoId) {
@@ -228,8 +258,54 @@ export default function PenerimaanBarang() {
     }).catch((ex) => setFormErr(errDetail(ex)));
   }, [manualPoId, view]);
 
+  const applyFrozenReceiveForm = useCallback((frozen) => {
+    const payload = frozen?.payload;
+    if (!payload) return;
+    setRecvPoId(String(payload.purchase_order_id || ""));
+    setRecvDate(String(payload.receipt_date || todayYmd()));
+    setRecvWarehouseId(String(payload.warehouse_id || ""));
+    const qtyMap = {};
+    (payload.lines || []).forEach((line) => {
+      qtyMap[line.purchase_order_line_id] = line.received_qty;
+    });
+    setRecvQty(qtyMap);
+  }, []);
+
+  const resumeHeldRecovery = useCallback((identity) => {
+    const held = identity || loadGrRecoveryIdentity();
+    if (!held?.frozen?.idempotency_key) return false;
+    recvFrozenRef.current = held.frozen;
+    setHeldRecovery(held);
+    setRecvRecovery(held.outcome || null);
+    setRecvErr(purchaseGoodsReceiptRecoveryPanelMessage(held.outcome) || held.message || "");
+    applyFrozenReceiveForm(held.frozen);
+    setRecvMsg("");
+    setRecvPoBranch(null);
+    setMainTab("receive-po");
+    setView("list");
+    setReceiveOpen(true);
+    return true;
+  }, [applyFrozenReceiveForm]);
+
+  useEffect(() => {
+    const held = loadGrRecoveryIdentity();
+    if (held?.frozen?.idempotency_key) setHeldRecovery(held);
+  }, []);
+
   useEffect(() => {
     if (!openReceiveFromQuery || !queryPoId || !canReceivePo) return;
+    const held = loadGrRecoveryIdentity();
+    if (held?.frozen?.idempotency_key) {
+      const heldPo = String(held.frozen.payload?.purchase_order_id || "");
+      if (heldPo && heldPo !== String(queryPoId)) {
+        setMainTab("receive-po");
+        setView("list");
+        setPoErr("Ada pemulihan penerimaan yang belum selesai. Lanjutkan transaksi tertunda sebelum menerima PO lain.");
+        return;
+      }
+      resumeHeldRecovery(held);
+      return;
+    }
     setMainTab("receive-po");
     setView("list");
     setRecvPoId(queryPoId);
@@ -237,6 +313,8 @@ export default function PenerimaanBarang() {
     setRecvQty({});
     setRecvErr("");
     setRecvMsg("");
+    setRecvRecovery(null);
+    recvFrozenRef.current = null;
     setReceiveOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -261,6 +339,11 @@ export default function PenerimaanBarang() {
 
   const openCreate = () => {
     if (!canCreate) return;
+    const held = loadGrRecoveryIdentity();
+    if (held?.frozen?.idempotency_key) {
+      setErr("Selesaikan pemulihan penerimaan tertunda sebelum membuat penerimaan lain.");
+      return;
+    }
     resetCreateForm();
     setOk("");
     setMainTab("direct");
@@ -277,11 +360,24 @@ export default function PenerimaanBarang() {
 
   const openReceivePo = (poId) => {
     if (!canReceivePo || !poId) return;
+    const held = loadGrRecoveryIdentity();
+    if (held?.frozen?.idempotency_key) {
+      const heldPo = String(held.frozen.payload?.purchase_order_id || "");
+      if (heldPo && heldPo !== String(poId)) {
+        setPoErr("Ada pemulihan penerimaan yang belum selesai. Lanjutkan transaksi tertunda sebelum menerima PO lain.");
+        return;
+      }
+      resumeHeldRecovery(held);
+      return;
+    }
     setRecvPoId(poId);
     setRecvDate(todayYmd());
     setRecvQty({});
     setRecvErr("");
     setRecvMsg("");
+    setRecvRecovery(null);
+    recvFrozenRef.current = null;
+    setRecvPoBranch(null);
     setReceiveOpen(true);
   };
 
@@ -314,11 +410,47 @@ export default function PenerimaanBarang() {
     }
   };
 
-  const closeReceive = () => {
+  const closeReceive = ({ force = false } = {}) => {
+    if (!force && (recvBusy || recvSubmitLockRef.current)) return;
+    const frozen = recvFrozenRef.current;
+    const outcome = recvRecovery;
+    if (frozen?.idempotency_key && shouldHoldGrRecoveryIdentity(outcome)) {
+      const held = saveGrRecoveryIdentity({
+        frozen,
+        outcome,
+        message: purchaseGoodsReceiptRecoveryPanelMessage(outcome),
+        updated_at: Date.now(),
+      });
+      setHeldRecovery(held);
+      setReceiveOpen(false);
+      setRecvPreview(null);
+      setRecvBusy(false);
+      setRecvPoBranch(null);
+      // Keep frozen ref + recovery outcome identity for resume; clear only modal chrome.
+      return;
+    }
+    if (frozen?.idempotency_key && outcome?.kind === "idempotency_cancelled") {
+      // Keep identity until operator acknowledges — still fail-closed for new-key create.
+      const held = saveGrRecoveryIdentity({
+        frozen,
+        outcome,
+        message: purchaseGoodsReceiptRecoveryPanelMessage(outcome),
+        updated_at: Date.now(),
+      });
+      setHeldRecovery(held);
+      setReceiveOpen(false);
+      setRecvPreview(null);
+      setRecvBusy(false);
+      setRecvPoBranch(null);
+      return;
+    }
     setReceiveOpen(false);
     setRecvPoId("");
     setRecvPreview(null);
     setRecvBusy(false);
+    setRecvRecovery(null);
+    setRecvPoBranch(null);
+    recvFrozenRef.current = null;
   };
 
   /** After a successful PO-linked GR: refresh list, eligible set, detail, receipts from API. */
@@ -456,8 +588,56 @@ export default function PenerimaanBarang() {
     }
   };
 
-  const savePoReceipt = async () => {
-    if (recvBusy || !recvPreview) return;
+  const savePoReceipt = async ({ retrySameKey = false } = {}) => {
+    if (recvBusy || recvSubmitLockRef.current || !recvPreview) return;
+    const forceRetry = Boolean(
+      (retrySameKey || recvRecovery?.showRetrySameKey)
+      && recvFrozenRef.current?.idempotency_key,
+    );
+    if (forceRetry) {
+      recvSubmitLockRef.current = true;
+      setRecvBusy(true);
+      setRecvErr("");
+      setRecvMsg("");
+      try {
+        const payload = buildRetryPurchaseGoodsReceiptBody(recvFrozenRef.current);
+        const res = await api.createPurchaseGoodsReceipt(payload);
+        const receiptNumber = res.receipt?.receipt_number || "";
+        const poId = payload.purchase_order_id;
+        setRecvMsg(`Penerimaan terhadap PO tercatat: ${receiptNumber}`);
+        setRecvRecovery(null);
+        recvFrozenRef.current = null;
+        clearGrRecoveryIdentity();
+        setHeldRecovery(null);
+        setOk(`Penerimaan ${receiptNumber} tersimpan`);
+        await refreshAfterPoGoodsReceipt(poId);
+        closeReceive({ force: true });
+      } catch (ex) {
+        const parsed = parsePurchaseGoodsReceiptCreateError(ex);
+        setRecvRecovery(parsed);
+        setRecvErr(purchaseGoodsReceiptRecoveryPanelMessage(parsed));
+        if (shouldHoldGrRecoveryIdentity(parsed) || parsed.kind === "idempotency_cancelled") {
+          const held = saveGrRecoveryIdentity({
+            frozen: recvFrozenRef.current,
+            outcome: parsed,
+            message: purchaseGoodsReceiptRecoveryPanelMessage(parsed),
+            updated_at: Date.now(),
+          });
+          setHeldRecovery(held);
+        }
+      } finally {
+        recvSubmitLockRef.current = false;
+        setRecvBusy(false);
+      }
+      return;
+    }
+
+    const held = loadGrRecoveryIdentity();
+    if (held?.frozen?.idempotency_key) {
+      setRecvErr("Transaksi penerimaan sebelumnya belum selesai. Lanjutkan pemulihan dengan kunci yang sama — jangan buat penerimaan baru.");
+      return;
+    }
+
     const qtyLines = (recvPreview.lines || []).map((l) => ({
       purchase_order_line_id: l.purchase_order_line_id,
       received_qty: recvQty[l.purchase_order_line_id],
@@ -466,33 +646,65 @@ export default function PenerimaanBarang() {
       setRecvErr("Minimal satu baris dengan qty diterima > 0.");
       return;
     }
-    if (recvWarehouseChoice.blocked || !recvWarehouseId) {
-      setRecvErr(recvWarehouseChoice.explicit
-        ? "Pilih gudang sebelum menyimpan penerimaan."
-        : "Penerimaan tidak dapat disimpan: belum ada gudang aktif.");
+    if (recvWarehouseChoice.reason === "legacy_branch_missing" || !String(recvPoBranch?.branch_id || "").trim()) {
+      setRecvErr(goodsReceiptWarehouseBlockMessage({ reason: "legacy_branch_missing", blocked: true }));
       return;
     }
+    if (recvWarehouseChoice.blocked || !recvWarehouseId) {
+      setRecvErr(goodsReceiptWarehouseBlockMessage(recvWarehouseChoice));
+      return;
+    }
+    const allowedIds = new Set((recvWarehouseChoice.rows || []).map((row) => row.id));
+    if (!allowedIds.has(recvWarehouseId)) {
+      setRecvErr("Gudang di luar cabang PO tidak diizinkan.");
+      return;
+    }
+    const poId = recvPreview.purchase_order_id;
+    const basePayload = normalizePurchaseGoodsReceiptPayload({
+      purchase_order_id: poId,
+      receipt_date: recvDate,
+      warehouse_id: recvWarehouseId,
+      lines: qtyLines,
+    });
+    const idemKey = newIdempotencyKey();
+    const frozen = freezePurchaseGoodsReceiptRequest({
+      idempotency_key: idemKey,
+      payload: basePayload,
+    });
+    // Snapshot before network — recovery always reuses this exact body + key.
+    recvFrozenRef.current = frozen;
+    const payload = buildRetryPurchaseGoodsReceiptBody(frozen);
+
+    recvSubmitLockRef.current = true;
     setRecvBusy(true);
     setRecvErr("");
     setRecvMsg("");
     try {
-      const poId = recvPreview.purchase_order_id;
-      const res = await api.createPurchaseGoodsReceipt({
-        purchase_order_id: poId,
-        receipt_date: recvDate,
-        warehouse_id: recvWarehouseId,
-        lines: qtyLines,
-        idempotency_key: newIdempotencyKey(),
-      });
+      const res = await api.createPurchaseGoodsReceipt(payload);
       const receiptNumber = res.receipt?.receipt_number || "";
       setRecvMsg(`Penerimaan terhadap PO tercatat: ${receiptNumber}`);
-      closeReceive();
+      setRecvRecovery(null);
+      recvFrozenRef.current = null;
+      clearGrRecoveryIdentity();
+      setHeldRecovery(null);
       setOk(`Penerimaan ${receiptNumber} tersimpan`);
-      // Invalidate local PO progress/history from API — do not leave Belum Diterima/sisa stale.
       await refreshAfterPoGoodsReceipt(poId);
+      closeReceive({ force: true });
     } catch (ex) {
-      setRecvErr(errDetail(ex));
+      const parsed = parsePurchaseGoodsReceiptCreateError(ex);
+      setRecvRecovery(parsed);
+      setRecvErr(purchaseGoodsReceiptRecoveryPanelMessage(parsed));
+      if (shouldHoldGrRecoveryIdentity(parsed) || parsed.kind === "idempotency_cancelled") {
+        const heldState = saveGrRecoveryIdentity({
+          frozen,
+          outcome: parsed,
+          message: purchaseGoodsReceiptRecoveryPanelMessage(parsed),
+          updated_at: Date.now(),
+        });
+        setHeldRecovery(heldState);
+      }
     } finally {
+      recvSubmitLockRef.current = false;
       setRecvBusy(false);
     }
   };
@@ -548,6 +760,31 @@ export default function PenerimaanBarang() {
     setCancelTarget(receipt);
   };
 
+  const probeCancelFromRecovery = async () => {
+    const receiptId = String(recvRecovery?.receipt_id || heldRecovery?.outcome?.receipt_id || "").trim();
+    if (!receiptId || !canReceivePo || cancelProbeBusy || recvBusy) return;
+    setCancelProbeBusy(true);
+    setCancelErr("");
+    setRecvErr("");
+    try {
+      const res = await api.getPurchaseGoodsReceipt(receiptId);
+      const live = res?.receipt || res;
+      const gate = evaluateLiveReceiptCancelEligibility(live);
+      if (!gate.allowed) {
+        setRecvErr(gate.reason || "Pembatalan tidak diizinkan.");
+        return;
+      }
+      openCancelReceipt(gate.receipt);
+    } catch (ex) {
+      const status = Number(ex?.response?.status) || 0;
+      if (status === 404) setRecvErr("Penerimaan tidak ditemukan. Pembatalan tidak tersedia.");
+      else if (status === 403) setRecvErr("Anda tidak memiliki izin membatalkan penerimaan ini.");
+      else setRecvErr(`Tidak dapat memuat status pembatalan. ${errDetail(ex)}`.trim());
+    } finally {
+      setCancelProbeBusy(false);
+    }
+  };
+
   const confirmCancelReceipt = async () => {
     if (!cancelTarget || cancelBusy) return;
     setCancelBusy(true);
@@ -560,9 +797,24 @@ export default function PenerimaanBarang() {
           "",
         );
       } else {
-        await api.cancelPurchaseGoodsReceipt(cancelTarget.id, "");
+        // Re-validate live can_cancel immediately before cancel API (status may have changed).
+        const liveRes = await api.getPurchaseGoodsReceipt(cancelTarget.id);
+        const live = liveRes?.receipt || liveRes;
+        const gate = evaluateLiveReceiptCancelEligibility(live);
+        if (!gate.allowed) {
+          setCancelErr(gate.reason || "Pembatalan tidak lagi diizinkan.");
+          setCancelTarget(null);
+          return;
+        }
+        await api.cancelPurchaseGoodsReceipt(gate.receipt.id, "");
+        if (recvFrozenRef.current || heldRecovery) {
+          clearGrRecoveryIdentity();
+          setHeldRecovery(null);
+          recvFrozenRef.current = null;
+          setRecvRecovery(null);
+        }
       }
-      setOk(`Penerimaan ${cancelTarget.receipt_number || ""} berhasil dibatalkan.`);
+      setOk(`Penerimaan ${cancelTarget.receipt_number || cancelTarget.id || ""} berhasil dibatalkan.`);
       setCancelTarget(null);
       setOpenId(null);
       await refreshSideData();
@@ -868,6 +1120,25 @@ export default function PenerimaanBarang() {
               Riwayat
             </button>
           </div>
+
+          {heldRecovery?.frozen?.idempotency_key && !receiveOpen && (
+            <div className="purchase-error-panel" role="status" data-testid="gr-recovery-hold-banner">
+              <AlertCircle size={16} color="#a53f2b" />
+              <span>
+                {heldRecovery.message
+                  || "Pemulihan penerimaan belum selesai. Jangan buat penerimaan baru dengan kunci berbeda."}
+                {" "}
+                <button
+                  type="button"
+                  className="linkish"
+                  data-testid="gr-recovery-resume"
+                  onClick={() => resumeHeldRecovery(heldRecovery)}
+                >
+                  Lanjutkan pemulihan
+                </button>
+              </span>
+            </div>
+          )}
 
           {mainTab === "receive-po" && view === "list" && (
             <p className="purchase-tab-helper" data-testid="tab-helper-receive-po">
@@ -1220,11 +1491,16 @@ export default function PenerimaanBarang() {
             </div>
             <div className="purchase-modal-body" data-testid="po-receive-form">
               {recvErr && (
-                <div className="purchase-error-panel" role="alert">
+                <div className="purchase-error-panel" role="alert" data-testid="po-receive-error">
                   <AlertCircle size={16} color="#a53f2b" />
                   <span>{recvErr}</span>
                 </div>
               )}
+              {recvRecovery?.receipt_id ? (
+                <p className="muted small" data-testid="po-receive-recovery-receipt-id">
+                  receipt_id: <span className="mono">{recvRecovery.receipt_id}</span>
+                </p>
+              ) : null}
               {recvMsg && <p className="purchase-inline-ok">{recvMsg}</p>}
               {recvPreview ? (
                 <>
@@ -1238,16 +1514,32 @@ export default function PenerimaanBarang() {
                       <span className="value">{recvPreview.supplier || "—"}</span>
                     </div>
                     <div>
+                      <span className="label">Cabang PO</span>
+                      <span className="value" data-testid="receive-po-branch">
+                        {purchaseBranchLabel(recvPoBranch)}
+                      </span>
+                    </div>
+                    <div>
                       <span className="label">Tanggal Terima</span>
-                      <input type="date" value={recvDate} onChange={(e) => setRecvDate(e.target.value)} />
+                      <input
+                        type="date"
+                        value={recvDate}
+                        onChange={(e) => setRecvDate(e.target.value)}
+                        disabled={recvBusy || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)}
+                      />
                     </div>
                     <div>
                       <span className="label">Gudang</span>
-                      {recvWarehouseChoice.explicit ? (
+                      {recvWarehouseChoice.reason === "legacy_branch_missing" ? (
+                        <span className="value" data-testid="receive-warehouse">
+                          Cabang PO belum dilengkapi
+                        </span>
+                      ) : recvWarehouseChoice.explicit ? (
                         <select
                           value={recvWarehouseId}
                           onChange={(e) => setRecvWarehouseId(e.target.value)}
                           data-testid="receive-warehouse"
+                          disabled={recvBusy || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)}
                         >
                           <option value="">Pilih gudang</option>
                           {recvWarehouseChoice.rows.map((row) => (
@@ -1295,6 +1587,7 @@ export default function PenerimaanBarang() {
                                 value={recvQty[l.purchase_order_line_id] ?? ""}
                                 onChange={(e) => setRecvQty((p) => ({ ...p, [l.purchase_order_line_id]: e.target.value }))}
                                 data-testid="receive-qty-input"
+                                disabled={recvBusy || Boolean(recvRecovery?.showRetrySameKey || heldRecovery?.frozen)}
                               />
                             </td>
                           </tr>
@@ -1308,15 +1601,44 @@ export default function PenerimaanBarang() {
               )}
             </div>
             <div className="purchase-modal-actions">
-              <button className="ghost" type="button" onClick={closeReceive} disabled={recvBusy}>Batal</button>
-              <button
-                className="primary"
-                disabled={recvBusy || !recvPreview || recvWarehouseChoice.blocked || (recvWarehouseChoice.explicit && !recvWarehouseId)}
-                data-testid="save-po-receipt"
-                onClick={savePoReceipt}
-              >
-                {recvBusy ? "Menyimpan…" : "Simpan Penerimaan"}
-              </button>
+              <button className="ghost" type="button" onClick={closeReceive} disabled={recvBusy}>Tutup</button>
+              {recvRecovery?.mayProbeCancel && recvRecovery.receipt_id && canReceivePo ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  data-testid="po-receive-probe-cancel"
+                  disabled={recvBusy || cancelProbeBusy}
+                  onClick={probeCancelFromRecovery}
+                >
+                  {cancelProbeBusy ? "Memeriksa…" : "Periksa Pembatalan"}
+                </button>
+              ) : null}
+              {recvRecovery?.showRetrySameKey ? (
+                <button
+                  className="primary"
+                  disabled={recvBusy || !recvPreview}
+                  data-testid="po-receive-retry-same-key"
+                  onClick={() => savePoReceipt({ retrySameKey: true })}
+                >
+                  {recvBusy ? "Mengulang…" : "Ulangi Transaksi Sama"}
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  disabled={
+                    recvBusy
+                    || !recvPreview
+                    || recvWarehouseChoice.blocked
+                    || (recvWarehouseChoice.explicit && !recvWarehouseId)
+                    || recvRecovery?.kind === "idempotency_cancelled"
+                    || Boolean(heldRecovery?.frozen?.idempotency_key && shouldHoldGrRecoveryIdentity(heldRecovery?.outcome))
+                  }
+                  data-testid="save-po-receipt"
+                  onClick={() => savePoReceipt()}
+                >
+                  {recvBusy ? "Menyimpan…" : "Simpan Penerimaan"}
+                </button>
+              )}
             </div>
           </div>
         </div>
