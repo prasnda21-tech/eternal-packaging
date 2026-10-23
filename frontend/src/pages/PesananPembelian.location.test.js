@@ -22,13 +22,14 @@ describe("PesananPembelian LOC-C1 Cabang Pembelian UI", () => {
     expect(page).toMatch(/createBranchFetchGen/);
   });
 
-  test("create payload does not send client branch_id; no legacy PATCH UI", () => {
+  test("create payload does not send client branch_id (server-authoritative YGY-first)", () => {
     expect(page).toMatch(/createPurchaseOrder\(\{/);
     const start = page.indexOf("createPurchaseOrder({");
     const end = page.indexOf("});", start);
     const payload = page.slice(start, end);
     expect(payload).not.toMatch(/branch_id/);
-    expect(page).not.toMatch(/edit_branch|updatePurchaseOrderBranch|\/branch/);
+    // Create path must stay free of client branch override; legacy completion is a separate action.
+    expect(payload).not.toMatch(/setPurchaseOrderBranch/);
   });
 
   test("YGY aktif → label benar", () => {

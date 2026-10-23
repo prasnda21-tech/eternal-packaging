@@ -335,6 +335,20 @@ export function purchaseBranchLabel(doc) {
   return name || code;
 }
 
+/** Legacy PO: Lengkapi Cabang only when branch missing, not cancelled, and permitted. */
+export function canShowLegacyPoBranchComplete(detail, canEditBranch) {
+  if (!detail || !canEditBranch) return false;
+  if (detail.cancelled === true) return false;
+  return !String(detail.branch_id || "").trim();
+}
+
+/** Active master branches with id for legacy PO completion select. */
+export function filterActiveBranchesForPoComplete(items) {
+  return (Array.isArray(items) ? items : []).filter(
+    (row) => row && row.active !== false && String(row.id || "").trim(),
+  );
+}
+
 /** Create-form Cabang messages — distinct from legacy detail "—". */
 export const PO_CREATE_BRANCH = {
   loading: "Memuat cabang...",

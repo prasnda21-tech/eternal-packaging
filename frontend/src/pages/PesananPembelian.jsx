@@ -5,7 +5,9 @@ import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import {
   applyCreatePoBranchFetchResult,
+  canShowLegacyPoBranchComplete,
   errDetail,
+  filterActiveBranchesForPoComplete,
   formatRupiah,
   friendlyLoadError,
   newIdempotencyKey,
@@ -44,6 +46,7 @@ export default function PesananPembelian() {
   const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
   const canCreate = hasPerm("purchase_orders.create");
+  const canEditBranch = hasPerm("purchase_orders.edit_branch");
   const queryRequestId = searchParams.get("request_id") || "";
   const wantCreate = searchParams.get("action") === "create" || Boolean(queryRequestId);
   const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
@@ -56,6 +59,17 @@ export default function PesananPembelian() {
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelErr, setCancelErr] = useState("");
+
+  const [branchModalOpen, setBranchModalOpen] = useState(false);
+  const [branchOptions, setBranchOptions] = useState([]);
+  const [branchOptionsErr, setBranchOptionsErr] = useState("");
+  const [branchOptionsLoading, setBranchOptionsLoading] = useState(false);
+  const [branchIdPick, setBranchIdPick] = useState("");
+  const [branchReason, setBranchReason] = useState("");
+  const [branchConfirmReady, setBranchConfirmReady] = useState(false);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [branchErr, setBranchErr] = useState("");
+  const branchSubmitLockRef = useRef(false);
 
   const [mode, setMode] = useState(queryRequestId ? "from_request" : "direct");
   const [eligible, setEligible] = useState([]);
@@ -304,6 +318,114 @@ export default function PesananPembelian() {
       setCancelErr(errDetail(ex));
     } finally {
       setCancelBusy(false);
+    }
+  };
+
+  const closeBranchModal = () => {
+    if (branchBusy) return;
+    setBranchModalOpen(false);
+    setBranchOptions([]);
+    setBranchOptionsErr("");
+    setBranchIdPick("");
+    setBranchReason("");
+    setBranchConfirmReady(false);
+    setBranchErr("");
+    branchSubmitLockRef.current = false;
+  };
+
+  const openBranchComplete = async () => {
+    if (!canShowLegacyPoBranchComplete(detail, canEditBranch) || branchBusy) return;
+    setBranchModalOpen(true);
+    setBranchIdPick("");
+    setBranchReason("");
+    setBranchConfirmReady(false);
+    setBranchErr("");
+    setBranchOptionsErr("");
+    setBranchOptions([]);
+    setBranchOptionsLoading(true);
+    try {
+      const res = await api.branches();
+      setBranchOptions(filterActiveBranchesForPoComplete(res?.items || []));
+    } catch (ex) {
+      const status = ex?.response?.status;
+      setBranchOptionsErr(
+        Number(status) === 403
+          ? "Anda tidak memiliki akses daftar cabang."
+          : errDetail(ex),
+      );
+    } finally {
+      setBranchOptionsLoading(false);
+    }
+  };
+
+  const onBranchFieldChange = (patch) => {
+    if (patch.branchIdPick != null) setBranchIdPick(patch.branchIdPick);
+    if (patch.branchReason != null) setBranchReason(patch.branchReason);
+    setBranchConfirmReady(false);
+    setBranchErr("");
+  };
+
+  const submitBranchComplete = async () => {
+    if (branchBusy || branchSubmitLockRef.current || !detail?.id) return;
+    const pick = String(branchIdPick || "").trim();
+    const reason = String(branchReason || "").trim();
+    if (!pick) {
+      setBranchErr("Pilih cabang terlebih dahulu.");
+      return;
+    }
+    if (reason.length < 3) {
+      setBranchErr("Alasan perubahan wajib diisi (minimal 3 karakter).");
+      return;
+    }
+    if (!branchConfirmReady) {
+      setBranchConfirmReady(true);
+      setBranchErr("");
+      return;
+    }
+    branchSubmitLockRef.current = true;
+    setBranchBusy(true);
+    setBranchErr("");
+    setErr("");
+    try {
+      const res = await api.setPurchaseOrderBranch(detail.id, {
+        branch_id: pick,
+        reason,
+      });
+      const order = res?.order || null;
+      if (order) setDetail(order);
+      else {
+        const refreshed = await api.getPurchaseOrder(detail.id);
+        setDetail(refreshed.order || refreshed);
+      }
+      setOk(res?.message || "Cabang Pembelian berhasil dilengkapi");
+      setBranchModalOpen(false);
+      setBranchOptions([]);
+      setBranchIdPick("");
+      setBranchReason("");
+      setBranchConfirmReady(false);
+      await load();
+    } catch (ex) {
+      const status = Number(ex?.response?.status);
+      setBranchErr(errDetail(ex));
+      if (status === 400 || status === 409) {
+        try {
+          const refreshed = await api.getPurchaseOrder(detail.id);
+          const order = refreshed.order || refreshed;
+          if (order) setDetail(order);
+          if (String(order?.branch_id || "").trim()) {
+            setBranchModalOpen(false);
+            setOk("Cabang Pembelian sudah terisi. Tampilan diperbarui.");
+          }
+        } catch {
+          /* keep modal error */
+        }
+      }
+      if (status === 403) {
+        setBranchErr(errDetail(ex) || "Anda tidak memiliki izin melengkapi cabang.");
+      }
+    } finally {
+      setBranchBusy(false);
+      branchSubmitLockRef.current = false;
     }
   };
 
@@ -661,6 +783,17 @@ export default function PesananPembelian() {
           />
           <PurchaseActivityHistory doc={detail} testId="po-activity" />
           <div className="purchase-detail-actions">
+            {canShowLegacyPoBranchComplete(detail, canEditBranch) && (
+              <button
+                type="button"
+                className="primary"
+                data-testid="btn-lengkapi-cabang-po"
+                disabled={branchBusy}
+                onClick={openBranchComplete}
+              >
+                Lengkapi Cabang
+              </button>
+            )}
             {canCreate && (
               <button
                 type="button"
@@ -679,6 +812,96 @@ export default function PesananPembelian() {
             {Number(detail.receiving_progress?.remaining_qty) > 0 && (
               <Link className="ghost" to={`/pembelian/penerimaan-barang?purchase_order_id=${detail.id}&action=receive`}>Terima Barang</Link>
             )}
+          </div>
+        </div>
+      )}
+
+      {branchModalOpen && (
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          data-testid="po-lengkapi-cabang-modal"
+          onClick={branchBusy ? undefined : closeBranchModal}
+        >
+          <div className="modal-inner purchase-cancel-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <h3>Lengkapi Cabang Pembelian</h3>
+                <p className="purchase-modal-helper">
+                  Hanya untuk PO lama tanpa cabang. Cabang tidak dapat diubah lagi setelah disimpan.
+                </p>
+              </div>
+              <button type="button" className="ghost sm" onClick={closeBranchModal} disabled={branchBusy} aria-label="Tutup">×</button>
+            </div>
+            <div className="purchase-modal-body">
+              {branchOptionsLoading ? (
+                <p className="muted small" data-testid="po-branch-options-loading">Memuat cabang…</p>
+              ) : null}
+              {branchOptionsErr ? (
+                <p className="error" data-testid="po-branch-options-error">{branchOptionsErr}</p>
+              ) : null}
+              {!branchOptionsLoading && !branchOptionsErr && branchOptions.length === 0 ? (
+                <p className="muted small" data-testid="po-branch-options-empty">Tidak ada cabang aktif yang dapat dipilih.</p>
+              ) : null}
+              <label htmlFor="po-complete-branch-select" className="label">Cabang</label>
+              <select
+                id="po-complete-branch-select"
+                data-testid="po-complete-branch-select"
+                value={branchIdPick}
+                disabled={branchBusy || branchOptionsLoading || Boolean(branchOptionsErr)}
+                onChange={(e) => onBranchFieldChange({ branchIdPick: e.target.value })}
+              >
+                <option value="">Pilih cabang…</option>
+                {branchOptions.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {purchaseBranchLabel(b)}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="po-complete-branch-reason" className="label">Alasan</label>
+              <textarea
+                id="po-complete-branch-reason"
+                data-testid="po-complete-branch-reason"
+                value={branchReason}
+                disabled={branchBusy}
+                rows={3}
+                placeholder="Minimal 3 karakter"
+                onChange={(e) => onBranchFieldChange({ branchReason: e.target.value })}
+              />
+              {branchConfirmReady ? (
+                <p className="muted small" data-testid="po-branch-confirm-summary">
+                  Konfirmasi: cabang{" "}
+                  <strong>{purchaseBranchLabel(branchOptions.find((b) => b.id === branchIdPick) || { id: branchIdPick })}</strong>
+                  {" "}akan disimpan. Tindakan ini tidak dapat diulang.
+                </p>
+              ) : null}
+              {branchErr ? (
+                <p className="error" data-testid="po-branch-complete-error">{branchErr}</p>
+              ) : null}
+            </div>
+            <div className="purchase-modal-actions">
+              <button type="button" className="ghost" onClick={closeBranchModal} disabled={branchBusy} data-testid="po-branch-complete-batal">
+                Batal
+              </button>
+              <button
+                type="button"
+                className="primary"
+                data-testid="po-branch-complete-save"
+                disabled={
+                  branchBusy
+                  || branchOptionsLoading
+                  || Boolean(branchOptionsErr)
+                  || !String(branchIdPick || "").trim()
+                  || String(branchReason || "").trim().length < 3
+                }
+                onClick={submitBranchComplete}
+              >
+                {branchBusy
+                  ? "Menyimpan…"
+                  : (branchConfirmReady ? "Konfirmasi Simpan" : "Lanjutkan")}
+              </button>
+            </div>
           </div>
         </div>
       )}
