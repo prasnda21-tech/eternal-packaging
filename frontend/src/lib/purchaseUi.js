@@ -309,3 +309,87 @@ export function canEditPurchaseInvoicePaymentTerms(invoice, hasEditPerm) {
   if (status === "LUNAS") return false;
   return true;
 }
+
+/** Master YGY picker — match by code (then Yogyakarta name). Never invents ids. */
+export function pickYgyBranchFromMaster(branches) {
+  const rows = Array.isArray(branches) ? branches : [];
+  const byCode = rows.find(
+    (b) => String(b?.code || "").trim().toUpperCase() === "YGY" && b?.active !== false,
+  );
+  if (byCode) return byCode;
+  return rows.find(
+    (b) => /yogyakarta/i.test(String(b?.name || "")) && b?.active !== false,
+  ) || null;
+}
+
+/**
+ * Display Cabang Pembelian from snapshot/master fields.
+ * Opaque branch_id alone → "—" (do not surface raw master ids).
+ */
+export function purchaseBranchLabel(doc) {
+  if (!doc || typeof doc !== "object") return "—";
+  const code = String(doc.branch_code || doc.code || "").trim();
+  const name = String(doc.branch_name || doc.name || "").trim();
+  if (!code && !name) return "—";
+  if (name && code) return `${name} (${code})`;
+  return name || code;
+}
+
+/** Create-form Cabang messages — distinct from legacy detail "—". */
+export const PO_CREATE_BRANCH = {
+  loading: "Memuat cabang...",
+  missing: "Cabang YGY tidak tersedia atau tidak dapat diakses",
+  forbidden: "Anda tidak memiliki akses melihat cabang",
+  error: "Gagal memuat data cabang",
+};
+
+/**
+ * Map branches API outcome → PO create-form label.
+ * Never invents YGY; empty success list ≠ production-empty claim.
+ */
+export function resolveCreatePoBranchLabel(outcome) {
+  if (!outcome || outcome.kind === "loading") return PO_CREATE_BRANCH.loading;
+  if (outcome.kind === "ok") {
+    const ygy = pickYgyBranchFromMaster(outcome.items || []);
+    if (ygy) return purchaseBranchLabel(ygy);
+    return PO_CREATE_BRANCH.missing;
+  }
+  if (outcome.kind === "http" && Number(outcome.status) === 403) {
+    return PO_CREATE_BRANCH.forbidden;
+  }
+  return PO_CREATE_BRANCH.error;
+}
+
+/** Ignore stale/unmounted branch fetches; return null when result must not apply. */
+export function applyCreatePoBranchFetchResult(gen, currentGen, cancelled, outcome) {
+  if (cancelled || gen !== currentGen) return null;
+  return resolveCreatePoBranchLabel(outcome);
+}
+
+/**
+ * Display Gudang from snapshot fields. Opaque warehouse_id alone → "—".
+ */
+export function purchaseWarehouseLabel(doc) {
+  if (!doc || typeof doc !== "object") return "—";
+  const code = String(doc.warehouse_code || "").trim();
+  const name = String(doc.warehouse_name || "").trim();
+  if (!code && !name) return "—";
+  if (name && code) return `${name} (${code})`;
+  return name || code;
+}
+
+/**
+ * Invoice create/detail warehouse label.
+ * From PO (early / before GR): always "—" when no warehouse snapshot.
+ */
+export function purchaseInvoiceWarehouseLabel(doc, invoiceSource) {
+  const src = String(invoiceSource || doc?.invoice_source || "").toLowerCase();
+  const fromPo = src === "purchase_order" || src === "po" || src === "pesanan";
+  if (fromPo) {
+    const hasWh = String(
+      doc?.warehouse_id || doc?.warehouse_code || doc?.warehouse_name || "",
+    ).trim();
+    if (!hasWh) return "—";
+  }
+  return purchaseWarehouseLabel(doc);
+}

@@ -8,8 +8,10 @@ import {
   CreditCard,
   FileText,
   Hash,
+  MapPin,
   Plus,
   Search,
+  Warehouse,
   Wallet,
 } from "lucide-react";
 import api from "../lib/api";
@@ -21,6 +23,8 @@ import {
   newIdempotencyKey,
   purchaseStatusPillClass,
   purchasePaymentStatusLabel,
+  purchaseBranchLabel,
+  purchaseInvoiceWarehouseLabel,
   todayYmd,
   purchaseRowInteractionProps,
   formatPurchaseDateTime,
@@ -591,6 +595,18 @@ export default function FakturPembelian() {
                 <span className="fpb-v" data-testid="create-supplier">{preview?.supplier || "— ambil sumber"}</span>
               </div>
               <div className="fpb-meta-item">
+                <span className="fpb-k"><MapPin size={12} aria-hidden /> Cabang</span>
+                <span className="fpb-v" data-testid="create-branch" aria-readonly="true">
+                  {preview ? purchaseBranchLabel(preview) : "—"}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Warehouse size={12} aria-hidden /> Gudang</span>
+                <span className="fpb-v" data-testid="create-warehouse" aria-readonly="true">
+                  {preview ? purchaseInvoiceWarehouseLabel(preview, invoiceSource) : "—"}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
                 <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Tanggal</span>
                 <input type="date" className="fpb-meta-input" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} data-testid="invoice-date-input" />
               </div>
@@ -762,6 +778,18 @@ export default function FakturPembelian() {
               <div className="fpb-meta-item">
                 <span className="fpb-k"><Building2 size={12} aria-hidden /> Pemasok</span>
                 <span className="fpb-v" data-testid="detail-supplier">{detail.supplier || "—"}</span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><MapPin size={12} aria-hidden /> Cabang</span>
+                <span className="fpb-v" data-testid="detail-branch" aria-readonly="true">
+                  {purchaseBranchLabel(detail)}
+                </span>
+              </div>
+              <div className="fpb-meta-item">
+                <span className="fpb-k"><Warehouse size={12} aria-hidden /> Gudang</span>
+                <span className="fpb-v" data-testid="detail-warehouse" aria-readonly="true">
+                  {purchaseInvoiceWarehouseLabel(detail, detail.invoice_source)}
+                </span>
               </div>
               <div className="fpb-meta-item">
                 <span className="fpb-k"><CalendarDays size={12} aria-hidden /> Tanggal</span>
