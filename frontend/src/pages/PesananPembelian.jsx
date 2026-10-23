@@ -62,6 +62,8 @@ export default function PesananPembelian() {
   const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
@@ -108,6 +110,7 @@ export default function PesananPembelian() {
   }, [q]);
 
   useEffect(() => { if (view === "list") load(); }, [load, view]);
+  useEffect(() => { setPage(1); }, [q]);
 
   const loadEligible = useCallback(async () => {
     try {
@@ -451,6 +454,9 @@ export default function PesananPembelian() {
   const detailLineCount = (detail?.lines || []).length;
   const recvProgress = detail?.receiving_progress || {};
   const invProgress = detail?.invoice_progress || {};
+  const pageCount = Math.max(1, Math.ceil((rows.length || 0) / pageSize) || 1);
+  const safePage = Math.min(page, pageCount);
+  const pageRows = rows.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   return (
     <div
@@ -494,9 +500,19 @@ export default function PesananPembelian() {
               <Search size={14} />
               <input value={q} onChange={(e) => setQ(e.target.value)} data-testid="po-search" placeholder="Cari no PO / supplier / permintaan" />
             </form>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              data-testid="po-page-size"
+              aria-label="Jumlah baris per halaman"
+            >
+              <option value={25}>25 / halaman</option>
+              <option value={50}>50 / halaman</option>
+              <option value={100}>100 / halaman</option>
+            </select>
           </div>
           <div className="purchase-table-wrap">
-            <table className="prod-table purchase-table purchase-table-po" data-testid="po-table">
+            <table className="prod-table purchase-table purchase-table-po purchase-table-excel" data-testid="po-table">
               <colgroup>
                 <col className="col-po" />
                 <col className="col-supplier" />
@@ -522,7 +538,7 @@ export default function PesananPembelian() {
                     <td colSpan={6} className="muted small">Belum ada pesanan pembelian.</td>
                   </tr>
                 )}
-                {rows.map((r) => (
+                {!loading && pageRows.map((r) => (
                   <tr
                     key={r.id}
                     {...purchaseRowInteractionProps(() => openDetail(r.id), { testId: `po-row-${r.id}` })}
@@ -548,6 +564,34 @@ export default function PesananPembelian() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="purchase-pager" data-testid="po-pager">
+            <span className="muted small" data-testid="po-pager-summary">
+              {rows.length === 0
+                ? "0 pesanan"
+                : `Menampilkan ${(safePage - 1) * pageSize + 1}–${Math.min(safePage * pageSize, rows.length)} dari ${rows.length}`}
+            </span>
+            <div className="purchase-pager-nav">
+              <button
+                type="button"
+                className="ghost sm"
+                disabled={safePage <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                data-testid="po-pager-prev"
+              >
+                Sebelumnya
+              </button>
+              <span className="muted small" data-testid="po-pager-page">{safePage} / {pageCount}</span>
+              <button
+                type="button"
+                className="ghost sm"
+                disabled={safePage >= pageCount || loading}
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                data-testid="po-pager-next"
+              >
+                Berikutnya
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -866,7 +910,7 @@ export default function PesananPembelian() {
             </div>
           </section>
 
-          <section className="fpb-lower" aria-label="Riwayat aktivitas">
+          <section className="fpb-lower is-po-activity" aria-label="Riwayat aktivitas">
             <div className="fpb-lower-card" data-testid="detail-panel-history">
               <PurchaseActivityHistory doc={detail} testId="po-activity" />
             </div>

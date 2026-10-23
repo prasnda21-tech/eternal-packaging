@@ -340,35 +340,37 @@
 .purchase-page .purchase-table-wrap table.purchase-table,
 .purchase-page .purchase-table-wrap table.purchase-table-excel,
 .purchase-page .purchase-table-wrap table.purchase-table-inv {
-  border: 1px solid var(--line, #d7e0e4) !important;
+  border: 1px solid #b7c5cc !important;
   border-collapse: collapse !important;
   background: var(--surface, #fff);
 }
 
 .purchase-page .purchase-table-wrap table.purchase-table thead th,
 .purchase-page .purchase-table-wrap table.purchase-table-excel thead th {
-  height: 40px;
+  height: 42px;
   padding: 0 12px !important;
   background: var(--ep-dark, #0b2d22) !important;
   color: #fff !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.18);
-  border-bottom: 1px solid var(--ep-dark, #0b2d22);
+  border-right: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom: 1px solid #083528;
   vertical-align: middle;
   font-size: 12px;
   font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .purchase-page .purchase-table-wrap table.purchase-table thead th:last-child,
 .purchase-page .purchase-table-wrap table.purchase-table-excel thead th:last-child {
-  border-right: 0;
+  border-right: 1px solid #b7c5cc;
 }
 
 .purchase-page .purchase-table-wrap table.purchase-table tbody td,
 .purchase-page .purchase-table-wrap table.purchase-table-excel tbody td {
-  height: 40px;
+  height: 42px;
   padding: 0 12px !important;
-  border-right: 1px solid var(--line, #d7e0e4);
-  border-bottom: 1px solid var(--line, #d7e0e4);
+  border-right: 1px solid #c8d3d8;
+  border-bottom: 1px solid #c8d3d8;
   vertical-align: middle;
   background: #fff;
   font-size: 13px;
@@ -376,17 +378,58 @@
 
 .purchase-page .purchase-table-wrap table.purchase-table tbody td:last-child,
 .purchase-page .purchase-table-wrap table.purchase-table-excel tbody td:last-child {
-  border-right: 0;
+  border-right: 1px solid #c8d3d8;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table tbody tr:nth-child(even) td,
+.purchase-page .purchase-table-wrap table.purchase-table-excel tbody tr:nth-child(even) td {
+  background: #f7faf8;
 }
 
 .purchase-page .purchase-table-wrap table.purchase-table tbody tr:hover td,
 .purchase-page .purchase-table-wrap table.purchase-table-excel tbody tr:hover td {
-  background: #f3faf6;
+  background: #eef7f1;
 }
 
 .purchase-page .purchase-table-wrap table.purchase-table tbody tr.is-row-selected td,
 .purchase-page .purchase-table-wrap table.purchase-table-excel tbody tr.is-row-selected td {
-  background: #eaf6ef;
+  background: #e2f1e8;
+}
+
+.purchase-page .purchase-table-wrap table.purchase-table td.num,
+.purchase-page .purchase-table-wrap table.purchase-table-excel td.num,
+.purchase-page .purchase-table-wrap table.purchase-table th.num,
+.purchase-page .purchase-table-wrap table.purchase-table-excel th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-page .purchase-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 2px;
+}
+
+.purchase-page .purchase-pager-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.purchase-page .purchase-search-bar.is-toolbar select[data-testid="po-page-size"],
+.purchase-page .purchase-search-bar.is-toolbar select {
+  height: 36px;
+  border: 1px solid var(--line, #d7e0e4);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink, #172126);
 }
 
 /* PUR-INV list — dense spreadsheet grid (list-only) */
@@ -2351,6 +2394,7 @@
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 12.5px;
+  border: 1px solid #b7c5cc;
 }
 
 .purchase-page .fpb-lines-table thead th {
@@ -2360,11 +2404,14 @@
   background: var(--ep-dark, #0b2d22);
   color: #fff;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-align: left;
-  padding: 8px;
-  border-right: 1px solid #164434;
+  padding: 10px 8px;
+  height: 40px;
+  border-right: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom: 1px solid #083528;
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .purchase-page .fpb-lines-table th.num,
@@ -2374,9 +2421,11 @@
 }
 
 .purchase-page .fpb-lines-table tbody td {
-  padding: 7px 8px;
-  border-bottom: 1px solid #e6eeea;
-  vertical-align: top;
+  padding: 8px;
+  height: 40px;
+  border-right: 1px solid #c8d3d8;
+  border-bottom: 1px solid #c8d3d8;
+  vertical-align: middle;
   background: #fff;
 }
 
@@ -2694,8 +2743,16 @@
 /* ---- P1 Lengkapi Cabang modal (stacked fields) ---- */
 .purchase-page .purchase-branch-modal.modal-inner,
 .modal .purchase-branch-modal.modal-inner {
-  width: min(520px, calc(100vw - 32px));
-  max-width: 520px;
+  width: min(480px, calc(100vw - 32px));
+  max-width: 480px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.purchase-page .purchase-branch-modal .modal-head,
+.modal .purchase-branch-modal .modal-head {
+  padding: 16px 18px 10px;
+  border-bottom: 1px solid var(--line, #d7e0e4);
 }
 
 .purchase-page .purchase-branch-modal .modal-head h3,
@@ -2704,6 +2761,30 @@
   align-items: center;
   gap: 8px;
   margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--ep-dark, #0b2d22);
+}
+
+.purchase-page .purchase-branch-modal .purchase-modal-helper,
+.modal .purchase-branch-modal .purchase-modal-helper {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--soft, #5b6b73);
+}
+
+.purchase-page .purchase-branch-modal .purchase-modal-body,
+.modal .purchase-branch-modal .purchase-modal-body {
+  padding: 14px 18px 8px;
+}
+
+.purchase-page .purchase-branch-modal .purchase-modal-actions,
+.modal .purchase-branch-modal .purchase-modal-actions {
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line, #d7e0e4);
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .purchase-page .purchase-branch-warn,
@@ -2711,7 +2792,7 @@
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   padding: 10px 12px;
   border: 1px solid #f0c9a0;
   border-radius: 8px;
@@ -2833,8 +2914,39 @@
 
 .purchase-page .purchase-receive-meta select:disabled,
 .modal .purchase-receive-meta select:disabled {
-  background: #f3f4f6;
+  background: #eef0f2;
   color: #6b7280;
+  cursor: not-allowed;
+  opacity: 1;
+  border-color: #d1d5db;
+}
+
+.purchase-page .purchase-receive-modal .purchase-modal-actions,
+.modal .purchase-receive-modal .purchase-modal-actions {
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line, #d7e0e4);
+  gap: 8px;
+}
+
+/* Disabled primary must look disabled (not solid orange) */
+.purchase-page .purchase-modal-actions .primary:disabled,
+.purchase-page .purchase-modal-actions button.primary:disabled,
+.modal .purchase-modal-actions .primary:disabled,
+.modal .purchase-modal-actions button.primary:disabled,
+.purchase-page .fpb-actions-bar .primary:disabled,
+.purchase-page button.primary:disabled {
+  background: #c5cbd0 !important;
+  border-color: #c5cbd0 !important;
+  color: #f3f4f6 !important;
+  opacity: 1;
+  cursor: not-allowed;
+  box-shadow: none !important;
+  filter: none;
+}
+
+.purchase-page .purchase-modal-actions .ghost:disabled,
+.modal .purchase-modal-actions .ghost:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -2843,13 +2955,43 @@
   margin-bottom: 8px;
 }
 
+.purchase-page.is-po-doc .fpb-final {
+  gap: 14px;
+}
+
 .purchase-page .fpb-lower.is-po-lower {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.purchase-page .fpb-lower.is-po-activity {
+  grid-template-columns: 1fr;
+  margin-top: 0;
+}
+
+.purchase-page .fpb-lower.is-po-activity .fpb-lower-card {
+  min-height: 96px;
+}
+
+.purchase-page.is-po-doc .purchase-activity-history .purchase-activity-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ep-dark, #0b2d22);
+}
+
+.purchase-page.is-po-doc .purchase-activity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px;
 }
 
 @media (max-width: 900px) {
   .purchase-page .fpb-lower.is-po-lower {
     grid-template-columns: 1fr;
+  }
+  .purchase-page.is-po-doc .purchase-activity-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }
 
