@@ -119,10 +119,43 @@ async def quote_selling_price(
     }
 
 
+def _remap_parent_line_ids(priced: List[dict], id_map: Dict[str, str]) -> None:
+    """Rewrite parent_line_id through the explicit old→new line_id map only.
+
+    Never invents parents by name or row order. Missing map entry → hard error
+    (do not silently drop the relation).
+    """
+    new_ids = {str(row.get("line_id") or "").strip() for row in priced if isinstance(row, dict)}
+    for index, line in enumerate(priced):
+        if not isinstance(line, dict):
+            continue
+        raw_parent = str(line.get("parent_line_id") or "").strip()
+        if not raw_parent:
+            continue
+        mapped = id_map.get(raw_parent)
+        if mapped:
+            line["parent_line_id"] = mapped
+            continue
+        # Already a stored id in this batch (rare); keep as-is.
+        if raw_parent in new_ids:
+            continue
+        raise HTTPException(
+            400,
+            f"Baris #{index + 1}: parent_line_id '{raw_parent}' tidak merujuk ke "
+            "line induk yang valid.",
+        )
+
+
 async def price_order_lines(db, raw_lines: List[dict]) -> Tuple[List[dict], Optional[float], bool]:
-    """Validate and snapshot selling prices. Does not read the price master again after return."""
+    """Validate and snapshot selling prices. Does not read the price master again after return.
+
+    Each line receives a fresh line_id UUID. parent_line_id values that pointed at
+    the client/temp ids are remapped through the old→new identity map so SERVICE /
+    Add On relations survive persistence.
+    """
     priced: List[dict] = []
     subtotals: List[Optional[float]] = []
+    id_map: Dict[str, str] = {}
     for index, raw in enumerate(raw_lines or []):
         claimed = str(raw.get("price_source") or "").strip()
         unit_price = parse_optional_unit_price(raw.get("unit_price"), f"Harga jual baris #{index + 1}")
@@ -151,13 +184,21 @@ async def price_order_lines(db, raw_lines: List[dict]) -> Tuple[List[dict], Opti
         line.pop("price_lock", None)
         line.pop("rowKey", None)
         line.pop("entry_mode", None)
+        old_id = str(raw.get("line_id") or "").strip()
+        new_id = str(uuid.uuid4())
+        if old_id:
+            if old_id in id_map:
+                raise HTTPException(400, f"Baris #{index + 1}: line_id duplikat '{old_id}'.")
+            id_map[old_id] = new_id
         line["line_idx"] = index
-        line["line_id"] = str(uuid.uuid4())
+        line["line_id"] = new_id
         line["unit_price"] = unit_price
         line["price_source"] = source
         line["price_review"] = review
         line["line_subtotal"] = subtotal
         priced.append(line)
+
+    _remap_parent_line_ids(priced, id_map)
 
     known = [amount for amount in subtotals if amount is not None]
     selling_total = money_round(sum(Decimal(str(amount)) for amount in known)) if known else None

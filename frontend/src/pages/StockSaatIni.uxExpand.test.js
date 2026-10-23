@@ -15,6 +15,7 @@ jest.mock("../lib/api", () => ({
     branches: jest.fn(),
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
+    physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
   },
 }));
 
@@ -33,6 +34,14 @@ async function flush() {
 }
 
 describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
+  beforeEach(() => {
+    api.physicalStockStatusSummary.mockResolvedValue({
+      counts: {},
+      operational_actions: [],
+      read_only: true,
+    });
+  });
+
   let container;
   let root;
 

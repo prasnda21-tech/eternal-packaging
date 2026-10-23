@@ -8753,7 +8753,7 @@ button.ghost.sm.icon{padding:4px 6px}
   background:var(--stock-def-bg);color:var(--stock-def-fg);border-color:var(--stock-def-bd)
 }
 .stock-page--mockup .stock-physical-cell-inner{
-  display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end
+  display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center
 }
 .stock-page--mockup .stock-physical-btn{
   border:0;background:transparent;padding:0;cursor:pointer;display:inline-flex
@@ -8764,20 +8764,40 @@ button.ghost.sm.icon{padding:4px 6px}
   overflow-x:auto;-webkit-overflow-scrolling:touch;
   border:1px solid var(--stock-line);border-radius:var(--stock-radius);background:#fff
 }
-.stock-page--mockup .stock-dense-table{width:100%;border-collapse:separate;border-spacing:0;min-width:860px}
+.stock-page--mockup .stock-dense-table{
+  width:100%;border-collapse:collapse;border-spacing:0;min-width:860px
+}
 .stock-page--mockup .stock-dense-table thead th{
   background:var(--stock-head);color:#fff;
   font:700 11px/1.2 'IBM Plex Sans',sans-serif;letter-spacing:.04em;text-transform:uppercase;
-  padding:11px 12px;white-space:nowrap;vertical-align:middle;border-bottom:0
+  padding:11px 12px;white-space:nowrap;vertical-align:middle;
+  border-bottom:1px solid #0b2f24;border-right:1px solid rgba(255,255,255,.18);
+  text-align:center
 }
-.stock-page--mockup .stock-dense-table thead th:first-child{border-radius:calc(var(--stock-radius) - 1px) 0 0 0}
-.stock-page--mockup .stock-dense-table thead th:last-child{border-radius:0 calc(var(--stock-radius) - 1px) 0 0}
+.stock-page--mockup .stock-dense-table thead th:last-child{border-right:0}
+.stock-page--mockup .stock-dense-table thead th.col-text{text-align:left}
 .stock-page--mockup .stock-dense-table tbody td{
-  padding:11px 12px;vertical-align:middle;border-bottom:1px solid #e8eee9;background:#fff
+  padding:11px 12px;vertical-align:middle;background:#fff;
+  border-bottom:1px solid #dce6df;border-right:1px solid #e4ebe6;
+  text-align:center
+}
+.stock-page--mockup .stock-dense-table tbody td:last-child{border-right:0}
+.stock-page--mockup .stock-dense-table tbody td.col-text{text-align:left}
+/* Owner final: numeric / status columns center (override prod-table .num right-align) */
+.stock-page--mockup .stock-dense-table.prod-table thead th.num,
+.stock-page--mockup .stock-dense-table.prod-table tbody td.num,
+.stock-page--mockup .stock-dense-table thead th.col-fit,
+.stock-page--mockup .stock-dense-table tbody td.col-fit{
+  text-align:center
+}
+.stock-page--mockup .stock-dense-table tbody td.num{
+  font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',monospace;white-space:nowrap
 }
 .stock-page--mockup .stock-dense-table tbody tr:last-child > td{border-bottom:0}
 .stock-page--mockup .stock-dense-table tbody tr:hover > td{background:#f7fbf8}
-.stock-page--mockup .stock-dense-table .col-expand{width:34px;padding-left:8px;padding-right:0}
+.stock-page--mockup .stock-dense-table .col-expand{
+  width:34px;padding-left:8px;padding-right:8px;text-align:center
+}
 .stock-page--mockup .stock-expand-btn{
   min-width:28px;min-height:28px;padding:0;line-height:1;font-size:13px;
   color:var(--stock-soft);border:1px solid var(--stock-line);border-radius:6px;background:#fff;cursor:pointer
@@ -8787,10 +8807,16 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .stock-page--mockup .stock-item-secondary{margin-top:2px;line-height:1.3;color:var(--stock-soft)}
 .stock-page--mockup .stock-book-negative{color:var(--stock-def-fg)}
-.stock-page--mockup .stock-last-update{line-height:1.35;min-width:7.5rem}
+.stock-page--mockup .stock-last-update{
+  line-height:1.35;min-width:7.5rem;text-align:center
+}
+.stock-page--mockup .stock-dense-table tbody td.stock-last-update{
+  text-align:center
+}
 .stock-page--mockup .stock-row-has-deficit > td{background:#fff8f7}
 .stock-page--mockup .stock-expand-row > td{
-  background:#e8f3ec;padding:10px 12px 14px;border-top:0;border-bottom:1px solid #e8eee9
+  background:#e8f3ec;padding:10px 12px 14px;border-top:0;border-bottom:1px solid #dce6df;
+  border-right:0;text-align:left
 }
 .stock-page--mockup .stock-expand-panel{
   margin:0;padding:12px;border:1px solid var(--stock-line-strong);border-radius:8px;
@@ -8807,13 +8833,21 @@ button.ghost.sm.icon{padding:4px 6px}
 .stock-page--mockup .stock-expand-table thead th{
   background:#eef5f0;color:var(--stock-soft);
   font:700 10.5px/1.2 'IBM Plex Sans',sans-serif;letter-spacing:.04em;text-transform:uppercase;
-  padding:8px 10px;text-align:left;border-bottom:1px solid var(--stock-line)
+  padding:8px 10px;text-align:center;
+  border-bottom:1px solid var(--stock-line);border-right:1px solid #e4ebe6
 }
+.stock-page--mockup .stock-expand-table thead th:first-child{text-align:left}
+.stock-page--mockup .stock-expand-table thead th:last-child{border-right:0}
 .stock-page--mockup .stock-expand-table thead th.num,
-.stock-page--mockup .stock-expand-table tbody td.num{text-align:right}
-.stock-page--mockup .stock-expand-table tbody td{
-  padding:9px 10px;border-bottom:1px solid #eef2ef;vertical-align:middle;background:#fff
+.stock-page--mockup .stock-expand-table tbody td.num{
+  text-align:center;font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',monospace
 }
+.stock-page--mockup .stock-expand-table tbody td{
+  padding:9px 10px;border-bottom:1px solid #eef2ef;border-right:1px solid #eef2ef;
+  vertical-align:middle;background:#fff;text-align:center
+}
+.stock-page--mockup .stock-expand-table tbody td:first-child{text-align:left}
+.stock-page--mockup .stock-expand-table tbody td:last-child{border-right:0}
 .stock-page--mockup .stock-expand-table tbody tr:last-child td{border-bottom:0}
 .stock-page--mockup .stock-pager{margin-top:12px;display:flex;align-items:center;gap:10px}
 .stock-page--mockup .stock-mobile-list{display:none}
@@ -8889,6 +8923,102 @@ button.ghost.sm.icon{padding:4px 6px}
 }
 .stock-adjust-actions .stock-btn-primary:disabled{opacity:.45;cursor:not-allowed}
 
+/* Stock Saat Ini — status summary (read-only diagnostics, compact bar) */
+.stock-page--mockup .stock-status-summary{
+  margin:8px 0 0;padding:8px 12px;border:1px solid var(--stock-line);
+  border-radius:var(--stock-radius);background:var(--stock-panel)
+}
+.stock-page--mockup .stock-status-summary-bar{
+  display:flex;align-items:center;gap:10px 14px;flex-wrap:nowrap;min-width:0
+}
+.stock-page--mockup .stock-status-summary-title{
+  margin:0;flex:0 0 auto;white-space:nowrap;
+  font:700 11px/1.2 'IBM Plex Sans',sans-serif;color:var(--stock-head);
+  letter-spacing:.02em;text-transform:uppercase
+}
+.stock-page--mockup .stock-status-summary-grid{
+  display:flex;align-items:center;flex:1 1 auto;flex-wrap:wrap;gap:4px 12px;min-width:0;
+  font:500 12px/1.25 'IBM Plex Sans',sans-serif;color:var(--stock-ink)
+}
+.stock-page--mockup .stock-status-summary-grid > span{white-space:nowrap}
+.stock-page--mockup .stock-status-summary-detail-toggle{
+  display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;margin-left:auto;
+  border:0;background:transparent;color:#2b6a8a;font:600 12px/1 'IBM Plex Sans',sans-serif;
+  cursor:pointer;padding:0;white-space:nowrap
+}
+.stock-page--mockup .stock-status-summary-detail-toggle svg{transition:transform .15s ease}
+.stock-page--mockup .stock-status-summary-detail-toggle svg.is-open{transform:rotate(180deg)}
+.stock-page--mockup .stock-status-summary-detail{margin-top:8px;padding-top:8px;border-top:1px solid var(--stock-line)}
+.stock-page--mockup .stock-status-summary-detail[hidden]{display:none !important}
+.stock-page--mockup .stock-status-summary-actions{
+  margin:0 0 6px;padding-left:18px;font:400 12px/1.45 'IBM Plex Sans',sans-serif;color:var(--stock-soft)
+}
+.stock-page--mockup .stock-status-summary-actions li{margin:0 0 4px}
+@media (max-width:900px){
+  .stock-page--mockup .stock-status-summary-bar{flex-wrap:wrap;align-items:flex-start}
+  .stock-page--mockup .stock-status-summary-detail-toggle{margin-left:0}
+}
+
+/* Saldo Awal Stock Fisik modal */
+.saldo-awal-overlay{
+  position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:40;
+  display:flex;align-items:center;justify-content:center;padding:16px
+}
+.saldo-awal-panel{
+  width:min(720px,100%);max-height:90vh;overflow:auto;background:#fff;
+  border-radius:12px;padding:22px 24px;display:grid;gap:16px;
+  box-shadow:0 18px 48px rgba(15,23,42,.18)
+}
+.saldo-awal-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.saldo-awal-panel-head h2{
+  margin:0;font:700 20px/1.2 'IBM Plex Sans',sans-serif;color:#0f172a;letter-spacing:-.02em
+}
+.saldo-awal-tabs{gap:8px}
+.saldo-awal-form,
+.saldo-awal-import-panel{display:grid;gap:14px}
+.saldo-awal-fields{
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 16px;align-items:start
+}
+.saldo-awal-fields--import{grid-template-columns:minmax(0,1fr) auto;align-items:end}
+.saldo-awal-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.saldo-awal-field--full{grid-column:1 / -1}
+.saldo-awal-label{
+  font:600 12px/1.2 'IBM Plex Sans',sans-serif;color:#334155;letter-spacing:.01em
+}
+.saldo-awal-field select,
+.saldo-awal-field input{
+  width:100%;min-width:0;height:40px;padding:0 12px;border:1px solid #c5d4cc;
+  border-radius:8px;background:#fff;font:500 14px/1.2 'IBM Plex Sans',sans-serif;color:#0f172a;
+  box-sizing:border-box
+}
+.saldo-awal-field select:disabled,
+.saldo-awal-field input:disabled,
+.saldo-awal-field input[readonly]{background:#f4f7f5;color:#475569}
+.saldo-awal-field select[aria-invalid="true"],
+.saldo-awal-field input[aria-invalid="true"]{border-color:#dc2626;background:#fef2f2}
+.saldo-awal-field-error{font:500 12px/1.3 'IBM Plex Sans',sans-serif;color:#b42318}
+.saldo-awal-actions{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.saldo-awal-import-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.saldo-awal-file-btn{display:inline-flex;align-items:center;cursor:pointer;min-height:40px;padding:0 12px}
+.saldo-awal-file-btn input{display:none}
+.saldo-awal-preview-wrap{overflow-x:auto}
+.saldo-awal-established{
+  grid-column:1 / -1;padding:14px 16px;border:1px solid #b7d4c2;border-radius:10px;background:#e8f5ee
+}
+.saldo-awal-established-grid{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;margin:12px 0 0
+}
+.saldo-awal-established-grid dt{
+  margin:0;font:600 11px/1.2 'IBM Plex Sans',sans-serif;color:#64748b;text-transform:uppercase;letter-spacing:.04em
+}
+.saldo-awal-established-grid dd{margin:2px 0 0;font:600 14px/1.3 'IBM Plex Sans',sans-serif;color:#0f172a}
+@media (max-width:640px){
+  .saldo-awal-fields,
+  .saldo-awal-fields--import,
+  .saldo-awal-established-grid{grid-template-columns:1fr}
+  .saldo-awal-panel{padding:16px}
+}
+
 @media (max-width:1100px){
   .stock-page--mockup .stock-filter-bar{flex-wrap:wrap}
 }
@@ -8925,18 +9055,20 @@ button.ghost.sm.icon{padding:4px 6px}
     display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-bottom:12px
   }
   .stock-page--mockup .stock-mobile-metrics > div{
-    display:flex;flex-direction:column;gap:2px;padding:8px 10px;
-    border-radius:8px;background:#f4f7f5;border:1px solid #e8eee9
+    display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 10px;
+    border-radius:8px;background:#f4f7f5;border:1px solid #e8eee9;text-align:center
   }
   .stock-page--mockup .stock-mobile-metrics span{
     font:600 10.5px/1.2 'IBM Plex Sans',sans-serif;color:var(--stock-soft);text-transform:uppercase;letter-spacing:.03em
   }
   .stock-page--mockup .stock-mobile-metrics strong{
-    font:700 14px/1.2 'IBM Plex Sans',sans-serif;color:var(--stock-ink)
+    font:700 14px/1.2 'IBM Plex Sans',sans-serif;color:var(--stock-ink);
+    font-variant-numeric:tabular-nums;font-family:'IBM Plex Mono',monospace
   }
   .stock-page--mockup .stock-mobile-footer{
-    display:flex;flex-wrap:wrap;gap:4px 8px;padding-top:10px;
-    border-top:1px solid #e8eee9;font:500 11.5px/1.35 'IBM Plex Sans',sans-serif;color:var(--stock-soft)
+    display:flex;flex-wrap:wrap;justify-content:center;gap:4px 8px;padding-top:10px;
+    border-top:1px solid #e8eee9;font:500 11.5px/1.35 'IBM Plex Sans',sans-serif;color:var(--stock-soft);
+    text-align:center
   }
 }
 

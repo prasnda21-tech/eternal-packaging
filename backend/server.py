@@ -11400,6 +11400,11 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
 
     from services.sales_order_prices import price_order_lines
     normalized_lines, selling_total, selling_prices_complete = await price_order_lines(db, normalized_lines)
+    # price_order_lines assigns new UUIDs and remaps parent_line_id; re-validate
+    # so a broken map never persists silently.
+    parent_err_after_price = validate_service_print_requires_parent(normalized_lines)
+    if parent_err_after_price:
+        raise HTTPException(400, parent_err_after_price)
 
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
@@ -14720,6 +14725,43 @@ async def physical_opening_import_confirm(
         raise _opening_import_http(exc) from exc
     except PhysicalStockUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@api_router.get("/physical-stock/status-summary")
+async def physical_stock_status_summary_get(
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read-only Stock Saat Ini status counts. No item identities; no writes."""
+    from services.branch_access import (
+        require_warehouse_access,
+        resolve_stock_catalog_branch_id,
+    )
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+        summarize_physical_stock_status,
+    )
+    try:
+        resolved = await resolve_stock_catalog_branch_id(db, user, branch_id)
+        effective_branch_id = (resolved.get("branch") or {}).get("id")
+        if warehouse_id:
+            await require_warehouse_access(
+                db, user, warehouse_id, expected_branch_id=effective_branch_id,
+            )
+        summary = await summarize_physical_stock_status(
+            db,
+            branch_id=effective_branch_id,
+            warehouse_id=warehouse_id,
+        )
+        summary["effective_branch_id"] = effective_branch_id
+        summary["effective_branch_code"] = (resolved.get("branch") or {}).get("code")
+        return summary
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @api_router.get("/physical-stock")

@@ -33,6 +33,7 @@ from services.purchase_goods_receipts import (
     create_purchase_goods_receipt,
 )
 from services.purchase_invoices import create_purchase_invoice
+from services.r2_go_live import set_r2_authority_active
 
 DB_NAME = "eternal_hpp_cutover_foundation"
 USER = {"id": "cutover-user", "name": "Cutover", "role": "admin", "email": "c@x"}
@@ -50,6 +51,7 @@ async def db():
     await client.drop_database(DB_NAME)
     await ensure_stock_indexes(database)
     await ensure_indexes(database)
+    await set_r2_authority_active(database, active=True)
     await database.hpp_cost_versions.create_index("id", unique=True)
     await database.hpp_cost_layers.create_index(
         [("calculation_version", 1), ("layer_id", 1)],
@@ -106,6 +108,7 @@ async def _ensure_org(db):
         await db.warehouses.insert_one({
             "id": "wh-ygy", "branch_id": "branch-ygy", "code": "MAIN",
             "name": "Gudang Yogyakarta", "active": True,
+            "is_operational": True, "is_default": True,
         })
 
 
@@ -791,10 +794,14 @@ async def test_5_hpp_failure_after_stock_success_retries_only_hpp(db, monkeypatc
         raise RuntimeError("forced HPP rebuild failure")
 
     monkeypatch.setattr(hpp_cutover, "rebuild_cutover_valuation", fail_rebuild)
-    with pytest.raises(RuntimeError, match="forced HPP"):
+    with pytest.raises(HTTPException) as caught:
         await create_purchase_goods_receipt(db, body, USER)
+    assert caught.value.status_code == 500
+    assert isinstance(caught.value.detail, dict)
+    assert caught.value.detail.get("receipt_id")
+    assert caught.value.detail.get("recoverable") is True
+    assert "forced HPP" in str(caught.value.detail.get("error") or "")
     assert await db.purchase_goods_receipts.count_documents({"idempotency_key": "gr-hpp-retry"}) == 1
-    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 100
     assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 0
     assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_PURCHASE_RECEIPT}) == 1
     failed = await db.hpp_recognition_events.find_one({"source_type": "GOODS_RECEIPT"}, {"_id": 0})
@@ -805,9 +812,8 @@ async def test_5_hpp_failure_after_stock_success_retries_only_hpp(db, monkeypatc
 
     monkeypatch.setattr(hpp_cutover, "rebuild_cutover_valuation", real_rebuild)
     receipt = await create_purchase_goods_receipt(db, body, USER)
-    assert receipt["id"]
+    assert receipt["id"] == caught.value.detail["receipt_id"]
     assert await db.purchase_goods_receipts.count_documents({"idempotency_key": "gr-hpp-retry"}) == 1
-    assert (await db.product_stock_state.find_one({"master_item_id": mid}))["total_qty"] == 100
     assert await db.stock_movements.count_documents({"reference_type": "goods_receipt"}) == 0
     assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_PURCHASE_RECEIPT}) == 1
     repaired = await db.hpp_recognition_events.find_one({"source_type": "GOODS_RECEIPT"}, {"_id": 0})

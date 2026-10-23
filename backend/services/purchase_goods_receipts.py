@@ -68,6 +68,51 @@ def set_fail_before_cancel_update(enabled: bool) -> None:
     _fail_before_cancel_update = bool(enabled)
 
 
+async def _recognize_posted_goods_receipt_or_raise(db, receipt: dict, user: dict) -> None:
+    """Run HPP recognition after stock commit; always surface receipt_id on failure.
+
+    Standalone/R2 stock is already durable here (no multi-doc transaction with HPP).
+    Architecture keeps stock posted and retries HPP via the same idempotency key —
+    never soft-succeed. Clients need receipt_id to cancel/recover if HPP stays failed.
+    """
+    from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
+
+    await register_baseline_participants(db, receipt)
+    try:
+        await recognize_posted_goods_receipt(db, receipt, user)
+    except HTTPException as exc:
+        detail = exc.detail
+        if isinstance(detail, dict):
+            raise HTTPException(
+                exc.status_code,
+                {
+                    **detail,
+                    "receipt_id": receipt.get("id"),
+                    "recoverable": True,
+                },
+            ) from exc
+        raise HTTPException(
+            exc.status_code,
+            {
+                "code": "FAILED",
+                "message": str(detail),
+                "receipt_id": receipt.get("id"),
+                "recoverable": True,
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            500,
+            {
+                "code": "FAILED",
+                "message": "Perhitungan cutover HPP gagal setelah stok terposting.",
+                "error": str(exc),
+                "receipt_id": receipt.get("id"),
+                "recoverable": True,
+            },
+        ) from exc
+
+
 def _whole_received_qty(value: Any) -> int:
     number = float(value)
     if not number.is_integer():
@@ -1023,6 +1068,15 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                 same_wh = (not requested_wh) or requested_wh == str(existing.get("warehouse_id") or "")
                 if not (same_po and same_lines and same_wh):
                     raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+                if is_cancelled(existing):
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "IDEMPOTENCY_CANCELLED",
+                            "message": "Idempotency key merujuk penerimaan yang sudah dibatalkan.",
+                            "receipt_id": existing.get("id"),
+                        },
+                    )
                 await _authorize_receipt_location(db, user, existing)
                 # Standalone PARTIAL/FAILED: resume missing warehouse movements.
                 # Do not assume receipt row existence means stock posting is done.
@@ -1082,8 +1136,7 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
                     or existing.get("warehouse_standalone")
                     or authority in {STOCK_AUTHORITY_R2, STOCK_AUTHORITY_STANDALONE}
                 ):
-                    from services.hpp_cutover import recognize_posted_goods_receipt
-                    await recognize_posted_goods_receipt(db, existing, user)
+                    await _recognize_posted_goods_receipt_or_raise(db, existing, user)
                 out = await enrich_goods_receipt(db, existing)
                 from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
                 await attach_goods_receipt_accounting_fields(db, [out])
@@ -1198,10 +1251,10 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
         # Mode A posts company PSS only. Warehouse HPP cutover / inventory layers
         # are owned by R2 or standalone — do not auto-bootstrap them here (avoids
         # inventing warehouse openings from company PSS qty).
+        # Stock commit is durable before HPP (no multi-doc txn on standalone).
+        # HPP failure keeps stock + receipt_id (idempotent HPP retry); see helper.
         if saved.get("r2_physical") or saved.get("warehouse_standalone"):
-            from services.hpp_cutover import register_baseline_participants, recognize_posted_goods_receipt
-            await register_baseline_participants(db, saved)
-            await recognize_posted_goods_receipt(db, saved, user)
+            await _recognize_posted_goods_receipt_or_raise(db, saved, user)
         out = await enrich_goods_receipt(db, saved)
         from services.purchase_goods_receipt_posting import attach_goods_receipt_accounting_fields
 

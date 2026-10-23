@@ -7,6 +7,7 @@ import {
   operationalOpeningWarehouses,
   mutationQtyColumns,
   openingReady,
+  openingFieldErrors,
   opnameLocationLabel,
   opnameWarehouseChoices,
   preselectedWarehouseId,
@@ -106,6 +107,18 @@ describe("physical stock view helpers", () => {
     expect(openingReady({ itemId: "i", branchId: "b", warehouseId: "w", qty: "" })).toBe(false);
     expect(openingReady({ itemId: "i", branchId: "b", warehouseId: "w", qty: "-1" })).toBe(false);
     expect(openingReady({ itemId: "i", branchId: "b", warehouseId: "w", qty: "0" })).toBe(true);
+  });
+
+  test("openingFieldErrors surfaces clear per-field messages", () => {
+    expect(openingFieldErrors({ itemId: "", branchId: "", warehouseId: "", qty: "" })).toEqual({
+      itemId: "Pilih barang.",
+      branchId: "Pilih cabang.",
+      warehouseId: "Pilih gudang.",
+      qty: "Isi qty stok fisik (≥ 0).",
+    });
+    expect(openingFieldErrors({ itemId: "i", branchId: "b", warehouseId: "w", qty: "-2" }).qty)
+      .toMatch(/tidak boleh negatif/i);
+    expect(openingFieldErrors({ itemId: "i", branchId: "b", warehouseId: "w", qty: "1.5" })).toEqual({});
   });
 
   test("movement labels stay on physical types", () => {
