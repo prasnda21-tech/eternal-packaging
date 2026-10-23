@@ -1101,12 +1101,24 @@ async def create_purchase_goods_receipt(db, payload: Dict[str, Any], user: dict)
     # Strip any client-supplied branch override; warehouse auth is authoritative.
     payload = dict(payload or {})
     payload.pop("branch_id", None)
-    requested_warehouse_id = await authorize_gr_warehouse_for_po(
-        db,
-        user,
-        po_branch_id=po_branch_id,
-        warehouse_id=requested_warehouse_id,
-    )
+
+    # Resolve stock authority server-side before warehouse auth (never trust client).
+    # Mode A (R2 OFF + standalone OFF): company PSS — omitted warehouse_id stays None.
+    # Do not auto-pin among multiple YGY warehouses. Explicit warehouse still LOC-A.
+    # Mode B/C: preserve authorize/resolve (warehouse required or single-WH resolve).
+    from services.r2_go_live import is_r2_authority_active
+    from services.warehouse_stock_standalone import is_warehouse_stock_standalone_active
+
+    r2_on = await is_r2_authority_active(db)
+    standalone_on = (not r2_on) and await is_warehouse_stock_standalone_active(db)
+    mode_a_legacy_pss = (not r2_on) and (not standalone_on)
+    if requested_warehouse_id or not mode_a_legacy_pss:
+        requested_warehouse_id = await authorize_gr_warehouse_for_po(
+            db,
+            user,
+            po_branch_id=po_branch_id,
+            warehouse_id=requested_warehouse_id,
+        )
 
     async with get_named_lock("purchase_goods_receipt"):
         # Re-read PO branch under lock; final CAS happens at commit (multi-worker).
