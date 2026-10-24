@@ -108,7 +108,7 @@ const CAPTION = {
   target_produksi: "Cohort jadwal, bukan kalender",
   po_terlambat: "Qty wajib belum terkirim",
   target_realisasi: "Awal, revisi, realisasi",
-  aging: "Produksi dan total PO",
+  aging: "Produksi terpisah dari total PO",
   ketepatan: "Produksi dan pengiriman",
   bottleneck: "Bukan kesalahan operator",
   sim_output: "Fixture visual, satuan pcs",
@@ -555,11 +555,54 @@ function KesiapanBody({ model }) {
   );
 }
 
-function CountPair({ label, value, title }) {
+function CountPair({ label, value, title, tone, text }) {
   return (
-    <div className="pd-metric" title={title}>
+    <div className={`pd-metric${tone ? ` is-${tone}` : ""}`} title={title}>
       <span>{label}</span>
-      <strong>{formatCount(value)}</strong>
+      <strong className={text ? "is-text" : undefined}>{text || formatCount(value)}</strong>
+    </div>
+  );
+}
+
+function knownNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function cohortScale(row) {
+  return Math.max(0, ...[row.awal, row.revisi, row.realisasi].filter(knownNumber));
+}
+
+function CompareRow({ label, value, tone, empty, scale }) {
+  const known = knownNumber(value);
+  const width = known && scale > 0 && value > 0 ? Math.min(100, (value / scale) * 100) : 0;
+  return (
+    <div className="pd-compare-row">
+      <span className="pd-compare-label">{label}</span>
+      <span className="pd-compare-track" aria-hidden="true">
+        {known ? <i className={`pd-compare-bar is-${tone}`} style={{ width: `${width}%` }} /> : null}
+      </span>
+      <strong>{known ? formatCount(value) : empty}</strong>
+    </div>
+  );
+}
+
+function realisasiShare(row) {
+  const parts = [];
+  if (knownNumber(row.persen_awal) && knownNumber(row.awal) && row.awal > 0) parts.push(`${row.persen_awal}% dari awal`);
+  if (knownNumber(row.persen_revisi) && knownNumber(row.revisi) && row.revisi > 0) parts.push(`${row.persen_revisi}% dari revisi`);
+  return parts.join(" · ");
+}
+
+function CohortBars({ row }) {
+  const scale = cohortScale(row);
+  const share = realisasiShare(row);
+  return (
+    <div className="pd-compare" data-testid={`produksi-realisasi-day-${row.day}-${row.unit}`}>
+      <p className="pd-compare-day">{row.day} · {row.unit}</p>
+      <CompareRow label="Target Awal" value={row.awal} tone="awal" empty="Tidak tersedia" scale={scale} />
+      <CompareRow label="Target Revisi" value={row.revisi} tone="revisi" empty="Belum ada revisi" scale={scale} />
+      <CompareRow label="Realisasi" value={row.realisasi} tone="realisasi" empty="Belum ada bukti" scale={scale} />
+      {share ? <p className="pd-compare-share">{share}</p> : null}
     </div>
   );
 }
@@ -597,6 +640,43 @@ function CohortBody({ model, testId }) {
   );
 }
 
+function RealisasiBody({ model }) {
+  if (model.status === "zero" || model.status === "unlocked") {
+    return <Quiet status="zero" title={model.status === "unlocked" ? "Target belum dikunci" : "Tidak ada PO aktif"} note={model.note || "Angka tidak dibuat dari jadwal yang masih draft."} />;
+  }
+  const series = model.series || [];
+  if (model.status !== "complete" || !series.length) return <Quiet status="incomplete" note={model.note} />;
+  const groups = [];
+  series.forEach((row) => {
+    const unit = row.unit || "tanpa satuan";
+    const group = groups.find((item) => item.unit === unit);
+    if (group) group.rows.push(row);
+    else groups.push({ unit, rows: [row] });
+  });
+  return (
+    <div className="pd-realisasi" data-testid="produksi-realisasi">
+      {groups.map((group) => {
+        const only = group.rows.length === 1 ? group.rows[0] : null;
+        return (
+          <section key={group.unit} data-testid={`produksi-realisasi-unit-${group.unit}`}>
+            {only ? (
+              <div className="pd-kesiapan-metrics pd-compare-kpis">
+                <CountPair label="Target Awal" value={only.awal} title="Target yang dikunci saat jadwal difinalisasi." />
+                <CountPair label="Target Revisi" value={knownNumber(only.revisi) ? only.revisi : undefined} text={knownNumber(only.revisi) ? "" : "Belum ada revisi"} title="Revisi tanggal atau qty setelah finalisasi." />
+                <CountPair label="Realisasi" value={knownNumber(only.realisasi) ? only.realisasi : undefined} text={knownNumber(only.realisasi) ? "" : "Belum ada bukti"} title="Qty terkonfirmasi pada tanggal jadwal. Nol berarti output nol, bukan bukti yang hilang." />
+              </div>
+            ) : (
+              <p className="pd-compare-unit">{group.unit}</p>
+            )}
+            {group.rows.map((row) => <CohortBars key={`${row.day}-${row.unit}`} row={row} />)}
+          </section>
+        );
+      })}
+      {model.note ? <p className="pd-note">{model.note}</p> : null}
+    </div>
+  );
+}
+
 function LateBody({ model }) {
   if (model.status === "zero") return <Quiet status="zero" title="Tidak ada PO aktif" />;
   if (model.status !== "complete") return <Quiet status="incomplete" />;
@@ -615,22 +695,41 @@ function LateBody({ model }) {
   );
 }
 
+function AgingPanel({ title, caption, bucket, doneTitle, testId }) {
+  return (
+    <section className="pd-aging-panel" data-testid={testId} title="Urgent dihitung sejak PO masuk. Normal dan Buffer Stock dihitung setelah Design dan Payment selesai.">
+      <h3>{title}</h3>
+      <p className="pd-note">{caption}</p>
+      <div className="pd-kesiapan-metrics">
+        <CountPair label="Aktif" value={bucket.aktif || 0} title="Awal hitung sudah ada dan pekerjaan ini belum selesai." />
+        <CountPair label="Selesai" value={bucket.selesai || 0} tone="ready" title={doneTitle} />
+        <CountPair label="Belum dapat dihitung" value={bucket.belum || 0} title="Urgent tanpa waktu PO masuk, atau Normal dan Buffer Stock sebelum kedua approval selesai." />
+        <CountPair label="Histori tidak lengkap" value={bucket.histori || 0} title="Pekerjaan sudah selesai, tetapi cap waktu akhirnya tidak tersimpan. Durasi tidak dihitung." />
+      </div>
+    </section>
+  );
+}
+
 function AgingBody({ model }) {
   if (model.status === "zero") return <Quiet status="zero" title="Tidak ada PO aktif" />;
   if (model.status !== "complete" || !model.produksi || !model.total) return <Quiet status="incomplete" />;
-  const cell = (bucket, key) => formatCount(bucket[key] || 0);
   return (
-    <div className="pd-table-wrap" data-testid="produksi-aging">
-      <table className="pd-table">
-        <thead>
-          <tr><th></th><th>Aktif</th><th>Selesai</th><th>Belum dapat dihitung</th><th>Histori tidak lengkap</th></tr>
-        </thead>
-        <tbody>
-          <tr title="Berakhir saat cetak dan packing selesai."><td>Produksi</td><td>{cell(model.produksi, "aktif")}</td><td>{cell(model.produksi, "selesai")}</td><td>{cell(model.produksi, "belum")}</td><td>{cell(model.produksi, "histori")}</td></tr>
-          <tr title="Berakhir saat qty wajib terkirim penuh."><td>Total PO</td><td>{cell(model.total, "aktif")}</td><td>{cell(model.total, "selesai")}</td><td>{cell(model.total, "belum")}</td><td>{cell(model.total, "histori")}</td></tr>
-        </tbody>
-      </table>
-      <p className="pd-note">{model.note}</p>
+    <div className="pd-aging" data-testid="produksi-aging">
+      <AgingPanel
+        testId="produksi-aging-produksi"
+        title="Aging Produksi"
+        caption="Berhenti setelah produksi termasuk packing selesai."
+        bucket={model.produksi}
+        doneTitle="Produksi termasuk packing sudah selesai dan waktu akhirnya tersimpan."
+      />
+      <AgingPanel
+        testId="produksi-aging-total"
+        title="Aging Total PO"
+        caption="Berhenti setelah seluruh qty wajib terkirim."
+        bucket={model.total}
+        doneTitle="Seluruh qty wajib sudah terkirim dan waktu kirim tersimpan."
+      />
+      {model.note ? <p className="pd-note">{model.note}</p> : null}
     </div>
   );
 }
@@ -659,15 +758,24 @@ function BottleneckBody({ model }) {
   if (model.status === "zero") return <Quiet status="zero" title="Tidak ada PO aktif" />;
   if (model.status !== "complete") return <Quiet status="incomplete" />;
   const units = Object.entries(model.by_unit || {});
+  const rows = Array.isArray(model.rows) ? model.rows : [];
   return (
     <div data-testid="produksi-bottleneck">
       <div className="pd-kesiapan-metrics">
-        <CountPair label="PO" value={model.po} title="PO unik yang melewati target selesai produksi." />
-        <CountPair label="Line" value={model.lines} title="Line cetak yang belum selesai, dihitung terpisah dari PO." />
-        <CountPair label="Kirim belum selesai" value={model.pengiriman_belum_selesai} title="Produksi termasuk packing sudah selesai, qty wajib belum terkirim." />
+        <CountPair label="PO Bottleneck" value={model.po} tone={model.po > 0 ? "wait" : undefined} title="PO unik yang melewati target selesai produksi. HOLD dan menunggu approval tidak dihitung." />
+        <CountPair label="Line Bottleneck" value={model.lines} tone={model.lines > 0 ? "wait" : undefined} title="Line cetak yang belum selesai. Dihitung terpisah dari jumlah PO." />
+        <CountPair label="Pengiriman belum selesai" value={model.pengiriman_belum_selesai} tone="ship" title="Produksi termasuk packing sudah selesai, qty wajib belum terkirim. Ini bukan bottleneck produksi." />
       </div>
-      {units.map(([unit, qty]) => <p key={unit} className="pd-note">Sisa {formatCount(qty)} {unit}</p>)}
-      <p className="pd-note">{model.note}</p>
+      {units.map(([unit, qty]) => <p key={unit} className="pd-note" data-testid={`produksi-bottleneck-sisa-${unit}`}>Sisa {formatCount(qty)} {unit}</p>)}
+      {rows.slice(0, 4).map((row) => {
+        const sisa = Object.entries(row.by_unit || {}).map(([unit, qty]) => `${formatCount(qty)} ${unit}`).join(", ");
+        return (
+          <p key={row.order_id || row.po_number} className="pd-note" data-testid="produksi-bottleneck-row">
+            {row.po_number || "PO"}{row.target ? ` · target ${row.target}` : ""}{sisa ? ` · sisa ${sisa}` : ""}
+          </p>
+        );
+      })}
+      <p className="pd-note">Bukan otomatis kesalahan operator.{model.note ? ` ${model.note}` : ""}</p>
     </div>
   );
 }
@@ -682,7 +790,7 @@ function CardBody({ id, model, tone, onRetry, controls }) {
   if (id === "beban_operator") return <WorkloadBody model={model} />;
   if (id === "kesiapan") return <KesiapanBody model={model} />;
   if (id === "target_produksi") return <CohortBody model={model} testId="produksi-target" />;
-  if (id === "target_realisasi") return <CohortBody model={model} testId="produksi-realisasi" />;
+  if (id === "target_realisasi") return <RealisasiBody model={model} />;
   if (id === "po_terlambat") return <LateBody model={model} />;
   if (id === "aging") return <AgingBody model={model} />;
   if (id === "ketepatan") return <AccuracyBody model={model} />;

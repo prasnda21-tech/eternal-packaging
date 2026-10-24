@@ -575,3 +575,107 @@ test("wave 2 widgets render locked targets and stay off a saved layout", async (
   expect(view.host.textContent).not.toContain("SIMULASI");
   view.unmount();
 });
+
+test("target versus realization stays per unit and does not invent a percent", async () => {
+  const allow = (key) => key === "dashboard.production.view";
+  const one = {
+    status: "complete",
+    note: "Satu cohort.",
+    series: [{ day: "2026-10-27", unit: "pcs", awal: 10000, revisi: 8000, realisasi: 6400, persen_awal: 64, persen_revisi: 80 }],
+  };
+  const apis = apisFor(layout([widget("target_realisasi", 0, 0, 6, 4)]));
+  apis.snapshotApi = jest.fn(async () => ({ ...snapshot, wave2: { status: "complete", target_realisasi: one } }));
+  const view = await renderPage(allow, apis);
+  const card = view.host.querySelector("[data-testid='produksi-realisasi']");
+  expect(card.textContent).toContain("10.000");
+  expect(card.textContent).toContain("8.000");
+  expect(card.textContent).toContain("6.400");
+  expect(card.textContent).toContain("64% dari awal");
+  expect(card.textContent).toContain("80% dari revisi");
+  expect(card.querySelector(".pd-compare-bar.is-awal")).toBeTruthy();
+  expect(card.querySelector(".pd-compare-bar.is-revisi")).toBeTruthy();
+  expect(card.querySelector(".pd-compare-bar.is-realisasi")).toBeTruthy();
+  view.unmount();
+
+  const many = {
+    status: "complete",
+    series: [
+      { day: "2026-10-27", unit: "pcs", awal: 100, revisi: null, realisasi: 0, persen_awal: 0, persen_revisi: null },
+      { day: "2026-10-28", unit: "pcs", awal: 50, revisi: 40, realisasi: 10, persen_awal: 20, persen_revisi: 25 },
+      { day: "2026-10-27", unit: "kg", awal: 2, revisi: null, realisasi: null, persen_awal: null, persen_revisi: null },
+    ],
+  };
+  const multiApis = apisFor(layout([widget("target_realisasi", 0, 0, 8, 4)]));
+  multiApis.snapshotApi = jest.fn(async () => ({ ...snapshot, wave2: { status: "complete", target_realisasi: many } }));
+  const multi = await renderPage(allow, multiApis);
+  const pcs = multi.host.querySelector("[data-testid='produksi-realisasi-unit-pcs']");
+  const kg = multi.host.querySelector("[data-testid='produksi-realisasi-unit-kg']");
+  const first = pcs.querySelector("[data-testid='produksi-realisasi-day-2026-10-27-pcs']");
+  const second = pcs.querySelector("[data-testid='produksi-realisasi-day-2026-10-28-pcs']");
+  expect(first.textContent).toContain("Belum ada revisi");
+  expect(first.textContent).toContain("0% dari awal");
+  expect(first.textContent).not.toContain("150");
+  expect(second.textContent).toContain("40");
+  expect(second.textContent).toContain("25% dari revisi");
+  expect(kg.textContent).toContain("Belum ada bukti");
+  expect(kg.textContent).not.toContain("%");
+  expect(kg.querySelector("[data-testid='produksi-realisasi-day-2026-10-27-kg']").textContent).not.toContain("100");
+  multi.unmount();
+
+  const lockedApis = apisFor(layout([widget("target_realisasi", 0, 0, 6, 3)]));
+  lockedApis.snapshotApi = jest.fn(async () => ({
+    ...snapshot,
+    wave2: { status: "complete", target_realisasi: { status: "unlocked", note: "Target belum dikunci.", series: [] } },
+  }));
+  const locked = await renderPage(allow, lockedApis);
+  expect(locked.host.textContent).toContain("Target belum dikunci");
+  expect(locked.host.querySelector(".pd-compare-bar")).toBeNull();
+  locked.unmount();
+});
+
+test("aging and bottleneck keep the four statuses and separate counts", async () => {
+  const allow = (key) => key === "dashboard.production.view";
+  const apis = apisFor(layout([
+    widget("aging", 0, 0, 6, 3),
+    widget("bottleneck", 6, 0, 6, 4),
+  ], 4));
+  apis.snapshotApi = jest.fn(async () => ({
+    ...snapshot,
+    wave2: {
+      status: "complete",
+      aging: {
+        status: "complete",
+        produksi: { aktif: 6, selesai: 4, belum: 1, histori: 2 },
+        total: { aktif: 7, selesai: 3, belum: 1, histori: 2 },
+        note: "Empat status.",
+      },
+      bottleneck: {
+        status: "complete",
+        po: 2,
+        lines: 3,
+        by_unit: { pcs: 4000 },
+        pengiriman_belum_selesai: 1,
+        rows: [{ order_id: "po-1", po_number: "PO-PREVIEW", target: "2026-10-27", by_unit: { pcs: 4000 } }],
+        note: "HOLD dan approval yang belum selesai bukan bottleneck produksi.",
+      },
+    },
+  }));
+  const view = await renderPage(allow, apis);
+  const aging = view.host.querySelector("[data-testid='produksi-aging']");
+  expect(aging.querySelector("[data-testid='produksi-aging-produksi']").textContent).toContain("Aging Produksi");
+  expect(aging.querySelector("[data-testid='produksi-aging-total']").textContent).toContain("Aging Total PO");
+  expect(aging.textContent).toContain("Aktif");
+  expect(aging.textContent).toContain("Selesai");
+  expect(aging.textContent).toContain("Belum dapat dihitung");
+  expect(aging.textContent).toContain("Histori tidak lengkap");
+  expect(aging.textContent).not.toMatch(/rata-rata|hari rata/i);
+  const bottleneck = view.host.querySelector("[data-testid='produksi-bottleneck']");
+  expect(bottleneck.textContent).toContain("PO Bottleneck");
+  expect(bottleneck.textContent).toContain("Line Bottleneck");
+  expect(bottleneck.textContent).toContain("Pengiriman belum selesai");
+  expect(bottleneck.textContent).toContain("Sisa 4.000 pcs");
+  expect(bottleneck.querySelector("[data-testid='produksi-bottleneck-row']").textContent).toContain("PO-PREVIEW");
+  expect(bottleneck.textContent).toContain("Bukan otomatis kesalahan operator");
+  expect(apis.layoutApi.save).not.toHaveBeenCalled();
+  view.unmount();
+});

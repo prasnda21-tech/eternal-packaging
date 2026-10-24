@@ -23,7 +23,7 @@ export const SIZES = {
   target_produksi: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 6, h: 4 },
   po_terlambat: { minW: 4, maxW: 8, minH: 3, maxH: 6, w: 4, h: 3 },
   target_realisasi: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 6, h: 4 },
-  aging: { minW: 4, maxW: 12, minH: 3, maxH: 6, w: 6, h: 3 },
+  aging: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 6, h: 5 },
   ketepatan: { minW: 4, maxW: 12, minH: 3, maxH: 6, w: 6, h: 3 },
   bottleneck: { minW: 6, maxW: 12, minH: 3, maxH: 8, w: 8, h: 4 },
 };

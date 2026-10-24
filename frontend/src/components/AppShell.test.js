@@ -166,6 +166,13 @@ describe("sidebar flyout interaction", () => {
     expect(shell).not.toMatch(/fuse\.js|fuse-js|fuzzy/);
   });
 
+  test("topbar profile shows the signed-in account, not the open dashboard title", () => {
+    expect(shell).toMatch(/className="profile-name">\{user\?\.name \|\| user\?\.email\}/);
+    expect(shell).toMatch(/data-testid="current-user-role">\{ROLES\[user\?\.role\] \|\| user\?\.role\}/);
+    expect(shell).not.toMatch(/Preview Keuangan/);
+    expect(shell).not.toMatch(/Dashboard Produksi|Dashboard Keuangan/);
+  });
+
   test("topbar aligns search, chat, and notification without duplicating chat unread fetch", () => {
     expect(shell).toMatch(/topbar-actions/);
     expect(shell).toMatch(/topbar-chat-button/);
