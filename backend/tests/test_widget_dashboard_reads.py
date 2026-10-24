@@ -298,6 +298,82 @@ async def test_purchase_and_recon_permissions(clean_db):
     assert empty.json()["items"] == []
 
 
+async def test_widget_recon_separates_active_pairs_from_legacy(clean_db):
+    db = server.db
+    await db.cash_bank_reconciliation_matches.delete_many({})
+    await db.cash_bank_accounts.delete_many({"id": "cb-uji"})
+    pair = {
+        "id": "pair-active",
+        "match_kind": "pair",
+        "status": "active",
+        "cash_bank_id": "cb-uji",
+        "date": "2026-10-20",
+        "direction": "in",
+        "amount": 999,
+        "journal_line_id": "jl-secret",
+        "statement_line_id": "st-secret",
+        "description": "rahasia",
+    }
+    await db.cash_bank_accounts.insert_one({"id": "cb-uji", "name": "Kas Uji"})
+    await db.cash_bank_reconciliation_matches.insert_many([
+        pair,
+        {"id": "pair-off", "match_kind": "pair", "status": "cancelled", "cash_bank_id": "cb-uji", "date": "2026-10-01"},
+        {"id": "group-1", "match_kind": "pair_group", "status": "active", "cash_bank_id": "cb-uji", "date": "2026-10-02"},
+    ])
+    before = await db.cash_bank_reconciliation_matches.find_one({"id": "pair-active"}, {"_id": 0})
+    app.dependency_overrides[current_user] = lambda: _user()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        pairs_only = await client.get("/api/dashboard/widget/reconciliations")
+    assert pairs_only.status_code == 200
+    body = pairs_only.json()
+    assert body["status"] == "complete"
+    assert body["items"] == []
+    assert [row["id"] for row in body["pairs"]] == ["pair-active"]
+    assert body["pairs"][0]["cash_bank_name"] == "Kas Uji"
+    assert "journal_line_id" not in body["pairs"][0]
+    assert "statement_line_id" not in body["pairs"][0]
+    assert "amount" not in body["pairs"][0]
+    assert "description" not in body["pairs"][0]
+    after = await db.cash_bank_reconciliation_matches.find_one({"id": "pair-active"}, {"_id": 0})
+    assert after == before
+
+    await db.cash_bank_reconciliations.insert_one({
+        "id": "recon-uji",
+        "number": "RK-UJI",
+        "cash_bank_name": "Kas Lama",
+        "reconciliation_date": "2026-10-04",
+        "statement_balance": 10,
+        "book_balance": 4,
+        "status": "draft",
+    })
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        both = await client.get("/api/dashboard/widget/reconciliations")
+    both_body = both.json()
+    assert both_body["items"][0]["number"] == "RK-UJI"
+    assert both_body["pairs"][0]["id"] == "pair-active"
+    assert both_body["items"][0]["id"] != both_body["pairs"][0]["id"]
+
+    await db.cash_bank_reconciliation_matches.delete_many({})
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        legacy_only = await client.get("/api/dashboard/widget/reconciliations")
+    assert legacy_only.json()["pairs"] == []
+    assert legacy_only.json()["items"][0]["status"] == "draft"
+
+    await db.cash_bank_reconciliations.delete_many({})
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        empty = await client.get("/api/dashboard/widget/reconciliations")
+    assert empty.json()["status"] == "empty"
+    assert empty.json()["items"] == []
+    assert empty.json()["pairs"] == []
+
+    denied = _user(role="widget_reader", override={"cash_bank.reconcile": False})
+    app.dependency_overrides[current_user] = lambda: denied
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        blocked = await client.get("/api/dashboard/widget/reconciliations")
+    assert blocked.status_code == 403
+    await db.cash_bank_accounts.delete_many({"id": "cb-uji"})
+
+
 def test_overdue_groups_match_source_rows():
     rows = [
         {"customer_key": "id:cust-1", "customer_name": "Kedai A", "accounting_outstanding": 40, "days_overdue": 5, "ambiguous": False},

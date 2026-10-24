@@ -76,14 +76,17 @@ export function mapTrend(section) {
 
 export function mapSales(section) {
   if (!section) return { status: "unavailable", rows: [] };
+  const rows = (section.groups || []).map((row, index) => ({
+    name: row.label,
+    amount: row.omzet,
+    invoices: row.invoice_count,
+    share: row.share == null ? null : row.share,
+    key: row.key || `${row.label || "grup"}:${index}`,
+  }));
   return {
     status: sectionStatus(section),
-    rows: (section.groups || []).map((row) => ({
-      name: row.label,
-      amount: row.omzet,
-      invoices: row.invoice_count,
-      share: row.share == null ? null : row.share,
-    })),
+    rows,
+    unassigned: section.unassigned_invoice_count,
     detail: section.detail,
   };
 }
@@ -93,14 +96,15 @@ export function mapProducts(section) {
   const source = Array.isArray(section.all_items) ? section.all_items : (section.items || []);
   return {
     status: sectionStatus(section),
-    rows: source.map((row) => ({
+    rows: source.map((row, index) => ({
       name: row.label,
       amount: row.amount,
       qty: row.quantity,
       unit: row.unit || "",
-      key: row.key,
+      key: row.key || `${row.label || "barang"}:${index}`,
       share: row.share == null ? null : row.share,
     })),
+    unidentified: section.unidentified_line_count,
     detail: section.detail,
   };
 }
@@ -265,21 +269,33 @@ export function mapOverdue(body) {
 }
 
 export function mapReconciliations(body) {
-  if (!body) return { status: "unavailable", rows: [] };
+  if (!body) return { status: "unavailable", rows: [], pairs: [] };
   const items = Array.isArray(body.items) ? body.items : (Array.isArray(body) ? body : []);
-  const status = body.status || (items.length ? "complete" : "empty");
+  const pairItems = Array.isArray(body.pairs) ? body.pairs : [];
+  const rows = items.map((row) => ({
+    name: row.cash_bank_name || "Akun",
+    order: row.number || "",
+    date: formatLongDate(row.reconciliation_date),
+    statusLabel: row.status === "finalized" ? "Finalized" : "Draft",
+    amount: row.difference,
+    zero: Number(row.difference) === 0,
+    key: row.id,
+    kind: "legacy",
+  }));
+  const pairs = pairItems.map((row, index) => ({
+    name: row.cash_bank_name || "Rekening",
+    date: formatLongDate(row.date),
+    statusLabel: "Aktif",
+    direction: row.direction || "",
+    key: row.id || `pair:${index}`,
+    kind: "pair",
+  }));
+  const status = body.status || ((rows.length || pairs.length) ? "complete" : "empty");
   return {
     status,
-    rows: items.map((row) => ({
-      name: row.cash_bank_name || "Akun",
-      order: row.number || "",
-      date: formatLongDate(row.reconciliation_date),
-      statusLabel: row.status === "finalized" ? "Finalized" : "Draft",
-      amount: row.difference,
-      zero: Number(row.difference) === 0,
-      key: row.id,
-    })),
-    detail: body.detail || (status === "empty" ? "Belum ada dokumen rekonsiliasi." : null),
+    rows,
+    pairs,
+    detail: body.detail || (status === "empty" ? "Belum ada pencocokan transaksi maupun rekonsiliasi saldo lama." : null),
   };
 }
 

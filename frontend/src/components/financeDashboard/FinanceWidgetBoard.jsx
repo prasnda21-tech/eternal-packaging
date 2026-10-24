@@ -83,14 +83,14 @@ function comparisonLine(comparison) {
 
 const EMPTY_NOTE = {
   cash: "Data arus kas belum tersedia pada periode ini.",
-  expense: "Belum ada beban operasional pada periode ini.",
+  expense: "Belum ada jurnal beban pada periode.",
   profit: "Belum ada jurnal laba rugi pada periode ini.",
   sales: "Belum ada faktur penjualan pada periode ini.",
   trend: "Belum ada data penjualan pada periode ini.",
   products: "Belum ada data penjualan barang pada periode ini.",
   sellers: "Belum ada data performa penjual pada periode ini.",
   purchases: "Belum ada faktur pembelian pada periode ini.",
-  recon: "Belum ada dokumen rekonsiliasi pada periode ini.",
+  recon: "Belum ada pencocokan transaksi maupun rekonsiliasi saldo lama.",
 };
 
 function noteFor(id, status) {
@@ -227,14 +227,18 @@ function Donut({ rows }) {
   );
 }
 
-function RankList({ rows, expanded }) {
+function signedMoney(amount) {
+  if (amount == null || !Number.isFinite(Number(amount))) return "—";
+  return formatMoney(amount);
+}
+
+function RankList({ rows, expanded, showShare }) {
   const list = expanded ? rows : rows.slice(0, 5);
-  const amounts = list.map((row) => Number(row.amount)).filter((value) => Number.isFinite(value) && value > 0);
-  const max = amounts.length ? Math.max(...amounts) : 0;
   return list.map((row, index) => {
-    const width = row.share != null && Number.isFinite(Number(row.share))
-      ? Math.min(100, Math.max(0, Number(row.share)))
-      : (max > 0 && row.amount != null ? Math.min(100, (Math.abs(Number(row.amount)) / max) * 100) : 0);
+    const share = Number(row.share);
+    const width = showShare && row.share != null && Number.isFinite(share)
+      ? Math.min(100, Math.max(0, share))
+      : 0;
     return (
       <div className="kb-rank" key={row.key || row.name}>
         <span className="kb-rank-no">{index + 1}</span>
@@ -250,9 +254,56 @@ function RankList({ rows, expanded }) {
   });
 }
 
+function ExpenseBody({ model, onRetry }) {
+  const status = model?.status || "loading";
+  if (status === "loading" || status === "error" || status === "forbidden" || status === "unavailable" || status === "incomplete") {
+    return <Quiet id="expense" status={status} onRetry={onRetry} />;
+  }
+  if (status === "empty") return <Quiet id="expense" status="empty" />;
+  const rows = model?.rows || [];
+  const positive = rows.filter((row) => row.amount != null && Number(row.amount) > 0);
+  const negative = rows.filter((row) => row.amount != null && Number(row.amount) < 0);
+  if (status === "zero" || (!positive.length && !negative.length)) {
+    return (
+      <div className="kb-empty is-zero">
+        <strong>Nol tercatat</strong>
+        <p>Tidak ada beban operasional bernilai nonnol pada periode yang dipilih.</p>
+      </div>
+    );
+  }
+  if (!positive.length) {
+    return (
+      <div className="kb-empty is-zero">
+        <strong>Tidak ada komposisi positif</strong>
+        <p>Nilai negatif ditampilkan apa adanya dan tidak dibalik menjadi beban positif.</p>
+        <div className="kb-lines">
+          {negative.map((row) => (
+            <div key={row.key || row.name}><span>{row.name}</span><strong>{signedMoney(row.amount)}</strong></div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <>
+      <Donut rows={positive} />
+      {negative.length ? (
+        <div className="kb-lines">
+          <p className="kb-kicker">Akun bernilai negatif tidak masuk donut dan tidak dibalik tandanya.</p>
+          {negative.map((row) => (
+            <div key={row.key || row.name}><span>{row.name}</span><strong>{signedMoney(row.amount)}</strong></div>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function CardBody({ id, model, compact, expanded, onRetry }) {
   const status = model?.status || "loading";
-  if (QUIET.has(status)) return <Quiet id={id} status={status} onRetry={onRetry} />;
+  if (id === "expense") return <ExpenseBody model={model} onRetry={onRetry} />;
+  const rankedPartial = (id === "products" || id === "sellers") && status === "incomplete" && (model?.rows || []).length > 0;
+  if (QUIET.has(status) && !rankedPartial) return <Quiet id={id} status={status} onRetry={onRetry} />;
   if (id === "cash") {
     return (
       <div className="kb-trio">
@@ -302,9 +353,6 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
       </div>
     );
   }
-  if (id === "expense") {
-    return model?.rows?.length ? <Donut rows={model.rows} /> : <Quiet id="expense" status="empty" />;
-  }
   if (id === "trend") {
     return model?.points?.length ? (
       <>
@@ -314,19 +362,42 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
     ) : <Quiet id={id} status={status === "complete" ? "empty" : status} />;
   }
   if (id === "products" || id === "sellers") {
-    return model?.rows?.length ? <RankList rows={model.rows} expanded={expanded} /> : <Quiet id={id} status={status === "complete" ? "empty" : status} />;
+    if (!model?.rows?.length) return <Quiet id={id} status={status === "complete" ? "empty" : status} />;
+    const gap = id === "products"
+      ? (model.unidentified ? `${model.unidentified} baris tidak teridentifikasi` : "")
+      : (model.unassigned ? `${model.unassigned} faktur belum ditetapkan` : "");
+    return (
+      <>
+        {status === "incomplete" ? (
+          <p className="kb-kicker">Data belum lengkap{gap ? ` · ${gap}` : ""}</p>
+        ) : null}
+        <RankList rows={model.rows} expanded={expanded} showShare={status === "complete"} />
+      </>
+    );
   }
   if (id === "recon") {
-    return model?.rows?.length ? (
+    const pairs = model?.pairs || [];
+    const legacy = model?.rows || [];
+    if (!pairs.length && !legacy.length) return <Quiet id={id} status={status === "complete" ? "empty" : status} />;
+    const limit = expanded ? 12 : 5;
+    return (
       <div className="kb-lines">
-        {model.rows.slice(0, expanded ? 12 : 5).map((row) => (
+        {pairs.length ? <p className="kb-kicker">Pencocokan transaksi</p> : null}
+        {pairs.slice(0, limit).map((row) => (
+          <div key={row.key}>
+            <span title={row.name}>{row.name}</span>
+            <strong>{row.statusLabel}{row.date ? ` · ${row.date}` : ""}{row.direction ? ` · ${row.direction}` : ""}</strong>
+          </div>
+        ))}
+        {legacy.length ? <p className="kb-kicker">Rekonsiliasi saldo legacy</p> : null}
+        {legacy.slice(0, limit).map((row) => (
           <div key={row.key || row.name}>
             <span title={row.name}>{row.name}</span>
-            <strong>{row.statusLabel || "—"}{row.amount == null ? "" : ` · selisih ${formatMoney(row.amount)}`}</strong>
+            <strong>{row.statusLabel || "—"}{row.amount == null ? "" : ` · selisih ${signedMoney(row.amount)}`}</strong>
           </div>
         ))}
       </div>
-    ) : <Quiet id={id} status={status === "complete" ? "empty" : status} />;
+    );
   }
   return <Quiet id={id} status={status} />;
 }
@@ -401,7 +472,10 @@ export default function FinanceWidgetBoard({ widgets, models, editing, hasPerm, 
         const model = allowed ? (models[widget.widget_id] || { status: "loading" }) : { status: "forbidden", detail: "Tidak ada izin." };
         const title = widget.settings?.title || meta?.title || widget.widget_id;
         const rows = model?.rows || [];
-        const canExpand = (widget.widget_id === "products" || widget.widget_id === "sellers" || widget.widget_id === "recon") && rows.length > 5;
+        const reconCount = rows.length + (model?.pairs || []).length;
+        const canExpand = (widget.widget_id === "products" || widget.widget_id === "sellers")
+          ? rows.length > 5
+          : widget.widget_id === "recon" && reconCount > 5;
         const periodMode = widget.settings?.period_mode || "global";
         const choosePeriod = (period_mode) => {
           onSettings(widget.widget_id, { ...(widget.settings || {}), period_mode });

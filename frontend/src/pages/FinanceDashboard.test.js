@@ -224,6 +224,155 @@ test("reset restores the server default and a missing layout does not write", as
   fallback.unmount();
 });
 
+test("sales expense and recon cards keep partial rows and separate pair data", async () => {
+  global.__financePerms = ["dashboard.finance.view", "dashboard.sales.view", "cash_bank.reconcile"];
+  api.financeDashboardLayout.mockResolvedValue(layout([
+    { widget_id: "products", x: 0, y: 0, w: 6, h: 4, settings: { period_mode: "global" } },
+    { widget_id: "sellers", x: 6, y: 0, w: 6, h: 4, settings: { period_mode: "global" } },
+    expenseWidget(),
+    { widget_id: "recon", x: 0, y: 4, w: 6, h: 4, settings: {} },
+    { widget_id: "trend", x: 6, y: 4, w: 6, h: 4, settings: { period_mode: "global" } },
+  ]));
+  api.salesDashboard.mockResolvedValue({
+    products: { status: "complete", unidentified_line_count: 0, all_items: [{ key: "a", label: "Cup", amount: 100, share: 100 }] },
+    sales: { status: "complete", unassigned_invoice_count: 0, groups: [{ key: "user:1", label: "Ayu", omzet: 100, invoice_count: 1, share: 100 }] },
+    trend: { status: "complete", grain_label: "Harian", points: [{ label: "1 Okt", omzet: 100 }, { label: "2 Okt", omzet: 80 }] },
+  });
+  api.financialDashboard.mockResolvedValue({
+    charts: { expense_composition: { status: "complete", items: [{ account_id: "e1", name: "Listrik", amount: 80 }, { account_id: "e2", name: "Koreksi", amount: -10 }] } },
+  });
+  api.widgetReconciliations.mockResolvedValue({
+    status: "complete",
+    items: [{ id: "rk", cash_bank_name: "Kas Lama", number: "RK-1", reconciliation_date: "2026-10-04", status: "finalized", difference: 5 }],
+    pairs: [{ id: "p1", cash_bank_name: "Kas Uji", date: "2026-10-20", direction: "in", status: "active" }],
+  });
+  let view = await renderPage();
+  expect(view.host.querySelector("[data-testid='finance-widget-products']").textContent).toContain("Cup");
+  expect(view.host.querySelector("[data-testid='finance-widget-sellers']").textContent).toContain("Ayu");
+  const mixed = view.host.querySelector("[data-testid='finance-widget-expense']").textContent;
+  expect(mixed).toContain("Listrik");
+  expect(mixed).toContain("Koreksi");
+  expect(mixed).toContain("tidak dibalik");
+  const both = view.host.querySelector("[data-testid='finance-widget-recon']").textContent;
+  expect(both).toContain("Pencocokan transaksi");
+  expect(both).toContain("Kas Uji");
+  expect(both).toContain("Rekonsiliasi saldo legacy");
+  expect(both).toContain("Kas Lama");
+  expect(api.salesDashboard).toHaveBeenCalledTimes(1);
+  view.unmount();
+
+  api.salesDashboard.mockResolvedValue({
+    products: { status: "incomplete", unidentified_line_count: 2, all_items: [{ key: "a", label: "Cup", amount: 40, share: null }] },
+    sales: {
+      status: "incomplete",
+      unassigned_invoice_count: 1,
+      groups: [
+        { key: "user:1", label: "Ayu", omzet: 40, invoice_count: 1, share: null },
+        { key: "unassigned", label: "Belum ditetapkan", omzet: 10, invoice_count: 1, share: null },
+      ],
+    },
+    trend: { status: "complete", grain_label: "Harian", points: [{ label: "1 Okt", omzet: 50 }] },
+  });
+  view = await renderPage();
+  const products = view.host.querySelector("[data-testid='finance-widget-products']");
+  expect(products.getAttribute("data-status")).toBe("incomplete");
+  expect(products.textContent).toContain("Cup");
+  expect(products.textContent).toContain("Data belum lengkap");
+  expect(products.textContent).toContain("2 baris tidak teridentifikasi");
+  const sellers = view.host.querySelector("[data-testid='finance-widget-sellers']");
+  expect(sellers.textContent).toContain("Ayu");
+  expect(sellers.textContent).toContain("Belum ditetapkan");
+  expect(sellers.textContent).toContain("1 faktur belum ditetapkan");
+  expect(sellers.textContent.match(/Ayu/g)).toHaveLength(1);
+  expect(sellers.textContent.match(/Belum ditetapkan/g)).toHaveLength(1);
+  view.unmount();
+
+  api.salesDashboard.mockResolvedValue({
+    products: { status: "incomplete", unidentified_line_count: 4, all_items: [] },
+    sales: { status: "incomplete", unassigned_invoice_count: 0, groups: [] },
+    trend: { status: "empty", points: [] },
+  });
+  view = await renderPage();
+  expect(view.host.querySelector("[data-testid='finance-widget-products']").textContent).toContain("Belum lengkap");
+  expect(view.host.querySelector("[data-testid='finance-widget-products']").textContent).not.toContain("Cup");
+  expect(view.host.querySelector("[data-testid='finance-widget-sellers']").textContent).toContain("Belum lengkap");
+  view.unmount();
+
+  api.financialDashboard.mockResolvedValue({ charts: { expense_composition: { status: "empty", items: [] } } });
+  view = await renderPage();
+  const emptyExpense = view.host.querySelector("[data-testid='finance-widget-expense']").textContent;
+  expect(emptyExpense).toContain("Belum ada data");
+  expect(emptyExpense).toContain("Belum ada jurnal beban pada periode.");
+  expect(emptyExpense).not.toContain("Rp 0");
+  view.unmount();
+
+  api.financialDashboard.mockResolvedValue({ charts: { expense_composition: { status: "zero", items: [] } } });
+  view = await renderPage();
+  const zeroExpense = view.host.querySelector("[data-testid='finance-widget-expense']").textContent;
+  expect(zeroExpense).toContain("Nol tercatat");
+  expect(zeroExpense).toContain("Tidak ada beban operasional bernilai nonnol");
+  expect(zeroExpense).not.toContain("Rp 0");
+  view.unmount();
+
+  api.financialDashboard.mockResolvedValue({
+    charts: { expense_composition: { status: "complete", items: [{ account_id: "e1", name: "Listrik", amount: 80 }] } },
+  });
+  view = await renderPage();
+  expect(view.host.querySelector("[data-testid='finance-widget-expense']").textContent).toContain("Listrik");
+  view.unmount();
+
+  api.financialDashboard.mockResolvedValue({
+    charts: { expense_composition: { status: "complete", items: [{ account_id: "e2", name: "Koreksi", amount: -10 }] } },
+  });
+  view = await renderPage();
+  const negative = view.host.querySelector("[data-testid='finance-widget-expense']").textContent;
+  expect(negative).toContain("Tidak ada komposisi positif");
+  expect(negative).toContain("Koreksi");
+  expect(negative).toContain("tidak dibalik");
+  expect(negative).not.toContain("Rp 10");
+  view.unmount();
+
+  api.widgetReconciliations.mockResolvedValue({ status: "complete", items: [], pairs: [{ id: "p1", cash_bank_name: "Kas Uji", date: "2026-10-20", direction: "in" }] });
+  view = await renderPage();
+  const pairOnly = view.host.querySelector("[data-testid='finance-widget-recon']").textContent;
+  expect(pairOnly).toContain("Pencocokan transaksi");
+  expect(pairOnly).not.toContain("Rekonsiliasi saldo legacy");
+  view.unmount();
+
+  api.widgetReconciliations.mockResolvedValue({
+    status: "complete",
+    items: [{ id: "rk", cash_bank_name: "Kas Lama", number: "RK-1", reconciliation_date: "2026-10-04", status: "draft", difference: 5 }],
+    pairs: [],
+  });
+  view = await renderPage();
+  const legacyOnly = view.host.querySelector("[data-testid='finance-widget-recon']").textContent;
+  expect(legacyOnly).toContain("Rekonsiliasi saldo legacy");
+  expect(legacyOnly).not.toContain("Pencocokan transaksi");
+  view.unmount();
+
+  api.widgetReconciliations.mockResolvedValue({ status: "empty", items: [], pairs: [] });
+  view = await renderPage();
+  const none = view.host.querySelector("[data-testid='finance-widget-recon']").textContent;
+  expect(none).toContain("Belum ada data");
+  expect(none).toContain("Belum ada pencocokan transaksi maupun rekonsiliasi saldo lama.");
+  view.unmount();
+
+  api.widgetReconciliations.mockRejectedValue({ response: { status: 500, data: { detail: "Gagal" } } });
+  view = await renderPage();
+  expect(view.host.querySelector("[data-testid='finance-widget-recon']").textContent).toContain("Gagal memuat");
+  view.unmount();
+
+  global.__financePerms = ["dashboard.finance.view"];
+  const salesBefore = api.salesDashboard.mock.calls.length;
+  const reconBefore = api.widgetReconciliations.mock.calls.length;
+  view = await renderPage();
+  expect(view.host.querySelector("[data-testid='finance-widget-products']").textContent).toContain("Tidak ada izin");
+  expect(view.host.querySelector("[data-testid='finance-widget-recon']").textContent).toContain("Tidak ada izin");
+  expect(api.salesDashboard.mock.calls.length).toBe(salesBefore);
+  expect(api.widgetReconciliations.mock.calls.length).toBe(reconBefore);
+  view.unmount();
+});
+
 test("incomplete and error cash are not shown as Rp 0", async () => {
   api.financialDashboard.mockResolvedValue({
     cash_movement: { status: "incomplete", cash_in: 0, cash_out: null, net_change: null, detail: "Jurnal belum lengkap" },
