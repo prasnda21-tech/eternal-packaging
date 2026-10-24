@@ -8,6 +8,11 @@ from services.finance_widget_layout import get_finance_layout, reset_finance_lay
 PERM = "dashboard.production.view"
 OPERATOR_PERM = "dashboard.production.operator_analytics"
 BRANCH_PERM = "dashboard.production.branch_output"
+DELIVERY_QTY_PERM = (
+    "delivery.schedule.view",
+    "schedule.view",
+    "nav.delivery_schedule",
+)
 
 READY_IDS = (
     "perlu_produksi",
@@ -42,6 +47,7 @@ READY.update({
     "bottleneck": PERM,
     "komposisi": PERM,
     "output_cabang": BRANCH_PERM,
+    "delivery_qty": DELIVERY_QTY_PERM,
 })
 
 # min_w, max_w, min_h, max_h, default_w, default_h
@@ -68,6 +74,7 @@ SIZES = {
     "bottleneck": (6, 12, 3, 8, 8, 4),
     "komposisi": (6, 12, 4, 8, 6, 5),
     "output_cabang": (6, 12, 4, 8, 6, 5),
+    "delivery_qty": (6, 12, 5, 9, 7, 7),
 }
 
 PRODUCTION_SPEC = {

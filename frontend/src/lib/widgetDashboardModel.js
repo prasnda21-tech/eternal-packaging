@@ -1,6 +1,11 @@
 /** Maps audited API payloads into widget view models. No sample numbers. */
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+const MONTHS_LONG = [
+  "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+];
+const WEEKDAYS = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
 
 export function formatLongDate(iso) {
   const text = String(iso || "").slice(0, 10);
@@ -8,6 +13,24 @@ export function formatLongDate(iso) {
   const monthIndex = Number(month) - 1;
   if (!year || !day || monthIndex < 0 || monthIndex > 11) return "";
   return `${Number(day)} ${MONTHS[monthIndex]} ${year}`;
+}
+
+export function formatShortAxisDate(iso) {
+  const text = String(iso || "").slice(0, 10);
+  const [year, month, day] = text.split("-");
+  const monthIndex = Number(month) - 1;
+  if (!year || !day || monthIndex < 0 || monthIndex > 11) return "";
+  return `${Number(day)} ${MONTHS[monthIndex]}`;
+}
+
+/** Full weekday date for tooltips, calendar-day only (no TZ shift). */
+export function formatWeekdayLongDate(iso) {
+  const text = String(iso || "").slice(0, 10);
+  const [year, month, day] = text.split("-").map(Number);
+  if (!year || !month || !day) return "";
+  const utc = new Date(Date.UTC(year, month - 1, day, 12));
+  if (Number.isNaN(utc.getTime())) return "";
+  return `${WEEKDAYS[utc.getUTCDay()]}, ${day} ${MONTHS_LONG[month - 1]} ${year}`;
 }
 
 export function formatRange(start, end) {
@@ -375,6 +398,49 @@ export function mapProduction(payload, todayIso) {
     status: rows.length ? "complete" : "empty",
     rows,
     detail: rows.length ? null : "Belum ada tanggal pengerjaan sesudah hari ini.",
+  };
+}
+
+const DELIVERY_UNIT_LABEL = {
+  tanpa_satuan: "tanpa satuan",
+  campuran: "campuran",
+};
+
+export function deliveryQtyUnitLabel(unit) {
+  if (DELIVERY_UNIT_LABEL[unit]) return DELIVERY_UNIT_LABEL[unit];
+  return String(unit || "").toLowerCase();
+}
+
+export function mapDeliveryQty(body) {
+  if (!body || !Array.isArray(body.series)) return { status: "unavailable", series: [], units: [], notes: [] };
+  const series = body.series.map((row) => ({
+    unit: row.unit,
+    label: deliveryQtyUnitLabel(row.unit),
+    todayQty: Number(row.today_qty) || 0,
+    todayPoCount: Number(row.today_po_count) || 0,
+    overdueQty: Number(row.overdue_qty) || 0,
+    overduePoCount: Number(row.overdue_po_count) || 0,
+    points: Array.isArray(row.points)
+      ? row.points.map((point) => ({
+        date: point.date,
+        day: point.date,
+        label: formatLongDate(point.date),
+        shortLabel: formatShortAxisDate(point.date),
+        tipLabel: formatWeekdayLongDate(point.date),
+        qty: Number(point.qty) || 0,
+        poCount: Number(point.po_count) || 0,
+      }))
+      : [],
+  }));
+  return {
+    status: body.status || "unavailable",
+    days: body.days,
+    today: body.today,
+    todayLabel: formatLongDate(body.today),
+    units: series.map((row) => row.unit),
+    series,
+    notes: Array.isArray(body.notes) ? body.notes : [],
+    detail: body.detail || null,
   };
 }
 

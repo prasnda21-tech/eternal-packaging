@@ -27,6 +27,14 @@ export const PRODUCTION_WIDGETS = [
   { id: "bottleneck", title: "Bottleneck Workflow", category: "Monitoring", perm: PRODUCTION_PERM, summary: "PO dan line yang melewati target selesai produksi. HOLD dan approval tertunda bukan bottleneck produksi.", ready: true },
   { id: "komposisi", title: "Komposisi Produk Diproduksi", category: "Analitik", perm: PRODUCTION_PERM, summary: "Ranking produk dari snapshot konfirmasi. Kategori historis hanya dari snapshot, bukan kategori master sekarang.", ready: true },
   { id: "output_cabang", title: "Output per Cabang", category: "Analitik", perm: BRANCH_OUTPUT_PERM, summary: "Lokasi produksi aktual dari penjadwalan. Cabang asal PO adalah mode terpisah.", ready: true },
+  {
+    id: "delivery_qty",
+    title: "Qty Rencana Pengiriman",
+    category: "Monitoring",
+    perm: ["delivery.schedule.view", "schedule.view", "nav.delivery_schedule"],
+    summary: "Sisa qty rencana aktif hari ini dan yang lewat tanggal, per satuan. Grafik 7 atau 30 hari ke depan adalah snapshot rencana, bukan realisasi pengiriman.",
+    ready: true,
+  },
 ];
 
 export const PENDING_WIDGETS = [
@@ -43,5 +51,6 @@ export function productionWidgetMeta(id) {
 export function productionWidgetAllowed(id, hasPerm) {
   const meta = productionWidgetMeta(id);
   if (!meta || typeof hasPerm !== "function") return false;
-  return Boolean(hasPerm(meta.perm));
+  const perms = Array.isArray(meta.perm) ? meta.perm : [meta.perm];
+  return perms.some((perm) => Boolean(hasPerm(perm)));
 }

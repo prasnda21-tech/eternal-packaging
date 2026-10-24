@@ -59,6 +59,8 @@ from services.delivery_schedule import (
 )
 from services.delivery_plan import (
     PLAN_PROJECTION as _DELIVERY_PLAN_PROJECTION,
+    QTY_WIDGET_PROJECTION as _DELIVERY_QTY_PROJECTION,
+    aggregate_delivery_plan_qty as _aggregate_delivery_plan_qty,
     build_plan_rows as _build_delivery_plan_rows,
     mongo_match as _delivery_plan_mongo_match,
     paginate_rows as _paginate_delivery_plan_rows,
@@ -7879,6 +7881,33 @@ async def list_delivery_plan(
         "generated_at": now_iso(),
         **meta,
     }
+
+
+@api_router.get("/dashboard/widget/qty-rencana-pengiriman")
+async def delivery_plan_qty_widget(
+    days: int = 7,
+    user=Depends(current_user),
+):
+    """Read-only snapshot of active Rencana Jadwal Kirim qty, grouped by date and unit.
+
+    Permission matches GET /delivery/plan. Finance dashboard access alone is not enough.
+    The query is the full eligible set, not one page of the plan list. No writes.
+    """
+    await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
+    if days not in (7, 30):
+        raise HTTPException(status_code=400, detail="Periode harus 7 atau 30 hari")
+    from services.dashboard_today import wib_today
+
+    scope = sales_owner_match(user)
+    match = _delivery_plan_mongo_match(scope)
+    docs = await db.orders.find(match, _DELIVERY_QTY_PROJECTION).to_list(None)
+    dd_settings = await _get_delivery_deadline_settings()
+    return _aggregate_delivery_plan_qty(
+        docs,
+        lead_time_days=dd_settings["lead_time_days"],
+        today=wib_today(),
+        days=days,
+    )
 
 
 @api_router.get("/delivery/reschedules")

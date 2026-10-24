@@ -8,6 +8,7 @@ import {
   productionWidgetAllowed,
 } from "../components/productionDashboard/productionWidgetCatalog";
 import { addWidget, defaultLayout } from "../components/productionDashboard/productionWidgetLayout";
+import { mapDeliveryQty } from "../lib/widgetDashboardModel";
 import "../components/financeDashboard/financeDashboard.css";
 import "../components/productionDashboard/productionDashboard.css";
 
@@ -27,6 +28,7 @@ const SNAPSHOT_IDS = ["po_aktif", "perlu_produksi", "po_urgent", "po_hold", "sis
 const PLANT_IDS = ["output_hari_ini", "tren_output", "distribusi_tahap", "komposisi"];
 const OPERATOR_IDS = ["output_operator", "beban_operator"];
 const BRANCH_IDS = ["output_cabang"];
+const DELIVERY_QTY_IDS = ["delivery_qty"];
 
 function mapToday(plant) {
   const today = plant?.today || {};
@@ -158,6 +160,7 @@ export function ProductionDashboardView({
   analyticsApi = null,
   operatorAnalyticsApi = null,
   branchOutputApi = null,
+  deliveryPlanQtyApi = null,
   simulation = null,
 }) {
   const [widgets, setWidgets] = useState([]);
@@ -290,7 +293,8 @@ export function ProductionDashboardView({
     const needPlant = PLANT_IDS.some(allowed);
     const needOperator = OPERATOR_IDS.some(allowed);
     const needBranch = BRANCH_IDS.some(allowed);
-    if (!needSnapshot && !needPlant && !needOperator && !needBranch) return undefined;
+    const needDeliveryQty = DELIVERY_QTY_IDS.some(allowed);
+    if (!needSnapshot && !needPlant && !needOperator && !needBranch && !needDeliveryQty) return undefined;
     let live = true;
     const jobs = [];
     if (needSnapshot) {
@@ -311,12 +315,18 @@ export function ProductionDashboardView({
         .then((body) => ({ kind: "branch", body }))
         .catch((error) => ({ kind: "branch", error: true, forbidden: error?.response?.status === 403 })));
     }
+    if (needDeliveryQty) {
+      jobs.push((deliveryPlanQtyApi ? deliveryPlanQtyApi(days) : Promise.reject(new Error("missing")))
+        .then((body) => ({ kind: "delivery_qty", body }))
+        .catch((error) => ({ kind: "delivery_qty", error: true, forbidden: error?.response?.status === 403 })));
+    }
     Promise.all(jobs).then((results) => {
       if (!live || requestId !== requestRef.current) return;
       const snapshot = results.find((item) => item.kind === "snapshot");
       const plantResult = results.find((item) => item.kind === "plant");
       const operatorResult = results.find((item) => item.kind === "operator");
       const branchResult = results.find((item) => item.kind === "branch");
+      const deliveryResult = results.find((item) => item.kind === "delivery_qty");
       const mapped = snapshot && !snapshot.error ? modelsFromSnapshot(snapshot.body) : null;
       setPlant(plantResult && !plantResult.error ? plantResult.body : null);
       setOperatorBody(operatorResult && !operatorResult.error ? operatorResult.body : null);
@@ -340,6 +350,11 @@ export function ProductionDashboardView({
           }
           if (OPERATOR_IDS.includes(widget.widget_id)) {
             patch[widget.widget_id] = operatorResult && !operatorResult.error ? { status: "ready" } : { status: "error" };
+          }
+          if (DELIVERY_QTY_IDS.includes(widget.widget_id)) {
+            patch[widget.widget_id] = deliveryResult && !deliveryResult.error
+              ? mapDeliveryQty(deliveryResult.body)
+              : { status: deliveryResult && deliveryResult.forbidden ? "forbidden" : "error" };
           }
         });
         return patch;
@@ -527,6 +542,7 @@ function RoutedProductionDashboard() {
       analyticsApi={(period) => api.productionAnalytics(period)}
       operatorAnalyticsApi={(period) => api.productionOperatorAnalytics(period)}
       branchOutputApi={(period) => api.productionBranchOutput(period)}
+      deliveryPlanQtyApi={(period) => api.deliveryPlanQty({ days: period })}
     />
   );
 }
