@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "write_authorized": false,
+  "expected_sha_pin": "34e8008ab7d33a43a1aafad5bbd76efc83e0d140",
+  "masters": {
+    "physical_a": "mid-phys-a-test",
+    "physical_b": "mid-phys-b-test",
+    "service": "mid-svc-test"
+  },
+  "plans": {
+    "so_single_svc": {
+      "status": "APPROVED_FOR_SIM",
+      "links": [
+        {
+          "service_accurate_line_id": "acc-s-1",
+          "parent_accurate_line_id": "acc-p-1",
+          "service_line_id": "ln-test-svc-1",
+          "parent_line_id": "ln-test-phys-1"
+        }
+      ]
+    },
+    "so_dual_svc": {
+      "status": "APPROVED_FOR_SIM",
+      "links": [
+        {
+          "service_accurate_line_id": "acc-s-2a",
+          "parent_accurate_line_id": "acc-p-2",
+          "service_line_id": "ln-test-svc-2a",
+          "parent_line_id": "ln-test-phys-2"
+        },
+        {
+          "service_accurate_line_id": "acc-s-2b",
+          "parent_accurate_line_id": "acc-p-2",
+          "service_line_id": "ln-test-svc-2b",
+          "parent_line_id": "ln-test-phys-2"
+        }
+      ]
+    },
+    "so_pf_dual": {
+      "status": "APPROVED_FOR_SIM",
+      "physical_fulfillment_decision": "KEEP_PF_AND_LINK_PARENT",
+      "links": [
+        {
+          "service_accurate_line_id": "acc-s-3a",
+          "parent_accurate_line_id": "acc-p-3",
+          "service_line_id": "ln-test-svc-3a",
+          "parent_line_id": "ln-test-phys-3"
+        },
+        {
+          "service_accurate_line_id": "acc-s-3b",
+          "parent_accurate_line_id": "acc-p-3",
+          "service_line_id": "ln-test-svc-3b",
+          "parent_line_id": "ln-test-phys-3"
+        }
+      ]
+    },
+    "so_multi_phys": {
+      "status": "BLOCKED_MULTI_CANDIDATE",
+      "reason": "Exclusive parent not Owner-approved; two physical candidates on SO",
+      "candidate_parent_accurate_line_ids": ["acc-p-4a", "acc-p-4b"],
+      "links": []
+    },
+    "so_physical_only_good": {
+      "status": "NO_LINKS",
+      "links": []
+    },
+    "so_item_b_ready": {
+      "status": "NO_LINKS",
+      "links": []
+    }
+  }
+}

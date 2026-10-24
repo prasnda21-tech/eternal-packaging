@@ -1,0 +1,77 @@
+{
+  "id": "so-sim-multi-phys",
+  "po_number": "PO-SIM/MULTI-PHYS",
+  "cancelled": false,
+  "qty_delivered": 1800,
+  "line_items": [
+    {
+      "accurate_line_id": "acc-p-4a",
+      "master_item_id": "mid-phys-a-test",
+      "accurate_item_id": "50",
+      "item_type": "INVENTORY",
+      "production_process": "print",
+      "quantity": 800,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    },
+    {
+      "accurate_line_id": "acc-s-4",
+      "master_item_id": "mid-svc-test",
+      "accurate_item_id": "250",
+      "item_type": "SERVICE",
+      "production_process": "print",
+      "quantity": 800,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    },
+    {
+      "accurate_line_id": "acc-p-4b",
+      "master_item_id": "mid-phys-a-test",
+      "accurate_item_id": "50",
+      "item_type": "INVENTORY",
+      "production_process": "print",
+      "quantity": 200,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    }
+  ],
+  "operator_splits": [
+    {"line_idx": 0, "qty_completed": 800},
+    {"line_idx": 1, "qty_completed": 800},
+    {"line_idx": 2, "qty_completed": 200}
+  ],
+  "shipments": [
+    {
+      "id": "ship-multi-phys",
+      "number": "SJ-SIM/MULTI-PHYS",
+      "delivery_status": "Terkirim",
+      "delivered_at": "2026-01-18T00:00:00+00:00",
+      "total_qty": 1800,
+      "qty_delivered": 1800,
+      "lines": [
+        {"line_idx": 0, "qty": 800},
+        {"line_idx": 1, "qty": 800},
+        {"line_idx": 2, "qty": 200}
+      ]
+    }
+  ],
+  "delivery_confirmations": [
+    {
+      "id": "conf-multi-phys",
+      "action_id": "act-multi-phys",
+      "shipment_id": "ship-multi-phys",
+      "qty": 1800,
+      "items": [
+        {"line_idx": 0, "qty": 800},
+        {"line_idx": 1, "qty": 800},
+        {"line_idx": 2, "qty": 200}
+      ]
+    }
+  ]
+}

@@ -108,6 +108,12 @@ def aggregate_legacy_delivered_qty(
     those lines remaps to the explicit parent inventory master when linked;
     unlinked SERVICE never invents parent demand (fail-closed unproven).
 
+    Per proven shipment identity, physical delivery for one parent mid is collapsed:
+    - if any native physical line qty exists for that parent, credit that sum only;
+    - else credit max(linked process/SERVICE line qtys) (SERVICE-only SJ path).
+    Distinct shipment identities are never merged. Printing colors must not multiply
+    physical delivered qty. Ambiguous identity/grouping fails closed (unproven).
+
     Returns (delivered_by_master, provenance_by_master) where provenance is:
     - "confirmed_shipment" when order.shipment has delivery confirmation / Terkirim
     - "order_qty_delivered" when single physical-master order falls back to
@@ -217,21 +223,61 @@ def aggregate_legacy_delivered_qty(
                     order_lines, owners, process_ids, unproven_masters,
                 )
                 continue
+            # Multi-line collapse requires a stable shipment identity; otherwise
+            # duplicate confirmation rows could re-credit the same physical move.
+            if not sh_tokens and len(attributed) > 1:
+                _mark_physical_masters_unproven(
+                    order_lines, owners, process_ids, unproven_masters,
+                )
+                continue
+
+            # Per parent mid within this shipment identity only.
+            native_by_parent: Dict[str, float] = {}
+            remapped_by_parent: Dict[str, List[float]] = {}
+            group_ambiguous = False
             for idx, qty in attributed.items():
                 if idx < 0 or idx >= len(order_lines):
                     continue
-                mid = _physical_delivery_master_id(
+                parent_mid = _physical_delivery_master_id(
                     order_lines, idx, owners, process_ids,
                 )
-                if not mid:
+                if not parent_mid:
                     # SERVICE/process without valid parent — fail-closed.
                     _mark_physical_masters_unproven(
                         order_lines, owners, process_ids, unproven_masters,
                     )
+                    group_ambiguous = True
+                    break
+                line_mid = _line_master_id(order_lines[idx], owners)
+                if not line_mid:
+                    _mark_physical_masters_unproven(
+                        order_lines, owners, process_ids, unproven_masters,
+                    )
+                    group_ambiguous = True
+                    break
+                q = float(qty)
+                if q <= 0:
                     continue
-                add(mid, float(qty), "confirmed_shipment")
-                if order_id and mid:
-                    confirmed_order_masters.add((order_id, mid))
+                if line_mid not in process_ids:
+                    native_by_parent[parent_mid] = (
+                        float(native_by_parent.get(parent_mid, 0.0)) + q
+                    )
+                else:
+                    remapped_by_parent.setdefault(parent_mid, []).append(q)
+
+            if group_ambiguous:
+                continue
+
+            for parent_mid in set(native_by_parent) | set(remapped_by_parent):
+                native_qty = float(native_by_parent.get(parent_mid, 0.0))
+                if native_qty > 0:
+                    credit = native_qty
+                else:
+                    process_qtys = remapped_by_parent.get(parent_mid) or []
+                    credit = max(process_qtys) if process_qtys else 0.0
+                add(parent_mid, credit, "confirmed_shipment")
+                if order_id and parent_mid:
+                    confirmed_order_masters.add((order_id, parent_mid))
 
     # Physical-master qty_delivered fallback when THIS PO has no confirmed
     # shipment attribution for that master. SERVICE process lines do not block

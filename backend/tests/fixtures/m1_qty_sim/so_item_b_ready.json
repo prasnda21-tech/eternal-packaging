@@ -1,0 +1,47 @@
+{
+  "id": "so-sim-item-b",
+  "po_number": "PO-SIM/ITEM-B",
+  "cancelled": false,
+  "qty_delivered": 200,
+  "line_items": [
+    {
+      "accurate_line_id": "acc-b-1",
+      "master_item_id": "mid-phys-b-test",
+      "accurate_item_id": "51",
+      "item_type": "INVENTORY",
+      "production_process": "print",
+      "quantity": 200,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": "ln-test-item-b"
+    }
+  ],
+  "operator_splits": [
+    {"line_idx": 0, "qty_completed": 200}
+  ],
+  "shipments": [
+    {
+      "id": "ship-item-b",
+      "number": "SJ-SIM/ITEM-B",
+      "delivery_status": "Terkirim",
+      "delivered_at": "2026-01-20T00:00:00+00:00",
+      "total_qty": 200,
+      "qty_delivered": 200,
+      "lines": [
+        {"line_idx": 0, "qty": 200}
+      ]
+    }
+  ],
+  "delivery_confirmations": [
+    {
+      "id": "conf-item-b",
+      "action_id": "act-item-b",
+      "shipment_id": "ship-item-b",
+      "qty": 200,
+      "items": [
+        {"line_idx": 0, "qty": 200}
+      ]
+    }
+  ]
+}
