@@ -291,6 +291,11 @@ export const api = {
   masterItemsCreate: (payload) => client.post(`/master-items`, payload).then((r) => r.data),
   masterItemsSetProductionProcess: (itemId, production_process) =>
     client.patch(`/master-items/${encodeURIComponent(itemId)}/production-process`, { production_process }).then((r) => r.data),
+  productCategories: () => client.get(`/product-categories`).then((r) => r.data),
+  productCategoryCreate: (name) => client.post(`/product-categories`, { name }).then((r) => r.data),
+  productCategoryUpdate: (id, payload) => client.patch(`/product-categories/${encodeURIComponent(id)}`, payload).then((r) => r.data),
+  masterItemsSetProductCategory: (itemId, category_id) =>
+    client.patch(`/master-items/${encodeURIComponent(itemId)}/product-category`, { category_id }).then((r) => r.data),
   masterItemsSetPhysicalFulfillment: (itemId, physical_fulfillment) =>
     client.patch(`/master-items/${encodeURIComponent(itemId)}/physical-fulfillment`, { physical_fulfillment }).then((r) => r.data),
   replaceSalesOrderLineProduct: (orderId, lineIdx, payload) =>
@@ -895,6 +900,7 @@ export const api = {
   updateOperationalHoliday: (day, payload) => client.patch(`/settings/operational-holidays/${encodeURIComponent(day)}`, payload).then((r) => r.data),
   deleteOperationalHoliday: (day, payload) => client.delete(`/settings/operational-holidays/${encodeURIComponent(day)}`, { data: payload }).then((r) => r.data),
   productionAnalytics: (days = 7) => client.get(`/dashboard/produksi/analytics`, { params: { days } }).then((r) => r.data),
+  productionBranchOutput: (days = 7) => client.get(`/dashboard/produksi/branch-output`, { params: { days } }).then((r) => r.data),
   productionOperatorAnalytics: (days = 7) => client.get(`/dashboard/produksi/operator-analytics`, { params: { days } }).then((r) => r.data),
   productionDashboardLayout: () => client.get(`/dashboard/produksi/layout`).then((r) => r.data),
   saveProductionDashboardLayout: (body) => client.put(`/dashboard/produksi/layout`, body).then((r) => r.data),

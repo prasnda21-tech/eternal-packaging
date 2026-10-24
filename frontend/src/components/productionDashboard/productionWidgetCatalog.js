@@ -2,6 +2,7 @@
 
 export const PRODUCTION_PERM = "dashboard.production.view";
 export const OPERATOR_ANALYTICS_PERM = "dashboard.production.operator_analytics";
+export const BRANCH_OUTPUT_PERM = "dashboard.production.branch_output";
 
 export const PRODUCTION_WIDGETS = [
   { id: "po_aktif", title: "PO Aktif", category: "Snapshot", perm: PRODUCTION_PERM, summary: "PO unik yang belum sepenuhnya terkirim. Snapshot saat ini, bukan histori.", ready: true },
@@ -24,13 +25,13 @@ export const PRODUCTION_WIDGETS = [
   { id: "aging", title: "Aging Pekerjaan", category: "Monitoring", perm: PRODUCTION_PERM, summary: "Aging produksi berakhir saat packing selesai. Aging total PO berakhir saat qty wajib terkirim.", ready: true },
   { id: "ketepatan", title: "Ketepatan Penyelesaian", category: "Analitik", perm: PRODUCTION_PERM, summary: "Ketepatan produksi memakai target selesai PO. Ketepatan pengiriman memakai tanggal kirim efektif.", ready: true },
   { id: "bottleneck", title: "Bottleneck Workflow", category: "Monitoring", perm: PRODUCTION_PERM, summary: "PO dan line yang melewati target selesai produksi. HOLD dan approval tertunda bukan bottleneck produksi.", ready: true },
+  { id: "komposisi", title: "Komposisi Produk Diproduksi", category: "Analitik", perm: PRODUCTION_PERM, summary: "Ranking produk dari snapshot konfirmasi. Kategori historis hanya dari snapshot, bukan kategori master sekarang.", ready: true },
+  { id: "output_cabang", title: "Output per Cabang", category: "Analitik", perm: BRANCH_OUTPUT_PERM, summary: "Lokasi produksi aktual dari penjadwalan. Cabang asal PO adalah mode terpisah.", ready: true },
 ];
 
 export const PENDING_WIDGETS = [
-  { id: "komposisi", title: "Komposisi Produk Diproduksi", category: "Analitik", summary: "Pengelompokan nama barang belum memakai identitas line." },
   { id: "qc_reject", title: "QC, Reject & Cetak Ulang", category: "Analitik", summary: "Belum ada pencatatan QC, reject, atau cetak ulang yang sah." },
   { id: "utilisasi_mesin", title: "Utilisasi Mesin", category: "Analitik", summary: "Jam kerja mesin tidak tersedia dan tidak boleh diasumsikan." },
-  { id: "output_cabang", title: "Output per Cabang", category: "Analitik", summary: "Filter cabang otoritatif belum ada pada sumber produksi." },
 ];
 
 export const READY_IDS = PRODUCTION_WIDGETS.map((item) => item.id);

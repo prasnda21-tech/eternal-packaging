@@ -111,6 +111,7 @@ def _split_view(split: Optional[dict]) -> Optional[dict]:
         "work_date": parse_calendar_date(split.get("work_date")),
         "qty": _safe_int(split.get("quantity")) or 0,
         "qty_completed": _safe_int(split.get("qty_completed")) or 0,
+        "production_branch_id": _text(split.get("production_branch_id")),
     }
 
 

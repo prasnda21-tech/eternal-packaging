@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Target,
   PauseCircle,
+  MapPin,
   PieChart,
   Printer,
   ShieldAlert,
@@ -57,6 +58,8 @@ const GLYPH = {
   aging: Timer,
   ketepatan: CalendarClock,
   bottleneck: Workflow,
+  komposisi: PieChart,
+  output_cabang: MapPin,
   sim_output: BarChart3,
   sim_workflow: Workflow,
   sim_operator: Users,
@@ -79,6 +82,8 @@ const TONE = {
   aging: "info",
   ketepatan: "ok",
   bottleneck: "warn",
+  komposisi: "analytics",
+  output_cabang: "info",
   sim_output: "analytics",
   sim_workflow: "info",
   sim_operator: "analytics",
@@ -111,6 +116,8 @@ const CAPTION = {
   aging: "Produksi terpisah dari total PO",
   ketepatan: "Produksi dan pengiriman",
   bottleneck: "Bukan kesalahan operator",
+  komposisi: "Snapshot konfirmasi, satuan terpisah",
+  output_cabang: "Lokasi aktual adalah default",
   sim_output: "Fixture visual, satuan pcs",
   sim_workflow: "Fixture visual, bukan status sah",
   sim_operator: "Fixture visual, satuan pcs",
@@ -285,9 +292,10 @@ function Donut({ model }) {
       </div>
       <ul className="pd-legend-list">
         {(model.slices || []).map((slice) => (
-          <li key={slice.name}>
+          <li key={slice.name} title={slice.qty == null ? slice.name : `${slice.name}: ${formatCount(slice.qty)} ${model.unit || ""}`}>
             <i className="pd-swatch" style={{ background: slice.color }} />
             <span>{slice.name}</span>
+            {slice.qty == null ? null : <span>{formatCount(slice.qty)} {model.unit}</span>}
             <b>{slice.pct}%</b>
           </li>
         ))}
@@ -780,6 +788,132 @@ function BottleneckBody({ model }) {
   );
 }
 
+const SLICE_COLORS = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ef4444", "#64748b"];
+
+function sharePct(qty, total) {
+  const base = Number(total);
+  const part = Number(qty);
+  if (!Number.isFinite(base) || base <= 0 || !Number.isFinite(part)) return null;
+  return Math.round((part / base) * 1000) / 10;
+}
+
+function CompositionBody({ model, controls }) {
+  const [mode, setMode] = useState("kategori");
+  const units = model.units || [];
+  const unitKey = units.join("|");
+  const [unit, setUnit] = useState(units[0] || "");
+  useEffect(() => {
+    const list = unitKey ? unitKey.split("|") : [];
+    if (!list.length) return;
+    if (!list.includes(unit)) setUnit(list[0]);
+  }, [unitKey, unit]);
+  const chosen = unit || units[0] || "";
+  const category = (model.categories || {})[chosen] || null;
+  const products = ((model.products || {})[chosen]) || [];
+  const unverified = (model.unverified_by_unit || {})[chosen];
+  const unmapped = (model.unmapped_by_unit || {})[chosen];
+  const productTotal = products.reduce((sum, row) => sum + Number(row.qty || 0), 0);
+  const categoryRows = category ? [...(category.slices || [])] : [];
+  if (category && Number(category.uncategorized_qty) > 0) {
+    categoryRows.push({ key: "uncategorized", name: "Belum Dikategorikan", qty: category.uncategorized_qty });
+  }
+  const categoryTotal = categoryRows.reduce((sum, row) => sum + Number(row.qty || 0), 0);
+  const showDonut = mode === "kategori" && category && category.status !== "incomplete" && categoryRows.length > 0;
+  const slices = showDonut ? categoryRows.map((row, index) => ({
+    name: row.name,
+    qty: row.qty,
+    pct: sharePct(row.qty, categoryTotal) || 0,
+    color: SLICE_COLORS[index % SLICE_COLORS.length],
+  })) : [];
+  return (
+    <div data-testid="produksi-komposisi">
+      <div className="pd-switch">
+        <button type="button" className={`kb-btn${mode === "kategori" ? " is-on" : ""}`} data-testid="produksi-komposisi-kategori" onClick={() => setMode("kategori")}>Kategori</button>
+        <button type="button" className={`kb-btn${mode === "produk" ? " is-on" : ""}`} data-testid="produksi-komposisi-produk" onClick={() => setMode("produk")}>Produk spesifik</button>
+        <PeriodSwitch days={controls.days || 7} onChange={controls.setDays || (() => {})} prefix="produksi-komposisi-periode" />
+      </div>
+      {units.length > 1 ? (
+        <div className="pd-switch">
+          {units.map((item) => (
+            <button type="button" key={item} className={`kb-btn${item === chosen ? " is-on" : ""}`} onClick={() => setUnit(item)}>{item}</button>
+          ))}
+        </div>
+      ) : null}
+      {mode === "kategori" && !showDonut ? (
+        <p className="pd-note" data-testid="produksi-komposisi-histori">Histori tidak lengkap. Kategori master saat ini tidak dipakai untuk event lama.</p>
+      ) : null}
+      {showDonut ? <Donut model={{ total: categoryTotal, unit: chosen, slices }} /> : null}
+      {mode === "kategori" && category && Number(category.excluded_historical_qty) > 0 ? (
+        <p className="pd-note" data-testid="produksi-komposisi-excluded">Histori tanpa snapshot kategori: {formatCount(category.excluded_historical_qty)} {chosen}. Tidak masuk donut.</p>
+      ) : null}
+      {mode === "produk" ? (
+        <div data-testid="produksi-komposisi-ranking">
+          {products.length ? (
+            <UnitBars
+              entries={products.map((row) => ({
+                name: row.name,
+                qty: row.qty,
+                suffix: sharePct(row.qty, productTotal) == null ? ` ${chosen}` : ` ${chosen} · ${sharePct(row.qty, productTotal)}%`,
+              }))}
+              note={unverified || unmapped ? "Bagian di bawah ini tidak masuk ranking produk." : "Kontribusi dihitung di dalam satuan yang sama."}
+            />
+          ) : <p className="pd-note">Belum ada produk dengan identitas snapshot pada periode ini.</p>}
+          {unmapped ? <p className="pd-note" data-testid="produksi-komposisi-unmapped">Belum terpetakan {formatCount(unmapped)} {chosen}</p> : null}
+          {unverified ? <p className="pd-note" data-testid="produksi-komposisi-unverified">Identitas historis tidak terverifikasi {formatCount(unverified)} {chosen}</p> : null}
+        </div>
+      ) : null}
+      {model.note ? <p className="pd-note">{model.note}</p> : null}
+    </div>
+  );
+}
+
+function BranchBody({ model, controls }) {
+  const [mode, setMode] = useState("actual");
+  const units = model.units || [];
+  const unitKey = units.join("|");
+  const [unit, setUnit] = useState(units[0] || "");
+  useEffect(() => {
+    const list = unitKey ? unitKey.split("|") : [];
+    if (!list.length) return;
+    if (!list.includes(unit)) setUnit(list[0]);
+  }, [unitKey, unit]);
+  const chosen = unit || units[0] || "";
+  const rows = ((mode === "origin" ? model.origin : model.actual) || {})[chosen] || [];
+  const total = (model.company_total || {})[chosen];
+  return (
+    <div data-testid="produksi-output-cabang">
+      <div className="pd-switch">
+        <button type="button" className={`kb-btn${mode === "actual" ? " is-on" : ""}`} data-testid="produksi-cabang-aktual" onClick={() => setMode("actual")}>Lokasi aktual</button>
+        <button type="button" className={`kb-btn${mode === "origin" ? " is-on" : ""}`} data-testid="produksi-cabang-asal" onClick={() => setMode("origin")}>Cabang asal PO</button>
+        <PeriodSwitch days={controls.days || 7} onChange={controls.setDays || (() => {})} prefix="produksi-cabang-periode" />
+      </div>
+      {units.length > 1 ? (
+        <div className="pd-switch">
+          {units.map((item) => (
+            <button type="button" key={item} className={`kb-btn${item === chosen ? " is-on" : ""}`} onClick={() => setUnit(item)}>{item}</button>
+          ))}
+        </div>
+      ) : null}
+      {rows.length ? (
+        <UnitBars
+          entries={rows.map((row) => ({
+            name: row.name,
+            qty: row.qty,
+            suffix: ` ${chosen}`,
+          }))}
+          note={mode === "actual"
+            ? "Lokasi mengikuti snapshot penjadwalan pada saat konfirmasi."
+            : "Cabang asal PO. Bukan lokasi pengerjaan."}
+        />
+      ) : <p className="pd-note">Tidak ada output terkonfirmasi pada periode ini.</p>}
+      {rows.some((row) => row.name === "Belum Teratribusi") ? (
+        <p className="pd-note" data-testid="produksi-cabang-unattributed">Belum Teratribusi tetap dihitung di total perusahaan.</p>
+      ) : null}
+      {total != null ? <p className="pd-note" data-testid="produksi-cabang-total">Total perusahaan {formatCount(total)} {chosen}</p> : null}
+    </div>
+  );
+}
+
 function CardBody({ id, model, tone, onRetry, controls }) {
   const status = model?.status || "loading";
   if (status === "loading" || status === "error" || status === "forbidden") return <Quiet status={status} onRetry={onRetry} />;
@@ -795,6 +929,8 @@ function CardBody({ id, model, tone, onRetry, controls }) {
   if (id === "aging") return <AgingBody model={model} />;
   if (id === "ketepatan") return <AccuracyBody model={model} />;
   if (id === "bottleneck") return <BottleneckBody model={model} />;
+  if (id === "komposisi") return <CompositionBody model={model} controls={controls} />;
+  if (id === "output_cabang") return <BranchBody model={model} controls={controls} />;
   if (QUIET.has(status)) return <Quiet status={status} onRetry={onRetry} />;
   if (id === "sisa_qty" && model.presentation === "simulated-products") {
     return (

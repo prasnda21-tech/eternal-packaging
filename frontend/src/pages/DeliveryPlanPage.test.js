@@ -100,7 +100,7 @@ test("renders rows source badges remaining and po link", async () => {
   const { container, root } = renderPage();
   await act(async () => { await Promise.resolve(); });
   expect(container.querySelector('[data-testid="dp-source-PO/1"]')?.textContent).toMatch(/Manual/);
-  expect(container.querySelector('[data-testid="dp-source-PO/2"]')?.textContent).toMatch(/Otomatis/);
+  expect(container.querySelector('[data-testid="dp-source-PO/2"]')?.textContent).toBe("Otomatis");
   expect(container.querySelector('[data-testid="dp-remaining-PO/1"]')?.textContent).toBe("75");
   expect(container.querySelector('[data-testid="dp-status-PO/1"]')?.textContent).toMatch(/Hari Ini/);
   const link = container.querySelector('[data-testid="dp-open-po-PO/1"]');
@@ -167,6 +167,7 @@ test("compact ux9 contracts and akan datang label", async () => {
       branch: "YGY",
       tanggal_pengiriman: "2026-10-25",
       tanggal_pengiriman_source: "automatic",
+      delivery_sla_effective: { date: "2026-10-25", source: "legacy", contract: "legacy_calendar", countable: false },
       qty_total: 10,
       qty_delivered: 0,
       qty_remaining: 10,
@@ -181,6 +182,7 @@ test("compact ux9 contracts and akan datang label", async () => {
   });
   const { container, root } = renderPage();
   await act(async () => { await Promise.resolve(); });
+  expect(container.querySelector('[data-testid="dp-source-PO/9"]')?.textContent).toBe("Otomatis (Legacy)");
   expect(container.querySelector('[data-testid="dp-status-PO/9"]')?.textContent).toMatch(/Akan Datang/);
   expect(container.querySelector('[data-testid="dp-kpi-total-po"]')?.textContent).toBe("1");
   expect(container.querySelector('[data-testid="dp-reset-cols-delivery-plan"]')).toBeTruthy();

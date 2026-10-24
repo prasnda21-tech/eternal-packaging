@@ -7,6 +7,7 @@ from services.finance_widget_layout import get_finance_layout, reset_finance_lay
 
 PERM = "dashboard.production.view"
 OPERATOR_PERM = "dashboard.production.operator_analytics"
+BRANCH_PERM = "dashboard.production.branch_output"
 
 READY_IDS = (
     "perlu_produksi",
@@ -39,6 +40,8 @@ READY.update({
     "aging": PERM,
     "ketepatan": PERM,
     "bottleneck": PERM,
+    "komposisi": PERM,
+    "output_cabang": BRANCH_PERM,
 })
 
 # min_w, max_w, min_h, max_h, default_w, default_h
@@ -63,6 +66,8 @@ SIZES = {
     "aging": (4, 12, 3, 6, 6, 3),
     "ketepatan": (4, 12, 3, 6, 6, 3),
     "bottleneck": (6, 12, 3, 8, 8, 4),
+    "komposisi": (6, 12, 4, 8, 6, 5),
+    "output_cabang": (6, 12, 4, 8, 6, 5),
 }
 
 PRODUCTION_SPEC = {

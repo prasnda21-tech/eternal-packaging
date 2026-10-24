@@ -61,6 +61,7 @@ async function renderPage(hasPerm, apis) {
           snapshotApi={apis.snapshotApi}
           analyticsApi={apis.analyticsApi || null}
           operatorAnalyticsApi={apis.operatorAnalyticsApi || null}
+          branchOutputApi={apis.branchOutputApi || null}
           simulation={apis.simulation || null}
         />
       </MemoryRouter>,
@@ -678,4 +679,60 @@ test("aging and bottleneck keep the four statuses and separate counts", async ()
   expect(bottleneck.textContent).toContain("Bukan otomatis kesalahan operator");
   expect(apis.layoutApi.save).not.toHaveBeenCalled();
   view.unmount();
+});
+
+test("composition and branch widgets keep units, history, and permission apart", async () => {
+  const composition = {
+    status: "partial",
+    note: "Event tanpa snapshot tetap terpisah.",
+    units: ["pcs", "pack"],
+    products: { pcs: [{ key: "m1", name: "Cup A · PC-A", qty: 80 }, { key: "m2", name: "Cup A · PC-B", qty: 20 }] },
+    unverified_by_unit: { pcs: 5 },
+    unmapped_by_unit: { pcs: 2 },
+    categories: {
+      pcs: { status: "partial", slices: [{ key: "c1", name: "Paper Cup", qty: 80 }], uncategorized_qty: 20, excluded_historical_qty: 5 },
+      pack: { status: "incomplete", slices: [], uncategorized_qty: 0, excluded_historical_qty: 3 },
+    },
+    history_status: "incomplete",
+  };
+  const branch = {
+    status: "complete",
+    units: ["pcs"],
+    company_total: { pcs: 100 },
+    actual: { pcs: [{ branch_id: "br-a", name: "Yogyakarta", qty: 70 }, { branch_id: null, name: "Belum Teratribusi", qty: 30 }] },
+    origin: { pcs: [{ branch_id: "br-b", name: "Semarang", qty: 100 }] },
+  };
+  const apis = apisFor(layout([
+    widget("komposisi", 0, 0, 6, 5),
+    widget("output_cabang", 6, 0, 6, 5),
+  ]));
+  apis.analyticsApi = jest.fn(async () => ({ composition, today: { by_unit: {} }, trend: { units: [], series: {} }, workflow: { per_po: { full: { bars: [] }, production: { bars: [] } } } }));
+  apis.branchOutputApi = jest.fn(async () => branch);
+  const allow = (key) => key === "dashboard.production.view" || key === "dashboard.production.branch_output";
+  const view = await renderPage(allow, { ...apis, branchOutputApi: apis.branchOutputApi });
+  const card = view.host.querySelector("[data-testid='produksi-komposisi']");
+  expect(card.textContent).toContain("Paper Cup");
+  expect(card.textContent).toContain("Histori tanpa snapshot kategori");
+  await act(async () => {
+    view.host.querySelector("[data-testid='produksi-komposisi-produk']").click();
+  });
+  expect(view.host.textContent).toContain("Cup A · PC-A");
+  expect(view.host.textContent).toContain("Cup A · PC-B");
+  expect(view.host.textContent).toContain("Identitas historis tidak terverifikasi");
+  expect(view.host.querySelector("[data-testid='produksi-cabang-aktual']").className).toContain("is-on");
+  expect(view.host.textContent).toContain("Yogyakarta");
+  expect(view.host.textContent).toContain("Belum Teratribusi");
+  await act(async () => {
+    view.host.querySelector("[data-testid='produksi-cabang-asal']").click();
+  });
+  expect(view.host.textContent).toContain("Semarang");
+  expect(apis.branchOutputApi).toHaveBeenCalled();
+  view.unmount();
+
+  const denied = apisFor(layout([widget("output_cabang", 0, 0, 6, 5)]));
+  denied.branchOutputApi = jest.fn(async () => branch);
+  const hidden = await renderPage((key) => key === "dashboard.production.view", { ...denied, branchOutputApi: denied.branchOutputApi });
+  expect(hidden.host.querySelector("[data-testid='produksi-widget-output_cabang']").textContent).toContain("Tidak ada izin");
+  expect(denied.branchOutputApi).not.toHaveBeenCalled();
+  hidden.unmount();
 });

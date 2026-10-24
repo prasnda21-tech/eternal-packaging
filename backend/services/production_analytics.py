@@ -106,6 +106,53 @@ def _resolved_line_idx(split: dict, entry: dict) -> Optional[int]:
         return None
 
 
+def confirmation_snapshot(line: Optional[dict], master: Optional[dict], category: Optional[dict], split: Optional[dict]) -> dict:
+    """Identity frozen onto a new print confirmation. Does not read orders.branch_id."""
+    line = line if isinstance(line, dict) else {}
+    master = master if isinstance(master, dict) else {}
+    category = category if isinstance(category, dict) else {}
+    split = split if isinstance(split, dict) else {}
+    master_id = str(line.get("master_item_id") or master.get("id") or "").strip() or None
+    accurate_id = str(line.get("accurate_item_id") or master.get("accurate_item_id") or "").strip() or None
+    category_id = str(master.get("product_category_id") or "").strip() or None
+    category_name = None
+    if category_id and str(category.get("id") or "").strip() == category_id:
+        category_name = str(category.get("name") or "").strip() or None
+    snap = {
+        "category_snapshotted": True,
+        "master_item_id": master_id,
+        "accurate_item_id": accurate_id,
+        "category_id": category_id,
+        "category_name": category_name,
+        "product_name": str(master.get("item_name") or line.get("name") or "").strip() or None,
+        "item_code": str(master.get("item_code") or line.get("item_code") or "").strip() or None,
+        "unit": str(line.get("unit") or "").strip() or None,
+    }
+    factor = line.get("conversion_factor")
+    if factor not in (None, ""):
+        snap["conversion_factor"] = factor
+        if line.get("base_uom") not in (None, ""):
+            snap["base_uom"] = line.get("base_uom")
+        if line.get("transaction_uom") not in (None, ""):
+            snap["transaction_uom"] = line.get("transaction_uom")
+    branch_id = str(split.get("production_branch_id") or "").strip()
+    if branch_id:
+        snap["production_branch_id"] = branch_id
+    return snap
+
+
+def _conversion_line(entry: dict, line: Optional[dict]) -> dict:
+    """New confirmations freeze the factor stored on the entry. Older rows keep the line snapshot."""
+    if entry.get("category_snapshotted") is True:
+        frozen = {"unit": entry.get("unit") or (line or {}).get("unit")}
+        if entry.get("conversion_factor") not in (None, ""):
+            frozen["conversion_factor"] = entry.get("conversion_factor")
+            frozen["base_uom"] = entry.get("base_uom")
+            frozen["transaction_uom"] = entry.get("transaction_uom")
+        return frozen
+    return line or {}
+
+
 def _snapshot_pcs(qty: int, unit: str, line: dict) -> tuple:
     """Convert only from a factor stored on the line. Current master settings are ignored."""
     if _unit_key(unit) == PCS:
@@ -217,10 +264,21 @@ def _walk_entries(orders: Iterable[dict]) -> dict:
                 if confirmed is None:
                     coverage["no_date"] += 1
                     continue
-                display_unit, display_qty, conversion = _snapshot_pcs(qty, unit, line)
+                frozen = _conversion_line(entry, line)
+                source_unit = str(frozen.get("unit") or unit).strip()
+                display_unit, display_qty, conversion = _snapshot_pcs(qty, source_unit, frozen)
                 if operator is None:
                     coverage["no_operator"] += 1
                 coverage["counted"] += 1
+                snapshotted = entry.get("category_snapshotted") is True
+                product_id = str(entry.get("master_item_id") or "").strip() if snapshotted else ""
+                if snapshotted and product_id:
+                    identity = "snapshot"
+                elif snapshotted:
+                    identity = "unmapped"
+                else:
+                    identity = "unverified"
+                category_id = str(entry.get("category_id") or "").strip() if snapshotted else ""
                 events.append({
                     "day": confirmed.date(),
                     "confirmed_at": confirmed.isoformat(),
@@ -229,6 +287,15 @@ def _walk_entries(orders: Iterable[dict]) -> dict:
                     "conversion": conversion,
                     "operator": operator,
                     "order_id": order_id,
+                    "identity": identity,
+                    "product_id": product_id or None,
+                    "product_name": str(entry.get("product_name") or "").strip() or None,
+                    "item_code": str(entry.get("item_code") or "").strip() or None,
+                    "category_snapshotted": snapshotted,
+                    "category_id": category_id or None,
+                    "category_name": str(entry.get("category_name") or "").strip() or None,
+                    "production_branch_id": str(entry.get("production_branch_id") or "").strip() or None,
+                    "origin_branch_id": str(order.get("branch_id") or "").strip() or None,
                 })
     return {"events": events, "coverage": coverage}
 
@@ -534,6 +601,171 @@ def _workload(orders: Iterable[dict]) -> dict:
     }
 
 
+def _window(events: List[dict], today: date, days: int) -> List[dict]:
+    start = today - timedelta(days=days - 1)
+    return [event for event in events if start <= event["day"] <= today]
+
+
+def _product_label(event: dict) -> str:
+    name = event.get("product_name") or "Produk"
+    code = event.get("item_code")
+    if code:
+        return f"{name} · {code}"
+    return name
+
+
+def _add_ranked(bucket: Dict[str, Any], event: dict, *, key: str, label: str) -> None:
+    slot = bucket.setdefault(key, {"key": key, "name": label, "qty": 0})
+    slot["qty"] = _sum(slot["qty"], event["qty"])
+
+
+def build_composition(events: List[dict], today: date, days: int) -> dict:
+    window = _window(events, today, days)
+    products: Dict[str, Dict[str, dict]] = {}
+    unverified: Dict[str, Any] = {}
+    unmapped: Dict[str, Any] = {}
+    categories: Dict[str, dict] = {}
+    for event in window:
+        unit = event["unit"]
+        identity = event.get("identity")
+        if identity == "snapshot" and event.get("product_id"):
+            _add_ranked(
+                products.setdefault(unit, {}),
+                event,
+                key=event["product_id"],
+                label=_product_label(event),
+            )
+        elif identity == "unmapped":
+            _add(unmapped, unit, event["qty"])
+        else:
+            _add(unverified, unit, event["qty"])
+        cat_slot = categories.setdefault(unit, {
+            "slices": {},
+            "uncategorized_qty": 0,
+            "excluded_historical_qty": 0,
+        })
+        if not event.get("category_snapshotted"):
+            cat_slot["excluded_historical_qty"] = _sum(cat_slot["excluded_historical_qty"], event["qty"])
+            continue
+        if event.get("category_id"):
+            _add_ranked(
+                cat_slot["slices"],
+                event,
+                key=event["category_id"],
+                label=event.get("category_name") or "Kategori",
+            )
+        else:
+            cat_slot["uncategorized_qty"] = _sum(cat_slot["uncategorized_qty"], event["qty"])
+    product_units = []
+    product_rows = {}
+    for unit, rows in products.items():
+        product_units.append(unit)
+        ordered = sorted(rows.values(), key=lambda row: (-_sort_qty(row["qty"]), row["name"].casefold()))
+        product_rows[unit] = ordered
+    for unit in list(unverified) + list(unmapped):
+        if unit not in product_units:
+            product_units.append(unit)
+    category_out = {}
+    history_missing = False
+    any_snapshot = False
+    for unit, slot in categories.items():
+        excluded = slot["excluded_historical_qty"]
+        slices = sorted(slot["slices"].values(), key=lambda row: (-_sort_qty(row["qty"]), row["name"].casefold()))
+        if excluded:
+            history_missing = True
+        if slices or slot["uncategorized_qty"]:
+            any_snapshot = True
+        if not slices and not slot["uncategorized_qty"]:
+            status = "incomplete"
+        elif excluded:
+            status = "partial"
+        else:
+            status = "complete"
+        category_out[unit] = {
+            "status": status,
+            "slices": slices,
+            "uncategorized_qty": slot["uncategorized_qty"],
+            "excluded_historical_qty": excluded,
+        }
+        if unit not in product_units:
+            product_units.append(unit)
+    if not window:
+        status = "zero"
+        note = "Tidak ada output terkonfirmasi pada periode ini."
+    elif history_missing and not any_snapshot:
+        status = "incomplete"
+        note = "Histori kategori dan identitas produk tidak lengkap. Kategori master saat ini tidak dipakai."
+    elif history_missing or unverified or unmapped:
+        status = "partial"
+        note = "Event tanpa snapshot tetap terpisah. Kategori master saat ini tidak mengubah histori."
+    else:
+        status = "complete"
+        note = ""
+    return {
+        "status": status,
+        "note": note,
+        "units": product_units,
+        "products": product_rows,
+        "unverified_by_unit": unverified,
+        "unmapped_by_unit": unmapped,
+        "categories": category_out,
+        "history_status": "incomplete" if history_missing or not any_snapshot and window else "complete",
+    }
+
+
+def build_branch_output(
+    orders: Iterable[dict],
+    *,
+    branch_names: Optional[Dict[str, str]] = None,
+    days: int = 7,
+    today: Optional[date] = None,
+    generated_at: Optional[str] = None,
+) -> dict:
+    today = today or wib_today()
+    names = branch_names or {}
+    walked = _walk_entries(orders)
+    window = _window(walked["events"], today, days)
+    actual: Dict[str, Dict[str, dict]] = {}
+    origin: Dict[str, Dict[str, dict]] = {}
+    company: Dict[str, Any] = {}
+
+    def place(groups: Dict[str, Dict[str, dict]], unit: str, branch_id: Optional[str], qty: Any) -> None:
+        known = branch_id and branch_id in names
+        key = branch_id if known else ""
+        label = names.get(branch_id) if known else "Belum Teratribusi"
+        slot = groups.setdefault(unit, {})
+        row = slot.setdefault(key, {"branch_id": key or None, "name": label, "qty": 0})
+        row["qty"] = _sum(row["qty"], qty)
+
+    for event in window:
+        unit = event["unit"]
+        _add(company, unit, event["qty"])
+        place(actual, unit, event.get("production_branch_id"), event["qty"])
+        place(origin, unit, event.get("origin_branch_id"), event["qty"])
+    def rows(groups: Dict[str, Dict[str, dict]]) -> dict:
+        out = {}
+        for unit, bucket in groups.items():
+            ordered = sorted(bucket.values(), key=lambda row: (row["name"] == "Belum Teratribusi", -_sort_qty(row["qty"]), row["name"].casefold()))
+            out[unit] = ordered
+        return out
+    actual_rows = rows(actual)
+    origin_rows = rows(origin)
+    units = list(company.keys())
+    return {
+        "timezone": "Asia/Jakarta",
+        "today_wib": today.isoformat(),
+        "generated_at": generated_at,
+        "permission": "dashboard.production.branch_output",
+        "days": days,
+        "status": "complete" if window else "zero",
+        "note": "" if window else "Tidak ada output terkonfirmasi pada periode ini.",
+        "units": units,
+        "company_total": company,
+        "actual": actual_rows,
+        "origin": origin_rows,
+    }
+
+
 def build_plant_analytics(
     orders: Iterable[dict],
     *,
@@ -584,6 +816,7 @@ def build_plant_analytics(
             "note": _with_conversion_note(trend_note, report),
         },
         "workflow": _workflow(orders),
+        "composition": build_composition(events, today, days),
         "coverage": coverage,
         "history_complete": coverage["legacy"] == 0 and coverage["no_date"] == 0 and coverage["no_unit"] == 0,
     }

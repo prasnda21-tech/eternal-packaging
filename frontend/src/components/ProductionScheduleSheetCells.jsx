@@ -32,7 +32,9 @@ function MobileRoleMark({ tone, title, testid }) {
 
 function scheduleSourceLabel(row) {
   const isManual = row.delivery_deadline_source === "manual" || row.tanggal_pengiriman_source === "manual";
-  return isManual ? "Manual" : "Otomatis";
+  if (isManual) return "Manual";
+  if (row.delivery_sla_effective?.contract === "legacy_calendar") return "Otomatis (Legacy)";
+  return "Otomatis";
 }
 
 function ScheduleSourceBadge({ row, testid }) {

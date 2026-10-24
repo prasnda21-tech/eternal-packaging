@@ -1209,6 +1209,8 @@ export default function PODetail() {
                 ) : "—"}
                 {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
                   <span className="muted small"> Manual</span>
+                ) : order.delivery_sla_effective?.contract === "legacy_calendar" ? (
+                  <span className="muted small"> Otomatis (Legacy)</span>
                 ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
                   <span className="muted small"> Otomatis</span>
                 ) : null}

@@ -221,6 +221,7 @@ PERMISSION_CATALOG = [
     ("Role & Permission", "super_admin.manage", "Kelola Super Admin"),
     ("Dashboard Produksi", "dashboard.production.view", "Lihat Dashboard Produksi"),
     ("Dashboard Produksi", "dashboard.production.operator_analytics", "Lihat analitik operator Dashboard Produksi"),
+    ("Dashboard Produksi", "dashboard.production.branch_output", "Lihat output produksi per cabang"),
     ("Dashboard Keuangan", "dashboard.finance.view", "Lihat Dashboard Keuangan"),
     ("Dashboard Penjualan", "dashboard.sales.view", "Lihat Dashboard Penjualan"),
     ("Dashboard Owner", "dashboard.owner.view", "Lihat Dashboard Owner (read-only)"),
@@ -450,7 +451,9 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "reports.purchase.export",
     # Urgent PO approval workflow — default OFF; never implied by urgent.manage.
     # Performa dan beban operator. Tidak ikut dashboard.production.view atau schedule.view.
+    # Output per cabang. Tidak ikut dashboard.production.view.
     "dashboard.production.operator_analytics",
+    "dashboard.production.branch_output",
     "settings.operational_calendar.manage",
     "urgent.request",
     "urgent.review",
@@ -468,6 +471,7 @@ DIRECTOR_MUST_OPT_IN_PERMISSIONS = frozenset({
     "sales.receipt.cancel",
     "sales.receipt.edit",
     "dashboard.production.operator_analytics",
+    "dashboard.production.branch_output",
     "settings.operational_calendar.manage",
     "urgent.request",
     "urgent.review",

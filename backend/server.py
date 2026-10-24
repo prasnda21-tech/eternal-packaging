@@ -776,6 +776,8 @@ class OperatorSplitInput(BaseModel):
     screen_size: Optional[str] = None
     # Selected operator user id. Omit keeps the stored id when the email is unchanged.
     operator_user_id: Optional[str] = None
+    # Actual production location. Omit keeps the stored branch. Operator confirm does not send this.
+    production_branch_id: Optional[str] = None
 
 
 class CancelSplitPayload(BaseModel):
@@ -4759,28 +4761,39 @@ def _record_finalized_assignment(order: dict, before_splits: list, action_id: Op
 @api_router.post("/orders/{order_id}/assign-operators")
 async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=Depends(current_user)):
     await _require_perm(user, "schedule.edit")
+    rows = []
+    for s in payload.splits:
+        wd = s.work_date
+        if wd is not None:
+            wd = _parse_work_date(wd)
+        dumped = s.model_dump(exclude_unset=True)
+        row = {
+            "id": s.id,
+            "operator_email": s.operator_email,
+            "operator_name": s.operator_name,
+            "quantity": int(s.quantity),
+            "line_idx": s.line_idx,
+            "work_date": wd,
+        }
+        if "screen_size" in dumped:
+            row["screen_size"] = dumped.get("screen_size")
+        if "operator_user_id" in dumped:
+            row["operator_user_id"] = str(dumped.get("operator_user_id") or "").strip()
+        if "production_branch_id" in dumped:
+            row["production_branch_id"] = str(dumped.get("production_branch_id") or "").strip()
+        rows.append(row)
+    branch_ids = [row["production_branch_id"] for row in rows if row.get("production_branch_id")]
+    if branch_ids:
+        found = await db.branches.find(
+            {"id": {"$in": branch_ids}},
+            {"_id": 0, "id": 1, "active": 1},
+        ).to_list(len(branch_ids) + 5)
+        active_ids = {str(doc.get("id")) for doc in found if doc.get("active") is not False}
+        if any(branch_id not in active_ids for branch_id in branch_ids):
+            raise HTTPException(400, "Lokasi produksi tidak valid atau tidak aktif.")
 
     def mutate(order: dict):
         from services.production_wave2 import ScheduleError, guard_finalized_move, schedule_finalized
-        rows = []
-        for s in payload.splits:
-            wd = s.work_date
-            if wd is not None:
-                wd = _parse_work_date(wd)
-            dumped = s.model_dump(exclude_unset=True)
-            row = {
-                "id": s.id,
-                "operator_email": s.operator_email,
-                "operator_name": s.operator_name,
-                "quantity": int(s.quantity),
-                "line_idx": s.line_idx,
-                "work_date": wd,
-            }
-            if "screen_size" in dumped:
-                row["screen_size"] = dumped.get("screen_size")
-            if "operator_user_id" in dumped:
-                row["operator_user_id"] = str(dumped.get("operator_user_id") or "").strip()
-            rows.append(row)
         before = copy.deepcopy(order.get("operator_splits") or [])
         if schedule_finalized(order):
             try:
@@ -5106,7 +5119,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
     op_applied = {}
 
-    def mutate(order: dict):
+    async def mutate(order: dict):
         splits = order.get("operator_splits", [])
         found = next((s for s in splits if s["id"] == payload.operator_id), None)
         if not found:
@@ -5180,6 +5193,31 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         operator_uid = str(found.get("operator_user_id") or "").strip()
         if operator_uid:
             extra["operator_user_id"] = operator_uid
+        line_idx = found.get("line_idx")
+        try:
+            line_idx = int(line_idx) if line_idx is not None else None
+        except (TypeError, ValueError):
+            line_idx = None
+        line = None
+        lines = order.get("line_items") or []
+        if line_idx is not None and 0 <= line_idx < len(lines) and isinstance(lines[line_idx], dict):
+            line = lines[line_idx]
+        master = None
+        category = None
+        master_id = str((line or {}).get("master_item_id") or "").strip()
+        if master_id:
+            master = await db.master_items.find_one(
+                {"id": master_id},
+                {"_id": 0, "id": 1, "accurate_item_id": 1, "item_name": 1, "item_code": 1, "product_category_id": 1},
+            )
+        category_id = str((master or {}).get("product_category_id") or "").strip()
+        if category_id:
+            category = await db.product_categories.find_one(
+                {"id": category_id},
+                {"_id": 0, "id": 1, "name": 1},
+            )
+        from services.production_analytics import confirmation_snapshot
+        extra.update(confirmation_snapshot(line, master, category, found))
         entries, _entry, created = append_qty_entry(
             entries,
             qty=increment,
@@ -14403,6 +14441,51 @@ async def master_items_set_production_process(
 
 class MasterItemPhysicalFulfillmentPayload(BaseModel):
     physical_fulfillment: bool
+
+
+class ProductCategoryBody(BaseModel):
+    name: str
+
+
+class ProductCategoryUpdateBody(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class MasterProductCategoryBody(BaseModel):
+    category_id: Optional[str] = None
+
+
+@api_router.get("/product-categories")
+async def product_categories_list(user=Depends(require_perm("master_items.view"))):
+    from services.product_categories import list_categories
+    return await list_categories(db)
+
+
+@api_router.post("/product-categories")
+async def product_categories_create(body: ProductCategoryBody, user=Depends(require_perm("master_items.manage"))):
+    from services.product_categories import create_category
+    return await create_category(db, body.name, user=user)
+
+
+@api_router.patch("/product-categories/{category_id}")
+async def product_categories_update(
+    category_id: str,
+    body: ProductCategoryUpdateBody,
+    user=Depends(require_perm("master_items.manage")),
+):
+    from services.product_categories import update_category
+    return await update_category(db, category_id, name=body.name, active=body.active, user=user)
+
+
+@api_router.patch("/master-items/{item_id}/product-category")
+async def master_items_set_product_category(
+    item_id: str,
+    body: MasterProductCategoryBody,
+    user=Depends(require_perm("master_items.manage")),
+):
+    from services.product_categories import set_master_product_category
+    return await set_master_product_category(db, item_id, body.category_id, user=user)
 
 
 @api_router.patch("/master-items/{item_id}/physical-fulfillment")

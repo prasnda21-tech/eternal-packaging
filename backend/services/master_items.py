@@ -36,7 +36,11 @@ ORIGIN_ACCURATE = "accurate"
 ALLOWED_LOCAL_ITEM_TYPES = frozenset({"INVENTORY", "SERVICE", "NON_INVENTORY"})
 ALLOWED_PRODUCTION_PROCESS = frozenset({"print", "non_print"})
 # ERP-owned: never taken from Accurate sync payloads.
-ERP_OWNED_FIELDS = frozenset({"production_process", "physical_fulfillment"})
+ERP_OWNED_FIELDS = frozenset({
+    "production_process",
+    "physical_fulfillment",
+    "product_category_id",
+})
 ACCURATE_ID_PARTIAL_INDEX = "accurate_item_id_partial_unique"
 LEGACY_ACCURATE_ID_INDEX = "accurate_item_id_1"
 CODE_CLAIMS_INDEX = "code_key_unique"
@@ -105,6 +109,7 @@ def public_master_item(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         "is_active": doc.get("is_active"),
         "production_process": normalize_production_process(doc.get("production_process")),
         "physical_fulfillment": bool(doc.get("physical_fulfillment") is True),
+        "product_category_id": str(doc.get("product_category_id") or "").strip() or None,
         "origin": resolve_master_origin(doc),
         "accurate_updated_at": doc.get("accurate_updated_at"),
         "last_synced_at": doc.get("last_synced_at"),

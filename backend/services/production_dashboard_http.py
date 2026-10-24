@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from services.division_tasks import division_tasks_read_pipeline
 from services.finance_widget_layout import LayoutError
-from services.production_analytics import build_operator_analytics, build_plant_analytics
+from services.production_analytics import build_branch_output, build_operator_analytics, build_plant_analytics
 from services.production_dashboard_snapshot import build_production_snapshot
 from services.production_widget_layout import get_production_layout, reset_production_layout, save_production_layout
 
@@ -23,6 +23,7 @@ _SNAPSHOT_FIELDS = {
     "production_finish_target": 1,
     "created_at": 1,
 }
+_ANALYTICS_FIELDS = {"branch_id": 1}
 
 
 def _snapshot_pipeline(query: dict) -> list:
@@ -81,10 +82,17 @@ def register_production_dashboard_routes(
         body = build_production_snapshot(orders, generated_at=now_iso())
         return body
 
+    def _analytics_pipeline(query: dict) -> list:
+        stages = division_tasks_read_pipeline(query, limit=None)
+        for stage in stages:
+            if "$project" in stage:
+                stage["$project"] = {**stage["$project"], **_ANALYTICS_FIELDS}
+        return stages
+
     async def _analytics_orders():
         db = get_db()
         raw = await db.orders.aggregate(
-            division_tasks_read_pipeline({"cancelled": {"$ne": True}}, limit=None)
+            _analytics_pipeline({"cancelled": {"$ne": True}})
         ).to_list(None)
         return [order for order in raw if not order.get("cancelled")]
 
@@ -109,6 +117,23 @@ def register_production_dashboard_routes(
         chosen = _days(days)
         orders = await _analytics_orders()
         return build_operator_analytics(orders, days=chosen, generated_at=now_iso())
+
+    @api_router.get("/dashboard/produksi/branch-output")
+    async def production_branch_output(
+        days: int = 7,
+        user=Depends(require_perm("dashboard.production.branch_output")),
+    ):
+        """Actual production location and PO origin. Read only."""
+        chosen = _days(days)
+        db = get_db()
+        orders = await _analytics_orders()
+        docs = await db.branches.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+        names = {
+            str(doc.get("id")): str(doc.get("name") or doc.get("id"))
+            for doc in docs
+            if doc.get("id")
+        }
+        return build_branch_output(orders, branch_names=names, days=chosen, generated_at=now_iso())
 
     @api_router.get("/dashboard/produksi/layout")
     async def get_my_production_layout(user=Depends(current_user)):

@@ -311,6 +311,12 @@ def test_permission_catalog_does_not_grant_operator_analytics_by_default():
     for role_keys in ROLE_DEFAULT_PERMISSIONS.values():
         assert "dashboard.production.operator_analytics" not in role_keys
     assert "dashboard.production.operator_analytics" not in director_full_permission_set()
+    assert "dashboard.production.branch_output" in keys
+    assert "dashboard.production.machine_view" not in keys
+    assert "dashboard.production.machine_manage" not in keys
+    for _role, role_keys in ROLE_DEFAULT_PERMISSIONS.items():
+        assert "dashboard.production.branch_output" not in role_keys
+    assert "dashboard.production.branch_output" not in director_full_permission_set()
 
 
 def test_line_snapshot_survives_a_later_master_factor():
@@ -457,6 +463,7 @@ async def test_routes_are_permissioned_and_do_not_mutate(clean_db):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         plant = await client.get("/api/dashboard/produksi/analytics", params={"days": 7})
         denied = await client.get("/api/dashboard/produksi/operator-analytics", params={"days": 7})
+        branch_denied = await client.get("/api/dashboard/produksi/branch-output", params={"days": 7})
         bad_period = await client.get("/api/dashboard/produksi/analytics", params={"days": 14})
 
         async def analyst():
@@ -467,6 +474,16 @@ async def test_routes_are_permissioned_and_do_not_mutate(clean_db):
 
         app.dependency_overrides[current_user] = analyst
         allowed = await client.get("/api/dashboard/produksi/operator-analytics", params={"days": 30})
+        branch_still = await client.get("/api/dashboard/produksi/branch-output", params={"days": 7})
+
+        async def branch_reader():
+            return _user("branch", **{
+                "dashboard.production.view": True,
+                "dashboard.production.branch_output": True,
+            })
+
+        app.dependency_overrides[current_user] = branch_reader
+        branch_ok = await client.get("/api/dashboard/produksi/branch-output", params={"days": 7})
 
         async def stranger():
             return _user("stranger")
@@ -486,6 +503,10 @@ async def test_routes_are_permissioned_and_do_not_mutate(clean_db):
     assert plant.json()["conversion"]["status"] == "unverified"
     assert "pcs" not in plant.json()["today"]["by_unit"]
     assert denied.status_code == 403
+    assert branch_denied.status_code == 403
+    assert branch_still.status_code == 403
+    assert branch_ok.status_code == 200
+    assert "composition" in plant.json()
     assert bad_period.status_code == 400
     assert allowed.status_code == 200
     assert allowed.json()["performance"]["ranking"]["pack"][0]["qty"] == 1

@@ -24,8 +24,9 @@ function zeroOrComplete(value) {
 }
 
 const SNAPSHOT_IDS = ["po_aktif", "perlu_produksi", "po_urgent", "po_hold", "sisa_qty", "deadline", "approval", "prioritas", "kesiapan", "target_produksi", "po_terlambat", "target_realisasi", "aging", "ketepatan", "bottleneck"];
-const PLANT_IDS = ["output_hari_ini", "tren_output", "distribusi_tahap"];
+const PLANT_IDS = ["output_hari_ini", "tren_output", "distribusi_tahap", "komposisi"];
 const OPERATOR_IDS = ["output_operator", "beban_operator"];
+const BRANCH_IDS = ["output_cabang"];
 
 function mapToday(plant) {
   const today = plant?.today || {};
@@ -156,6 +157,7 @@ export function ProductionDashboardView({
   snapshotApi,
   analyticsApi = null,
   operatorAnalyticsApi = null,
+  branchOutputApi = null,
   simulation = null,
 }) {
   const [widgets, setWidgets] = useState([]);
@@ -173,6 +175,7 @@ export function ProductionDashboardView({
   const [models, setModels] = useState({});
   const [plant, setPlant] = useState(null);
   const [operatorBody, setOperatorBody] = useState(null);
+  const [branchBody, setBranchBody] = useState(null);
   const [days, setDays] = useState(7);
   const [scope, setScope] = useState("produksi");
   const [trendUnit, setTrendUnit] = useState("");
@@ -270,6 +273,7 @@ export function ProductionDashboardView({
       setModels(simulation.models || {});
       setPlant(null);
       setOperatorBody(null);
+      setBranchBody(null);
       return undefined;
     }
     const requestId = requestRef.current + 1;
@@ -285,7 +289,8 @@ export function ProductionDashboardView({
     const needSnapshot = SNAPSHOT_IDS.some(allowed);
     const needPlant = PLANT_IDS.some(allowed);
     const needOperator = OPERATOR_IDS.some(allowed);
-    if (!needSnapshot && !needPlant && !needOperator) return undefined;
+    const needBranch = BRANCH_IDS.some(allowed);
+    if (!needSnapshot && !needPlant && !needOperator && !needBranch) return undefined;
     let live = true;
     const jobs = [];
     if (needSnapshot) {
@@ -301,14 +306,21 @@ export function ProductionDashboardView({
         .then((body) => ({ kind: "operator", body }))
         .catch(() => ({ kind: "operator", error: true })));
     }
+    if (needBranch) {
+      jobs.push((branchOutputApi ? branchOutputApi(days) : Promise.reject(new Error("missing")))
+        .then((body) => ({ kind: "branch", body }))
+        .catch((error) => ({ kind: "branch", error: true, forbidden: error?.response?.status === 403 })));
+    }
     Promise.all(jobs).then((results) => {
       if (!live || requestId !== requestRef.current) return;
       const snapshot = results.find((item) => item.kind === "snapshot");
       const plantResult = results.find((item) => item.kind === "plant");
       const operatorResult = results.find((item) => item.kind === "operator");
+      const branchResult = results.find((item) => item.kind === "branch");
       const mapped = snapshot && !snapshot.error ? modelsFromSnapshot(snapshot.body) : null;
       setPlant(plantResult && !plantResult.error ? plantResult.body : null);
       setOperatorBody(operatorResult && !operatorResult.error ? operatorResult.body : null);
+      setBranchBody(branchResult && !branchResult.error ? branchResult.body : null);
       setModels((current) => {
         const patch = { ...current };
         widgets.forEach((widget) => {
@@ -317,7 +329,14 @@ export function ProductionDashboardView({
             patch[widget.widget_id] = mapped ? (mapped[widget.widget_id] || { status: "incomplete" }) : { status: "error" };
           }
           if (PLANT_IDS.includes(widget.widget_id)) {
-            patch[widget.widget_id] = plantResult && !plantResult.error ? { status: "ready" } : { status: "error" };
+            patch[widget.widget_id] = plantResult && !plantResult.error
+              ? (widget.widget_id === "komposisi" ? { status: "ready", ...(plantResult.body.composition || {}) } : { status: "ready" })
+              : { status: "error" };
+          }
+          if (BRANCH_IDS.includes(widget.widget_id)) {
+            patch[widget.widget_id] = branchResult && !branchResult.error
+              ? { status: "ready", ...branchResult.body }
+              : { status: branchResult && branchResult.forbidden ? "forbidden" : "error" };
           }
           if (OPERATOR_IDS.includes(widget.widget_id)) {
             patch[widget.widget_id] = operatorResult && !operatorResult.error ? { status: "ready" } : { status: "error" };
@@ -341,13 +360,15 @@ export function ProductionDashboardView({
       fill("output_hari_ini", mapToday(plant));
       fill("tren_output", mapTrend(plant, trendUnit));
       fill("distribusi_tahap", mapWorkflow(plant, scope));
+      if (plant.composition) fill("komposisi", { status: plant.composition.status || "ready", ...plant.composition });
     }
+    if (branchBody) fill("output_cabang", { status: branchBody.status || "ready", ...branchBody });
     if (operatorBody) {
       fill("output_operator", mapPerformance(operatorBody, operatorUnit));
       fill("beban_operator", mapWorkload(operatorBody));
     }
     return patch;
-  }, [models, plant, operatorBody, scope, trendUnit, operatorUnit, simulation]);
+  }, [models, plant, operatorBody, branchBody, scope, trendUnit, operatorUnit, simulation]);
 
   const needle = query.trim().toLowerCase();
   const chips = [
@@ -505,6 +526,7 @@ function RoutedProductionDashboard() {
       snapshotApi={() => api.productionSnapshot()}
       analyticsApi={(period) => api.productionAnalytics(period)}
       operatorAnalyticsApi={(period) => api.productionOperatorAnalytics(period)}
+      branchOutputApi={(period) => api.productionBranchOutput(period)}
     />
   );
 }
