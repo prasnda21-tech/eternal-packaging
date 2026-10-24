@@ -152,6 +152,7 @@ PERMISSION_CATALOG = [
     ("Operator", "operator.sample_upload", "Upload sample cetak"),
     ("Operator", "operator.sample_approve", "Approve sample cetak"),
     ("Produksi", "work_panel.view", "Lihat Form Pekerjaan Divisi"),
+    ("Pengaturan", "settings.operational_calendar.manage", "Kelola Kalender Libur Operasional"),
     ("Pengaturan", "settings.work_panel.view", "Lihat pengaturan Form Pekerjaan Divisi"),
     ("Pengaturan", "settings.work_panel.manage", "Ubah pengaturan Form Pekerjaan Divisi"),
     ("Pengaturan", "settings.design_cetakan.view", "Lihat Design Cetakan"),
@@ -219,6 +220,8 @@ PERMISSION_CATALOG = [
     ("Role & Permission", "permissions.manage", "Ubah default permission role"),
     ("Role & Permission", "super_admin.manage", "Kelola Super Admin"),
     ("Dashboard Produksi", "dashboard.production.view", "Lihat Dashboard Produksi"),
+    ("Dashboard Produksi", "dashboard.production.operator_analytics", "Lihat analitik operator Dashboard Produksi"),
+    ("Dashboard Produksi", "dashboard.production.branch_output", "Lihat output produksi per cabang"),
     ("Dashboard Keuangan", "dashboard.finance.view", "Lihat Dashboard Keuangan"),
     ("Dashboard Penjualan", "dashboard.sales.view", "Lihat Dashboard Penjualan"),
     ("Dashboard Owner", "dashboard.owner.view", "Lihat Dashboard Owner (read-only)"),
@@ -447,6 +450,11 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "reports.purchase.view",
     "reports.purchase.export",
     # Urgent PO approval workflow — default OFF; never implied by urgent.manage.
+    # Performa dan beban operator. Tidak ikut dashboard.production.view atau schedule.view.
+    # Output per cabang. Tidak ikut dashboard.production.view.
+    "dashboard.production.operator_analytics",
+    "dashboard.production.branch_output",
+    "settings.operational_calendar.manage",
     "urgent.request",
     "urgent.review",
     "urgent.approve",
@@ -462,6 +470,9 @@ DIRECTOR_MUST_OPT_IN_PERMISSIONS = frozenset({
     "sales.invoice.cancel",
     "sales.receipt.cancel",
     "sales.receipt.edit",
+    "dashboard.production.operator_analytics",
+    "dashboard.production.branch_output",
+    "settings.operational_calendar.manage",
     "urgent.request",
     "urgent.review",
     "urgent.approve",

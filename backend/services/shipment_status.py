@@ -28,6 +28,7 @@ SHIPMENT_STATUS_PROJECTION = {
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "delivery_sla_v2": 1,
     "delivered_at": 1,
     "delivery_proofs.uploaded_at": 1,
     "delivery_proofs.created_at": 1,

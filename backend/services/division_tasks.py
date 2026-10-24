@@ -292,17 +292,20 @@ def _rewrite_present_array(field: str, mapped: dict) -> dict:
     }
 
 
-def division_tasks_read_pipeline(query: dict) -> list:
+def division_tasks_read_pipeline(query: dict, *, limit: Optional[int] = 1000) -> list:
     """Same unordered 1000-document cap as the previous find().
 
     Legacy inline SJ bytes become LIST_INLINE_PRESENT inside this pipeline.
     The aggregation result itself has no data_url, progress photo/photos, or
     url value that is an inline data: payload. Other url values stay.
     The stored document is not updated.
+
+    limit=None omits the cap. Division task lists keep the default of 1000.
     """
-    return [
-        {"$match": query},
-        {"$limit": 1000},
+    stages = [{"$match": query}]
+    if limit is not None:
+        stages.append({"$limit": limit})
+    stages.extend([
         {"$project": TASK_PROJECTION},
         {"$set": {
             "surat_jalan_files": {
@@ -348,7 +351,8 @@ def division_tasks_read_pipeline(query: dict) -> list:
                 ]
             },
         }},
-    ]
+    ])
+    return stages
 
 
 def _is_inline_data_url(value) -> bool:

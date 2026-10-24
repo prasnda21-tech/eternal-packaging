@@ -126,6 +126,19 @@ def _match_existing(existing: List[dict], payload_row: dict) -> Optional[dict]:
 
 
 _SCREEN_UNSET = object()
+_BRANCH_UNSET = object()
+
+
+def _payload_branch(raw: dict):
+    if not isinstance(raw, dict) or "production_branch_id" not in raw:
+        return _BRANCH_UNSET
+    return str(raw.get("production_branch_id") or "").strip()
+
+
+def _stored_branch(split: Optional[dict]) -> str:
+    if not isinstance(split, dict):
+        return ""
+    return str(split.get("production_branch_id") or "").strip()
 
 
 def _payload_screen_token(raw: dict):
@@ -278,6 +291,32 @@ def apply_operator_assignments(
         }
         if operator_user_id:
             row["operator_user_id"] = operator_user_id
+        branch_token = _payload_branch(raw)
+        prev_branch = _stored_branch(prev)
+        if branch_token is _BRANCH_UNSET:
+            branch = prev_branch
+        else:
+            branch = branch_token
+        if prev and completed > 0 and branch != prev_branch:
+            raise ValueError(
+                "Lokasi produksi yang sudah punya qty terkonfirmasi tidak dapat dipindah "
+                "pada baris yang sama. Buat alokasi baru untuk sisa qty di cabang tujuan. "
+                "Progress lama tetap di lokasi asal."
+            )
+        if branch:
+            row["production_branch_id"] = branch
+        if prev and branch != prev_branch:
+            revisions = list(order.get("production_location_revisions") or [])
+            revisions.append({
+                "at": now,
+                "by": (user or {}).get("email"),
+                "split_id": sid,
+                "line_idx": line_idx,
+                "from_branch_id": prev_branch or None,
+                "to_branch_id": branch or None,
+                "confirmed_qty": completed,
+            })
+            order["production_location_revisions"] = revisions
         write_allocation_screen(row, raw, prev)
         new_splits.append(row)
 

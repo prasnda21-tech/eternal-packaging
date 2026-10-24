@@ -3,6 +3,13 @@ import { AlertTriangle, Clock, Calendar, RotateCcw, Edit3 } from "lucide-react";
 import api from "../lib/api";
 import { formatApiError } from "../lib/errors";
 
+function fmtDateKey(key) {
+  if (!key || String(key).length < 10) return "-";
+  const [y, m, d] = String(key).slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return String(key);
+  return new Date(y, m - 1, d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 function fmt(iso) {
   if (!iso) return "-";
   try {
@@ -37,6 +44,7 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
   const [draftDt, setDraftDt] = useState("");
   const [draftReason, setDraftReason] = useState("");
 
+  const fact = order?.delivery_sla_effective;
   const effective = order?.delivery_deadline_effective;
   const source = order?.delivery_deadline_source || "none";
   const status = order?.delivery_deadline_status || "unknown";
@@ -94,8 +102,15 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
     <section className="panel" data-testid="delivery-deadline-panel">
       <header className="panel-head">
         <h3><Calendar size={14}/> Deadline Pengiriman</h3>
-        <span className={`pill sm dd-source-${source}`} data-testid="dd-source-badge">
-          {source === "manual" ? "Manual" : source === "automatic" ? "Otomatis" : "Belum tersedia"}
+        <span className={`pill sm dd-source-${fact?.source || source}`} data-testid="dd-source-badge">
+          {fact?.source === "jadwal_pengiriman" ? "Jadwal Pengiriman"
+            : fact?.source === "otomatis" ? "Otomatis"
+            : fact?.source === "manual" ? "Manual"
+            : fact?.source === "belum_dijadwalkan" ? "Belum Dijadwalkan"
+            : fact?.source === "legacy" ? "Legacy"
+            : source === "manual" ? "Manual"
+            : source === "automatic" ? "Otomatis"
+            : "Belum tersedia"}
         </span>
       </header>
 
@@ -113,9 +128,10 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
       )}
 
       <div className="row" style={{ display: "flex", flexWrap: "wrap", gap: "8px 20px", fontSize: 13 }}>
-        <div><span className="muted small">Effective</span><br/><strong data-testid="dd-effective">{fmt(effective)}</strong></div>
+        <div><span className="muted small">Effective</span><br/><strong data-testid="dd-effective">{fact?.date ? fmtDateKey(fact.date) : fmt(effective)}</strong></div>
         {source === "manual" && <div><span className="muted small">Manual oleh</span><br/>{manualBy || "-"}</div>}
-        {source === "automatic" && lead && <div><span className="muted small">Formula</span><br/>Approval terakhir + {lead} hari</div>}
+        {fact?.contract === "sla_v2" && fact?.source === "otomatis" && <div><span className="muted small">Formula</span><br/>{order?.delivery_sla_v2?.working_days || 3} hari kerja setelah kedua approval</div>}
+        {source === "automatic" && fact?.source !== "otomatis" && lead && <div><span className="muted small">Formula</span><br/>Approval terakhir + {lead} hari</div>}
         {calc && source === "manual" && <div><span className="muted small">Otomatis (ref)</span><br/>{fmt(calc)}</div>}
       </div>
 

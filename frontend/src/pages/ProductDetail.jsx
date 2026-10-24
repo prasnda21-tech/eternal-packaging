@@ -68,6 +68,18 @@ export default function ProductDetail() {
   const [processSaving, setProcessSaving] = useState(false);
   const [processSuccess, setProcessSuccess] = useState("");
   const [processError, setProcessError] = useState("");
+  const [categories, setCategories] = useState([]);
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryMsg, setCategoryMsg] = useState("");
+  const [categoryErr, setCategoryErr] = useState("");
+
+  const reloadCategories = useCallback(() => {
+    api.productCategories().then((body) => setCategories(body.items || [])).catch(() => setCategories([]));
+  }, []);
+
+  useEffect(() => {
+    reloadCategories();
+  }, [reloadCategories, id]);
 
   const [physicalStock, setPhysicalStock] = useState(null);
   const [branches, setBranches] = useState([]);
@@ -527,6 +539,78 @@ export default function ProductDetail() {
                     {processError && (
                       <p role="alert" className="muted small" style={{ color: "#b42318", marginTop: 4 }} data-testid="product-process-error">{processError}</p>
                     )}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ color: "#64748b", fontWeight: 500 }}>Kategori produksi</td>
+                  <td>
+                    {canManageMaster ? (
+                      <select
+                        value={item.product_category_id || ""}
+                        data-testid="product-category-select"
+                        aria-label="Kategori produksi"
+                        onChange={async (e) => {
+                          const next = e.target.value || null;
+                          setCategoryErr("");
+                          setCategoryMsg("");
+                          try {
+                            const updated = await api.masterItemsSetProductCategory(item.id, next);
+                            setProductData((prev) => (
+                              prev ? { ...prev, item: { ...(prev.item || {}), product_category_id: updated.product_category_id } } : prev
+                            ));
+                            setCategoryMsg(next ? "Kategori tersimpan. Histori konfirmasi lama tidak diubah." : "Item tanpa kategori. Output masuk Belum Dikategorikan.");
+                          } catch (ex) {
+                            const det = ex.response?.data?.detail;
+                            setCategoryErr(typeof det === "string" ? det : "Gagal menyimpan kategori");
+                          }
+                        }}
+                      >
+                        <option value="">Belum dikategorikan</option>
+                        {categories.filter((row) => row.active !== false).map((row) => (
+                          <option key={row.id} value={row.id}>{row.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span data-testid="product-category-label">
+                        {categories.find((row) => row.id === item.product_category_id)?.name || "Belum dikategorikan"}
+                      </span>
+                    )}
+                    <p className="muted small" style={{ marginTop: 6 }}>
+                      Kategori internal Eternal. Sync Accurate dan katalog publik tidak menimpa kategori ini.
+                    </p>
+                    {canManageMaster ? (
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        <input
+                          value={categoryName}
+                          onChange={(e) => setCategoryName(e.target.value)}
+                          placeholder="Nama kategori baru"
+                          data-testid="product-category-name"
+                          aria-label="Nama kategori baru"
+                        />
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          data-testid="product-category-create"
+                          onClick={async () => {
+                            setCategoryErr("");
+                            setCategoryMsg("");
+                            try {
+                              await api.productCategoryCreate(categoryName);
+                              setCategoryName("");
+                              setCategoryMsg("Kategori dibuat. Belum menempel ke item ini.");
+                              reloadCategories();
+                            } catch (ex) {
+                              const det = ex.response?.data?.detail;
+                              setCategoryErr(typeof det === "string" ? det : "Gagal membuat kategori");
+                            }
+                          }}
+                        >
+                          Tambah kategori
+                        </button>
+                      </div>
+                    ) : null}
+                    {categoryMsg ? <p className="muted small" data-testid="product-category-msg">{categoryMsg}</p> : null}
+                    {categoryErr ? <p role="alert" className="muted small" style={{ color: "#b42318" }}>{categoryErr}</p> : null}
                   </td>
                 </tr>
                 {item.accurate_item_id && (

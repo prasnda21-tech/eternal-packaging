@@ -1,0 +1,145 @@
+.ops-holiday {
+  display: grid;
+  gap: 16px;
+  max-width: 880px;
+}
+.ops-holiday-head h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  color: #1e293b;
+}
+.ops-holiday-head p {
+  margin: 0;
+  max-width: 62ch;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ops-holiday-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+}
+.ops-holiday-form {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+.ops-holiday-form label,
+.ops-holiday-edit {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #475569;
+}
+.content .ops-holiday input[type="date"],
+.content .ops-holiday input[type="text"],
+.content .ops-holiday input:not([type]) {
+  width: 100%;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+  box-shadow: none;
+}
+.ops-holiday-add,
+.ops-holiday-actions button,
+.ops-holiday-edit button,
+.ops-holiday-confirm button {
+  height: 36px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #d6d3d1;
+  background: #fff;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 650;
+}
+.ops-holiday-add {
+  background: #1e293b;
+  border-color: #1e293b;
+  color: #fff;
+}
+.ops-holiday-add:disabled {
+  opacity: 0.55;
+}
+.ops-holiday-feedback {
+  margin: 0;
+  font-size: 13px;
+  color: #475569;
+}
+.ops-holiday-error {
+  color: #9f1239;
+}
+.ops-holiday ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.ops-holiday li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid #e5e7eb;
+}
+.ops-holiday li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.ops-holiday li strong {
+  display: block;
+  font-size: 14px;
+  color: #1e293b;
+}
+.ops-holiday li span {
+  color: #64748b;
+  font-size: 12px;
+}
+.ops-holiday-actions,
+.ops-holiday-confirm {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ops-holiday-confirm {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 13px;
+}
+.ops-holiday-empty {
+  display: block;
+  color: #64748b;
+  font-size: 13px;
+}
+.ops-holiday-edit {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+@media (max-width: 1366px) {
+  .ops-holiday-form {
+    grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+  }
+  .ops-holiday-add {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}

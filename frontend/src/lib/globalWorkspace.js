@@ -21,6 +21,7 @@ import { createWorkspaceTabApi } from "./workspaceTabs";
 import { hydratePoDetailStoredTab, poDetailWorkspaceTab } from "./poWorkspaceTab";
 import { canSeeSpkNav } from "./spk";
 import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { canOpenFinanceDashboard } from "../components/financeDashboard/financeWidgetCatalog";
 import { canAccessOwnerDashboard } from "./ownerAnalytics";
 import { withWorkspaceRememberSearch } from "./workspaceSmartOptIn";
 
@@ -71,8 +72,15 @@ export function visibleGlobalWorkspaceCatalog(hasPerm, user) {
       path: "/dashboard/penjualan",
       label: "Dashboard Penjualan",
       matches(path) {
-        return path === "/dashboard/penjualan" || path === "/dashboard/widget" || path === "/dashboard/keuangan";
+        return path === "/dashboard/penjualan" || path === "/dashboard/widget";
       },
+    });
+  }
+  if (canOpenFinanceDashboard(hasPerm)) {
+    tabs.push({
+      id: "dashboard-keuangan",
+      path: "/dashboard/keuangan",
+      label: "Dashboard Keuangan",
     });
   }
 

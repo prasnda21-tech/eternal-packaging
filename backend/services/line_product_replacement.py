@@ -37,6 +37,7 @@ REASON_NOT_FOUND = "PRODUK_TIDAK_DITEMUKAN"
 REASON_SAME_PRODUCT = "PRODUK_SAMA"
 REASON_INVALID_LINE = "LINE_TIDAK_VALID"
 REASON_CANCELLED = "PO_DIBATALKAN"
+REASON_PRINT_CONFIRMED = "CETAK_SUDAH_DIKONFIRMASI"
 
 MSG_SAMPLE = "Barang tidak dapat diganti karena item sudah memasuki tahap Sampel Cetak."
 MSG_DOWNSTREAM = (
@@ -63,6 +64,9 @@ MSG_NOT_FOUND = "Produk target tidak ditemukan di Barang/Jasa."
 MSG_SAME = "Produk pengganti sama dengan barang saat ini."
 MSG_INVALID_LINE = "Line item tidak ditemukan."
 MSG_CANCELLED = "PO dibatalkan — barang tidak dapat diganti."
+MSG_PRINT_CONFIRMED = (
+    "Produk tidak dapat diganti karena qty cetak pada line ini sudah dikonfirmasi."
+)
 MSG_QTY_CANCELLED = "PO dibatalkan — qty tidak dapat diubah."
 
 # Product-derived fields mirrored from create_sales_order / PesananPenjualan mapping.
@@ -73,6 +77,48 @@ PRODUCT_DERIVED_FIELDS = (
     "accurate_item_id",
     "master_item_id",
 )
+
+
+def _entry_qty(entry: dict) -> int:
+    try:
+        qty = int(entry.get("qty") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return qty if qty > 0 else 0
+
+
+def confirmed_print_locks_line(order: dict, line_idx: int) -> bool:
+    """A valid confirmed print entry locks the line product.
+
+    Legacy, cancelled, and replaced rows do not lock.
+    A repeated action_id does not create a second lock.
+    """
+    try:
+        wanted = int(line_idx)
+    except (TypeError, ValueError):
+        return False
+    seen_actions = set()
+    for split in (order or {}).get("operator_splits") or []:
+        if not isinstance(split, dict):
+            continue
+        try:
+            if int(split.get("line_idx")) != wanted:
+                continue
+        except (TypeError, ValueError):
+            continue
+        for entry in split.get("progress_entries") or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("cancelled") or entry.get("replaced") or entry.get("legacy") is True:
+                continue
+            action_id = str(entry.get("action_id") or "").strip()
+            if action_id:
+                if action_id in seen_actions:
+                    continue
+                seen_actions.add(action_id)
+            if _entry_qty(entry) > 0:
+                return True
+    return False
 
 
 def line_production_process(li: dict) -> str:
@@ -358,6 +404,9 @@ async def evaluate_line_product_replacement(
 
     if process == "print" and sample_uploaded(order):
         return finish(False, REASON_SAMPLE, MSG_SAMPLE, [])
+
+    if confirmed_print_locks_line(order, idx):
+        return finish(False, REASON_PRINT_CONFIRMED, MSG_PRINT_CONFIRMED, [])
 
     return finish(True, None, None, [])
 

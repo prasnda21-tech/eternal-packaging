@@ -7,8 +7,9 @@ import MobileOperationalLayout from "./mobile/MobileOperationalLayout";
 import MobileTasksPage from "./mobile/MobileTasksPage";
 import Login from "./pages/Login";
 import { canOpenWidgetDashboard } from "./components/widgetDashboard/widgetDashboardCatalog";
+import { canOpenFinanceDashboard } from "./components/financeDashboard/financeWidgetCatalog";
 import { canAccessOwnerDashboard } from "./lib/ownerAnalytics";
-import { widgetDashboardAliasTarget, widgetDashboardFinanceTarget } from "./components/widgetDashboard/widgetDashboardLocation";
+import { widgetDashboardAliasTarget } from "./components/widgetDashboard/widgetDashboardLocation";
 import { NAV_KEYS, cashBankNavVisible, employeeAdminNavVisible, hrPayrollNavVisible, inventoryNavVisible, ledgerNavVisible, purchasingNavVisible, reportsNavVisible } from "./lib/navAccess";
 import { inventoryValueRouteAllowed } from "./lib/inventoryValueLink";
 import { SPK_ACCESS_KEYS } from "./lib/spk";
@@ -61,9 +62,10 @@ const OptimasiRute = lazy(() => import("./pages/OptimasiRute"));
 const OptimasiRuteEditor = lazy(() => import("./pages/OptimasiRuteEditor"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const PODetail = lazy(() => import("./pages/PODetail"));
-const HoPDashboard = lazy(() => import("./pages/HoPDashboard"));
+const ProductionDashboard = lazy(() => import("./pages/ProductionDashboard"));
 const OwnerDashboard = lazy(() => import("./pages/OwnerDashboard"));
 const WidgetDashboard = lazy(() => import("./pages/WidgetDashboard"));
+const FinanceDashboard = lazy(() => import("./pages/FinanceDashboard"));
 const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SentralisasiCat = lazy(() => import("./pages/SentralisasiCat"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
@@ -127,7 +129,7 @@ const SalesPwaReceivablesPage = lazy(() => import("./sales/SalesPwaReceivablesPa
 const SalesPwaPredictionsPage = lazy(() => import("./sales/SalesPwaPredictionsPage"));
 const SalesPwaProfilePage = lazy(() => import("./sales/SalesPwaProfilePage"));
 
-const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "settings.public_catalog.view", "settings.public_catalog.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage", "settings.sales_user_mapping.view", "settings.sales_user_mapping.manage", "settings.sales_master.view", "settings.sales_master.manage", "settings.crm_daily_report.view", "settings.crm_daily_report.manage"];
+const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "settings.operational_calendar.manage", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "settings.public_catalog.view", "settings.public_catalog.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage", "settings.sales_user_mapping.view", "settings.sales_user_mapping.manage", "settings.sales_master.view", "settings.sales_master.manage", "settings.crm_daily_report.view", "settings.crm_daily_report.manage"];
 const PHYSICAL_STOCK_SETTINGS_PERMS = ["current_stock.view", "current_stock.update", "permissions.manage"];
 const SETTINGS_HUB_PERMS = [...SETTINGS_PERMS, "current_stock.view", "current_stock.update"];
 const PhysicalStockSettingsRoute = Settings;
@@ -186,13 +188,10 @@ function WidgetDashboardAlias() {
   );
 }
 
-function WidgetDashboardFinanceAlias() {
-  const location = useLocation();
-  return (
-    <WidgetDashboardGate>
-      <Navigate to={widgetDashboardFinanceTarget(location)} replace />
-    </WidgetDashboardGate>
-  );
+function FinanceDashboardGate({ children }) {
+  const { hasPerm } = useAuth();
+  if (!canOpenFinanceDashboard(hasPerm)) return <Navigate to="/" replace />;
+  return children;
 }
 
 function NilaiPersediaanGate({ children }) {
@@ -339,11 +338,11 @@ export default function App() {
             <Route path="/spk" element={<PermGate anyOf={SPK_ACCESS_KEYS}><SpkDashboard /></PermGate>} />
             <Route path="/chat" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
             <Route path="/chat/:roomId" element={<PermGate anyOf={[NAV_KEYS.chat, "chat.use"]}><ChatPage /></PermGate>} />
-            <Route path="/dashboard/keuangan" element={<WidgetDashboardFinanceAlias />} />
+            <Route path="/dashboard/keuangan" element={<FinanceDashboardGate><FinanceDashboard /></FinanceDashboardGate>} />
             <Route path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>} />
             <Route path="/dashboard/widget" element={<WidgetDashboardAlias />} />
             <Route path="/dashboard/owner" element={<OwnerDashboardGate><OwnerDashboard /></OwnerDashboardGate>} />
-            <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><HoPDashboard /></PermGate>} />
+            <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><ProductionDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/kepala-produksi/prioritas/:kpi" element={<PermGate anyOf={[NAV_KEYS.tasksKepalaProduksi, "schedule.edit"]}><KepalaProduksiKpiDetailPage /></PermGate>} />

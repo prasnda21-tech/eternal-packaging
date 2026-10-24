@@ -4,15 +4,15 @@ import { dashboardMenuItems, dashboardNavVisible, NAV_KEYS } from "./navAccess";
 const has = (...keys) => (key) => keys.includes(key);
 
 describe("sales dashboard access", () => {
-  test("sales permission opens only Dashboard Penjualan", () => {
+  test("sales permission opens Dashboard Keuangan", () => {
     const visible = dashboardNavVisible(has("dashboard.sales.view"));
     expect(visible).toEqual({ parent: true, production: false, owner: false, sales: true, finance: false });
     expect(dashboardMenuItems(has("dashboard.sales.view"))).toEqual([
       expect.objectContaining({
-        label: "Dashboard Penjualan",
-        to: "/dashboard/penjualan",
+        label: "Dashboard Keuangan",
+        to: "/dashboard/keuangan",
         end: true,
-        testid: "top-nav-dashboard-penjualan",
+        testid: "top-nav-dashboard-keuangan",
       }),
     ]);
   });
@@ -20,21 +20,21 @@ describe("sales dashboard access", () => {
   test("production and finance stay on their own entries when sales is absent", () => {
     expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.finance.view")).map((item) => item.to)).toEqual([
       "/dashboard",
-      "/dashboard/penjualan",
+      "/dashboard/keuangan",
     ]);
     expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.finance.view")).map((item) => item.label)).toEqual([
       "Dashboard Produksi",
-      "Dashboard Penjualan",
+      "Dashboard Keuangan",
     ]);
   });
 
-  test("sales and finance share one menu entry", () => {
+  test("sales and finance share one keuangan menu entry", () => {
     expect(dashboardMenuItems(has("dashboard.sales.view", "dashboard.finance.view")).map((item) => item.to)).toEqual([
-      "/dashboard/penjualan",
+      "/dashboard/keuangan",
     ]);
   });
 
-  test("operations-only access opens the same penjualan menu", () => {
+  test("widget-only access keeps the legacy penjualan route", () => {
     const items = dashboardMenuItems(has("po.view"), { role: "ops" });
     expect(dashboardNavVisible(has("po.view"), { role: "ops" })).toEqual({
       parent: true,
@@ -43,21 +43,19 @@ describe("sales dashboard access", () => {
       sales: false,
       finance: false,
     });
-    expect(items.map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
     expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
   });
 
-  test("finance-only access keeps one penjualan menu item", () => {
+  test("finance-only access opens Dashboard Keuangan", () => {
     const items = dashboardMenuItems(has("dashboard.finance.view"), { role: "finance" });
-    expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
-    expect(items.map((item) => item.label)).toEqual(["Dashboard Penjualan"]);
+    expect(items.map((item) => item.to)).toEqual(["/dashboard/keuangan"]);
+    expect(items.map((item) => item.label)).toEqual(["Dashboard Keuangan"]);
   });
 
-  test("admin without stored keys sees penjualan because O2 and O3 are allowed", () => {
+  test("admin without a finance widget permission does not see Dashboard Keuangan", () => {
     const items = dashboardMenuItems(() => false, { role: "admin" });
-    expect(items.map((item) => ({ label: item.label, to: item.to }))).toEqual([
-      { label: "Dashboard Penjualan", to: "/dashboard/penjualan" },
-    ]);
+    expect(items.map((item) => item.to)).toEqual(["/dashboard/penjualan"]);
+    expect(items.some((item) => item.to === "/dashboard/keuangan")).toBe(false);
   });
 
   test("a user with no widget permission does not see a dashboard menu", () => {
@@ -68,8 +66,8 @@ describe("sales dashboard access", () => {
 
   test("production stays its own menu and does not add a second penjualan entry", () => {
     const items = dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.sales.view", "po.view"), { role: "admin" });
-    expect(items.map((item) => item.to)).toEqual(["/dashboard", "/dashboard/penjualan"]);
-    expect(items.filter((item) => item.label === "Dashboard Penjualan")).toHaveLength(1);
+    expect(items.map((item) => item.to)).toEqual(["/dashboard", "/dashboard/keuangan"]);
+    expect(items.filter((item) => item.label === "Dashboard Keuangan")).toHaveLength(1);
     expect(items.some((item) => item.to === "/dashboard/widget")).toBe(false);
   });
 });

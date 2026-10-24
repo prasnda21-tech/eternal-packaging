@@ -58,7 +58,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
       "OptimasiRuteEditor",
       "Dashboard",
       "PODetail",
-      "HoPDashboard",
+      "ProductionDashboard",
       "ProductionSchedule",
       "SuratJalan",
       "PesananPenjualan",

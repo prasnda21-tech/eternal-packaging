@@ -1,7 +1,8 @@
 /** Sidebar / page visibility helpers over existing `hasPerm` + nav.* keys. */
 
-import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
 import { canAccessOwnerDashboard } from "./ownerAnalytics";
+import { canOpenFinanceDashboard } from "../components/financeDashboard/financeWidgetCatalog";
+import { canOpenWidgetDashboard } from "../components/widgetDashboard/widgetDashboardCatalog";
 import { userHasReportCatalogAccess } from "./reportCatalog";
 
 export const NAV_KEYS = {
@@ -194,9 +195,10 @@ export function dashboardNavVisible(hasPerm, user) {
   const owner = canAccessOwnerDashboard(user, hasPerm);
   const sales = canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || canSeeNav(hasPerm, "dashboard.sales.view");
   const finance = canSeeNav(hasPerm, NAV_KEYS.dashboardFinance) || canSeeNav(hasPerm, "dashboard.finance.view");
-  const widget = canOpenWidgetDashboard(user, hasPerm);
+  const hasMainDashboard = Boolean(production || canOpenFinanceDashboard(hasPerm));
+  const legacyWidget = !hasMainDashboard && canOpenWidgetDashboard(user, hasPerm);
   return {
-    parent: Boolean(production || widget || owner),
+    parent: Boolean(hasMainDashboard || owner || legacyWidget),
     production: Boolean(production),
     owner: Boolean(owner),
     sales: Boolean(sales),
@@ -207,16 +209,6 @@ export function dashboardNavVisible(hasPerm, user) {
 export function dashboardMenuItems(hasPerm, user) {
   const visible = dashboardNavVisible(hasPerm, user);
   const items = [];
-  if (visible.owner) {
-    items.push({
-      key: NAV_KEYS.dashboardOwner,
-      label: "Dashboard Owner",
-      to: "/dashboard/owner",
-      end: true,
-      tone: "green",
-      testid: "top-nav-dashboard-owner",
-    });
-  }
   if (visible.production) {
     items.push({
       key: NAV_KEYS.dashboard,
@@ -227,9 +219,30 @@ export function dashboardMenuItems(hasPerm, user) {
       testid: "top-nav-dashboard-produksi",
     });
   }
+  if (canOpenFinanceDashboard(hasPerm)) {
+    items.push({
+      key: NAV_KEYS.dashboardFinance,
+      label: "Dashboard Keuangan",
+      to: "/dashboard/keuangan",
+      end: true,
+      tone: "green",
+      testid: "top-nav-dashboard-keuangan",
+    });
+  }
+  if (visible.production || canOpenFinanceDashboard(hasPerm)) return items;
+  if (visible.owner) {
+    items.push({
+      key: NAV_KEYS.dashboardOwner,
+      label: "Dashboard Owner",
+      to: "/dashboard/owner",
+      end: true,
+      tone: "green",
+      testid: "top-nav-dashboard-owner",
+    });
+  }
   if (canOpenWidgetDashboard(user, hasPerm)) {
     items.push({
-      key: visible.sales || !visible.finance ? NAV_KEYS.dashboardSales : NAV_KEYS.dashboardFinance,
+      key: NAV_KEYS.dashboardSales,
       label: "Dashboard Penjualan",
       to: "/dashboard/penjualan",
       end: true,
@@ -1228,6 +1241,7 @@ export const SETTINGS_TAB_IDS = [
   "customer-approval",
   "notifications",
   "delivery-deadline",
+  "operational-calendar",
   "operator-target",
   "work-panel",
   "employee-admin",
@@ -1293,7 +1307,8 @@ export const SETTINGS_TILE_LABELS = {
   "pricing-catalog": "Harga & Katalog",
   "customer-approval": "Customer Approval",
   "notifications": "Notifikasi",
-  "delivery-deadline": "Deadline Pengiriman",
+  "delivery-deadline": "Estimasi Pengiriman",
+  "operational-calendar": "Kalender Libur Operasional",
   "operator-target": "Target Output Operator",
   "work-panel": "Form Pekerjaan Divisi",
   "employee-admin": "Administrasi Karyawan",
@@ -1415,6 +1430,7 @@ export function settingsNavVisible(hasPerm) {
     "customer-approval": Boolean(parentGranted && customerApproval),
     "notifications": Boolean(parentGranted && customerApproval),
     "delivery-deadline": Boolean(parentGranted && deliveryDeadline),
+    "operational-calendar": Boolean(parentGranted && canSeeNav(hasPerm, "settings.operational_calendar.manage")),
     "operator-target": Boolean(parentGranted && operatorTarget),
     "work-panel": Boolean(parentGranted && workPanel),
     "employee-admin": Boolean(parentGranted && employeeAdmin),

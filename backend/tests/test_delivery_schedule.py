@@ -207,7 +207,15 @@ def test_schedule_status_today_and_late():
     o2 = _po(scheduled_delivery_date="2026-08-31")
     assert schedule_status_code(o2, today="2026-08-27") == "terjadwal"
     o3 = _po(delivery_status="Terkirim")
+    o3.pop("qty_delivered")
     assert schedule_status_code(o3, today="2026-08-27") == "terkirim"
+    partial = _po(
+        delivery_status="Terkirim",
+        current_stage=14,
+        qty_delivered=1,
+        line_items=[{"name": "Karton", "quantity": 100, "production_process": "print"}],
+    )
+    assert schedule_status_code(partial, today="2026-08-27") != "terkirim"
 
 
 def test_buffer_stock_past_sj_row_exists_but_not_terlambat():

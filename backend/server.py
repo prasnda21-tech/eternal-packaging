@@ -244,6 +244,10 @@ from services.purchase_reports_http import register_purchase_report_routes
 from services.stock_reports_http import register_stock_report_routes
 from services.owner_analytics_http import register_owner_analytics_routes
 from services.widget_dashboard_http import register_widget_dashboard_routes
+from services.finance_widget_layout_http import register_finance_widget_layout_routes
+from services.production_dashboard_http import register_production_dashboard_routes
+from services.production_wave2_http import register_production_wave2_routes
+from services.production_dashboard_snapshot import summary_flags as _production_summary_flags
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
 from services.chart_of_accounts import COLLECTION as LEDGER_ACCOUNTS_COLLECTION
@@ -772,15 +776,19 @@ class OperatorSplitInput(BaseModel):
     screen_size: Optional[str] = None
     # Selected operator user id. Omit keeps the stored id when the email is unchanged.
     operator_user_id: Optional[str] = None
+    # Actual production location. Omit keeps the stored branch. Operator confirm does not send this.
+    production_branch_id: Optional[str] = None
 
 
 class CancelSplitPayload(BaseModel):
     qty: int
     reason: Optional[str] = None
+    action_id: Optional[str] = None
 
 
 class AssignOperatorsPayload(BaseModel):
     splits: List[OperatorSplitInput]
+    action_id: Optional[str] = None
 
 
 class UrgentPayload(BaseModel):
@@ -1615,6 +1623,7 @@ def _orders_dashboard_list_projection() -> dict:
         "design_bypassed_at": 1,
         "payment_approved_at": 1,
         "payment_bypassed_at": 1,
+        "delivery_sla_v2": 1,
         "print_completed_qty": 1,
         "print_qty_target": 1,
         "operator_assigned_qty": 1,
@@ -1981,19 +1990,31 @@ def _check_stage_permission(current_stage: int, role: str):
 
 
 # ---- Delivery Deadline (Batch 1) ----
-# Setting disimpan di app_settings key "delivery_deadline".
-# Format: {"lead_time_days": 1|3|5}. Calendar days (existing seed/deadline
-# calculation semua pakai timedelta(days=X); tidak ada working-day helper di
-# aplikasi ini).
+# app_settings key "delivery_deadline".
+# unit working_days stores the Normal SLA duration (1, 3, or 5).
+# A document with no unit, or unit calendar_days, remains the legacy calendar formula.
 _DELIVERY_DEADLINE_DEFAULT = {"lead_time_days": 3}
 _DELIVERY_DEADLINE_ALLOWED_DAYS = [1, 3, 5]
 
 
 async def _get_delivery_deadline_settings() -> dict:
+    """Calendar days stay on ``lead_time_days`` for unstamped legacy reads.
+
+    New Normal stamps use ``sla_working_days``. A stored document without
+    ``unit: working_days`` does not become a working-day duration.
+    """
+    from services.tanggal_pengiriman import classify_delivery_deadline_setting
+
     doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
-    if not doc:
-        return dict(_DELIVERY_DEADLINE_DEFAULT)
-    return {"lead_time_days": int(doc.get("lead_time_days", _DELIVERY_DEADLINE_DEFAULT["lead_time_days"]))}
+    info = classify_delivery_deadline_setting(doc)
+    return {
+        "lead_time_days": info["calendar_lead_time_days"],
+        "calendar_lead_time_days": info["calendar_lead_time_days"],
+        "sla_working_days": info["sla_working_days"],
+        "sla_unit": info["sla_unit"],
+        "sla_source": info["sla_source"],
+        "legacy_unit": info["legacy_unit"],
+    }
 
 
 def _latest_approval_at(order: dict) -> Optional[str]:
@@ -2011,15 +2032,22 @@ def _calculated_delivery_deadline(order: dict, lead_time_days: int) -> Optional[
     return calendar_date_to_wib_iso(key) if key else None
 
 
-def _deadline_status_for(deadline_iso: Optional[str], order: dict) -> str:
+def _deadline_status_for(deadline_iso: Optional[str], order: dict, *, qty_basis: bool = False) -> str:
     """Predicate priority: overdue > h6 > h1 > normal. Kalau PO Terkirim →
     'terkirim' (warning aktif hilang; Tanggal Pengiriman tetap untuk audit).
 
     Overdue uses WIB calendar dates (not seconds-past midnight). Due today is
     never overdue. Buffer Stock is not a customer SLA — never overdue.
     Missing/None/false buffer_stock is treated as a normal PO.
+
+    ``qty_basis`` skips the stage/text shortcut. Full delivery then comes only
+    from ``is_fully_delivered``.
     """
-    if order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14:
+    if qty_basis:
+        from quantity_rules import is_fully_delivered
+        if is_fully_delivered(order):
+            return "terkirim"
+    elif order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14:
         return "terkirim"
     if not deadline_iso:
         return "unknown"
@@ -2060,9 +2088,32 @@ def _attach_deadline_snapshot(order: dict, lead_time_days: int):
     from services.tanggal_pengiriman import attach_tanggal_pengiriman_snapshot
 
     attach_tanggal_pengiriman_snapshot(order, lead_time_days)
-    order["delivery_deadline_status"] = _deadline_status_for(
-        order.get("delivery_deadline_effective"), order
-    )
+    fact = order.get("delivery_sla_effective") if isinstance(order.get("delivery_sla_effective"), dict) else {}
+    contract = fact.get("contract")
+    state = fact.get("state")
+    explicit_qty = order.get("qty_delivered")
+    has_qty = explicit_qty is not None and str(explicit_qty).strip() != ""
+    text_closed = order.get("delivery_status") == "Terkirim" or (order.get("current_stage") or 0) >= 14
+    from quantity_rules import is_fully_delivered
+    false_text_close = bool(text_closed and has_qty and not is_fully_delivered(order))
+    qty_basis = contract in ("sla_v2", "urgent", "manual") or false_text_close
+    order["delivery_deadline_status_basis"] = "qty" if qty_basis else "legacy_stage"
+    if qty_basis:
+        if state == "delivered" or is_fully_delivered(order):
+            order["delivery_deadline_status"] = "terkirim"
+        elif state == "overdue":
+            order["delivery_deadline_status"] = "overdue"
+        elif state == "buffer":
+            order["delivery_deadline_status"] = "normal"
+        elif state == "unscheduled":
+            order["delivery_deadline_status"] = "unknown"
+        else:
+            status = _deadline_status_for(order.get("delivery_deadline_effective"), order, qty_basis=True)
+            order["delivery_deadline_status"] = "normal" if status == "terkirim" else status
+    else:
+        order["delivery_deadline_status"] = _deadline_status_for(
+            order.get("delivery_deadline_effective"), order
+        )
 
 
 _DERIVED_ORDER_KEYS = (
@@ -2072,6 +2123,7 @@ _DERIVED_ORDER_KEYS = (
     "terkirim_confirmed",     "delivery_deadline_calculated",
     "delivery_deadline_effective", "delivery_deadline_source",
     "delivery_deadline_lead_time_days", "delivery_deadline_status",
+    "delivery_deadline_status_basis",
     "tanggal_pengiriman", "tanggal_pengiriman_source",
     "tanggal_pengiriman_calculated", "tanggal_pengiriman_lead_time_days",
     "requires_printing", "print_qty_total", "packing_required_total",
@@ -2090,6 +2142,7 @@ _DERIVED_ORDER_KEYS = (
     "loading_verification_status",
     "eligible_delivery_qty",
     "effective_delivery_date", "delivery_schedule_status",
+    "delivery_sla_effective",
     "delivery_history", "terkirim_total_po_qty", "terkirim_remaining_qty",
     "sj_integrity",
     "sales_ownership_admin_label",
@@ -2985,6 +3038,21 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
     return {"order": order}
 
 
+async def _stamp_delivery_sla_on_write(order: dict) -> None:
+    """One-time working-day stamp. Holiday edits and later setting changes do not recompute it."""
+    from services.production_wave2 import holiday_dates, stamp_delivery_sla
+    try:
+        days = await holiday_dates(db)
+    except Exception:
+        days = []
+    try:
+        settings = await _get_delivery_deadline_settings()
+        working_days = settings["sla_working_days"]
+    except Exception:
+        working_days = 3
+    stamp_delivery_sla(order, days, working_days=working_days, now=now_iso())
+
+
 @api_router.post("/orders/{order_id}/approve-design")
 async def approve_design(order_id: str, payload: ApprovalPayload, user=Depends(current_user)):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -3012,6 +3080,7 @@ async def approve_design(order_id: str, payload: ApprovalPayload, user=Depends(c
             order["current_stage"] = 3
         _sync_workflow_stage(order)
         add_timeline(order, order["current_stage"], user, note=payload.note or "Design di-approve")
+        await _stamp_delivery_sla_on_write(order)
     else:
         order["design_status"] = "Waiting"
         order["design_approved_by"] = None
@@ -3057,6 +3126,7 @@ async def approve_payment(order_id: str, payload: ApprovalPayload, user=Depends(
             order["current_stage"] = 4
         _sync_workflow_stage(order)
         add_timeline(order, order["current_stage"], user, note=payload.note or "Payment di-approve")
+        await _stamp_delivery_sla_on_write(order)
     else:
         order["payment_status"] = "Waiting"
         order["payment_approved_by"] = None
@@ -3103,6 +3173,7 @@ async def bypass_design(order_id: str, payload: BypassPayload, user=Depends(curr
         order["current_stage"] = 3
     _sync_workflow_stage(order)
     add_timeline(order, order["current_stage"], user, note=f"Bypass approval design: {reason}")
+    await _stamp_delivery_sla_on_write(order)
     await _persist_order(order)
     await _audit_po(order, "design.bypass", user, after={"design_bypassed": True}, note=reason)
     return {"order": order}
@@ -3134,6 +3205,7 @@ async def bypass_payment(order_id: str, payload: BypassPayload, user=Depends(cur
         order["current_stage"] = 4
     _sync_workflow_stage(order)
     add_timeline(order, order["current_stage"], user, note=f"Bypass approval payment: {reason}")
+    await _stamp_delivery_sla_on_write(order)
     await _persist_order(order)
     await _audit_po(order, "payment.bypass", user, after={"payment_bypassed": True}, note=reason)
     return {"order": order}
@@ -4032,6 +4104,7 @@ def _orders_action_center_projection() -> dict:
         "payment_bypassed": 1,
         "payment_approved_at": 1,
         "payment_bypassed_at": 1,
+        "delivery_sla_v2": 1,
         "sample_approved": 1,
         "customer_approval.status": 1,
         "screener_info.screen_qty": 1,
@@ -4655,36 +4728,85 @@ async def update_screener_info(order_id: str, payload: ScreenerInfoPayload, view
     return {"order": _public_saved_order(order, view)}
 
 
+def _schedule_http(exc):
+    from services.production_wave2 import ScheduleError
+    if isinstance(exc, ScheduleError):
+        raise HTTPException(exc.status_code, {"code": exc.code, "detail": exc.detail})
+    raise exc
+
+
+async def _mirror_new_schedule_events(order: dict, action_id: Optional[str]) -> None:
+    if not action_id:
+        return
+    from services.production_wave2 import mirror_schedule_events
+    fresh = [
+        row for row in (order.get("production_schedule_events") or [])
+        if row.get("action_id") == action_id
+    ]
+    await mirror_schedule_events(db, fresh)
+
+
+def _record_finalized_assignment(order: dict, before_splits: list, action_id: Optional[str], user: dict) -> None:
+    from services.production_wave2 import ScheduleError, record_assignment_change
+    try:
+        result = record_assignment_change(
+            order, before_splits, action_id=action_id or "", user=user, now=now_iso(),
+        )
+    except ScheduleError as exc:
+        _schedule_http(exc)
+    if result == "replay":
+        raise _OrderMutationSkipped()
+
+
 @api_router.post("/orders/{order_id}/assign-operators")
 async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=Depends(current_user)):
     await _require_perm(user, "schedule.edit")
+    rows = []
+    for s in payload.splits:
+        wd = s.work_date
+        if wd is not None:
+            wd = _parse_work_date(wd)
+        dumped = s.model_dump(exclude_unset=True)
+        row = {
+            "id": s.id,
+            "operator_email": s.operator_email,
+            "operator_name": s.operator_name,
+            "quantity": int(s.quantity),
+            "line_idx": s.line_idx,
+            "work_date": wd,
+        }
+        if "screen_size" in dumped:
+            row["screen_size"] = dumped.get("screen_size")
+        if "operator_user_id" in dumped:
+            row["operator_user_id"] = str(dumped.get("operator_user_id") or "").strip()
+        if "production_branch_id" in dumped:
+            row["production_branch_id"] = str(dumped.get("production_branch_id") or "").strip()
+        rows.append(row)
+    branch_ids = [row["production_branch_id"] for row in rows if row.get("production_branch_id")]
+    if branch_ids:
+        found = await db.branches.find(
+            {"id": {"$in": branch_ids}},
+            {"_id": 0, "id": 1, "active": 1},
+        ).to_list(len(branch_ids) + 5)
+        active_ids = {str(doc.get("id")) for doc in found if doc.get("active") is not False}
+        if any(branch_id not in active_ids for branch_id in branch_ids):
+            raise HTTPException(400, "Lokasi produksi tidak valid atau tidak aktif.")
 
     def mutate(order: dict):
-        rows = []
-        for s in payload.splits:
-            wd = s.work_date
-            if wd is not None:
-                wd = _parse_work_date(wd)
-            dumped = s.model_dump(exclude_unset=True)
-            row = {
-                "id": s.id,
-                "operator_email": s.operator_email,
-                "operator_name": s.operator_name,
-                "quantity": int(s.quantity),
-                "line_idx": s.line_idx,
-                "work_date": wd,
-            }
-            if "screen_size" in dumped:
-                row["screen_size"] = dumped.get("screen_size")
-            if "operator_user_id" in dumped:
-                row["operator_user_id"] = str(dumped.get("operator_user_id") or "").strip()
-            rows.append(row)
+        from services.production_wave2 import ScheduleError, guard_finalized_move, schedule_finalized
+        before = copy.deepcopy(order.get("operator_splits") or [])
+        if schedule_finalized(order):
+            try:
+                guard_finalized_move(before, rows)
+            except ScheduleError as exc:
+                _schedule_http(exc)
         try:
             new_splits, cancel_notes = _apply_operator_assignments(
                 order, rows, user, now_iso(), new_id_fn=lambda: str(uuid.uuid4()),
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
+        _record_finalized_assignment(order, before, payload.action_id, user)
         note = f"Assign {len(new_splits)} operator"
         if cancel_notes:
             released = sum(int(c.get("cancel_qty") or 0) for c in cancel_notes)
@@ -4692,7 +4814,12 @@ async def assign_operators(order_id: str, payload: AssignOperatorsPayload, user=
         add_timeline(order, order["current_stage"], user, note=note)
         _sync_workflow_stage(order)
 
-    order = await _with_quantity_lock(order_id, mutate)
+    try:
+        order = await _with_quantity_lock(order_id, mutate)
+    except _OrderMutationSkipped:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        return {"order": order, "replay": True}
+    await _mirror_new_schedule_events(order, payload.action_id)
     return {"order": order}
 
 
@@ -4704,6 +4831,7 @@ async def cancel_operator_split_remaining(
     await _require_perm(user, "schedule.edit")
 
     def mutate(order: dict):
+        before = copy.deepcopy(order.get("operator_splits") or [])
         try:
             found = _cancel_split_remaining(
                 order, split_id, int(payload.qty), user, now_iso(), payload.reason,
@@ -4712,13 +4840,19 @@ async def cancel_operator_split_remaining(
             msg = str(e)
             code = 404 if "tidak ditemukan" in msg else 400
             raise HTTPException(code, msg)
+        _record_finalized_assignment(order, before, payload.action_id, user)
         add_timeline(
             order, order["current_stage"], user,
             note=f"Lepas sisa {payload.qty} dari {found.get('operator_name')} (completed {found.get('qty_completed')})",
         )
         _sync_workflow_stage(order)
 
-    order = await _with_quantity_lock(order_id, mutate)
+    try:
+        order = await _with_quantity_lock(order_id, mutate)
+    except _OrderMutationSkipped:
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        return {"order": order, "replay": True}
+    await _mirror_new_schedule_events(order, payload.action_id)
     return {"order": order}
 
 
@@ -4726,6 +4860,7 @@ async def cancel_operator_split_remaining(
 class WorkDatePayload(BaseModel):
     work_date: Optional[str] = None  # ISO date string (YYYY-MM-DD) or ISO datetime; null clears
     note: Optional[str] = None
+    action_id: Optional[str] = None
 
 
 def _parse_work_date(v: Optional[str]) -> Optional[str]:
@@ -4753,6 +4888,35 @@ async def set_order_work_date(order_id: str, payload: WorkDatePayload, user=Depe
     _ensure_not_cancelled(order)
     new_val = _parse_work_date(payload.work_date)
     before_val = order.get("work_date")
+    from services.production_wave2 import ScheduleError, record_order_work_date, schedule_finalized
+    if schedule_finalized(order):
+        def mutate(locked: dict):
+            prior = locked.get("work_date")
+            locked["work_date"] = new_val
+            try:
+                result = record_order_work_date(
+                    locked, prior, new_val, action_id=payload.action_id or "", user=user, now=now_iso(),
+                )
+            except ScheduleError as exc:
+                _schedule_http(exc)
+            if result == "replay":
+                raise _OrderMutationSkipped()
+            add_timeline(locked, locked["current_stage"], user, note=(payload.note or f"Tanggal Pengerjaan: {new_val or '(dikosongkan)'}"))
+
+        try:
+            order = await _with_quantity_lock(order_id, mutate)
+        except _OrderMutationSkipped:
+            order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        else:
+            await _mirror_new_schedule_events(order, payload.action_id)
+        await _write_audit(
+            "schedule.work_date.update", user,
+            target_email=None,
+            before={"po_number": order["po_number"], "work_date": before_val},
+            after={"po_number": order["po_number"], "work_date": order.get("work_date")},
+            note=f"PO {order['po_number']}: {before_val or '-'} → {order.get('work_date') or '-'}",
+        )
+        return {"order": order}
     order["work_date"] = new_val
     add_timeline(order, order["current_stage"], user, note=(payload.note or f"Tanggal Pengerjaan: {new_val or '(dikosongkan)'}"))
     await _persist_order(order)
@@ -4775,11 +4939,39 @@ async def set_split_work_date(order_id: str, split_id: str, payload: WorkDatePay
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
     _ensure_not_cancelled(order)
+    new_val = _parse_work_date(payload.work_date)
+    from services.production_wave2 import schedule_finalized
+    if schedule_finalized(order):
+        def mutate(locked: dict):
+            splits = locked.get("operator_splits", [])
+            found_row = next((s for s in splits if s.get("id") == split_id), None)
+            if not found_row:
+                raise HTTPException(404, "Operator split tidak ditemukan")
+            before = copy.deepcopy(splits)
+            found_row["work_date"] = new_val
+            found_row["updated_at"] = now_iso()
+            _record_finalized_assignment(locked, before, payload.action_id, user)
+            add_timeline(locked, locked["current_stage"], user, note=f"Tanggal Pengerjaan {found_row.get('operator_name')}: {new_val or '(dikosongkan)'}")
+
+        try:
+            order = await _with_quantity_lock(order_id, mutate)
+        except _OrderMutationSkipped:
+            order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        else:
+            await _mirror_new_schedule_events(order, payload.action_id)
+        found = next((s for s in (order.get("operator_splits") or []) if s.get("id") == split_id), {})
+        await _write_audit(
+            "schedule.work_date.update", user,
+            target_email=None,
+            before={"po_number": order["po_number"], "split_id": split_id, "operator": found.get("operator_name"), "work_date": None},
+            after={"po_number": order["po_number"], "split_id": split_id, "operator": found.get("operator_name"), "work_date": found.get("work_date")},
+            note=f"PO {order['po_number']} · Operator {found.get('operator_name')}: revisi → {found.get('work_date') or '-'}",
+        )
+        return {"order": order}
     splits = order.get("operator_splits", [])
     found = next((s for s in splits if s.get("id") == split_id), None)
     if not found:
         raise HTTPException(404, "Operator split tidak ditemukan")
-    new_val = _parse_work_date(payload.work_date)
     before_val = found.get("work_date")
     found["work_date"] = new_val
     found["updated_at"] = now_iso()
@@ -4927,7 +5119,7 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
 
     op_applied = {}
 
-    def mutate(order: dict):
+    async def mutate(order: dict):
         splits = order.get("operator_splits", [])
         found = next((s for s in splits if s["id"] == payload.operator_id), None)
         if not found:
@@ -5001,6 +5193,31 @@ async def update_operator_progress(order_id: str, payload: OperatorProgressPaylo
         operator_uid = str(found.get("operator_user_id") or "").strip()
         if operator_uid:
             extra["operator_user_id"] = operator_uid
+        line_idx = found.get("line_idx")
+        try:
+            line_idx = int(line_idx) if line_idx is not None else None
+        except (TypeError, ValueError):
+            line_idx = None
+        line = None
+        lines = order.get("line_items") or []
+        if line_idx is not None and 0 <= line_idx < len(lines) and isinstance(lines[line_idx], dict):
+            line = lines[line_idx]
+        master = None
+        category = None
+        master_id = str((line or {}).get("master_item_id") or "").strip()
+        if master_id:
+            master = await db.master_items.find_one(
+                {"id": master_id},
+                {"_id": 0, "id": 1, "accurate_item_id": 1, "item_name": 1, "item_code": 1, "product_category_id": 1},
+            )
+        category_id = str((master or {}).get("product_category_id") or "").strip()
+        if category_id:
+            category = await db.product_categories.find_one(
+                {"id": category_id},
+                {"_id": 0, "id": 1, "name": 1},
+            )
+        from services.production_analytics import confirmation_snapshot
+        extra.update(confirmation_snapshot(line, master, category, found))
         entries, _entry, created = append_qty_entry(
             entries,
             qty=increment,
@@ -7745,10 +7962,21 @@ class DeliveryDeadlineManualPayload(BaseModel):
 async def get_delivery_deadline_settings(user=Depends(current_user)):
     # View available untuk siapa saja dengan permission delivery.update / dashboard view.
     settings = await _get_delivery_deadline_settings()
+    legacy = None
+    if settings.get("legacy_unit") == "calendar_days":
+        legacy = {
+            "lead_time_days": settings["calendar_lead_time_days"],
+            "unit": "calendar_days",
+        }
     return {
-        "settings": settings,
+        "settings": {
+            "lead_time_days": settings["sla_working_days"],
+            "unit": "working_days",
+            "source": settings["sla_source"],
+            "legacy": legacy,
+        },
         "allowed_lead_time_days": _DELIVERY_DEADLINE_ALLOWED_DAYS,
-        "unit": "calendar_days",
+        "unit": "working_days",
     }
 
 
@@ -7757,17 +7985,40 @@ async def put_delivery_deadline_settings(payload: DeliveryDeadlineSettingsPayloa
     await _require_perm(user, "delivery.deadline.settings")
     if payload.lead_time_days not in _DELIVERY_DEADLINE_ALLOWED_DAYS:
         raise HTTPException(400, f"lead_time_days harus salah satu dari {_DELIVERY_DEADLINE_ALLOWED_DAYS}")
+    current = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
+    from services.tanggal_pengiriman import classify_delivery_deadline_setting
+    info = classify_delivery_deadline_setting(current)
     doc = {
         "key": "delivery_deadline",
         "lead_time_days": int(payload.lead_time_days),
+        "unit": "working_days",
+        "sla_working_days": int(payload.lead_time_days),
+        "sla_unit": "working_days",
         "updated_by": user.get("email"),
         "updated_by_name": user.get("name"),
         "updated_at": now_iso(),
     }
+    if info.get("legacy_unit") == "calendar_days":
+        doc["legacy_lead_time_days"] = info["calendar_lead_time_days"]
+        doc["legacy_unit"] = "calendar_days"
+    elif isinstance(current, dict) and current.get("legacy_unit") == "calendar_days":
+        doc["legacy_lead_time_days"] = current.get("legacy_lead_time_days")
+        doc["legacy_unit"] = "calendar_days"
     await db.app_settings.update_one({"key": "delivery_deadline"}, {"$set": doc}, upsert=True)
     await _write_audit(action="delivery.deadline.settings.update", actor=user,
-                       target_email="-", after={"lead_time_days": doc["lead_time_days"]})
-    return {"settings": await _get_delivery_deadline_settings()}
+                       target_email="-", after={"lead_time_days": doc["lead_time_days"], "unit": "working_days"})
+    saved = await _get_delivery_deadline_settings()
+    return {
+        "settings": {
+            "lead_time_days": saved["sla_working_days"],
+            "unit": "working_days",
+            "source": saved["sla_source"],
+            "legacy": (
+                {"lead_time_days": saved["calendar_lead_time_days"], "unit": "calendar_days"}
+                if saved.get("legacy_unit") == "calendar_days" else None
+            ),
+        }
+    }
 
 
 class WorkPanelSettingsPayload(BaseModel):
@@ -8114,6 +8365,7 @@ def _orders_dashboard_summary_projection() -> dict:
         "payment_bypassed": 1,
         "payment_approved_at": 1,
         "payment_bypassed_at": 1,
+        "delivery_sla_v2": 1,
         "delivery_status": 1,
         "qty_delivered": 1,
         "delivered_at": 1,
@@ -8313,7 +8565,7 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
     active_orders, completed_orders = partition_orders_by_delivery(
         orders, _qr_is_fully_delivered
     )
-    urgent_orders = [o for o in active_orders if o.get("priority") == "urgent"]
+    urgent_orders = [o for o in active_orders if _production_summary_flags(o)["urgent"]]
 
     total_active = len(active_orders)
     total_urgent = len(urgent_orders)
@@ -8329,18 +8581,18 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
     for o in active_orders:
         # Batch 1: overdue/h1/h6 memakai `delivery_deadline_status` sebagai
         # SOURCE OF TRUTH (sama predicate untuk Dashboard/Schedule/PODetail).
-        st = o.get("delivery_deadline_status")
-        if st == "overdue":
+        flags = _production_summary_flags(o)
+        if flags["overdue"]:
             overdue.append(o)
-        elif st == "h6":
+        elif flags["h6"]:
             deadline_h6.append(o)
-        elif st == "h1":
+        elif flags["h1"]:
             deadline_h1.append(o)
-        if o.get("design_status") != "Approved" and not o.get("design_bypassed"):
+        if flags["design"]:
             waiting_design.append(o)
-        if o.get("payment_status") != "Approved" and not o.get("payment_bypassed"):
+        if flags["payment"]:
             waiting_payment.append(o)
-        if o.get("hold"):
+        if flags["hold"]:
             hold_list.append(o)
 
     # Per-stage breakdown (count of active orders at each stage, exclude cancelled)
@@ -8624,6 +8876,7 @@ _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION = {
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
     "delivery_deadline_manual": 1,
+    "delivery_sla_v2": 1,
     "delivery_status": 1,
     "qty_delivered": 1,
     "delivery_note_number": 1,
@@ -8740,6 +8993,7 @@ STATUS_PO_PROJECTION = {
     "design_bypassed_at": 1,
     "payment_approved_at": 1,
     "payment_bypassed_at": 1,
+    "delivery_sla_v2": 1,
     "delivered_at": 1,
     "delivery_proofs.uploaded_at": 1,
     "delivery_proofs.created_at": 1,
@@ -12169,6 +12423,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "customer_approval.status": 1,
     "delivery_deadline_manual": 1,
     "scheduled_delivery_date": 1,
+    "delivery_sla_v2": 1,
     "priority": 1,
     "buffer_stock": 1,
     "delivery_status": 1,
@@ -14186,6 +14441,51 @@ async def master_items_set_production_process(
 
 class MasterItemPhysicalFulfillmentPayload(BaseModel):
     physical_fulfillment: bool
+
+
+class ProductCategoryBody(BaseModel):
+    name: str
+
+
+class ProductCategoryUpdateBody(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class MasterProductCategoryBody(BaseModel):
+    category_id: Optional[str] = None
+
+
+@api_router.get("/product-categories")
+async def product_categories_list(user=Depends(require_perm("master_items.view"))):
+    from services.product_categories import list_categories
+    return await list_categories(db)
+
+
+@api_router.post("/product-categories")
+async def product_categories_create(body: ProductCategoryBody, user=Depends(require_perm("master_items.manage"))):
+    from services.product_categories import create_category
+    return await create_category(db, body.name, user=user)
+
+
+@api_router.patch("/product-categories/{category_id}")
+async def product_categories_update(
+    category_id: str,
+    body: ProductCategoryUpdateBody,
+    user=Depends(require_perm("master_items.manage")),
+):
+    from services.product_categories import update_category
+    return await update_category(db, category_id, name=body.name, active=body.active, user=user)
+
+
+@api_router.patch("/master-items/{item_id}/product-category")
+async def master_items_set_product_category(
+    item_id: str,
+    body: MasterProductCategoryBody,
+    user=Depends(require_perm("master_items.manage")),
+):
+    from services.product_categories import set_master_product_category
+    return await set_master_product_category(db, item_id, body.category_id, user=user)
 
 
 @api_router.patch("/master-items/{item_id}/physical-fulfillment")
@@ -16470,6 +16770,34 @@ register_widget_dashboard_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+register_finance_widget_layout_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    Depends=Depends,
+)
+register_production_dashboard_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    require_perm=require_perm,
+    apply_hold=_apply_hold_snapshot,
+    attach_deadline=_attach_deadline_snapshot,
+    get_deadline_settings=_get_delivery_deadline_settings,
+    now_iso=now_iso,
+    Depends=Depends,
+)
+register_production_wave2_routes(
+    api_router,
+    get_db=lambda: db,
+    require_perm=require_perm,
+    with_quantity_lock=_with_quantity_lock,
+    skip_mutation=_OrderMutationSkipped,
+    now_iso=now_iso,
+    Depends=Depends,
+)
 register_balance_sheet_routes(
     api_router,
     get_db=lambda: db,
@@ -17952,6 +18280,7 @@ app.include_router(api_router)
 import customer_approval as _ca_mod
 _ca_router = _ca_mod.build_router({
     "db": db,
+    "get_db": lambda: db,
     "current_user": current_user,
     "require_perm": _require_perm,
     "persist_order": _persist_order,

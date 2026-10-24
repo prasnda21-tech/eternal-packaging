@@ -310,7 +310,20 @@ def build_router(deps):
         "logger": logging.Logger,
       }
     """
-    db = deps["db"]
+    class _LiveDatabase:
+        """Follow server.db when tests rebind it. Production passes the same object."""
+
+        def _target(self):
+            getter = deps.get("get_db")
+            return getter() if getter else deps["db"]
+
+        def __getattr__(self, name):
+            return getattr(self._target(), name)
+
+        def __getitem__(self, name):
+            return self._target()[name]
+
+    db = _LiveDatabase()
     current_user = deps["current_user"]
     require_perm = deps["require_perm"]
     persist_order = deps["persist_order"]
@@ -859,6 +872,19 @@ def build_router(deps):
             "design_version": rec.get("design_version"),
             "note": note or "",
         })
+        if action == "approve":
+            from services.production_wave2 import holiday_dates, stamp_delivery_sla
+            from services.tanggal_pengiriman import classify_delivery_deadline_setting
+            try:
+                days = await holiday_dates(db)
+            except Exception:
+                days = []
+            try:
+                setting = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
+                working_days = classify_delivery_deadline_setting(setting)["sla_working_days"]
+            except Exception:
+                working_days = 3
+            stamp_delivery_sla(order, days, working_days=working_days, now=now_str)
         await persist_order(order)
 
         # Side-effect: in-app notifications for Designer/CRM.
