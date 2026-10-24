@@ -1,0 +1,77 @@
+{
+  "id": "so-sim-dual-svc",
+  "po_number": "PO-SIM/DUAL-SVC",
+  "cancelled": false,
+  "qty_delivered": 3000,
+  "line_items": [
+    {
+      "accurate_line_id": "acc-p-2",
+      "master_item_id": "mid-phys-a-test",
+      "accurate_item_id": "50",
+      "item_type": "INVENTORY",
+      "production_process": "print",
+      "quantity": 1000,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    },
+    {
+      "accurate_line_id": "acc-s-2a",
+      "master_item_id": "mid-svc-test",
+      "accurate_item_id": "250",
+      "item_type": "SERVICE",
+      "production_process": "print",
+      "quantity": 1000,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    },
+    {
+      "accurate_line_id": "acc-s-2b",
+      "master_item_id": "mid-svc-test",
+      "accurate_item_id": "250",
+      "item_type": "SERVICE",
+      "production_process": "print",
+      "quantity": 1000,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    }
+  ],
+  "operator_splits": [
+    {"line_idx": 0, "qty_completed": 1000},
+    {"line_idx": 1, "qty_completed": 1000},
+    {"line_idx": 2, "qty_completed": 1000}
+  ],
+  "shipments": [
+    {
+      "id": "ship-dual-svc",
+      "number": "SJ-SIM/DUAL-SVC",
+      "delivery_status": "Terkirim",
+      "delivered_at": "2026-01-16T00:00:00+00:00",
+      "total_qty": 3000,
+      "qty_delivered": 3000,
+      "lines": [
+        {"line_idx": 0, "qty": 1000},
+        {"line_idx": 1, "qty": 1000},
+        {"line_idx": 2, "qty": 1000}
+      ]
+    }
+  ],
+  "delivery_confirmations": [
+    {
+      "id": "conf-dual-svc",
+      "action_id": "act-dual-svc",
+      "shipment_id": "ship-dual-svc",
+      "qty": 3000,
+      "items": [
+        {"line_idx": 0, "qty": 1000},
+        {"line_idx": 1, "qty": 1000},
+        {"line_idx": 2, "qty": 1000}
+      ]
+    }
+  ]
+}

@@ -446,3 +446,285 @@ def test_formula_tersedia_with_valid_stock_and_demand():
     assert buckets["qty_pesanan"] == 80.0
     assert buckets["qty_belum_terkirim"] == 30.0
     assert buckets["qty_tersedia"] == 860.0  # 970 - 80 - 30
+
+
+def test_alt3_phys_plus_service_same_sj_counts_native_only():
+    """Phys 1000 + SERVICE 1000 on one SJ → delivered parent 1000 (not 2000)."""
+    parent = "inv-parent-alt3"
+    svc = "svc-sablon-alt3"
+    orders = [{
+        "id": "so-alt3-single",
+        "cancelled": False,
+        "branch_id": BRANCH_YGY,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": parent, "quantity": 1000,
+             "production_process": "print"},
+            {"line_id": "ln-svc", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+        ],
+        "shipments": [{
+            "id": "ship-alt3-1",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-10-20T00:00:00+00:00",
+            "total_qty": 2000,
+            "lines": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-alt3-1",
+            "shipment_id": "ship-alt3-1",
+            "qty": 2000,
+            "items": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+            ],
+        }],
+    }]
+    delivered, prov = aggregate_legacy_delivered_qty(
+        orders, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 1000.0
+    assert svc not in delivered
+    assert prov.get(parent) == "confirmed_shipment"
+
+
+def test_alt3_phys_plus_two_service_colors_no_multiply():
+    """Phys 1000 + two SERVICE 1000 → delivered 1000."""
+    parent = "inv-parent-alt3b"
+    svc = "svc-sablon-alt3b"
+    orders = [{
+        "id": "so-alt3-dual",
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": parent, "quantity": 1000,
+             "production_process": "print"},
+            {"line_id": "ln-s1", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+            {"line_id": "ln-s2", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+        ],
+        "shipments": [{
+            "id": "ship-alt3-dual",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-10-20T00:00:00+00:00",
+            "total_qty": 3000,
+            "lines": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+                {"line_idx": 2, "qty": 1000},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-alt3-dual",
+            "shipment_id": "ship-alt3-dual",
+            "items": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+                {"line_idx": 2, "qty": 1000},
+            ],
+        }],
+    }]
+    delivered, _ = aggregate_legacy_delivered_qty(
+        orders, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 1000.0
+
+
+def test_alt3_pf_true_service_no_multiplication():
+    """PF=true printing SERVICE on same SJ as phys must not multiply delivery."""
+    parent = "inv-parent-pf"
+    svc = "svc-pf"
+    orders = [{
+        "id": "so-alt3-pf",
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": parent, "quantity": 1000,
+             "production_process": "print"},
+            {"line_id": "ln-s1", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE",
+             "physical_fulfillment": True},
+            {"line_id": "ln-s2", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE",
+             "physical_fulfillment": True},
+        ],
+        "shipments": [{
+            "id": "ship-alt3-pf",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-10-20T00:00:00+00:00",
+            "total_qty": 3000,
+            "lines": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+                {"line_idx": 2, "qty": 1000},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-alt3-pf",
+            "shipment_id": "ship-alt3-pf",
+            "items": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+                {"line_idx": 2, "qty": 1000},
+            ],
+        }],
+    }]
+    delivered, _ = aggregate_legacy_delivered_qty(
+        orders, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 1000.0
+    assert orders[0]["line_items"][1]["physical_fulfillment"] is True
+    assert orders[0]["line_items"][2]["physical_fulfillment"] is True
+
+
+def test_alt3_partial_shipments_sum_across_identities():
+    """Distinct partial SJ identities sum; colors on each SJ do not multiply."""
+    parent = "inv-parent-partial"
+    svc = "svc-partial"
+    orders = [{
+        "id": "so-alt3-partial",
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": parent, "quantity": 1000,
+             "production_process": "print"},
+            {"line_id": "ln-svc", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+        ],
+        "shipments": [
+            {
+                "id": "ship-p1",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-10-20T00:00:00+00:00",
+                "total_qty": 800,
+                "lines": [
+                    {"line_idx": 0, "qty": 400},
+                    {"line_idx": 1, "qty": 400},
+                ],
+            },
+            {
+                "id": "ship-p2",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-10-21T00:00:00+00:00",
+                "total_qty": 600,
+                "lines": [
+                    {"line_idx": 0, "qty": 300},
+                    {"line_idx": 1, "qty": 300},
+                ],
+            },
+        ],
+        "delivery_confirmations": [
+            {
+                "id": "conf-p1",
+                "shipment_id": "ship-p1",
+                "items": [
+                    {"line_idx": 0, "qty": 400},
+                    {"line_idx": 1, "qty": 400},
+                ],
+            },
+            {
+                "id": "conf-p2",
+                "shipment_id": "ship-p2",
+                "items": [
+                    {"line_idx": 0, "qty": 300},
+                    {"line_idx": 1, "qty": 300},
+                ],
+            },
+        ],
+    }]
+    delivered, prov = aggregate_legacy_delivered_qty(
+        orders, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 700.0  # 400 + 300 native across SJs
+    assert prov.get(parent) == "confirmed_shipment"
+
+
+def test_alt3_duplicate_confirmation_identity_not_double_counted():
+    """Repeated confirmation for the same shipment identity must not double-count."""
+    parent = "inv-parent-dedupe"
+    svc = "svc-dedupe"
+    orders = [{
+        "id": "so-alt3-dedupe",
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": parent, "quantity": 1000,
+             "production_process": "print"},
+            {"line_id": "ln-svc", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+        ],
+        "shipments": [
+            {
+                "id": "ship-dedupe",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-10-20T00:00:00+00:00",
+                "total_qty": 2000,
+                "lines": [
+                    {"line_idx": 0, "qty": 1000},
+                    {"line_idx": 1, "qty": 1000},
+                ],
+            },
+            {
+                # Same identity tokens as ship-dedupe → skipped by seen_identities.
+                "id": "ship-dedupe",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-10-20T00:00:00+00:00",
+                "total_qty": 2000,
+                "lines": [
+                    {"line_idx": 0, "qty": 1000},
+                    {"line_idx": 1, "qty": 1000},
+                ],
+            },
+        ],
+        "delivery_confirmations": [{
+            "id": "conf-dedupe",
+            "shipment_id": "ship-dedupe",
+            "items": [
+                {"line_idx": 0, "qty": 1000},
+                {"line_idx": 1, "qty": 1000},
+            ],
+        }],
+    }]
+    delivered, _ = aggregate_legacy_delivered_qty(
+        orders, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 1000.0
+
+
+def test_alt3_service_only_colors_use_max_not_sum():
+    """SERVICE-only SJ with two colors → max(process qtys), not sum."""
+    parent = "inv-parent-svc-only"
+    svc = "svc-only-colors"
+    orders = [{
+        "id": "so-alt3-svc-only",
+        "cancelled": False,
+        "line_items": [
+            {"line_id": "ln-main", "master_item_id": parent, "quantity": 1000,
+             "production_process": "print"},
+            {"line_id": "ln-s1", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+            {"line_id": "ln-s2", "master_item_id": svc, "parent_line_id": "ln-main",
+             "quantity": 1000, "production_process": "print", "item_type": "SERVICE"},
+        ],
+        "shipments": [{
+            "id": "ship-svc-only",
+            "delivery_status": "Terkirim",
+            "delivered_at": "2026-10-20T00:00:00+00:00",
+            "total_qty": 2000,
+            "lines": [
+                {"line_idx": 1, "qty": 1000},
+                {"line_idx": 2, "qty": 800},
+            ],
+        }],
+        "delivery_confirmations": [{
+            "id": "conf-svc-only",
+            "shipment_id": "ship-svc-only",
+            "items": [
+                {"line_idx": 1, "qty": 1000},
+                {"line_idx": 2, "qty": 800},
+            ],
+        }],
+    }]
+    delivered, _ = aggregate_legacy_delivered_qty(
+        orders, [], process_master_ids={svc},
+    )
+    assert delivered.get(parent) == 1000.0  # max(1000, 800), not 1800

@@ -1,0 +1,62 @@
+{
+  "id": "so-sim-single-svc",
+  "po_number": "PO-SIM/SINGLE-SVC",
+  "cancelled": false,
+  "qty_delivered": 2000,
+  "line_items": [
+    {
+      "accurate_line_id": "acc-p-1",
+      "master_item_id": "mid-phys-a-test",
+      "accurate_item_id": "50",
+      "item_type": "INVENTORY",
+      "production_process": "print",
+      "quantity": 1000,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    },
+    {
+      "accurate_line_id": "acc-s-1",
+      "master_item_id": "mid-svc-test",
+      "accurate_item_id": "250",
+      "item_type": "SERVICE",
+      "production_process": "print",
+      "quantity": 1000,
+      "physical_fulfillment": null,
+      "parent_line_id": null,
+      "parent_line_idx": null,
+      "line_id": null
+    }
+  ],
+  "operator_splits": [
+    {"line_idx": 0, "qty_completed": 1000},
+    {"line_idx": 1, "qty_completed": 1000}
+  ],
+  "shipments": [
+    {
+      "id": "ship-single-svc",
+      "number": "SJ-SIM/SINGLE-SVC",
+      "delivery_status": "Terkirim",
+      "delivered_at": "2026-01-15T00:00:00+00:00",
+      "total_qty": 2000,
+      "qty_delivered": 2000,
+      "lines": [
+        {"line_idx": 0, "qty": 1000},
+        {"line_idx": 1, "qty": 1000}
+      ]
+    }
+  ],
+  "delivery_confirmations": [
+    {
+      "id": "conf-single-svc",
+      "action_id": "act-single-svc",
+      "shipment_id": "ship-single-svc",
+      "qty": 2000,
+      "items": [
+        {"line_idx": 0, "qty": 1000},
+        {"line_idx": 1, "qty": 1000}
+      ]
+    }
+  ]
+}
