@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   BarChart3,
+  Calendar,
   Clock,
+  ExternalLink,
   Flame,
   GripVertical,
+  Info,
   Layers,
   ListOrdered,
   MoreHorizontal,
@@ -18,6 +21,7 @@ import {
   PieChart,
   Printer,
   ShieldAlert,
+  Truck,
   Users,
   Workflow,
 } from "lucide-react";
@@ -25,6 +29,8 @@ import { COLUMNS } from "../widgetBoard/widgetGrid";
 import { productionWidgetAllowed, productionWidgetMeta } from "./productionWidgetCatalog";
 import { placeWidget, removeWidget } from "./productionWidgetLayout";
 import { productionUpdatedLabel } from "./productionFormat";
+
+const DELIVERY_PLAN_PATH = "/produksi/rencana-jadwal-kirim";
 
 const GAP = 12;
 const ROW = 72;
@@ -60,6 +66,7 @@ const GLYPH = {
   bottleneck: Workflow,
   komposisi: PieChart,
   output_cabang: MapPin,
+  delivery_qty: Truck,
   sim_output: BarChart3,
   sim_workflow: Workflow,
   sim_operator: Users,
@@ -84,6 +91,7 @@ const TONE = {
   bottleneck: "warn",
   komposisi: "analytics",
   output_cabang: "info",
+  delivery_qty: "warn",
   sim_output: "analytics",
   sim_workflow: "info",
   sim_operator: "analytics",
@@ -118,6 +126,7 @@ const CAPTION = {
   bottleneck: "Bukan kesalahan operator",
   komposisi: "Snapshot konfirmasi, satuan terpisah",
   output_cabang: "Lokasi aktual adalah default",
+  delivery_qty: "Monitoring sisa qty berdasarkan tanggal rencana",
   sim_output: "Fixture visual, satuan pcs",
   sim_workflow: "Fixture visual, bukan status sah",
   sim_operator: "Fixture visual, satuan pcs",
@@ -340,6 +349,139 @@ function trendTip(point, model) {
   if (qty > 0) return `${point.day}: ${formatCount(qty)} ${model.unit}`;
   if (model.status === "incomplete") return `${point.day}: Histori tidak tersedia.`;
   return `${point.day}: Output 0`;
+}
+
+function deliveryChartCeiling(value) {
+  const n = Number(value) || 0;
+  if (n <= 0) return 1;
+  const exp = 10 ** Math.floor(Math.log10(n));
+  const scaled = n / exp;
+  const nice = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  return nice * exp;
+}
+
+function deliveryYTicks(ceiling) {
+  const top = Number(ceiling) || 1;
+  return [top, Math.round(top * 0.5), 0];
+}
+
+function DeliveryQtyBody({ model, controls }) {
+  const series = model?.series || [];
+  const units = series.map((row) => row.unit);
+  const unitKey = units.join("|");
+  const [unit, setUnit] = useState(units[0] || "");
+  useEffect(() => {
+    const list = unitKey ? unitKey.split("|") : [];
+    if (!list.length) {
+      if (unit) setUnit("");
+      return;
+    }
+    if (!list.includes(unit)) setUnit(list[0]);
+  }, [unitKey, unit]);
+  const chosen = series.find((row) => row.unit === unit) || series[0];
+  const points = chosen?.points || [];
+  const max = Math.max(...points.map((point) => Number(point.qty) || 0), 0);
+  const ceiling = deliveryChartCeiling(max);
+  const ticks = deliveryYTicks(ceiling);
+  const label = chosen?.label || "";
+  if (!chosen) {
+    return <Quiet status={model?.status === "complete" ? "empty" : (model?.status || "empty")} onRetry={controls.onRetry} note={model?.detail} />;
+  }
+  return (
+    <div className="pd-delivery-qty" data-testid="produksi-delivery-qty-body">
+      <div className="pd-delivery-controls">
+        <PeriodSwitch days={controls.days} onChange={controls.setDays} prefix="produksi-delivery-qty-days" />
+        {units.length > 1 ? (
+          <div className="pd-switch" role="group" aria-label="Satuan Qty Rencana Pengiriman">
+            {series.map((row) => (
+              <button
+                type="button"
+                key={row.unit}
+                className={`kb-btn${chosen.unit === row.unit ? " is-on" : ""}`}
+                data-testid={`produksi-delivery-qty-unit-${row.unit}`}
+                onClick={() => setUnit(row.unit)}
+              >
+                {row.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="pd-delivery-kpis">
+        <div className="pd-delivery-kpi is-today" data-testid="produksi-delivery-qty-today">
+          <span>
+            <Calendar size={14} aria-hidden="true" />
+            Rencana Hari Ini
+          </span>
+          <strong>{formatCount(chosen.todayQty)} <em>{label}</em></strong>
+          <p>{formatCount(chosen.todayPoCount)} PO aktif · {model.todayLabel || "hari ini"} WIB</p>
+        </div>
+        <div className="pd-delivery-kpi is-late" data-testid="produksi-delivery-qty-overdue">
+          <span>
+            <Clock size={14} aria-hidden="true" />
+            Lewat Rencana
+          </span>
+          <strong>{formatCount(chosen.overdueQty)} <em>{label}</em></strong>
+          <p>{formatCount(chosen.overduePoCount)} PO masih bersisa</p>
+        </div>
+      </div>
+      <div className="pd-delivery-chart">
+        <div className="pd-delivery-chart-head">
+          <strong>Rencana per Hari</strong>
+          <span>Snapshot rencana aktif, bukan realisasi pengiriman.</span>
+        </div>
+        <div className="pd-delivery-plot" data-testid="produksi-delivery-qty-chart">
+          <div className="pd-delivery-y" aria-hidden="true">
+            {ticks.map((tick) => (
+              <span key={`y-${tick}`}>{formatCount(tick)}</span>
+            ))}
+          </div>
+          <div className={`pd-bars pd-output-plot pd-delivery-bars${points.length > 10 ? " is-scroll" : ""}`}>
+            {points.map((point) => {
+              const qty = Number(point.qty) || 0;
+              const poCount = Number(point.poCount) || 0;
+              const tipDate = point.tipLabel || point.label || point.day;
+              const axis = point.shortLabel || String(point.date || point.day || "").slice(8);
+              return (
+                <button
+                  type="button"
+                  key={point.date || point.day}
+                  className={`pd-bar-col pd-delivery-bar${qty > 0 ? "" : " is-zero"}`}
+                  data-testid="produksi-delivery-qty-bar-col"
+                  aria-label={`${tipDate}. Rencana ${formatCount(qty)} ${label}. Jumlah PO ${formatCount(poCount)}.`}
+                >
+                  <span className="pd-output-slot">
+                    <span className="pd-output-spacer" style={{ flexGrow: qty > 0 ? Math.max(ceiling - qty, 0) : 1 }} />
+                    {qty > 0 ? (
+                      <span className="pd-output-bar" data-testid="produksi-delivery-qty-bar" style={{ flexGrow: qty }} />
+                    ) : (
+                      <span className="pd-output-zero" data-testid="produksi-delivery-qty-zero" />
+                    )}
+                  </span>
+                  <em>{axis}</em>
+                  <span className="pd-delivery-tip" role="tooltip" data-testid="produksi-delivery-qty-tip">
+                    <strong>{tipDate}</strong>
+                    <span className="pd-delivery-tip-row">
+                      <i className="is-qty" aria-hidden="true" />
+                      Rencana: {formatCount(qty)} {label}
+                    </span>
+                    <span className="pd-delivery-tip-row">
+                      <i className="is-po" aria-hidden="true" />
+                      Jumlah PO: {formatCount(poCount)}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <p className="pd-delivery-foot">
+        <Info size={14} aria-hidden="true" />
+        <span>Menampilkan total qty sisa per tanggal rencana. Gunakan menu untuk melihat detail di Rencana Pengiriman.</span>
+      </p>
+    </div>
+  );
 }
 
 function TrendChart({ model, controls }) {
@@ -918,6 +1060,7 @@ function CardBody({ id, model, tone, onRetry, controls }) {
   const status = model?.status || "loading";
   if (status === "loading" || status === "error" || status === "forbidden") return <Quiet status={status} onRetry={onRetry} />;
   if (id === "output_hari_ini") return <OutputToday model={model} />;
+  if (id === "delivery_qty") return <DeliveryQtyBody model={model} controls={controls} />;
   if (id === "tren_output") return <TrendChart model={model} controls={controls} />;
   if (id === "distribusi_tahap") return <WorkflowBars model={model} controls={controls} />;
   if (id === "output_operator") return <OperatorOutput model={model} controls={controls} />;
@@ -1122,7 +1265,15 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
         return (
           <article
             key={widget.widget_id}
-            className={`kb-card${TONE[widget.widget_id] ? ` pd-tone-${TONE[widget.widget_id]}` : ""}${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}`}
+            className={[
+              "kb-card",
+              TONE[widget.widget_id] ? `pd-tone-${TONE[widget.widget_id]}` : "",
+              widget.h <= 2 ? "is-compact" : "",
+              editing ? "is-edit" : "",
+              menuFor === widget.widget_id ? "is-menu" : "",
+              widget.widget_id === "delivery_qty" ? "is-delivery-qty" : "",
+              widget.widget_id === "delivery_qty" && widget.h < 6 ? "is-delivery-tight" : "",
+            ].filter(Boolean).join(" ")}
             data-testid={`produksi-widget-${widget.widget_id}`}
             data-status={model.status}
             style={{
@@ -1165,6 +1316,17 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
                 </button>
                 {menuFor === widget.widget_id ? (
                   <div className="kb-pop" role="menu">
+                    {widget.widget_id === "delivery_qty" ? (
+                      <Link
+                        to={DELIVERY_PLAN_PATH}
+                        role="menuitem"
+                        data-testid="produksi-open-delivery_qty"
+                        onClick={() => setMenuFor("")}
+                      >
+                        <ExternalLink size={14} aria-hidden="true" />
+                        Lihat Rencana Pengiriman
+                      </Link>
+                    ) : null}
                     <button type="button" data-testid={`produksi-info-${widget.widget_id}`} onClick={() => { setInfoFor(infoFor === widget.widget_id ? "" : widget.widget_id); setMenuFor(""); }}>Info Widget</button>
                     <button type="button" data-testid={`produksi-remove-${widget.widget_id}`} onClick={() => onLayout(removeWidget(widgets, widget.widget_id))}>Hapus dari Dashboard</button>
                     {editing ? (

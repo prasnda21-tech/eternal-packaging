@@ -910,6 +910,7 @@ export const api = {
   purchasePeriodSummary: (params = {}) => client.get(`/dashboard/pembelian`, { params }).then((r) => r.data),
   widgetProfitLoss: (params = {}) => client.get(`/dashboard/widget/laba-rugi`, { params }).then((r) => r.data),
   widgetReconciliations: () => client.get(`/dashboard/widget/reconciliations`).then((r) => r.data),
+  deliveryPlanQty: (params = {}) => client.get(`/dashboard/widget/qty-rencana-pengiriman`, { params }).then((r) => r.data),
   accountsReceivableOverdueCustomers: (params = {}) => client.get(`/ledger/accounts-receivable/overdue-customers`, { params }).then((r) => r.data),
   shipmentStatus: (params = {}) => client.get(`/dashboard/shipment-status`, { params }).then((r) => r.data),
   statusPo: (params = {}) => client.get(`/dashboard/status-po`, { params }).then((r) => r.data),

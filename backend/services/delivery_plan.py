@@ -9,10 +9,12 @@ SJ is NOT required for inclusion.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from quantity_rules import is_fully_delivered
+from quantity_rules import is_fully_delivered, is_process_only_service_line
 from services.delivery_history import terkirim_qty_summary
+from services.product_unit_conversion import normalize_uom
 from services.delivery_schedule import schedule_status_code, schedule_status_label
 from services.paint_table_query import apply_filters, parse_header_filters, parse_sort, sort_rows
 from services.tanggal_pengiriman import DEFAULT_LEAD_TIME_DAYS, resolve_tanggal_pengiriman
@@ -247,6 +249,178 @@ def paginate_rows(
         "totals": _aggregate_totals(rows),
     }
     return slice_rows, meta
+
+
+QTY_WIDGET_ID = "delivery_qty"
+QTY_HORIZONS = (7, 30)
+UNIT_NONE = "tanpa_satuan"
+UNIT_MIXED = "campuran"
+NOTE_NO_UNIT = "Qty tanpa satuan tidak dijumlahkan dan tidak dianggap pcs."
+NOTE_MIXED = (
+    "PO dengan lebih dari satu satuan ditampilkan terpisah sebagai campuran "
+    "dan tidak dijumlahkan ke satuan lain."
+)
+
+QTY_WIDGET_PROJECTION = {
+    **PLAN_PROJECTION,
+    "line_items.unit": 1,
+}
+
+
+def _positive_line_qty(value: Any) -> bool:
+    if value is None or str(value).strip() == "":
+        return False
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def plan_qty_unit(order: dict) -> str:
+    """Unit bucket for one PO's remaining qty.
+
+    Remaining qty stays the PO-level integer from terkirim_qty_summary.
+    Lines that do not count toward packing are ignored. One shared unit keeps
+    that unit. Blank units stay blank and are never treated as pcs. More than
+    one unit stays in campuran so the PO integer is not added to either series.
+    """
+    seen: List[str] = []
+    any_physical = False
+    for line in order.get("line_items") or []:
+        if not isinstance(line, dict) or is_process_only_service_line(line):
+            continue
+        any_physical = True
+        if not _positive_line_qty(line.get("quantity")):
+            continue
+        key = normalize_uom(line.get("unit")) or UNIT_NONE
+        if key not in seen:
+            seen.append(key)
+    if not any_physical or not seen or seen == [UNIT_NONE]:
+        return UNIT_NONE
+    if len(seen) == 1:
+        return seen[0]
+    return UNIT_MIXED
+
+
+def _today_date(today: Any) -> date:
+    if isinstance(today, date):
+        return today
+    if isinstance(today, str):
+        return date.fromisoformat(today[:10])
+    raise TypeError("today harus tanggal")
+
+
+def aggregate_delivery_plan_qty(
+    orders: List[dict],
+    *,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    today: Any,
+    days: int = 7,
+) -> Dict[str, Any]:
+    """Active-plan snapshot grouped by effective delivery date and unit.
+
+    Same inclusion as plan_row. Not a stored history and not delivery realization.
+    Chart window is today through today+days-1 (WIB). Overdue qty uses the same
+    schedule_status_code rule as Rencana Jadwal Kirim (Buffer Stock is never
+    terlambat) and is never added into today or the forward chart.
+    Every eligible order in ``orders`` is counted. This function does not page.
+    """
+    if days not in QTY_HORIZONS:
+        raise ValueError("Periode harus 7 atau 30 hari")
+    start = _today_date(today)
+    today_key = start.isoformat()
+    end = start + timedelta(days=days - 1)
+    end_key = end.isoformat()
+    dates = [(start + timedelta(days=offset)).isoformat() for offset in range(days)]
+    forward: Dict[str, Dict[str, int]] = {}
+    forward_po: Dict[str, Dict[str, set]] = {}
+    today_qty: Dict[str, int] = {}
+    today_po: Dict[str, set] = {}
+    overdue_qty: Dict[str, int] = {}
+    overdue_po: Dict[str, set] = {}
+    seen_ids = set()
+    for order in orders:
+        row = plan_row(order, lead_time_days=lead_time_days, today=today_key)
+        if not row:
+            continue
+        order_id = str(row.get("id") or "").strip()
+        if order_id:
+            if order_id in seen_ids:
+                continue
+            seen_ids.add(order_id)
+        try:
+            remaining = int(row.get("qty_remaining") or 0)
+        except (TypeError, ValueError):
+            remaining = 0
+        if remaining <= 0:
+            continue
+        unit = plan_qty_unit(order)
+        plan_date = str(row.get("tanggal_pengiriman") or "")
+        status_code = row.get("delivery_schedule_status") or ""
+        po_key = order_id or f"anon:{id(order)}"
+        if status_code == "terlambat":
+            overdue_qty[unit] = overdue_qty.get(unit, 0) + remaining
+            overdue_po.setdefault(unit, set()).add(po_key)
+            continue
+        if plan_date == today_key:
+            today_qty[unit] = today_qty.get(unit, 0) + remaining
+            today_po.setdefault(unit, set()).add(po_key)
+        if today_key <= plan_date <= end_key:
+            day_bucket = forward.setdefault(unit, {})
+            day_bucket[plan_date] = day_bucket.get(plan_date, 0) + remaining
+            day_po = forward_po.setdefault(unit, {})
+            day_po.setdefault(plan_date, set()).add(po_key)
+
+    def _rank(unit: str) -> tuple:
+        if unit == UNIT_NONE:
+            return (1, unit)
+        if unit == UNIT_MIXED:
+            return (2, unit)
+        return (0, unit)
+
+    units = set(forward) | set(today_qty) | set(overdue_qty)
+    series = []
+    for unit in sorted(units, key=_rank):
+        day_bucket = forward.get(unit) or {}
+        day_po = forward_po.get(unit) or {}
+        points = [
+            {
+                "date": day,
+                "qty": int(day_bucket.get(day, 0)),
+                "po_count": len(day_po.get(day) or ()),
+            }
+            for day in dates
+        ]
+        series.append({
+            "unit": unit,
+            "today_qty": int(today_qty.get(unit, 0)),
+            "today_po_count": len(today_po.get(unit) or ()),
+            "overdue_qty": int(overdue_qty.get(unit, 0)),
+            "overdue_po_count": len(overdue_po.get(unit) or ()),
+            "points": points,
+        })
+    notes: List[str] = []
+    if any(item["unit"] == UNIT_NONE for item in series):
+        notes.append(NOTE_NO_UNIT)
+    if any(item["unit"] == UNIT_MIXED for item in series):
+        notes.append(NOTE_MIXED)
+    has_signal = any(
+        item["today_qty"] or item["overdue_qty"] or any(point["qty"] for point in item["points"])
+        for item in series
+    )
+    status = "complete" if has_signal else "empty"
+    return {
+        "status": status,
+        "days": days,
+        "today": today_key,
+        "start": today_key,
+        "end": end_key,
+        "timezone": "Asia/Jakarta",
+        "snapshot": True,
+        "series": series if has_signal else [],
+        "notes": notes if has_signal else [],
+        "detail": None if has_signal else "Belum ada rencana pengiriman aktif pada rentang ini.",
+    }
 
 
 def mongo_match(extra: Optional[dict] = None) -> dict:

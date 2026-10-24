@@ -75,7 +75,12 @@ class LayoutError(Exception):
 def finance_widget_allowed(widget_id: str, permissions: Iterable[str], spec: Optional[dict] = None) -> bool:
     ready = READY_PERMISSION if spec is None else spec["ready"]
     needed = ready.get(widget_id)
-    return bool(needed and needed in set(permissions or []))
+    if not needed:
+        return False
+    granted = set(permissions or [])
+    if isinstance(needed, (list, tuple, set, frozenset)):
+        return any(item in granted for item in needed)
+    return needed in granted
 
 
 def _int_field(value: Any, field: str) -> int:

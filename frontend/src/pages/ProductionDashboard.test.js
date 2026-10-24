@@ -9,7 +9,7 @@ jest.mock("react-router-dom", () => {
   const React = require("react");
   return {
     MemoryRouter: ({ children }) => children,
-    Link: ({ children, to }) => React.createElement("a", { href: to }, children),
+    Link: ({ children, to, ...rest }) => React.createElement("a", { href: to, ...rest }, children),
   };
 }, { virtual: true });
 
@@ -62,6 +62,7 @@ async function renderPage(hasPerm, apis) {
           analyticsApi={apis.analyticsApi || null}
           operatorAnalyticsApi={apis.operatorAnalyticsApi || null}
           branchOutputApi={apis.branchOutputApi || null}
+          deliveryPlanQtyApi={apis.deliveryPlanQtyApi || null}
           simulation={apis.simulation || null}
         />
       </MemoryRouter>,
@@ -735,4 +736,105 @@ test("composition and branch widgets keep units, history, and permission apart",
   expect(hidden.host.querySelector("[data-testid='produksi-widget-output_cabang']").textContent).toContain("Tidak ada izin");
   expect(denied.branchOutputApi).not.toHaveBeenCalled();
   hidden.unmount();
+});
+
+test("qty rencana pengiriman stays on production with separate today and overdue", async () => {
+  const payload = {
+    status: "complete",
+    days: 7,
+    today: "2026-10-24",
+    series: [
+      {
+        unit: "PCS",
+        today_qty: 60,
+        today_po_count: 2,
+        overdue_qty: 15,
+        overdue_po_count: 1,
+        points: [
+          { date: "2026-10-24", qty: 60, po_count: 2 },
+          { date: "2026-10-25", qty: 0, po_count: 0 },
+          { date: "2026-10-26", qty: 12, po_count: 1 },
+          { date: "2026-10-27", qty: 0, po_count: 0 },
+          { date: "2026-10-28", qty: 8, po_count: 1 },
+          { date: "2026-10-29", qty: 0, po_count: 0 },
+          { date: "2026-10-30", qty: 10, po_count: 1 },
+        ],
+      },
+      {
+        unit: "DUS",
+        today_qty: 4,
+        today_po_count: 1,
+        overdue_qty: 0,
+        overdue_po_count: 0,
+        points: [
+          { date: "2026-10-24", qty: 4, po_count: 1 },
+          { date: "2026-10-25", qty: 0, po_count: 0 },
+          { date: "2026-10-26", qty: 0, po_count: 0 },
+          { date: "2026-10-27", qty: 2, po_count: 1 },
+          { date: "2026-10-28", qty: 0, po_count: 0 },
+          { date: "2026-10-29", qty: 0, po_count: 0 },
+          { date: "2026-10-30", qty: 1, po_count: 1 },
+        ],
+      },
+    ],
+    notes: ["PO dengan lebih dari satu satuan ditampilkan terpisah sebagai campuran dan tidak dijumlahkan ke satuan lain."],
+  };
+  const apis = apisFor(layout([
+    widget("po_aktif", 0, 0, 3, 2),
+    widget("delivery_qty", 3, 0, 7, 7),
+  ]));
+  apis.deliveryPlanQtyApi = jest.fn(async () => payload);
+  const allow = (key) => key === "dashboard.production.view" || key === "delivery.schedule.view";
+  const view = await renderPage(allow, apis);
+  const card = view.host.querySelector("[data-testid='produksi-widget-delivery_qty']");
+  expect(card.textContent).toContain("Qty Rencana Pengiriman");
+  expect(card.textContent).toContain("Monitoring sisa qty berdasarkan tanggal rencana");
+  expect(card.textContent).toContain("Rencana Hari Ini");
+  expect(card.textContent).toContain("Lewat Rencana");
+  expect(card.textContent).toContain("Rencana per Hari");
+  const todayKpi = card.querySelector("[data-testid='produksi-delivery-qty-today']");
+  const overdueKpi = card.querySelector("[data-testid='produksi-delivery-qty-overdue']");
+  expect(todayKpi.textContent).toContain("60");
+  expect(todayKpi.textContent).toContain("2 PO aktif");
+  expect(todayKpi.textContent).toContain("24 Okt 2026");
+  expect(overdueKpi.textContent).toContain("15");
+  expect(overdueKpi.textContent).toContain("1 PO masih bersisa");
+  expect(`${todayKpi.textContent}${overdueKpi.textContent}`).not.toMatch(/\b75\b/);
+  expect(card.textContent).toContain("Menampilkan total qty sisa per tanggal rencana");
+  const tipCol = [...card.querySelectorAll("[data-testid='produksi-delivery-qty-bar-col']")]
+    .find((node) => node.getAttribute("aria-label")?.includes("26 Oktober 2026"));
+  expect(tipCol).toBeTruthy();
+  expect(tipCol.getAttribute("aria-label")).toContain("Rencana 12 pcs");
+  expect(tipCol.getAttribute("aria-label")).toContain("Jumlah PO 1");
+  expect(tipCol.querySelector("[data-testid='produksi-delivery-qty-tip']").textContent).toContain("Senin, 26 Oktober 2026");
+  expect(tipCol.querySelector("[data-testid='produksi-delivery-qty-tip']").textContent).toContain("Jumlah PO: 1");
+  expect(view.host.querySelector("[data-testid='produksi-widget-po_aktif']").textContent).toContain("5");
+  expect(apis.deliveryPlanQtyApi).toHaveBeenCalledWith(7);
+  await act(async () => { view.host.querySelector("[data-testid='produksi-delivery-qty-unit-DUS']").click(); });
+  expect(card.textContent).toContain("4");
+  expect(card.textContent).toContain("dus");
+  await act(async () => { view.host.querySelector("[data-testid='produksi-delivery-qty-days-30']").click(); });
+  await act(async () => { await flush(); await flush(); });
+  expect(apis.deliveryPlanQtyApi).toHaveBeenCalledWith(30);
+  await act(async () => { view.host.querySelector("[data-testid='produksi-menu-delivery_qty']").click(); });
+  const openPlan = view.host.querySelector("[data-testid='produksi-open-delivery_qty']");
+  expect(openPlan).toBeTruthy();
+  expect(openPlan.getAttribute("href")).toBe("/produksi/rencana-jadwal-kirim");
+  expect(openPlan.textContent).toContain("Lihat Rencana Pengiriman");
+  expect(view.host.querySelector("[data-testid='produksi-info-delivery_qty']")).toBeTruthy();
+  expect(card.textContent).not.toContain("Download Data");
+  await act(async () => { view.host.querySelector("[data-testid='produksi-remove-delivery_qty']").click(); });
+  await act(async () => { await wait(700); });
+  expect(view.host.querySelector("[data-testid='produksi-widget-delivery_qty']")).toBeNull();
+  expect(view.host.querySelector("[data-testid='produksi-widget-po_aktif']")).toBeTruthy();
+  await act(async () => { view.host.querySelector("[data-testid='produksi-add-widget']").click(); });
+  expect(view.host.querySelector("[data-testid='produksi-catalog-delivery_qty']").textContent).toContain("Qty Rencana Pengiriman");
+  view.unmount();
+
+  const denied = apisFor(layout([widget("delivery_qty", 0, 0, 6, 5)]));
+  denied.deliveryPlanQtyApi = jest.fn(async () => payload);
+  const blocked = await renderPage((key) => key === "dashboard.production.view", denied);
+  expect(blocked.host.querySelector("[data-testid='produksi-widget-delivery_qty']").textContent).toContain("Tidak ada izin");
+  expect(denied.deliveryPlanQtyApi).not.toHaveBeenCalled();
+  blocked.unmount();
 });

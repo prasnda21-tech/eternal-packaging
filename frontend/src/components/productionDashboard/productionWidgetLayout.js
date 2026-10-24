@@ -28,6 +28,7 @@ export const SIZES = {
   bottleneck: { minW: 6, maxW: 12, minH: 3, maxH: 8, w: 8, h: 4 },
   komposisi: { minW: 6, maxW: 12, minH: 4, maxH: 8, w: 6, h: 5 },
   output_cabang: { minW: 6, maxW: 12, minH: 4, maxH: 8, w: 6, h: 5 },
+  delivery_qty: { minW: 6, maxW: 12, minH: 5, maxH: 9, w: 7, h: 7 },
 };
 
 const DEFAULT_ORDER = [

@@ -4,6 +4,7 @@ import {
   formatLongDate,
   mapCash,
   mapCustomerRank,
+  mapDeliveryQty,
   mapProduction,
   mapProducts,
   mapPurchases,
@@ -169,6 +170,51 @@ test("reconciliation empty is not a matched zero and finalized keeps a differenc
   expect(both.pairs[0].name).toBe("Kas Uji");
   expect(both.pairs[0].amount).toBeUndefined();
   expect(both.rows).toHaveLength(1);
+});
+
+test("delivery qty keeps today overdue and units separate", () => {
+  const model = mapDeliveryQty({
+    status: "complete",
+    days: 7,
+    today: "2026-10-24",
+    series: [
+      {
+        unit: "PCS",
+        today_qty: 60,
+        today_po_count: 2,
+        overdue_qty: 15,
+        overdue_po_count: 1,
+        points: [
+          { date: "2026-10-24", qty: 60, po_count: 2 },
+          { date: "2026-10-25", qty: 10, po_count: 1 },
+          { date: "2026-10-26", qty: 17000, po_count: 6 },
+        ],
+      },
+      {
+        unit: "tanpa_satuan",
+        today_qty: 7,
+        today_po_count: 1,
+        overdue_qty: 0,
+        overdue_po_count: 0,
+        points: [{ date: "2026-10-24", qty: 7, po_count: 1 }],
+      },
+    ],
+    notes: ["Qty tanpa satuan tidak dijumlahkan dan tidak dianggap pcs."],
+  });
+  expect(model.todayLabel).toBe("24 Okt 2026");
+  expect(model.series[0]).toMatchObject({ label: "pcs", todayQty: 60, overdueQty: 15, todayPoCount: 2 });
+  expect(model.series[1].label).toBe("tanpa satuan");
+  expect(model.series[0].points[1]).toMatchObject({
+    label: "25 Okt 2026",
+    shortLabel: "25 Okt",
+    tipLabel: "Minggu, 25 Oktober 2026",
+    poCount: 1,
+  });
+  expect(model.series[0].points[2]).toMatchObject({
+    tipLabel: "Senin, 26 Oktober 2026",
+    qty: 17000,
+    poCount: 6,
+  });
 });
 
 test("a later request id wins", () => {

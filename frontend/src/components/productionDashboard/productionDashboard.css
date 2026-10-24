@@ -118,12 +118,332 @@
 
 .produksi-board-page .pd-stack { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .produksi-board-page .pd-deadline,
-.produksi-board-page .pd-approval {
+.produksi-board-page .pd-approval,
+.produksi-board-page .pd-delivery-kpis {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   min-width: 0;
 }
+/* Delivery qty: header stays visible; chart+footer stack without overlap. */
+.produksi-board-page .kb-card.is-delivery-qty {
+  overflow: hidden;
+}
+.produksi-board-page .kb-card.is-delivery-qty.is-menu {
+  overflow: visible;
+  z-index: 6;
+}
+.produksi-board-page .kb-card.is-delivery-qty > header {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  min-height: 56px;
+  padding: 16px 14px 8px;
+  gap: 8px;
+  position: relative;
+  z-index: 2;
+  background: transparent;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-handle {
+  margin-top: 2px;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-glyph {
+  margin-top: 1px;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-card-title {
+  padding-top: 0;
+  overflow: visible;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-card-title h2 {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  overflow: visible;
+  white-space: normal;
+  word-break: break-word;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-card-title p {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-card-tools {
+  margin-top: 0;
+  align-self: flex-start;
+}
+.produksi-board-page .kb-card.is-delivery-qty .kb-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 14px 12px;
+}
+.produksi-board-page .pd-delivery-qty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+.produksi-board-page .pd-delivery-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.produksi-board-page .pd-delivery-kpis {
+  flex: 0 0 auto;
+}
+.produksi-board-page .pd-delivery-kpi {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+}
+.produksi-board-page .pd-delivery-kpi.is-late {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+.produksi-board-page .pd-delivery-kpi > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+}
+.produksi-board-page .pd-delivery-kpi.is-today > span { color: #08784c; }
+.produksi-board-page .pd-delivery-kpi.is-late > span { color: #c2410c; }
+.produksi-board-page .pd-delivery-kpi strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 22px;
+  line-height: 1.1;
+  color: #102337;
+  font-variant-numeric: tabular-nums;
+}
+.produksi-board-page .pd-delivery-kpi em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.produksi-board-page .pd-delivery-kpi p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 11px;
+}
+.produksi-board-page .pd-delivery-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.produksi-board-page .pd-delivery-chart-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.produksi-board-page .pd-delivery-chart-head strong {
+  font-size: 13px;
+  color: #102337;
+}
+.produksi-board-page .pd-delivery-chart-head span {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.produksi-board-page .pd-delivery-plot {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 6px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+.produksi-board-page .pd-delivery-y {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 4px 0 18px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.produksi-board-page .pd-delivery-qty .pd-delivery-bars.pd-bars,
+.produksi-board-page .pd-delivery-qty .pd-delivery-bars.pd-output-plot {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  padding-top: 4px;
+  align-items: stretch;
+  border-bottom: 1px solid #dce8e2;
+}
+.produksi-board-page .pd-delivery-qty .pd-delivery-bars.is-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+.produksi-board-page .pd-delivery-qty .pd-delivery-bars.is-scroll .pd-bar-col {
+  flex: 1 0 22px;
+  min-width: 22px;
+}
+.produksi-board-page .pd-delivery-bar {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+  overflow: visible;
+}
+.produksi-board-page .pd-delivery-bar:focus-visible {
+  outline: 2px solid rgba(8, 120, 76, 0.45);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.produksi-board-page .pd-delivery-qty .pd-output-slot {
+  max-width: 28px;
+  min-height: 0;
+  height: 100%;
+}
+.produksi-board-page .pd-delivery-qty .pd-delivery-bars.is-scroll .pd-output-slot {
+  max-width: 22px;
+}
+/* Tip stays inside the plot so it does not fight the footer. */
+.produksi-board-page .pd-delivery-tip {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  top: 6px;
+  bottom: auto;
+  transform: translateX(-50%);
+  min-width: 158px;
+  max-width: 210px;
+  padding: 7px 9px;
+  border: 1px solid #dce8e2;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 18px rgba(16, 35, 55, 0.12);
+  color: #334155;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+}
+.produksi-board-page .pd-delivery-bar:hover .pd-delivery-tip,
+.produksi-board-page .pd-delivery-bar:focus-visible .pd-delivery-tip {
+  opacity: 1;
+  visibility: visible;
+}
+.produksi-board-page .pd-delivery-bars .pd-bar-col:first-child .pd-delivery-tip,
+.produksi-board-page .pd-delivery-bars .pd-bar-col:nth-child(2) .pd-delivery-tip {
+  left: 0;
+  transform: none;
+}
+.produksi-board-page .pd-delivery-bars .pd-bar-col:last-child .pd-delivery-tip,
+.produksi-board-page .pd-delivery-bars .pd-bar-col:nth-last-child(2) .pd-delivery-tip {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.produksi-board-page .pd-delivery-tip strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #102337;
+  font-size: 12px;
+}
+.produksi-board-page .pd-delivery-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.produksi-board-page .pd-delivery-tip-row + .pd-delivery-tip-row { margin-top: 2px; }
+.produksi-board-page .pd-delivery-tip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  flex: 0 0 auto;
+  background: #94a3b8;
+}
+.produksi-board-page .pd-delivery-tip i.is-qty { background: #08784c; }
+.produksi-board-page .pd-delivery-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 10px;
+  line-height: 1.35;
+  position: relative;
+  z-index: 1;
+}
+.produksi-board-page .pd-delivery-foot svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  width: 12px;
+  height: 12px;
+  color: #2563eb;
+}
+.produksi-board-page .kb-card.is-delivery-tight .pd-delivery-kpi {
+  padding: 6px 8px;
+}
+.produksi-board-page .kb-card.is-delivery-tight .pd-delivery-kpi strong {
+  font-size: 18px;
+}
+.produksi-board-page .kb-card.is-delivery-tight .pd-delivery-qty {
+  gap: 6px;
+}
+.produksi-board-page .kb-card.is-delivery-tight .pd-delivery-chart-head span {
+  display: none;
+}
+.produksi-board-page .kb-pop a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  border-radius: 8px;
+  color: #102337;
+  font-size: 12px;
+  text-align: left;
+  padding: 0 8px;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+.produksi-board-page .kb-pop a:hover { background: #f4f8f6; }
 .produksi-board-page .pd-deadline { flex: 1; }
 .produksi-board-page .pd-status {
   min-width: 0;
@@ -529,5 +849,6 @@
 @container finance-card (max-width: 280px) {
   .pd-donut-wrap { grid-template-columns: 1fr; }
   .pd-deadline,
-  .pd-approval { grid-template-columns: 1fr; }
+  .pd-approval,
+  .pd-delivery-kpis { grid-template-columns: 1fr; }
 }
