@@ -160,6 +160,15 @@ test("reconciliation empty is not a matched zero and finalized keeps a differenc
   expect(row.statusLabel).toBe("Finalized");
   expect(row.amount).toBe(500);
   expect(row.date).toBe("4 Okt 2026");
+  const both = mapReconciliations({
+    status: "complete",
+    items: [{ id: "1", cash_bank_name: "Kas BCA", number: "RK-1", reconciliation_date: "2026-10-04", status: "draft", difference: 5 }],
+    pairs: [{ id: "p1", cash_bank_name: "Kas Uji", date: "2026-10-20", direction: "in", amount: 999, journal_line_id: "secret" }],
+  });
+  expect(both.pairs).toHaveLength(1);
+  expect(both.pairs[0].name).toBe("Kas Uji");
+  expect(both.pairs[0].amount).toBeUndefined();
+  expect(both.rows).toHaveLength(1);
 });
 
 test("a later request id wins", () => {
