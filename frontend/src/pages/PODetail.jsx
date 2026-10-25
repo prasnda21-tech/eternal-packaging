@@ -4,6 +4,7 @@ import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDow
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { STAGES, canAdvance, formatDate, formatDisplayDate, formatDisplayDateTime } from "../lib/constants";
+import { legacyEstimateNotice } from "../lib/legacyEstimateNotice";
 import { getWorkflowReady, resolveOperationalStage } from "../lib/stageState";
 import { isApprovalDesignComplete, isCustomerDesignApproved } from "../lib/designEvidence";
 import Timeline from "../components/Timeline";
@@ -1215,6 +1216,19 @@ export default function PODetail() {
                 ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
                   <span className="muted small"> Otomatis</span>
                 ) : null}
+                {(() => {
+                  const notice = legacyEstimateNotice(order.delivery_sla_effective);
+                  if (!notice) return null;
+                  return (
+                    <span
+                      className="muted small legacy-estimate-notice"
+                      data-testid="legacy-estimate-notice"
+                      title={notice.title}
+                    >
+                      {notice.text}
+                    </span>
+                  );
+                })()}
               </strong>
             </div>
             <div className="po-info-pair">

@@ -20,6 +20,7 @@ from services.shipment_status import shipment_status_row
 from services.workflow_stage_status import role_status_for_schedule_row, _sj_loaded_vs_need
 from services.tanggal_pengiriman import (
     DEFAULT_LEAD_TIME_DAYS,
+    _public_sla,
     delivery_sla_effective,
     effective_tanggal_pengiriman,
     manual_tanggal_pengiriman,
@@ -425,13 +426,7 @@ def _public_delivery_sla(
     holidays: Optional[list] = None,
 ) -> dict:
     fact = delivery_sla_effective(order, lead_time_days, today=today, holidays=holidays)
-    return {
-        "date": fact.get("date"),
-        "source": fact.get("source"),
-        "state": fact.get("state"),
-        "contract": fact.get("contract"),
-        "countable": bool(fact.get("countable")),
-    }
+    return _public_sla(fact)
 
 
 def schedule_row(

@@ -304,6 +304,24 @@
 .dp-dot.late { background: #dc2626; }
 .dp-dot.upcoming { background: #166534; }
 
+.dp-date-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+.dp-estimate-notice {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--dp-muted, #64748b);
+  white-space: normal;
+  max-width: 14rem;
+}
+
 .dp-badge {
   display: inline-flex;
   align-items: center;

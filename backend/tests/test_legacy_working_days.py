@@ -56,6 +56,11 @@ def test_friday_plus_3_working_days_skips_sunday():
     assert snap["tanggal_pengiriman"] == "2026-10-27"
     assert snap["source"] == "automatic"
     assert snap["delivery_sla_effective"]["countable"] is False
+    pub = snap["delivery_sla_effective"]
+    assert pub["estimate_adjusted"] is True
+    assert pub["estimate_from"] == "2026-10-26"
+    assert pub["estimate_to"] == "2026-10-27"
+    assert pub["legacy_calendar_date"] == "2026-10-26"
 
 
 def test_saturday_plus_1_working_day():
@@ -110,12 +115,43 @@ def test_manual_and_urgent_priority_unchanged():
     assert m["date"] == "2026-11-02"
     assert m["source"] == "manual"
     assert m["countable"] is True
+    m_pub = resolve_tanggal_pengiriman(manual, 3)["delivery_sla_effective"]
+    assert "estimate_adjusted" not in m_pub
+    assert "estimate_from" not in m_pub
 
     urgent = _legacy(priority="urgent", scheduled_delivery_date="2026-10-20")
     u = delivery_sla_effective(urgent, 3, today=date(2026, 10, 30))
     assert u["contract"] == "urgent"
     assert u["date"] == "2026-10-20"
     assert u["source"] == "jadwal_pengiriman"
+    u_pub = resolve_tanggal_pengiriman(urgent, 3)["delivery_sla_effective"]
+    assert "estimate_adjusted" not in u_pub
+
+
+def test_estimate_adjusted_false_when_calendar_equals_working():
+    """Wed + 3 WD lands same as calendar (no Sunday in range)."""
+    order = _legacy(
+        design_approved_at="2026-10-21T10:00:00+07:00",  # Wednesday
+        payment_approved_at="2026-10-21T11:00:00+07:00",
+    )
+    assert automatic_tanggal_pengiriman(order, 3) == "2026-10-24"
+    assert automatic_working_tanggal_pengiriman(order, 3, []) == "2026-10-24"
+    pub = resolve_tanggal_pengiriman(order, 3)["delivery_sla_effective"]
+    assert pub["contract"] == "legacy_working_days"
+    assert pub["estimate_adjusted"] is False
+    assert "estimate_from" not in pub
+    stamped = _legacy(
+        delivery_sla_v2={
+            "rule": "working_days_3",
+            "working_days": 3,
+            "unit": "working_days",
+            "automatic_date": "2026-10-27",
+            "legacy": False,
+        },
+    )
+    v2 = resolve_tanggal_pengiriman(stamped, 3)["delivery_sla_effective"]
+    assert v2["contract"] == "sla_v2"
+    assert "estimate_adjusted" not in v2
 
 
 def test_incomplete_cancelled_full_and_partial():

@@ -186,13 +186,33 @@ def _today_key(today: Any) -> str:
 
 
 def _public_sla(fact: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    """Public read contract. Never invents dates for non-Legacy paths.
+
+    For ``legacy_working_days`` only, exposes a read-only calendar→working
+    compare so UI can show a soft notice when the estimate shifted. This is
+    not persisted and is never applied to manual, urgent, or locked SLA V2.
+    """
+    out = {
         "date": fact.get("date"),
         "source": fact.get("source"),
         "state": fact.get("state"),
         "contract": fact.get("contract"),
         "countable": bool(fact.get("countable")),
     }
+    if fact.get("contract") != "legacy_working_days":
+        return out
+    calendar = parse_calendar_date(fact.get("legacy_calendar_date"))
+    working = parse_calendar_date(fact.get("date"))
+    if not calendar or not working:
+        return out
+    out["legacy_calendar_date"] = calendar
+    if calendar != working:
+        out["estimate_adjusted"] = True
+        out["estimate_from"] = calendar
+        out["estimate_to"] = working
+    else:
+        out["estimate_adjusted"] = False
+    return out
 
 
 def classify_delivery_deadline_setting(doc: Optional[dict]) -> Dict[str, Any]:

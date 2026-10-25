@@ -4,6 +4,7 @@ import { CalendarDays, RefreshCw, RotateCcw, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
+import { legacyEstimateNotice } from "../lib/legacyEstimateNotice";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
 import { encodeHeaderFilters } from "../components/deliveryPlan/deliveryPlanTableLayout";
 import PoIdentityBadges from "../components/PoIdentityBadges";
@@ -254,7 +255,23 @@ export default function DeliveryPlanPage() {
       label: "Tanggal Kirim",
       type: "date",
       minWidth: 110,
-      render: (v) => formatDate(v, { dateOnly: true }),
+      render: (v, row) => {
+        const notice = legacyEstimateNotice(row?.delivery_sla_effective);
+        return (
+          <span className="dp-date-cell">
+            <span>{formatDate(v, { dateOnly: true })}</span>
+            {notice ? (
+              <span
+                className="dp-estimate-notice"
+                data-testid={`dp-estimate-notice-${row.po_number}`}
+                title={notice.title}
+              >
+                {notice.text}
+              </span>
+            ) : null}
+          </span>
+        );
+      },
     },
     {
       key: "po_number",
