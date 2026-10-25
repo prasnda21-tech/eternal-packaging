@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { STAGES, formatDate } from "../lib/constants";
+import { physicalOrderQty } from "../lib/orderPhysicalQty";
 import PoIdentityBadges from "./PoIdentityBadges";
 
 /**
@@ -93,7 +94,14 @@ function StageContent({ order, stageIdx }) {
               )
               : null
           }/>
-          <KV label="Total Qty" value={order.total_quantity != null ? Number(order.total_quantity).toLocaleString("id-ID") : null}/>
+          <KV
+            label="Total fisik"
+            testid="stage-physical-qty"
+            value={(() => {
+              const qty = physicalOrderQty(order);
+              return qty == null ? null : qty.toLocaleString("id-ID");
+            })()}
+          />
           <KV label="Sales" value={order.sales || order.sales_user}/>
           <KV label="Pembuat PO" value={order.created_by_name || order.created_by_user || order.imported_by}/>
         </dl>

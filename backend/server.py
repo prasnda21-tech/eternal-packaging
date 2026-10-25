@@ -1161,6 +1161,10 @@ def _orders_list_summary_projection() -> dict:
                     "name": "$$li.name",
                     "quantity": "$$li.quantity",
                     "color": "$$li.color",
+                    "master_item_id": "$$li.master_item_id",
+                    "item_type": "$$li.item_type",
+                    "physical_fulfillment": "$$li.physical_fulfillment",
+                    "production_process": "$$li.production_process",
                 },
             }
         },
@@ -1200,6 +1204,8 @@ async def _list_orders_summary(st: str, extra: Optional[dict] = None) -> dict:
         {"$limit": _ORDERS_SUMMARY_LIMIT},
         {"$project": _orders_list_summary_projection()},
     ]).to_list(_ORDERS_SUMMARY_LIMIT)
+    # Physical qty before finalize so hold filter still sees stamped lines.
+    await _attach_list_packing_required_totals(raw)
     orders = [_finalize_orders_summary_row(o) for o in raw]
     if st == "hold":
         orders = [o for o in orders if o.get("hold")]
@@ -1279,6 +1285,8 @@ async def list_orders(
         # dan Timeline konsisten memakai source of truth yang sama).
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
         _strip_tracking_secret(o)
+    # Derived physical qty for any default-list consumer (batched; never persisted).
+    await _attach_list_packing_required_totals(orders)
     orders = [_strip_sj_bytes(o) for o in orders]
     # Post-filter by computed status when requested
     if st == "hold":
@@ -1435,6 +1443,9 @@ def _orders_dashboard_line_items_expr() -> dict:
             "in": {
                 "line_id": "$$li.line_id",
                 "line_idx": "$$li.line_idx",
+                "master_item_id": "$$li.master_item_id",
+                "item_type": "$$li.item_type",
+                "physical_fulfillment": "$$li.physical_fulfillment",
                 "production_process": "$$li.production_process",
                 "quantity": "$$li.quantity",
             },
@@ -1847,6 +1858,8 @@ async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
         _strip_tracking_secret(o)
+    # One batched master stamp + derived packing_required_total (no per-order N+1).
+    await _attach_list_packing_required_totals(raw)
     orders = [_finalize_orders_dashboard_row(o) for o in raw]
     if st == "hold":
         orders = [o for o in orders if o.get("hold")]
@@ -2250,16 +2263,9 @@ class _OrderMutationSkipped(Exception):
     """Idempotent progress save. Leave the order document untouched."""
 
 
-async def _stamp_order_line_item_types(order: dict) -> None:
-    """In-memory stamp of master item_type onto lines missing it (not persisted).
-
-    Enables sync packing/SJ/loading helpers to exclude SERVICE process qty.
-    Also stamps physical_fulfillment when the line key is absent.
-    """
-    from quantity_rules import stamp_line_item_types, stamp_line_physical_fulfillment
-
-    need_type: list = []
-    need_fulfillment: list = []
+def _stamp_need_master_ids(order: dict) -> list:
+    """Master ids that still need in-memory item_type / physical_fulfillment stamp."""
+    need: list = []
     for li in (order.get("line_items") or []):
         if not isinstance(li, dict):
             continue
@@ -2267,12 +2273,17 @@ async def _stamp_order_line_item_types(order: dict) -> None:
         if not mid:
             continue
         if not str(li.get("item_type") or "").strip():
-            need_type.append(mid)
+            need.append(mid)
         if "physical_fulfillment" not in li:
-            need_fulfillment.append(mid)
-    need = list(set(need_type + need_fulfillment))
+            need.append(mid)
+    return need
+
+
+async def _load_stamp_master_maps(master_ids: list) -> tuple:
+    """One master_items read → (type_by_master, fulfillment_by_master)."""
+    need = sorted({str(mid).strip() for mid in (master_ids or []) if str(mid).strip()})
     if not need:
-        return
+        return {}, {}
     rows = await db.master_items.find(
         {"id": {"$in": need}},
         {"_id": 0, "id": 1, "item_type": 1, "physical_fulfillment": 1},
@@ -2287,8 +2298,51 @@ async def _stamp_order_line_item_types(order: dict) -> None:
         for r in rows
         if str(r.get("id") or "").strip() and r.get("physical_fulfillment") is True
     }
+    return type_by_master, fulfillment_by_master
+
+
+async def _stamp_order_line_item_types(order: dict) -> None:
+    """In-memory stamp of master item_type onto lines missing it (not persisted).
+
+    Enables sync packing/SJ/loading helpers to exclude SERVICE process qty.
+    Also stamps physical_fulfillment when the line key is absent.
+    """
+    from quantity_rules import stamp_line_item_types, stamp_line_physical_fulfillment
+
+    need = _stamp_need_master_ids(order)
+    if not need:
+        return
+    type_by_master, fulfillment_by_master = await _load_stamp_master_maps(need)
     stamp_line_item_types(order, type_by_master)
     stamp_line_physical_fulfillment(order, fulfillment_by_master)
+
+
+async def _stamp_orders_line_item_types_batch(orders: list) -> None:
+    """Stamp many orders with a single master_items query (no per-order N+1)."""
+    from quantity_rules import stamp_line_item_types, stamp_line_physical_fulfillment
+
+    need: list = []
+    for order in orders or []:
+        if isinstance(order, dict):
+            need.extend(_stamp_need_master_ids(order))
+    type_by_master, fulfillment_by_master = await _load_stamp_master_maps(need)
+    if not type_by_master and not fulfillment_by_master:
+        # Still run stamps with empty maps so behavior matches single-order path
+        # when every line already has type/fulfillment keys.
+        pass
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        stamp_line_item_types(order, type_by_master)
+        stamp_line_physical_fulfillment(order, fulfillment_by_master)
+
+
+async def _attach_list_packing_required_totals(orders: list) -> None:
+    """Derived packing_required_total for list/detail consumers (never persisted)."""
+    await _stamp_orders_line_item_types_batch(orders)
+    for order in orders or []:
+        if isinstance(order, dict):
+            order["packing_required_total"] = _packing_required_total(order)
 
 
 async def _load_order_for_mutation(order_id: str) -> dict:

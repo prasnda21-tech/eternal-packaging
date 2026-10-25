@@ -80,6 +80,7 @@ import PoStagePickerSheet from "../components/poDetail/PoStagePickerSheet";
 import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poDetail/PoStageAccordionContext";
 import { getStagePresentation } from "../lib/poDetailPresentation";
 import { sjHistory } from "../lib/suratJalan";
+import { physicalOrderQty } from "../lib/orderPhysicalQty";
 
 function PengirimanDeliveryProofPanel({ order, onUpdated }) {
   const { open } = usePoStageAccordion(14);
@@ -1049,7 +1050,12 @@ export default function PODetail() {
         </header>
       <section className="po-kpi-strip po-order-masuk-kpi" data-testid="po-kpi-strip" hidden={viewedStage !== 0}>
         <MetricRow columns={5}>
-          <MetricCell label="Total PO" value={order.total_quantity} testid="kpi-total-po" />
+          <MetricCell
+            label="Total fisik"
+            value={physicalOrderQty(order) == null ? "—" : physicalOrderQty(order)}
+            format={physicalOrderQty(order) == null ? "text" : "qty"}
+            testid="kpi-total-po"
+          />
           <MetricCell className="kpi-accent-target" label="Target Cetak" value={order.print_qty_target ?? order.print_qty_total} testid="kpi-print-target" />
           <MetricCell className="kpi-accent-done" label="Selesai Cetak" value={order.print_completed_qty} testid="kpi-print-done" />
           <MetricCell className="kpi-accent-remain" label="Sisa Cetak" value={order.print_qty_remaining} testid="kpi-print-remain" />
@@ -1355,7 +1361,12 @@ export default function PODetail() {
             <tfoot>
               <tr>
                 <td colSpan={6} className="li-total-cell">
-                  <span data-testid="scope-total-po">Total {(order.total_quantity ?? 0).toLocaleString("id-ID")} pcs</span>
+                  <span data-testid="scope-total-po">
+                    Total fisik{" "}
+                    {physicalOrderQty(order) == null
+                      ? "tidak tersedia"
+                      : `${physicalOrderQty(order).toLocaleString("id-ID")} pcs`}
+                  </span>
                   {" · "}
                   <span data-testid="scope-print-qty">Cetak {Number(order.print_qty_total ?? 0).toLocaleString("id-ID")} pcs</span>
                   {" · "}
