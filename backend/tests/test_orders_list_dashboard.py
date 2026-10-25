@@ -438,6 +438,39 @@ def _status_fixture_set(server):
     return {row["id"]: row for row in rows}
 
 
+def test_dashboard_attaches_packing_required_total_for_order_masuk_card():
+    """Lean dashboard must expose physical qty without per-order N+1 stamp."""
+    body = _dashboard_fn_body()
+    assert "await _attach_list_packing_required_totals(raw)" in body
+    assert "await _stamp_order_line_item_types(o)" not in body
+    assert body.index("await _attach_list_packing_required_totals(raw)") < body.index(
+        "orders = [_finalize_orders_dashboard_row(o) for o in raw]"
+    )
+    strip_start = SERVER.index("_ORDERS_DASHBOARD_RESPONSE_STRIP = (")
+    strip_end = SERVER.index(")", strip_start)
+    assert "packing_required_total" not in SERVER[strip_start:strip_end]
+
+    li_start = SERVER.index("def _orders_dashboard_line_items_expr")
+    li_end = SERVER.index("def _orders_dashboard_operator_splits_expr")
+    li_body = SERVER[li_start:li_end]
+    assert "item_type" in li_body
+    assert "physical_fulfillment" in li_body
+    assert "master_item_id" in li_body
+
+
+def test_summary_and_default_list_attach_packing_required_total_batched():
+    summary = _summary_fn_body()
+    assert "await _attach_list_packing_required_totals(raw)" in summary
+    default_body = _list_orders_fn_body()
+    assert "await _attach_list_packing_required_totals(orders)" in default_body
+    # summary projection carries type fields needed for SERVICE exclusion
+    proj_start = SERVER.index("def _orders_list_summary_projection")
+    proj_end = SERVER.index("def _finalize_orders_summary_row")
+    proj = SERVER[proj_start:proj_end]
+    assert "item_type" in proj and "master_item_id" in proj
+    assert "physical_fulfillment" in proj
+
+
 def test_loading_confirmation_lean_fields_available_until_finalize():
     server = _import_server()
     body = _dashboard_fn_body()
