@@ -46,7 +46,16 @@ BRANCH_INHERITANCE_FIELDS = (
 SLOT_COMPANY_LOGO = "company_logo"
 SLOT_PREPARED = "prepared_signature_image"
 SLOT_APPROVED = "approved_signature_image"
-ASSET_SLOTS = frozenset({SLOT_COMPANY_LOGO, SLOT_PREPARED, SLOT_APPROVED})
+# Markup-isolated signature assets (do not mutate invoice/proforma slots).
+SLOT_MARKUP_PREPARED = "markup_prepared_signature_image"
+SLOT_MARKUP_APPROVED = "markup_approved_signature_image"
+ASSET_SLOTS = frozenset({
+    SLOT_COMPANY_LOGO,
+    SLOT_PREPARED,
+    SLOT_APPROVED,
+    SLOT_MARKUP_PREPARED,
+    SLOT_MARKUP_APPROVED,
+})
 
 MAX_LOGO_BYTES = 2_000_000
 MAX_SIGNATURE_BYTES = 1_500_000
@@ -110,6 +119,20 @@ def default_settings() -> Dict[str, Any]:
             # Phase 1 generic header — empty means V1 legacy path.
             "header_elements": [],
             # Phase 2 generic footer — empty means V1 legacy footer path.
+            "footer_elements": [],
+        },
+        # Separate Design Cetakan type for Faktur Markup (reseller). Defaults mirror invoice.
+        "invoice_markup": {
+            "bank_accounts": default_bank_accounts(),
+            "estimasi_title": layout.ESTIMASI_TITLE,
+            "estimasi_lines": list(layout.ESTIMASI_LINES),
+            "prepared_label": "Disiapkan Oleh",
+            "prepared_footer": "Admin",
+            "approved_label": "Disetujui Oleh",
+            "approved_footer": "Pengelola",
+            "prepared_signature_image": None,
+            "approved_signature_image": None,
+            "header_elements": [],
             "footer_elements": [],
         },
         "schema_version": 1,
@@ -351,6 +374,7 @@ def _sanitize_footer_elements(
         ALLOWED_FOOTER_ELEMENT_TYPES,
         DOCUMENT_DELIVERY,
         DOCUMENT_INVOICE,
+        DOCUMENT_MARKUP,
         DOCUMENT_PO,
         DOCUMENT_PROFORMA,
         ELEMENT_TYPE_FIELD,
@@ -387,7 +411,11 @@ def _sanitize_footer_elements(
             continue
         el_type = str(row.get("type") or "").strip()
         # SJ/PO do not use invoice signature element type (POD stays frozen).
-        if el_type == ELEMENT_TYPE_SIGNATURE and doc not in {DOCUMENT_INVOICE, DOCUMENT_PROFORMA}:
+        if el_type == ELEMENT_TYPE_SIGNATURE and doc not in {
+            DOCUMENT_INVOICE,
+            DOCUMENT_PROFORMA,
+            DOCUMENT_MARKUP,
+        }:
             if strict:
                 raise HTTPException(400, f"Tipe signature tidak diizinkan untuk dokumen {doc}")
             continue
@@ -499,9 +527,16 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
 
     po_raw = doc.get("po") if isinstance(doc.get("po"), dict) else {}
     inv_raw = doc.get("invoice") if isinstance(doc.get("invoice"), dict) else {}
+    markup_raw = doc.get("invoice_markup") if isinstance(doc.get("invoice_markup"), dict) else {}
     sj_raw = doc.get("surat_jalan") if isinstance(doc.get("surat_jalan"), dict) else {}
     header_elements = _sanitize_header_elements(inv_raw.get("header_elements"), strict=False, document="invoice")
     footer_elements = _sanitize_footer_elements(inv_raw.get("footer_elements"), strict=False, document="invoice")
+    markup_header_elements = _sanitize_header_elements(
+        markup_raw.get("header_elements"), strict=False, document="markup",
+    )
+    markup_footer_elements = _sanitize_footer_elements(
+        markup_raw.get("footer_elements"), strict=False, document="markup",
+    )
     po_header_elements = _sanitize_header_elements(po_raw.get("header_elements"), strict=False, document="po")
     po_footer_elements = _sanitize_footer_elements(po_raw.get("footer_elements"), strict=False, document="po")
     sj_header_elements = _sanitize_header_elements(sj_raw.get("header_elements"), strict=False, document="delivery")
@@ -530,6 +565,51 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
         "header_elements": header_elements,
         "footer_elements": footer_elements,
     }
+    # Backward compatible: missing invoice_markup inherits invoice defaults.
+    markup_base = base["invoice_markup"]
+    invoice_markup = {
+        "bank_accounts": _bank_accounts(
+            markup_raw.get("bank_accounts") if markup_raw else None,
+            invoice["bank_accounts"] if not markup_raw else markup_base["bank_accounts"],
+        ),
+        "estimasi_title": (
+            _clip(markup_raw.get("estimasi_title"), _MAX_LINE)
+            or (invoice["estimasi_title"] if not markup_raw else markup_base["estimasi_title"])
+        ),
+        "estimasi_lines": _string_list(
+            markup_raw.get("estimasi_lines") if markup_raw else None,
+            fallback=invoice["estimasi_lines"] if not markup_raw else markup_base["estimasi_lines"],
+            max_items=_MAX_ESTIMASI_LINES,
+        ),
+        "prepared_label": (
+            _clip(markup_raw.get("prepared_label"))
+            or (invoice["prepared_label"] if not markup_raw else markup_base["prepared_label"])
+        ),
+        "prepared_footer": (
+            _clip(markup_raw.get("prepared_footer"))
+            or (invoice["prepared_footer"] if not markup_raw else markup_base["prepared_footer"])
+        ),
+        "approved_label": (
+            _clip(markup_raw.get("approved_label"))
+            or (invoice["approved_label"] if not markup_raw else markup_base["approved_label"])
+        ),
+        "approved_footer": (
+            _clip(markup_raw.get("approved_footer"))
+            or (invoice["approved_footer"] if not markup_raw else markup_base["approved_footer"])
+        ),
+        "prepared_signature_image": (
+            _sanitize_asset_ref(markup_raw.get("prepared_signature_image"))
+            if markup_raw
+            else invoice.get("prepared_signature_image")
+        ),
+        "approved_signature_image": (
+            _sanitize_asset_ref(markup_raw.get("approved_signature_image"))
+            if markup_raw
+            else invoice.get("approved_signature_image")
+        ),
+        "header_elements": markup_header_elements if markup_raw else list(header_elements),
+        "footer_elements": markup_footer_elements if markup_raw else list(footer_elements),
+    }
     surat_jalan = {
         "signature_labels": _labels(
             sj_raw.get("signature_labels"),
@@ -556,6 +636,7 @@ def resolve_print_design(raw: Optional[dict] = None) -> Dict[str, Any]:
         "company_logo": _sanitize_asset_ref(doc.get("company_logo")),
         "po": po,
         "invoice": invoice,
+        "invoice_markup": invoice_markup,
         "surat_jalan": surat_jalan,
         "updated_at": doc.get("updated_at"),
         "updated_by": doc.get("updated_by"),
@@ -596,6 +677,23 @@ def public_settings(doc: Optional[dict] = None) -> Dict[str, Any]:
             "header_elements": list(inv.get("header_elements") or []),
             "footer_elements": list(inv.get("footer_elements") or []),
         },
+        "invoice_markup": {
+            "bank_accounts": (resolved.get("invoice_markup") or {}).get("bank_accounts"),
+            "estimasi_title": (resolved.get("invoice_markup") or {}).get("estimasi_title"),
+            "estimasi_lines": (resolved.get("invoice_markup") or {}).get("estimasi_lines"),
+            "prepared_label": (resolved.get("invoice_markup") or {}).get("prepared_label"),
+            "prepared_footer": (resolved.get("invoice_markup") or {}).get("prepared_footer"),
+            "approved_label": (resolved.get("invoice_markup") or {}).get("approved_label"),
+            "approved_footer": (resolved.get("invoice_markup") or {}).get("approved_footer"),
+            "prepared_signature_image": _public_asset(
+                (resolved.get("invoice_markup") or {}).get("prepared_signature_image")
+            ),
+            "approved_signature_image": _public_asset(
+                (resolved.get("invoice_markup") or {}).get("approved_signature_image")
+            ),
+            "header_elements": list((resolved.get("invoice_markup") or {}).get("header_elements") or []),
+            "footer_elements": list((resolved.get("invoice_markup") or {}).get("footer_elements") or []),
+        },
         "surat_jalan": {
             "signature_labels": (resolved.get("surat_jalan") or {}).get("signature_labels"),
             "date_label": (resolved.get("surat_jalan") or {}).get("date_label"),
@@ -623,6 +721,14 @@ def _validate_put_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(banks, list) and len(banks) > _MAX_BANKS:
             raise HTTPException(400, f"Maksimal {_MAX_BANKS} rekening pada Design Cetakan")
 
+    markup_payload = payload.get("invoice_markup") if isinstance(payload.get("invoice_markup"), dict) else {}
+    if "bank_accounts" in markup_payload:
+        banks = markup_payload.get("bank_accounts")
+        if banks is not None and not isinstance(banks, list):
+            raise HTTPException(400, "Daftar rekening Faktur Markup harus berupa array")
+        if isinstance(banks, list) and len(banks) > _MAX_BANKS:
+            raise HTTPException(400, f"Maksimal {_MAX_BANKS} rekening pada Design Cetakan Faktur Markup")
+
     # Strict validate header/footer elements when present on PUT.
     touched = False
     if "header_elements" in invoice_payload or "footer_elements" in invoice_payload:
@@ -641,6 +747,24 @@ def _validate_put_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
         payload = dict(payload)
         payload["invoice"] = invoice_payload
+        touched = True
+
+    if "header_elements" in markup_payload or "footer_elements" in markup_payload:
+        markup_payload = dict(markup_payload)
+        if "header_elements" in markup_payload:
+            markup_payload["header_elements"] = _sanitize_header_elements(
+                markup_payload.get("header_elements"),
+                strict=True,
+                document="markup",
+            )
+        if "footer_elements" in markup_payload:
+            markup_payload["footer_elements"] = _sanitize_footer_elements(
+                markup_payload.get("footer_elements"),
+                strict=True,
+                document="markup",
+            )
+        payload = dict(payload)
+        payload["invoice_markup"] = markup_payload
         touched = True
 
     po_payload = payload.get("po") if isinstance(payload.get("po"), dict) else {}
@@ -687,6 +811,9 @@ def _validate_put_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     resolved["company_logo"] = None
     resolved["invoice"]["prepared_signature_image"] = None
     resolved["invoice"]["approved_signature_image"] = None
+    if isinstance(resolved.get("invoice_markup"), dict):
+        resolved["invoice_markup"]["prepared_signature_image"] = None
+        resolved["invoice_markup"]["approved_signature_image"] = None
     resolved["updated_at"] = None
     resolved["updated_by"] = None
     return resolved
@@ -725,8 +852,16 @@ async def save_print_design_settings(db, payload: Dict[str, Any], user: Optional
     cleaned["invoice"]["approved_signature_image"] = (existing_resolved.get("invoice") or {}).get(
         "approved_signature_image"
     )
+    cleaned.setdefault("invoice_markup", {})
+    cleaned["invoice_markup"]["prepared_signature_image"] = (
+        existing_resolved.get("invoice_markup") or {}
+    ).get("prepared_signature_image")
+    cleaned["invoice_markup"]["approved_signature_image"] = (
+        existing_resolved.get("invoice_markup") or {}
+    ).get("approved_signature_image")
     # Preserve V2 header/footer when client omits the key (older clients / partial payloads).
     inv_in = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
+    markup_in = payload.get("invoice_markup") if isinstance(payload.get("invoice_markup"), dict) else {}
     po_in = payload.get("po") if isinstance(payload.get("po"), dict) else {}
     sj_in = payload.get("surat_jalan") if isinstance(payload.get("surat_jalan"), dict) else {}
     if "header_elements" not in inv_in:
@@ -737,6 +872,17 @@ async def save_print_design_settings(db, payload: Dict[str, Any], user: Optional
         cleaned["invoice"]["footer_elements"] = list(
             (existing_resolved.get("invoice") or {}).get("footer_elements") or []
         )
+    if "invoice_markup" not in payload:
+        cleaned["invoice_markup"] = copy.deepcopy(existing_resolved.get("invoice_markup") or cleaned["invoice_markup"])
+    else:
+        if "header_elements" not in markup_in:
+            cleaned["invoice_markup"]["header_elements"] = list(
+                (existing_resolved.get("invoice_markup") or {}).get("header_elements") or []
+            )
+        if "footer_elements" not in markup_in:
+            cleaned["invoice_markup"]["footer_elements"] = list(
+                (existing_resolved.get("invoice_markup") or {}).get("footer_elements") or []
+            )
     if "header_elements" not in po_in:
         cleaned["po"]["header_elements"] = list(
             (existing_resolved.get("po") or {}).get("header_elements") or []
@@ -860,6 +1006,11 @@ def _get_slot_ref(settings: dict, slot: str) -> Optional[dict]:
         return _sanitize_asset_ref(inv.get("prepared_signature_image"))
     if slot == SLOT_APPROVED:
         return _sanitize_asset_ref(inv.get("approved_signature_image"))
+    markup = settings.get("invoice_markup") or {}
+    if slot == SLOT_MARKUP_PREPARED:
+        return _sanitize_asset_ref(markup.get("prepared_signature_image"))
+    if slot == SLOT_MARKUP_APPROVED:
+        return _sanitize_asset_ref(markup.get("approved_signature_image"))
     return None
 
 
@@ -871,6 +1022,10 @@ def _set_slot_ref(settings: dict, slot: str, ref: Optional[dict]) -> dict:
         out.setdefault("invoice", {})["prepared_signature_image"] = ref
     elif slot == SLOT_APPROVED:
         out.setdefault("invoice", {})["approved_signature_image"] = ref
+    elif slot == SLOT_MARKUP_PREPARED:
+        out.setdefault("invoice_markup", {})["prepared_signature_image"] = ref
+    elif slot == SLOT_MARKUP_APPROVED:
+        out.setdefault("invoice_markup", {})["approved_signature_image"] = ref
     return out
 
 

@@ -8,6 +8,7 @@ const TABS = [
   { id: "umum", label: "Umum", testid: "design-cetakan-tab-umum" },
   { id: "po", label: "PO", testid: "design-cetakan-tab-po" },
   { id: "invoice", label: "Faktur & Proforma", testid: "design-cetakan-tab-invoice" },
+  { id: "invoice_markup", label: "Faktur Markup", testid: "design-cetakan-tab-invoice-markup" },
   { id: "sj", label: "Surat Jalan", testid: "design-cetakan-tab-sj" },
 ];
 
@@ -298,6 +299,20 @@ function emptyDraft() {
       header_elements: [],
       footer_elements: [],
     },
+    invoice_markup: {
+      bank_accounts: [
+        { bank_label: "", account_number: "", account_name: "" },
+        { bank_label: "", account_number: "", account_name: "" },
+      ],
+      estimasi_title: "",
+      estimasi_lines: ["", "", ""],
+      prepared_label: "",
+      prepared_footer: "",
+      approved_label: "",
+      approved_footer: "",
+      header_elements: [],
+      footer_elements: [],
+    },
     surat_jalan: {
       signature_labels: ["Gudang", "Cek Barang", "Kurir", "Penerima"],
       date_label: "Tgl.",
@@ -312,20 +327,38 @@ function emptyAssets() {
     company_logo: { has_custom: false },
     prepared_signature_image: { has_custom: false },
     approved_signature_image: { has_custom: false },
+    markup_prepared_signature_image: { has_custom: false },
+    markup_approved_signature_image: { has_custom: false },
   };
 }
 
-function fromApi(settings) {
-  const s = settings || {};
-  const inv = s.invoice || {};
+function mapInvoiceSection(inv, fallbackBanks) {
   const banks = Array.isArray(inv.bank_accounts) && inv.bank_accounts.length
     ? inv.bank_accounts.map((row) => ({
         bank_label: row.bank_label || "",
         account_number: row.account_number || "",
         account_name: row.account_name || "",
       }))
-    : emptyDraft().invoice.bank_accounts;
+    : fallbackBanks.map((row) => ({ ...row }));
   while (banks.length < 2) banks.push({ bank_label: "", account_number: "", account_name: "" });
+  return {
+    bank_accounts: banks.slice(0, 4),
+    estimasi_title: inv.estimasi_title || "",
+    estimasi_lines: [...(inv.estimasi_lines || []), "", "", ""].slice(0, 5),
+    prepared_label: inv.prepared_label || "",
+    prepared_footer: inv.prepared_footer || "",
+    approved_label: inv.approved_label || "",
+    approved_footer: inv.approved_footer || "",
+    header_elements: normalizeHeaderElements(inv.header_elements),
+    footer_elements: normalizeFooterElements(inv.footer_elements),
+  };
+}
+
+function fromApi(settings) {
+  const s = settings || {};
+  const inv = s.invoice || {};
+  const markup = s.invoice_markup || inv;
+  const fallbackBanks = emptyDraft().invoice.bank_accounts;
   return {
     company_name: s.company_name || "",
     address_lines: [...(s.address_lines || []), "", "", ""].slice(0, 4),
@@ -336,17 +369,8 @@ function fromApi(settings) {
       header_elements: normalizePoHeaderElements((s.po || {}).header_elements),
       footer_elements: normalizePoFooterElements((s.po || {}).footer_elements),
     },
-    invoice: {
-      bank_accounts: banks.slice(0, 4),
-      estimasi_title: inv.estimasi_title || "",
-      estimasi_lines: [...(inv.estimasi_lines || []), "", "", ""].slice(0, 5),
-      prepared_label: inv.prepared_label || "",
-      prepared_footer: inv.prepared_footer || "",
-      approved_label: inv.approved_label || "",
-      approved_footer: inv.approved_footer || "",
-      header_elements: normalizeHeaderElements(inv.header_elements),
-      footer_elements: normalizeFooterElements(inv.footer_elements),
-    },
+    invoice: mapInvoiceSection(inv, fallbackBanks),
+    invoice_markup: mapInvoiceSection(markup, fallbackBanks),
     surat_jalan: {
       signature_labels: [...((s.surat_jalan || {}).signature_labels || []), "", "", "", ""].slice(0, 4),
       date_label: (s.surat_jalan || {}).date_label || "Tgl.",
@@ -359,10 +383,13 @@ function fromApi(settings) {
 function assetsFromApi(settings) {
   const s = settings || {};
   const inv = s.invoice || {};
+  const markup = s.invoice_markup || {};
   return {
     company_logo: s.company_logo || { has_custom: false },
     prepared_signature_image: inv.prepared_signature_image || { has_custom: false },
     approved_signature_image: inv.approved_signature_image || { has_custom: false },
+    markup_prepared_signature_image: markup.prepared_signature_image || { has_custom: false },
+    markup_approved_signature_image: markup.approved_signature_image || { has_custom: false },
   };
 }
 
@@ -604,9 +631,10 @@ function formatHistoryAt(iso) {
 export default function DesignCetakanSettings({ notify, canEdit }) {
   const [tab, setTab] = useState("umum");
   const [invoiceSection, setInvoiceSection] = useState("header");
+  const [markupSection, setMarkupSection] = useState("header");
   const [poSection, setPoSection] = useState("header");
   const [sjSection, setSjSection] = useState("header");
-  const [legacyOpen, setLegacyOpen] = useState({ invoice: false, po: false, sj: false });
+  const [legacyOpen, setLegacyOpen] = useState({ invoice: false, markup: false, po: false, sj: false });
   const [scope, setScope] = useState("global");
   const [catalog, setCatalog] = useState([]);
   const [draft, setDraft] = useState(emptyDraft);
@@ -641,6 +669,8 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
   const logoInputRef = useRef(null);
   const preparedInputRef = useRef(null);
   const approvedInputRef = useRef(null);
+  const markupPreparedInputRef = useRef(null);
+  const markupApprovedInputRef = useRef(null);
   const objectUrlsRef = useRef([]);
 
   const revokeAllPreviews = () => {
@@ -666,12 +696,20 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     if (requestId !== loadRequestRef.current) return;
     revokeAllPreviews();
     const next = {};
-    const slots = ["company_logo", "prepared_signature_image", "approved_signature_image"];
+    const slots = [
+      "company_logo",
+      "prepared_signature_image",
+      "approved_signature_image",
+      "markup_prepared_signature_image",
+      "markup_approved_signature_image",
+    ];
     await Promise.all(
       slots.map(async (slot) => {
         if (!nextAssets?.[slot]?.has_custom) return;
         try {
-          const useBranch = activeScope && activeScope !== "global" && flags?.[slot];
+          // Markup signature slots are global-only (no sparse branch overlay yet).
+          const branchCapable = !String(slot).startsWith("markup_");
+          const useBranch = branchCapable && activeScope && activeScope !== "global" && flags?.[slot];
           const blob = useBranch
             ? await api.designCetakanBranchAssetPreview(activeScope, slot)
             : await api.designCetakanAssetPreview(slot);
@@ -978,6 +1016,19 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
             header_elements: normalizeHeaderElements(draft.invoice.header_elements),
             footer_elements: normalizeFooterElements(draft.invoice.footer_elements),
           },
+          invoice_markup: {
+            bank_accounts: (draft.invoice_markup?.bank_accounts || []).filter(
+              (row) => row.bank_label || row.account_number || row.account_name
+            ),
+            estimasi_title: draft.invoice_markup?.estimasi_title || "",
+            estimasi_lines: (draft.invoice_markup?.estimasi_lines || []).filter((line) => String(line || "").trim()),
+            prepared_label: draft.invoice_markup?.prepared_label || "",
+            prepared_footer: draft.invoice_markup?.prepared_footer || "",
+            approved_label: draft.invoice_markup?.approved_label || "",
+            approved_footer: draft.invoice_markup?.approved_footer || "",
+            header_elements: normalizeHeaderElements(draft.invoice_markup?.header_elements),
+            footer_elements: normalizeFooterElements(draft.invoice_markup?.footer_elements),
+          },
           surat_jalan: {
             signature_labels: draft.surat_jalan.signature_labels,
             date_label: draft.surat_jalan.date_label,
@@ -1243,6 +1294,101 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
     ]);
   };
 
+  const updateMarkupHeaderElements = (nextList) => {
+    patch("invoice_markup.header_elements", normalizeHeaderElements(nextList));
+  };
+  const addMarkupHeaderElement = () => {
+    const list = Array.isArray(draft.invoice_markup?.header_elements) ? draft.invoice_markup.header_elements : [];
+    if (list.length >= MAX_HEADER_ELEMENTS) return;
+    updateMarkupHeaderElements([...list, newHeaderElement()]);
+  };
+  const removeMarkupHeaderElement = (id) => {
+    const list = Array.isArray(draft.invoice_markup?.header_elements) ? draft.invoice_markup.header_elements : [];
+    updateMarkupHeaderElements(list.filter((row) => row.id !== id));
+  };
+  const moveMarkupHeaderElement = (id, direction) => {
+    const list = [...(draft.invoice_markup?.header_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updateMarkupHeaderElements(list);
+  };
+  const patchMarkupHeaderElement = (id, key, value) => {
+    const list = (draft.invoice_markup?.header_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = HEADER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = opt?.type === "static_text" ? "static_text" : "field";
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updateMarkupHeaderElements(list);
+  };
+  const loadDefaultMarkupHeaderElements = () => {
+    updateMarkupHeaderElements([
+      newHeaderElement("company.logo"),
+      { ...newHeaderElement("company.name"), bold: true, align: "left" },
+      { ...newHeaderElement("company.address"), align: "left" },
+      { ...newHeaderElement("customer.name"), label: "Kepada", bold: true, align: "left" },
+      { ...newHeaderElement("customer.address"), align: "left" },
+      { ...newHeaderElement("document.date"), label: "Tanggal", align: "right" },
+      { ...newHeaderElement("document.number"), label: "Nomor", align: "right" },
+      { ...newHeaderElement("sales.name"), label: "Sales", align: "right" },
+      { ...newHeaderElement("document.po_number"), label: "PO No", align: "right" },
+      { ...newHeaderElement("document.due_date"), label: "Jatuh Tempo", align: "right" },
+    ]);
+  };
+
+  const updateMarkupFooterElements = (nextList) => {
+    patch("invoice_markup.footer_elements", normalizeFooterElements(nextList));
+  };
+  const addMarkupFooterElement = () => {
+    const list = Array.isArray(draft.invoice_markup?.footer_elements) ? draft.invoice_markup.footer_elements : [];
+    if (list.length >= MAX_FOOTER_ELEMENTS) return;
+    updateMarkupFooterElements([...list, newFooterElement()]);
+  };
+  const removeMarkupFooterElement = (id) => {
+    const list = Array.isArray(draft.invoice_markup?.footer_elements) ? draft.invoice_markup.footer_elements : [];
+    updateMarkupFooterElements(list.filter((row) => row.id !== id));
+  };
+  const moveMarkupFooterElement = (id, direction) => {
+    const list = [...(draft.invoice_markup?.footer_elements || [])];
+    const idx = list.findIndex((row) => row.id === id);
+    if (idx < 0) return;
+    const target = idx + direction;
+    if (target < 0 || target >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[target];
+    list[target] = tmp;
+    updateMarkupFooterElements(list);
+  };
+  const patchMarkupFooterElement = (id, key, value) => {
+    const list = (draft.invoice_markup?.footer_elements || []).map((row) => {
+      if (row.id !== id) return row;
+      const next = { ...row, [key]: value };
+      if (key === "source") {
+        const opt = FOOTER_SOURCE_FLAT.find((o) => o.key === value);
+        next.type = elementTypeForOpt(opt);
+        if (next.type !== "static_text") next.text = "";
+      }
+      return next;
+    });
+    updateMarkupFooterElements(list);
+  };
+  const loadDefaultMarkupFooterElements = () => {
+    updateMarkupFooterElements([
+      { ...newFooterElement("signature.prepared"), align: "left" },
+      { ...newFooterElement("signature.approved"), align: "center" },
+      { ...newFooterElement("estimasi.block"), align: "right" },
+    ]);
+  };
+
   const updatePoHeaderElements = (nextList) => {
     patch("po.header_elements", normalizePoHeaderElements(nextList));
   };
@@ -1501,6 +1647,9 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                 </button>
                 <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-proforma" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("proforma"); }}>
                   Preview Proforma
+                </button>
+                <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-markup" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("markup"); }}>
+                  Preview Faktur Markup
                 </button>
                 <button type="button" role="menuitem" className="dc-menu-item" data-testid="design-cetakan-preview-delivery" disabled={previewLocked} onClick={() => { setPreviewOpen(false); openPreview("delivery"); }}>
                   Preview Surat Jalan
@@ -2393,6 +2542,321 @@ export default function DesignCetakanSettings({ notify, canEdit }) {
                       </label>
                     </div>
                   </div>
+                </div>
+              ) : null}
+            </section>
+          </div>
+        ) : null}
+
+        {tab === "invoice_markup" ? (
+          <div data-testid="design-cetakan-invoice-markup">
+            <div className="dc-info" data-testid="design-cetakan-markup-global-scope" role="note">
+              <Info size={15} aria-hidden="true" />
+              <p>
+                Pengaturan khusus Faktur Markup saat ini berlaku untuk semua cabang. Pengaturan per
+                cabang belum tersedia.
+              </p>
+            </div>
+            <p className="muted small" data-testid="design-cetakan-markup-help">
+              Desain khusus Faktur Markup (reseller). Rekening pada dokumen markup diganti oleh
+              rekening manual per revisi saat dicetak. Header/Footer generik &amp; tanda tangan gambar
+              di bawah tidak menyalin atau menimpa Faktur &amp; Proforma.
+            </p>
+            <div className="dc-invoice-panel-tabs" role="tablist" aria-label="Bagian Faktur Markup">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={markupSection === "header"}
+                data-testid="design-cetakan-markup-section-header"
+                className={markupSection === "header" ? "is-active" : ""}
+                onClick={() => setMarkupSection("header")}
+              >
+                Header
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={markupSection === "footer"}
+                data-testid="design-cetakan-markup-section-footer"
+                className={markupSection === "footer" ? "is-active" : ""}
+                onClick={() => setMarkupSection("footer")}
+              >
+                Footer
+              </button>
+            </div>
+            {markupSection === "header" ? (
+              <section className="dc-section" data-testid="design-cetakan-markup-header-section">
+                <h3 className="dc-label-row">
+                  Header Faktur Markup
+                  <span
+                    className={`dc-mode-badge ${sectionModeLabel(draft.invoice_markup?.header_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                    data-testid="design-cetakan-markup-header-status"
+                  >
+                    {sectionModeLabel(draft.invoice_markup?.header_elements)}
+                  </span>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-markup-header">Header Mengikuti Global</GlobalOnlyMark> : null}
+                </h3>
+                <p className="muted small dc-header-help">
+                  Susun elemen header dari sumber terdaftar. Kosongkan = header Legacy Markup.
+                </p>
+                <div className="dc-header-toolbar">
+                  <button type="button" className="secondary" data-testid="design-cetakan-markup-header-add" disabled={globalOnlyLocked || (draft.invoice_markup?.header_elements || []).length >= MAX_HEADER_ELEMENTS} onClick={addMarkupHeaderElement}>
+                    <Plus size={14} aria-hidden="true" /> Tambah Elemen
+                  </button>
+                  <button type="button" className="secondary" data-testid="design-cetakan-markup-header-load-default" disabled={globalOnlyLocked} onClick={loadDefaultMarkupHeaderElements}>
+                    Isi Default Header
+                  </button>
+                  {(draft.invoice_markup?.header_elements || []).length > 0 ? (
+                    <button type="button" className="secondary" data-testid="design-cetakan-markup-header-clear" disabled={globalOnlyLocked} onClick={() => updateMarkupHeaderElements([])}>
+                      Kosongkan (pakai Legacy)
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dc-header-list" data-testid="design-cetakan-markup-header-list">
+                  {(draft.invoice_markup?.header_elements || []).length === 0 ? (
+                    <p className="muted small" data-testid="design-cetakan-markup-header-empty">Belum ada elemen header generik. PDF memakai header Legacy Markup.</p>
+                  ) : (
+                    (draft.invoice_markup.header_elements || []).map((row, idx) => (
+                      <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-markup-header-row-${idx}`}>
+                        <div className="dc-header-order">
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => moveMarkupHeaderElement(row.id, -1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" disabled={globalOnlyLocked || idx === (draft.invoice_markup?.header_elements || []).length - 1} onClick={() => moveMarkupHeaderElement(row.id, 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                        </div>
+                        <label className="dc-header-source">
+                          <span className="dc-sr-only">Sumber</span>
+                          <select data-testid={`design-cetakan-markup-header-source-${idx}`} value={row.source} disabled={globalOnlyLocked} aria-label="Sumber" onChange={(e) => patchMarkupHeaderElement(row.id, "source", e.target.value)}>
+                            {HEADER_SOURCE_OPTIONS.map((group) => (
+                              <optgroup key={group.group} label={group.group}>
+                                {group.options.map((opt) => (<option key={opt.key} value={opt.key}>{opt.label}</option>))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="dc-header-align">
+                          <span className="dc-sr-only">Posisi</span>
+                          <select data-testid={`design-cetakan-markup-header-align-${idx}`} value={row.align} disabled={globalOnlyLocked} aria-label="Posisi" onChange={(e) => patchMarkupHeaderElement(row.id, "align", e.target.value)}>
+                            {HEADER_ALIGN_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
+                          </select>
+                        </label>
+                        <label className="dc-header-label">
+                          <span className="dc-sr-only">Label</span>
+                          <input data-testid={`design-cetakan-markup-header-label-${idx}`} value={row.label} disabled={globalOnlyLocked} aria-label="Label" onChange={(e) => patchMarkupHeaderElement(row.id, "label", e.target.value)} placeholder="Label" />
+                        </label>
+                        {row.source === "static.text" ? (
+                          <label className="dc-header-text">
+                            <span className="dc-sr-only">Teks</span>
+                            <input data-testid={`design-cetakan-markup-header-text-${idx}`} value={row.text} disabled={globalOnlyLocked} aria-label="Teks manual" onChange={(e) => patchMarkupHeaderElement(row.id, "text", e.target.value)} placeholder="Teks" />
+                          </label>
+                        ) : null}
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`} data-testid={`design-cetakan-markup-header-bold-${idx}`} aria-pressed={Boolean(row.bold)} disabled={globalOnlyLocked} onClick={() => patchMarkupHeaderElement(row.id, "bold", !row.bold)}>
+                          <span className="dc-toggle-b" aria-hidden="true">B</span>
+                        </button>
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`} data-testid={`design-cetakan-markup-header-visible-${idx}`} aria-pressed={row.visible !== false} disabled={globalOnlyLocked} onClick={() => patchMarkupHeaderElement(row.id, "visible", row.visible === false)}>
+                          {row.visible !== false ? <Eye size={13} aria-hidden="true" /> : <EyeOff size={13} aria-hidden="true" />}
+                        </button>
+                        <button type="button" className="secondary dc-icon-btn" data-testid={`design-cetakan-markup-header-remove-${idx}`} disabled={globalOnlyLocked} onClick={() => removeMarkupHeaderElement(row.id)}>
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            ) : (
+              <section className="dc-section" data-testid="design-cetakan-markup-footer-section">
+                <h3 className="dc-label-row">
+                  Footer Faktur Markup
+                  <span
+                    className={`dc-mode-badge ${sectionModeLabel(draft.invoice_markup?.footer_elements) === "Generic Aktif" ? "is-generic" : "is-legacy"}`}
+                    data-testid="design-cetakan-markup-footer-status"
+                  >
+                    {sectionModeLabel(draft.invoice_markup?.footer_elements)}
+                  </span>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-markup-footer">Footer Mengikuti Global</GlobalOnlyMark> : null}
+                </h3>
+                <p className="muted small dc-header-help">
+                  Susun elemen footer dari sumber terdaftar. Kosongkan = footer Legacy Markup.
+                </p>
+                <div className="dc-header-toolbar">
+                  <button type="button" className="secondary" data-testid="design-cetakan-markup-footer-add" disabled={globalOnlyLocked || (draft.invoice_markup?.footer_elements || []).length >= MAX_FOOTER_ELEMENTS} onClick={addMarkupFooterElement}>
+                    <Plus size={14} aria-hidden="true" /> Tambah Elemen
+                  </button>
+                  <button type="button" className="secondary" data-testid="design-cetakan-markup-footer-load-default" disabled={globalOnlyLocked} onClick={loadDefaultMarkupFooterElements}>
+                    Isi Default Footer
+                  </button>
+                  {(draft.invoice_markup?.footer_elements || []).length > 0 ? (
+                    <button type="button" className="secondary" data-testid="design-cetakan-markup-footer-clear" disabled={globalOnlyLocked} onClick={() => updateMarkupFooterElements([])}>
+                      Kosongkan (pakai Legacy)
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dc-header-list" data-testid="design-cetakan-markup-footer-list">
+                  {(draft.invoice_markup?.footer_elements || []).length === 0 ? (
+                    <p className="muted small" data-testid="design-cetakan-markup-footer-empty">Belum ada elemen footer generik. PDF memakai footer Legacy Markup.</p>
+                  ) : (
+                    (draft.invoice_markup.footer_elements || []).map((row, idx) => (
+                      <div className={`dc-header-row${row.source === "static.text" ? " has-text" : ""}`} key={row.id} data-testid={`design-cetakan-markup-footer-row-${idx}`}>
+                        <div className="dc-header-order">
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Naikkan" disabled={globalOnlyLocked || idx === 0} onClick={() => moveMarkupFooterElement(row.id, -1)}><ChevronUp size={12} aria-hidden="true" /></button>
+                          <button type="button" className="secondary dc-icon-btn" aria-label="Turunkan" disabled={globalOnlyLocked || idx === (draft.invoice_markup?.footer_elements || []).length - 1} onClick={() => moveMarkupFooterElement(row.id, 1)}><ChevronDown size={12} aria-hidden="true" /></button>
+                        </div>
+                        <label className="dc-header-source">
+                          <span className="dc-sr-only">Sumber</span>
+                          <select data-testid={`design-cetakan-markup-footer-source-${idx}`} value={row.source} disabled={globalOnlyLocked} aria-label="Sumber" onChange={(e) => patchMarkupFooterElement(row.id, "source", e.target.value)}>
+                            {FOOTER_SOURCE_OPTIONS.map((group) => (
+                              <optgroup key={group.group} label={group.group}>
+                                {group.options.map((opt) => (<option key={opt.key} value={opt.key}>{opt.label}</option>))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="dc-header-align">
+                          <span className="dc-sr-only">Posisi</span>
+                          <select data-testid={`design-cetakan-markup-footer-align-${idx}`} value={row.align} disabled={globalOnlyLocked} aria-label="Posisi" onChange={(e) => patchMarkupFooterElement(row.id, "align", e.target.value)}>
+                            {HEADER_ALIGN_OPTIONS.map((opt) => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
+                          </select>
+                        </label>
+                        <label className="dc-header-label">
+                          <span className="dc-sr-only">Label</span>
+                          <input data-testid={`design-cetakan-markup-footer-label-${idx}`} value={row.label} disabled={globalOnlyLocked} aria-label="Label" onChange={(e) => patchMarkupFooterElement(row.id, "label", e.target.value)} placeholder="Label" />
+                        </label>
+                        {row.source === "static.text" ? (
+                          <label className="dc-header-text">
+                            <span className="dc-sr-only">Teks</span>
+                            <input data-testid={`design-cetakan-markup-footer-text-${idx}`} value={row.text} disabled={globalOnlyLocked} aria-label="Teks manual" onChange={(e) => patchMarkupFooterElement(row.id, "text", e.target.value)} placeholder="Teks" />
+                          </label>
+                        ) : null}
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.bold ? " is-on" : ""}`} data-testid={`design-cetakan-markup-footer-bold-${idx}`} aria-pressed={Boolean(row.bold)} disabled={globalOnlyLocked} onClick={() => patchMarkupFooterElement(row.id, "bold", !row.bold)}>
+                          <span className="dc-toggle-b" aria-hidden="true">B</span>
+                        </button>
+                        <button type="button" className={`secondary dc-icon-btn dc-toggle-btn${row.visible !== false ? " is-on" : ""}`} data-testid={`design-cetakan-markup-footer-visible-${idx}`} aria-pressed={row.visible !== false} disabled={globalOnlyLocked} onClick={() => patchMarkupFooterElement(row.id, "visible", row.visible === false)}>
+                          {row.visible !== false ? <Eye size={13} aria-hidden="true" /> : <EyeOff size={13} aria-hidden="true" />}
+                        </button>
+                        <button type="button" className="secondary dc-icon-btn" data-testid={`design-cetakan-markup-footer-remove-${idx}`} disabled={globalOnlyLocked} onClick={() => removeMarkupFooterElement(row.id)}>
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            )}
+
+            <section className="dc-section dc-legacy-section" data-testid="design-cetakan-markup-legacy">
+              <button
+                type="button"
+                className="dc-legacy-toggle"
+                data-testid="design-cetakan-markup-legacy-toggle"
+                aria-expanded={Boolean(legacyOpen.markup)}
+                onClick={() => toggleLegacy("markup")}
+              >
+                <span>Pengaturan Legacy Markup</span>
+                {legacyOpen.markup ? <ChevronUp size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+              </button>
+              {legacyOpen.markup ? (
+                <div className="dc-legacy-body" data-testid="design-cetakan-markup-legacy-body">
+                  <p className="muted small dc-legacy-help">Fallback jika Header/Footer generik Markup belum dikonfigurasi. Rekening di sini hanya default design; cetak markup memakai rekening manual revisi.</p>
+                  <h3>Tanda Tangan Gambar (khusus Markup)</h3>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-markup-signature">Tanda Tangan Markup Mengikuti Global</GlobalOnlyMark> : null}
+                  <AssetSlot
+                    title="Tanda Tangan Markup — Disiapkan Oleh"
+                    slot="markup_prepared_signature_image"
+                    asset={assets.markup_prepared_signature_image}
+                    previewUrl={previews.markup_prepared_signature_image}
+                    canEdit={canEdit && !branchMode}
+                    busy={busy}
+                    accept={SIGNATURE_ACCEPT}
+                    onPick={(file) => uploadSlot("markup_prepared_signature_image", file)}
+                    onRemove={() => removeSlot("markup_prepared_signature_image")}
+                    removeLabel="Hapus"
+                    uploadLabel="Ganti"
+                    statusCustom="Custom"
+                    statusDefault="Teks saja"
+                    fileInputRef={markupPreparedInputRef}
+                    testIdPrefix="design-cetakan-markup-prepared-sig"
+                    emptyLabel="Belum ada tanda tangan markup"
+                  />
+                  <AssetSlot
+                    title="Tanda Tangan / Stempel Markup — Disetujui Oleh"
+                    slot="markup_approved_signature_image"
+                    asset={assets.markup_approved_signature_image}
+                    previewUrl={previews.markup_approved_signature_image}
+                    canEdit={canEdit && !branchMode}
+                    busy={busy}
+                    accept={SIGNATURE_ACCEPT}
+                    onPick={(file) => uploadSlot("markup_approved_signature_image", file)}
+                    onRemove={() => removeSlot("markup_approved_signature_image")}
+                    removeLabel="Hapus"
+                    uploadLabel="Ganti"
+                    statusCustom="Custom"
+                    statusDefault="Teks saja"
+                    fileInputRef={markupApprovedInputRef}
+                    testIdPrefix="design-cetakan-markup-approved-sig"
+                    emptyLabel="Belum ada stempel markup"
+                  />
+                  <h3>Rekening Default Design (fallback)</h3>
+                  {branchMode ? <GlobalOnlyMark testid="design-cetakan-global-only-markup-bank">Rekening Markup Mengikuti Global</GlobalOnlyMark> : null}
+                  <div className="dc-bank-list">
+                    {(draft.invoice_markup?.bank_accounts || []).map((row, idx) => (
+                      <div className="dc-bank-row" key={`markup-bank-${idx}`}>
+                        <label>
+                          Bank
+                          <input
+                            data-testid={`design-cetakan-markup-bank-label-${idx}`}
+                            value={row.bank_label}
+                            disabled={!canEdit || busy || branchMode}
+                            onChange={(e) => patch(`invoice_markup.bank_accounts.${idx}.bank_label`, e.target.value)}
+                          />
+                        </label>
+                        <label>
+                          Nomor
+                          <input
+                            data-testid={`design-cetakan-markup-bank-number-${idx}`}
+                            value={row.account_number}
+                            disabled={!canEdit || busy || branchMode}
+                            onChange={(e) => patch(`invoice_markup.bank_accounts.${idx}.account_number`, e.target.value)}
+                          />
+                        </label>
+                        <label>
+                          A.N
+                          <input
+                            data-testid={`design-cetakan-markup-bank-name-${idx}`}
+                            value={row.account_name}
+                            disabled={!canEdit || busy || branchMode}
+                            onChange={(e) => patch(`invoice_markup.bank_accounts.${idx}.account_name`, e.target.value)}
+                          />
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="dc-fields dc-fields-2" style={{ marginTop: 12 }}>
+                    <label>
+                      Label Disiapkan
+                      <input data-testid="design-cetakan-markup-prepared-label" value={draft.invoice_markup?.prepared_label || ""} disabled={!canEdit || busy || branchMode} onChange={(e) => patch("invoice_markup.prepared_label", e.target.value)} />
+                    </label>
+                    <label>
+                      Footer Disiapkan
+                      <input data-testid="design-cetakan-markup-prepared-footer" value={draft.invoice_markup?.prepared_footer || ""} disabled={!canEdit || busy || branchMode} onChange={(e) => patch("invoice_markup.prepared_footer", e.target.value)} />
+                    </label>
+                    <label>
+                      Label Disetujui
+                      <input data-testid="design-cetakan-markup-approved-label" value={draft.invoice_markup?.approved_label || ""} disabled={!canEdit || busy || branchMode} onChange={(e) => patch("invoice_markup.approved_label", e.target.value)} />
+                    </label>
+                    <label>
+                      Footer Disetujui
+                      <input data-testid="design-cetakan-markup-approved-footer" value={draft.invoice_markup?.approved_footer || ""} disabled={!canEdit || busy || branchMode} onChange={(e) => patch("invoice_markup.approved_footer", e.target.value)} />
+                    </label>
+                  </div>
+                  <label style={{ display: "block", marginTop: 12 }}>
+                    Judul Estimasi
+                    <input data-testid="design-cetakan-markup-estimasi-title" value={draft.invoice_markup?.estimasi_title || ""} disabled={!canEdit || busy || branchMode} onChange={(e) => patch("invoice_markup.estimasi_title", e.target.value)} />
+                  </label>
+                  {(draft.invoice_markup?.estimasi_lines || []).map((line, idx) => (
+                    <label key={`markup-est-${idx}`} style={{ display: "block", marginTop: 8 }}>
+                      Baris estimasi {idx + 1}
+                      <input data-testid={`design-cetakan-markup-estimasi-line-${idx}`} value={line} disabled={!canEdit || busy || branchMode} onChange={(e) => patch(`invoice_markup.estimasi_lines.${idx}`, e.target.value)} />
+                    </label>
+                  ))}
                 </div>
               ) : null}
             </section>

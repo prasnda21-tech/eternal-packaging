@@ -1026,6 +1026,20 @@ export const api = {
   downloadSalesOrderPdf: (id) => client.get(`/orders/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   getOrderProforma: (orderId) => client.get(`/orders/${encodeURIComponent(orderId)}/proforma`).then((r) => r.data),
   downloadProformaInvoice: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/proforma`, { responseType: "blob" }).then((r) => r.data),
+  listSalesInvoiceMarkups: (invoiceId) =>
+    client.get(`/sales-invoices/${encodeURIComponent(invoiceId)}/markup`).then((r) => r.data),
+  getSalesInvoiceMarkup: (invoiceId, markupId) =>
+    client
+      .get(`/sales-invoices/${encodeURIComponent(invoiceId)}/markup/${encodeURIComponent(markupId)}`)
+      .then((r) => r.data),
+  createSalesInvoiceMarkup: (invoiceId, payload) =>
+    client.post(`/sales-invoices/${encodeURIComponent(invoiceId)}/markup`, payload).then((r) => r.data),
+  downloadSalesInvoiceMarkupPdf: (invoiceId, markupId) =>
+    client
+      .get(`/sales-invoices/${encodeURIComponent(invoiceId)}/markup/${encodeURIComponent(markupId)}/pdf`, {
+        responseType: "blob",
+      })
+      .then((r) => r.data),
   downloadSalesReceiptPdf: (id) => client.get(`/sales-receipts/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),
   downloadSalesReceiptPaymentProof: (id, download = false, config = {}) =>
     client

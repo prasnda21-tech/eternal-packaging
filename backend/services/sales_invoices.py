@@ -36,7 +36,9 @@ MSG_INVOICE_LINE_UNKNOWN = "Baris faktur tidak ditemukan pada faktur ini."
 
 DOCUMENT_INVOICE = "invoice"
 DOCUMENT_PROFORMA = "proforma"
+DOCUMENT_MARKUP = "markup"
 PROFORMA_WARNING = "Dokumen Proforma — bukan Faktur Penjualan resmi"
+MARKUP_WARNING = "Dokumen cetakan reseller — tidak mengubah Faktur Penjualan asli."
 
 _invoice_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
@@ -2008,9 +2010,9 @@ def generate_sales_invoice_pdf_bytes(
     document_type: str = DOCUMENT_INVOICE,
     design: dict | None = None,
 ) -> bytes:
-    """A4 portrait Faktur Penjualan. Proforma reuses this layout with another title.
+    """A4 portrait Faktur Penjualan. Proforma/Markup reuse this layout with another title.
 
-    Proforma still omits payment-settlement rows (uang dimuka). It does not
+    Proforma and Markup omit payment-settlement rows (uang dimuka). They do not
     reprice, post, or change the saved invoice.
     """
     from reportlab.lib import colors
@@ -2037,6 +2039,8 @@ def generate_sales_invoice_pdf_bytes(
     inv_design = design.get("invoice") or {}
     pdf_assets = design.get("_pdf_assets") if isinstance(design.get("_pdf_assets"), dict) else {}
     proforma = document_type == DOCUMENT_PROFORMA
+    markup = document_type == DOCUMENT_MARKUP
+    omit_payment_rows = proforma or markup
     sty = styles(design.get("accent_color"))
     accent = sty["accent"]
     width = content_width(A4)
@@ -2056,13 +2060,24 @@ def generate_sales_invoice_pdf_bytes(
     footer_elements = inv_design.get("footer_elements") or []
     use_generic_header = header_elements_active(header_elements)
     use_generic_footer = footer_elements_active(footer_elements)
-    title = "PROFORMA INVOICE" if proforma else "Faktur Penjualan"
+    if markup:
+        title = "Faktur Markup"
+        doc_warning = MARKUP_WARNING
+        context_document_type = "markup"
+    elif proforma:
+        title = "PROFORMA INVOICE"
+        doc_warning = PROFORMA_WARNING
+        context_document_type = "proforma"
+    else:
+        title = "Faktur Penjualan"
+        doc_warning = None
+        context_document_type = "invoice"
     print_context = None
     if use_generic_header or use_generic_footer:
         print_context = build_invoice_print_context(
             invoice,
             design,
-            document_type="proforma" if proforma else "invoice",
+            document_type=context_document_type,
         )
 
     if use_generic_header:
@@ -2075,7 +2090,7 @@ def generate_sales_invoice_pdf_bytes(
                 sty=sty,
                 width=width,
                 document_title=title,
-                proforma_warning=PROFORMA_WARNING if proforma else None,
+                proforma_warning=doc_warning,
             )
         )
     else:
@@ -2097,8 +2112,11 @@ def generate_sales_invoice_pdf_bytes(
         elements.append(brand)
         elements.append(Spacer(1, 2 * mm))
         elements.append(Paragraph(esc(title), sty["title"]))
-        if proforma:
-            elements.append(Paragraph(esc(PROFORMA_WARNING), sty["warn"]))
+        if doc_warning:
+            warn_style = sty["markup_warn"] if markup and sty.get("markup_warn") else sty["warn"]
+            elements.append(Paragraph(esc(doc_warning), warn_style))
+            if markup:
+                elements.append(Spacer(1, 1 * mm))
         elements.append(Spacer(1, 2 * mm))
 
         address = str(invoice.get("address") or "").strip()
@@ -2116,24 +2134,49 @@ def generate_sales_invoice_pdf_bytes(
         def cell(label: str, value_html: str) -> Paragraph:
             return Paragraph(f"{esc(label)}<br/><b>{value_html or '&nbsp;'}</b>", sty["small"])
 
-        meta = [
-            [
-                cell("Tanggal", esc(_sales_invoice_pdf_date(invoice.get("invoice_date")))),
-                cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
-            ],
-            [
-                cell("Sales", esc(invoice_sales_label(invoice))),
-                cell("Tipe Pengiriman", esc(tipe)),
-            ],
-            [
-                cell("Jasa Pengiriman", esc(jasa)),
-                Paragraph(bank_left, sty["small"]),
-            ],
-            [
-                cell("PO No", esc(invoice.get("po_number") or "")),
-                Paragraph(bank_right, sty["small"]),
-            ],
-        ]
+        if markup:
+            # Keep shipping and manual bank visually separate (markup-only layout).
+            meta = [
+                [
+                    cell("Tanggal", esc(_sales_invoice_pdf_date(invoice.get("invoice_date")))),
+                    cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
+                ],
+                [
+                    cell("Sales", esc(invoice_sales_label(invoice))),
+                    cell("PO No", esc(invoice.get("po_number") or "")),
+                ],
+                [
+                    cell("Tipe Pengiriman", esc(tipe) or "&nbsp;"),
+                    cell("Jasa Pengiriman", esc(jasa) or "&nbsp;"),
+                ],
+            ]
+            bank_html = bank_left or "&nbsp;"
+            if bank_right:
+                bank_html = f"{bank_left}<br/>{bank_right}" if bank_left else bank_right
+            bank_block = Paragraph(
+                f"<b>Rekening Markup (manual)</b><br/>{bank_html}",
+                sty["small"],
+            )
+        else:
+            meta = [
+                [
+                    cell("Tanggal", esc(_sales_invoice_pdf_date(invoice.get("invoice_date")))),
+                    cell("Nomor", esc(invoice.get("invoice_number") or invoice.get("id") or "")),
+                ],
+                [
+                    cell("Sales", esc(invoice_sales_label(invoice))),
+                    cell("Tipe Pengiriman", esc(tipe)),
+                ],
+                [
+                    cell("Jasa Pengiriman", esc(jasa)),
+                    Paragraph(bank_left, sty["small"]),
+                ],
+                [
+                    cell("PO No", esc(invoice.get("po_number") or "")),
+                    Paragraph(bank_right, sty["small"]),
+                ],
+            ]
+            bank_block = None
         grid_width = width * 0.58
         meta_table = Table(meta, colWidths=[grid_width / 2, grid_width / 2])
         meta_table.setStyle(TableStyle([
@@ -2160,6 +2203,18 @@ def generate_sales_invoice_pdf_bytes(
         elements.append(party)
         elements.append(Spacer(1, 1.5 * mm))
         elements.append(Paragraph(f"Jatuh Tempo : {esc(due) or '-'}", sty["red"]))
+        if bank_block is not None:
+            elements.append(Spacer(1, 1.5 * mm))
+            bank_table = Table([[bank_block]], colWidths=[width])
+            bank_table.setStyle(TableStyle([
+                ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.Color(0.97, 0.97, 0.97)),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(bank_table)
         elements.append(Spacer(1, 2 * mm))
 
     header = [
@@ -2226,7 +2281,7 @@ def generate_sales_invoice_pdf_bytes(
             Paragraph(esc(label), sty["body"]),
             Paragraph(esc(format_money(charge.get("amount"))), sty["right"]),
         ])
-    if not proforma:
+    if not omit_payment_rows:
         summary.append([
             Paragraph("Uang dimuka", sty["body"]),
             Paragraph(esc(format_money(invoice.get("paid_total"))), sty["right"]),

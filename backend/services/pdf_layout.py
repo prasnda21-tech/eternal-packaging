@@ -317,6 +317,18 @@ def styles(accent_hex: Optional[str] = None):
             alignment=TA_CENTER,
             textColor=colors.HexColor("#7e22ce"),
         ),
+        # Markup-only disclaimer — larger/higher contrast than shared warn (proforma unchanged).
+        "markup_warn": ParagraphStyle(
+            "EternalMarkupWarn",
+            parent=normal,
+            fontName="Helvetica-Oblique",
+            fontSize=9.5,
+            leading=12,
+            alignment=TA_CENTER,
+            textColor=colors.HexColor("#4c1d95"),
+            spaceBefore=1,
+            spaceAfter=2,
+        ),
         "header": ParagraphStyle(
             "EternalHeader",
             parent=normal,

@@ -137,7 +137,7 @@ describe("Design Cetakan settings wiring", () => {
     expect(pageSrc).toMatch(/data-testid="design-cetakan-po-legacy-toggle"/);
     expect(pageSrc).toMatch(/data-testid="design-cetakan-sj-legacy-toggle"/);
     expect(pageSrc).toMatch(/legacyOpen, setLegacyOpen/);
-    expect(pageSrc).toMatch(/invoice: false, po: false, sj: false/);
+    expect(pageSrc).toMatch(/invoice: false, markup: false, po: false, sj: false/);
     expect(pageSrc).toMatch(/Generic Aktif/);
     expect(pageSrc).toMatch(/Legacy Fallback/);
     expect(pageSrc).toMatch(/sectionModeLabel/);

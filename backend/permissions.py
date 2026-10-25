@@ -38,6 +38,8 @@ PERMISSION_CATALOG = [
     ("Penjualan", "sales.delivery.print", "Cetak Pengiriman Pesanan"),
     ("Penjualan", "sales.invoice.view", "Lihat Faktur Penjualan"),
     ("Penjualan", "proforma_invoice.view", "Lihat Proforma Invoice"),
+    ("Penjualan", "sales.invoice_markup.view", "Lihat Faktur Markup"),
+    ("Penjualan", "sales.invoice_markup.create", "Buat Faktur Markup"),
     ("Penjualan", "sales.invoice.create", "Buat Faktur Penjualan"),
     ("Penjualan", "sales.invoice.edit", "Ubah Faktur Penjualan"),
     ("Penjualan", "sales.invoice.cancel", "Batalkan Faktur Penjualan (bisnis)"),

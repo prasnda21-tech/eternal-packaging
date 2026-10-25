@@ -13508,6 +13508,88 @@ async def get_sales_invoice_proforma_pdf(id: str, user=Depends(current_user)):
     )
 
 
+@api_router.get("/sales-invoices/{id}/markup")
+async def list_sales_invoice_markup_endpoint(id: str, user=Depends(current_user)):
+    """List Faktur Markup revisions for one invoice. Zero-write."""
+    await _require_perm(user, "sales.invoice_markup.view")
+    detail = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
+    from services.sales_invoice_markup import list_markup_documents
+
+    result = await list_markup_documents(db, detail["id"])
+    return {
+        "invoice_id": detail["id"],
+        "invoice_number": detail.get("invoice_number"),
+        "items": result["items"],
+        "count": result["count"],
+    }
+
+
+@api_router.post("/sales-invoices/{id}/markup")
+async def create_sales_invoice_markup_endpoint(id: str, payload: dict = Body(...), user=Depends(current_user)):
+    """Create an immutable Faktur Markup revision. Does not mutate the sales invoice."""
+    await _require_perm(user, "sales.invoice_markup.create")
+    detail = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
+    from services.sales_invoice_markup import create_markup_document
+
+    before_invoice = {
+        "id": detail.get("id"),
+        "grand_total": detail.get("grand_total"),
+        "unit_prices": [
+            {"line_id": ln.get("line_id"), "unit_price": ln.get("unit_price")}
+            for ln in (detail.get("lines") or [])
+            if isinstance(ln, dict)
+        ],
+    }
+    doc = await create_markup_document(db, detail["id"], payload or {}, user)
+    await _write_audit(
+        action="sales.invoice_markup.create",
+        actor=user,
+        target_email=f"invoice:{detail.get('invoice_number') or detail.get('id')}",
+        before=before_invoice,
+        after={
+            "markup_id": doc.get("id"),
+            "revision": doc.get("revision"),
+            "markup_grand_total": doc.get("markup_grand_total"),
+        },
+        note=f"Buat Faktur Markup revisi {doc.get('revision')}",
+    )
+    return {"markup": doc, "message": f"Faktur Markup revisi {doc.get('revision')} berhasil disimpan"}
+
+
+@api_router.get("/sales-invoices/{id}/markup/{markup_id}")
+async def get_sales_invoice_markup_endpoint(id: str, markup_id: str, user=Depends(current_user)):
+    """Read one Faktur Markup revision. Zero-write."""
+    await _require_perm(user, "sales.invoice_markup.view")
+    detail = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
+    from services.sales_invoice_markup import get_markup_document
+
+    doc = await get_markup_document(db, detail["id"], markup_id)
+    return {"markup": doc}
+
+
+@api_router.get("/sales-invoices/{id}/markup/{markup_id}/pdf")
+async def get_sales_invoice_markup_pdf_endpoint(id: str, markup_id: str, user=Depends(current_user)):
+    """PDF from stored markup snapshot. Zero-write on business collections."""
+    await _require_perm(user, "sales.invoice_markup.view")
+    detail = await _get_sales_invoice_detail(db, id)
+    await ensure_owned_po_id(db, user, (detail or {}).get("po_id"))
+    from services.sales_invoice_markup import get_markup_document, render_markup_pdf_bytes
+
+    doc = await get_markup_document(db, detail["id"], markup_id)
+    pdf_bytes = await render_markup_pdf_bytes(db, doc)
+    inv_num = str(doc.get("original_invoice_number") or detail.get("invoice_number") or "INV").replace("/", "_").replace("\\", "_")
+    rev = doc.get("revision") or ""
+    filename = f"Faktur_Markup_{inv_num}_R{rev}.pdf"
+    return FastAPIResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @api_router.put("/sales-invoices/{id}")
 async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
     """Update draft qty, unit prices, or notes. Qty is rechecked against the latest PO."""
