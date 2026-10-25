@@ -89,13 +89,14 @@ def plan_row(
     *,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     today: Optional[str] = None,
+    holidays: Optional[list] = None,
 ) -> Optional[dict]:
     """Build one plan row or None when excluded."""
     if order.get("cancelled"):
         return None
     if is_fully_delivered(order):
         return None
-    snap = resolve_tanggal_pengiriman(order, lead_time_days)
+    snap = resolve_tanggal_pengiriman(order, lead_time_days, holidays=holidays)
     date_key = snap.get("tanggal_pengiriman")
     if not date_key:
         return None
@@ -103,7 +104,13 @@ def plan_row(
     if source not in ("manual", "automatic"):
         return None
     qty = terkirim_qty_summary(order)
-    status = schedule_status_code(order, today=today, lead_time_days=lead_time_days, schedule_date=date_key)
+    status = schedule_status_code(
+        order,
+        today=today,
+        lead_time_days=lead_time_days,
+        schedule_date=date_key,
+        holidays=holidays,
+    )
     return {
         "id": order.get("id"),
         "order_id": order.get("id"),
@@ -169,6 +176,7 @@ def build_plan_rows(
     *,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     today: Optional[str] = None,
+    holidays: Optional[list] = None,
     filters: Optional[dict] = None,
     sort_by: Optional[str] = None,
     sort_dir: Optional[str] = None,
@@ -177,7 +185,7 @@ def build_plan_rows(
     """Eligibility → toolbar filters → header filters → stable sort (before pagination)."""
     rows: List[dict] = []
     for order in orders:
-        row = plan_row(order, lead_time_days=lead_time_days, today=today)
+        row = plan_row(order, lead_time_days=lead_time_days, today=today, holidays=holidays)
         if row and _match_filters(row, filters or {}):
             rows.append(row)
     header_filters = parse_header_filters(hf, PLAN_FILTER_FIELDS)
@@ -316,6 +324,7 @@ def aggregate_delivery_plan_qty(
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     today: Any,
     days: int = 7,
+    holidays: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Active-plan snapshot grouped by effective delivery date and unit.
 
@@ -340,7 +349,7 @@ def aggregate_delivery_plan_qty(
     overdue_po: Dict[str, set] = {}
     seen_ids = set()
     for order in orders:
-        row = plan_row(order, lead_time_days=lead_time_days, today=today_key)
+        row = plan_row(order, lead_time_days=lead_time_days, today=today_key, holidays=holidays)
         if not row:
             continue
         order_id = str(row.get("id") or "").strip()

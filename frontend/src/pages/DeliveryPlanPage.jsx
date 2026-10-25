@@ -32,7 +32,10 @@ const SOURCE_OPTIONS = [
 
 function sourceLabel(source, row) {
   if (source === "manual") return "Manual";
-  if (row?.delivery_sla_effective?.contract === "legacy_calendar") return "Otomatis (Legacy)";
+  if (row?.delivery_sla_effective?.contract === "legacy_working_days"
+    || row?.delivery_sla_effective?.contract === "legacy_calendar") {
+    return "Otomatis (Legacy · Hari Kerja)";
+  }
   if (source === "automatic") return "Otomatis";
   return source || "—";
 }
@@ -282,8 +285,9 @@ export default function DeliveryPlanPage() {
         <span
           className={`dp-badge ${v === "manual" ? "source-manual" : "source-auto"}`}
           data-testid={`dp-source-${row.po_number}`}
-          title={row?.delivery_sla_effective?.contract === "legacy_calendar"
-            ? "Estimasi kalender lama. Tanggal tidak dipindahkan."
+          title={row?.delivery_sla_effective?.contract === "legacy_working_days"
+            || row?.delivery_sla_effective?.contract === "legacy_calendar"
+            ? "Estimasi hari kerja Legacy. Belum SLA terkunci."
             : sourceLabel(v, row)}
         >
           {sourceLabel(v, row)}

@@ -190,14 +190,19 @@ def _section_error(exc: Exception) -> dict:
     }
 
 
+async def _sla_read_context(db) -> tuple:
+    """Official sla_working_days + operational holidays. Read only."""
+    from services.tanggal_pengiriman import classify_delivery_deadline_setting
+    from services.production_wave2 import holiday_dates
+
+    doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
+    days = int(classify_delivery_deadline_setting(doc)["sla_working_days"])
+    return days, await holiday_dates(db)
+
+
 async def _lead_time_days(db) -> int:
-    doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0, "lead_time_days": 1})
-    if not doc:
-        return DEFAULT_LEAD_TIME_DAYS
-    try:
-        return int(doc.get("lead_time_days", DEFAULT_LEAD_TIME_DAYS))
-    except (TypeError, ValueError):
-        return DEFAULT_LEAD_TIME_DAYS
+    days, _ = await _sla_read_context(db)
+    return days
 
 
 def _build_aov(omzet: dict) -> dict:
@@ -328,7 +333,13 @@ def _slim_delivery_row(row: dict) -> dict:
     }
 
 
-def _build_operations(orders: List[dict], *, lead_time_days: int, today: date) -> dict:
+def _build_operations(
+    orders: List[dict],
+    *,
+    lead_time_days: int,
+    today: date,
+    holidays: Optional[list] = None,
+) -> dict:
     active, completed = partition_orders_by_delivery(orders, is_fully_delivered)
     today_key = today.isoformat()
     stage_breakdown = []
@@ -340,7 +351,9 @@ def _build_operations(orders: List[dict], *, lead_time_days: int, today: date) -
     today_rows: List[dict] = []
     upcoming_rows: List[dict] = []
     for order in orders:
-        for row in schedule_rows(order, today=today_key, lead_time_days=lead_time_days):
+        for row in schedule_rows(
+            order, today=today_key, lead_time_days=lead_time_days, holidays=holidays,
+        ):
             code = str(row.get("status") or "")
             slim = _slim_delivery_row(row)
             if code == "terlambat":
@@ -1188,12 +1201,14 @@ async def get_owner_analytics(
         base["average_po"] = _section_error(exc)
 
     try:
-        lead = await _lead_time_days(db)
+        lead, holidays = await _sla_read_context(db)
         orders = await db.orders.find(
             {"cancelled": {"$ne": True}},
             OPS_PROJECTION,
         ).sort("deadline", 1).to_list(OPS_ORDER_LIMIT)
-        ops = _build_operations(orders, lead_time_days=lead, today=today)
+        ops = _build_operations(
+            orders, lead_time_days=lead, today=today, holidays=holidays,
+        )
         base["operations"] = ops
         base["po_active"] = ops["po_active"]
         base["delivery_late"] = {

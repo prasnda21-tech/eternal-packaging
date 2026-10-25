@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, Tuple
 WIB = timezone(timedelta(hours=7))
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DEFAULT_LEAD_TIME_DAYS = 3
+ALLOWED_SLA_DAYS = (1, 3, 5)
 STATUS_SCHEDULED = "scheduled"
 
 
@@ -103,13 +104,49 @@ def automatic_tanggal_pengiriman(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
 ) -> Optional[str]:
-    """latest(Approval Design, Approval Payment) + lead_time calendar days (WIB)."""
+    """latest(Approval Design, Approval Payment) + lead_time calendar days (WIB).
+
+    Kept for diagnostics and stamped-order ``calculated`` candidates. Active
+    Legacy automatic dates use :func:`automatic_working_tanggal_pengiriman`.
+    """
     latest = latest_required_approval_at(order)
     if latest is None:
         return None
     base = latest.astimezone(WIB).date()
     days = int(lead_time_days) if lead_time_days is not None else DEFAULT_LEAD_TIME_DAYS
     return (base + timedelta(days=days)).isoformat()
+
+
+def _normalize_sla_days(lead_time_days: Any) -> int:
+    try:
+        days = int(lead_time_days) if lead_time_days is not None else DEFAULT_LEAD_TIME_DAYS
+    except (TypeError, ValueError):
+        days = DEFAULT_LEAD_TIME_DAYS
+    if days not in ALLOWED_SLA_DAYS:
+        return DEFAULT_LEAD_TIME_DAYS
+    return days
+
+
+def automatic_working_tanggal_pengiriman(
+    order: dict,
+    working_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[Any] = None,
+) -> Optional[str]:
+    """latest required approval (WIB date) + N working days.
+
+    Monday–Saturday count. Sunday and ``operational_holidays`` dates are skipped.
+    Reuses :func:`services.production_wave2.add_working_days`. Never writes.
+    """
+    latest = latest_required_approval_at(order)
+    if latest is None:
+        return None
+    from services.production_wave2 import add_working_days
+
+    days = _normalize_sla_days(working_days)
+    holiday_list = sorted({
+        key for key in (parse_calendar_date(row) for row in (holidays or [])) if key
+    })
+    return add_working_days(latest.astimezone(WIB).date(), days, holiday_list).isoformat()
 
 
 def _scheduled_from_reschedule(order: dict) -> Optional[str]:
@@ -156,9 +193,6 @@ def _public_sla(fact: Dict[str, Any]) -> Dict[str, Any]:
         "contract": fact.get("contract"),
         "countable": bool(fact.get("countable")),
     }
-
-
-ALLOWED_SLA_DAYS = (1, 3, 5)
 
 
 def classify_delivery_deadline_setting(doc: Optional[dict]) -> Dict[str, Any]:
@@ -218,18 +252,21 @@ def delivery_sla_effective(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     today: Any = None,
+    holidays: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """One read contract for the customer delivery date.
 
     Urgent uses only the stored Jadwal Pengiriman date.
-    A locked ``delivery_sla_v2.automatic_date`` wins over the 1/3/5 calendar
-    setting and is not recomputed when holidays change.
-    Unstamped orders keep the calendar-day formula and stay legacy.
+    A locked ``delivery_sla_v2.automatic_date`` wins and is not recomputed when
+    holidays or settings change.
+    Unstamped automatic orders use working days (``legacy_working_days``),
+    ``countable=false``. ``lead_time_days`` is the official ``sla_working_days``.
     This function never writes the order.
     """
     from quantity_rules import is_fully_delivered
 
-    days = int(lead_time_days) if lead_time_days is not None else DEFAULT_LEAD_TIME_DAYS
+    days = _normalize_sla_days(lead_time_days)
+    working = automatic_working_tanggal_pengiriman(order, days, holidays)
     calendar = automatic_tanggal_pengiriman(order, days)
     manual = manual_tanggal_pengiriman(order)
     urgent = str(order.get("priority") or "").lower() == "urgent"
@@ -249,11 +286,18 @@ def delivery_sla_effective(
         }
     elif stamp_date:
         fact = {"date": stamp_date, "source": "otomatis", "contract": "sla_v2", "countable": True}
-    elif calendar:
-        fact = {"date": calendar, "source": "legacy", "contract": "legacy_calendar", "countable": False}
+    elif working:
+        fact = {
+            "date": working,
+            "source": "legacy",
+            "contract": "legacy_working_days",
+            "countable": False,
+        }
     else:
         fact = {"date": None, "source": "legacy", "contract": "incomplete", "countable": False}
-    fact["calendar_date"] = calendar
+    # Automatic candidate for mirrors: working-day estimate (not calendar days).
+    fact["calendar_date"] = working
+    fact["legacy_calendar_date"] = calendar
     fact["lead_time_days"] = days
     if order.get("buffer_stock"):
         state = "buffer"
@@ -272,21 +316,22 @@ def delivery_sla_effective(
 def resolve_tanggal_pengiriman(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Return authoritative Tanggal Pengiriman snapshot.
 
     Keys:
       tanggal_pengiriman — YYYY-MM-DD or None
       source — manual | automatic | none (legacy readers and Rencana Kirim)
-      calculated — 1/3/5 calendar candidate; not the effective date when a stamp or manual date exists
-      lead_time_days — days used for the calendar candidate
+      calculated — working-day automatic candidate (not used when manual/stamp wins)
+      lead_time_days — official sla_working_days used for the automatic candidate
       is_manual — bool
       delivery_sla_effective — shared read contract
     """
-    fact = delivery_sla_effective(order, lead_time_days)
+    fact = delivery_sla_effective(order, lead_time_days, holidays=holidays)
     if fact["source"] in ("manual", "jadwal_pengiriman"):
         source, is_manual = "manual", True
-    elif fact["source"] == "otomatis" or fact["contract"] == "legacy_calendar":
+    elif fact["source"] == "otomatis" or fact["contract"] in ("legacy_calendar", "legacy_working_days"):
         source, is_manual = "automatic", False
     else:
         source, is_manual = "none", False
@@ -304,8 +349,9 @@ def resolve_tanggal_pengiriman(
 def effective_tanggal_pengiriman(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[Any] = None,
 ) -> Optional[str]:
-    return resolve_tanggal_pengiriman(order, lead_time_days)["tanggal_pengiriman"]
+    return resolve_tanggal_pengiriman(order, lead_time_days, holidays=holidays)["tanggal_pengiriman"]
 
 
 def apply_manual_tanggal_pengiriman(order: dict, date_key: str, *, user: Optional[dict] = None, reason: str = "") -> str:
@@ -364,13 +410,14 @@ def clear_manual_tanggal_pengiriman(order: dict, *, user: Optional[dict] = None)
 def attach_tanggal_pengiriman_snapshot(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Attach derived non-persisted fields used by Web/PWA/API responses.
 
     Also mirrors legacy delivery_deadline_* keys so existing consumers keep
     working without treating legacy ``deadline`` as authoritative.
     """
-    snap = resolve_tanggal_pengiriman(order, lead_time_days)
+    snap = resolve_tanggal_pengiriman(order, lead_time_days, holidays=holidays)
     date_key = snap["tanggal_pengiriman"]
     order["delivery_sla_effective"] = snap.get("delivery_sla_effective") or {}
     # Prefer WIB midnight ISO for timestamp-shaped legacy fields when we have a date.

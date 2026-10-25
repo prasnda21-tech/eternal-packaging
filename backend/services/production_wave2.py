@@ -408,9 +408,15 @@ def stamp_delivery_sla(
     return True
 
 
-def _effective_delivery(order: dict, today: Optional[date] = None) -> dict:
+def _effective_delivery(
+    order: dict,
+    today: Optional[date] = None,
+    *,
+    working_days: int = NORMAL_WORKING_DAYS,
+    holidays: Optional[Iterable[str]] = None,
+) -> dict:
     """Widget date. Same read contract as Detail PO / Status PO / Jadwal Pengiriman."""
-    fact = delivery_sla_effective(order, today=today)
+    fact = delivery_sla_effective(order, working_days, today=today, holidays=holidays)
     return {
         "date": fact["date"] if fact["countable"] else None,
         "source": fact["source"],
@@ -420,8 +426,14 @@ def _effective_delivery(order: dict, today: Optional[date] = None) -> dict:
     }
 
 
-def _overdue(order: dict, today: date) -> dict:
-    fact = _effective_delivery(order, today)
+def _overdue(
+    order: dict,
+    today: date,
+    *,
+    working_days: int = NORMAL_WORKING_DAYS,
+    holidays: Optional[Iterable[str]] = None,
+) -> dict:
+    fact = _effective_delivery(order, today, working_days=working_days, holidays=holidays)
     out = {"state": fact["state"], "source": fact["source"]}
     if fact["countable"] and fact["date"]:
         out["date"] = fact["date"]
@@ -638,11 +650,18 @@ def _remaining_by_unit(order: dict) -> Dict[str, int]:
     return totals
 
 
-def build_wave2(orders: Iterable[dict], *, today: Optional[date] = None) -> dict:
+def build_wave2(
+    orders: Iterable[dict],
+    *,
+    today: Optional[date] = None,
+    working_days: int = NORMAL_WORKING_DAYS,
+    holidays: Optional[Iterable[str]] = None,
+) -> dict:
     today = today or datetime.now(WIB).date()
     rows = [order for order in orders if isinstance(order, dict) and order.get("id")]
     if not rows:
         return {"status": "zero", "population": "non_cancelled_active"}
+    holiday_list = list(holidays or [])
     overdue = unscheduled = legacy = 0
     late_rows = []
     contracts = []
@@ -661,8 +680,8 @@ def build_wave2(orders: Iterable[dict], *, today: Optional[date] = None) -> dict
     bottleneck_rows = []
     for order in rows:
         oid = str(order.get("id"))
-        late = _overdue(order, today)
-        shown = _effective_delivery(order, today)
+        late = _overdue(order, today, working_days=working_days, holidays=holiday_list)
+        shown = _effective_delivery(order, today, working_days=working_days, holidays=holiday_list)
         contracts.append({
             "order_id": oid,
             "po_number": order.get("po_number") or "",
@@ -692,7 +711,9 @@ def build_wave2(orders: Iterable[dict], *, today: Optional[date] = None) -> dict
             accuracy["produksi"]["tepat"] += 1
         else:
             accuracy["produksi"]["terlambat"] += 1
-        delivery_date = _effective_delivery(order)
+        delivery_date = _effective_delivery(
+            order, working_days=working_days, holidays=holiday_list,
+        )
         ship_mark = _on_time(del_end, delivery_date["date"] if delivery_date["countable"] else None)
         if not delivery_date["countable"] or del_end == "missing":
             accuracy["pengiriman"]["tidak_tersedia"] += 1

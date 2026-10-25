@@ -198,7 +198,13 @@ def _kesiapan(active: Sequence[dict]) -> Dict[str, Any]:
     }
 
 
-def build_production_snapshot(orders: Sequence[dict], *, generated_at: Optional[str] = None) -> Dict[str, Any]:
+def build_production_snapshot(
+    orders: Sequence[dict],
+    *,
+    generated_at: Optional[str] = None,
+    sla_working_days: int = 3,
+    holidays: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
     """Snapshot widgets. Caller attaches HOLD and deadline, and excludes cancelled orders."""
     active, _completed = partition_orders_by_delivery(orders, is_fully_delivered)
     flags = {str(order.get("id")): summary_flags(order) for order in active if order.get("id")}
@@ -269,5 +275,10 @@ def build_production_snapshot(orders: Sequence[dict], *, generated_at: Optional[
             "drill": _drill_kepala("prioritas"),
         },
         "kesiapan": _kesiapan(active),
-        "wave2": build_wave2(active, today=wib_today()),
+        "wave2": build_wave2(
+            active,
+            today=wib_today(),
+            working_days=sla_working_days,
+            holidays=list(holidays or []),
+        ),
     }

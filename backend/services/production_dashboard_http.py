@@ -75,11 +75,18 @@ def register_production_dashboard_routes(
         ).to_list(None)
         orders = [order for order in raw if not order.get("cancelled")]
         settings = await get_deadline_settings()
-        lead_days = settings["lead_time_days"]
+        lead_days = settings["sla_working_days"]
+        from services.production_wave2 import holiday_dates
+        holidays = await holiday_dates(db)
         for order in orders:
             apply_hold(order)
-            attach_deadline(order, lead_days)
-        body = build_production_snapshot(orders, generated_at=now_iso())
+            attach_deadline(order, lead_days, holidays=holidays)
+        body = build_production_snapshot(
+            orders,
+            generated_at=now_iso(),
+            sla_working_days=lead_days,
+            holidays=holidays,
+        )
         return body
 
     def _analytics_pipeline(query: dict) -> list:

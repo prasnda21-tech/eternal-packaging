@@ -33,7 +33,10 @@ function MobileRoleMark({ tone, title, testid }) {
 function scheduleSourceLabel(row) {
   const isManual = row.delivery_deadline_source === "manual" || row.tanggal_pengiriman_source === "manual";
   if (isManual) return "Manual";
-  if (row.delivery_sla_effective?.contract === "legacy_calendar") return "Otomatis (Legacy)";
+  if (row.delivery_sla_effective?.contract === "legacy_working_days"
+    || row.delivery_sla_effective?.contract === "legacy_calendar") {
+    return "Otomatis (Legacy · Hari Kerja)";
+  }
   return "Otomatis";
 }
 

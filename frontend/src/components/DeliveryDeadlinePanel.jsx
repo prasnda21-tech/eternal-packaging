@@ -107,7 +107,8 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
             : fact?.source === "otomatis" ? "Otomatis"
             : fact?.source === "manual" ? "Manual"
             : fact?.source === "belum_dijadwalkan" ? "Belum Dijadwalkan"
-            : fact?.source === "legacy" ? "Legacy"
+            : fact?.contract === "legacy_working_days" || fact?.contract === "legacy_calendar"
+              || fact?.source === "legacy" ? "Otomatis (Legacy · Hari Kerja)"
             : source === "manual" ? "Manual"
             : source === "automatic" ? "Otomatis"
             : "Belum tersedia"}
@@ -131,7 +132,10 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
         <div><span className="muted small">Effective</span><br/><strong data-testid="dd-effective">{fact?.date ? fmtDateKey(fact.date) : fmt(effective)}</strong></div>
         {source === "manual" && <div><span className="muted small">Manual oleh</span><br/>{manualBy || "-"}</div>}
         {fact?.contract === "sla_v2" && fact?.source === "otomatis" && <div><span className="muted small">Formula</span><br/>{order?.delivery_sla_v2?.working_days || 3} hari kerja setelah kedua approval</div>}
-        {source === "automatic" && fact?.source !== "otomatis" && lead && <div><span className="muted small">Formula</span><br/>Approval terakhir + {lead} hari</div>}
+        {(fact?.contract === "legacy_working_days" || fact?.contract === "legacy_calendar"
+          || (source === "automatic" && fact?.source === "legacy")) && lead && (
+          <div><span className="muted small">Formula</span><br/>Approval terakhir + {lead} hari kerja</div>
+        )}
         {calc && source === "manual" && <div><span className="muted small">Otomatis (ref)</span><br/>{fmt(calc)}</div>}
       </div>
 
