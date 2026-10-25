@@ -11,9 +11,9 @@ from fastapi import HTTPException
 from services.order_pdf import generate_sales_order_pdf_bytes
 from services.print_design_settings import assert_known_branch_id, get_print_design_for_pdf
 from services.sales_deliveries import generate_sales_delivery_pdf_bytes
-from services.sales_invoices import DOCUMENT_PROFORMA, generate_sales_invoice_pdf_bytes
+from services.sales_invoices import DOCUMENT_MARKUP, DOCUMENT_PROFORMA, generate_sales_invoice_pdf_bytes
 
-PREVIEW_TYPES = frozenset({"po", "invoice", "proforma", "delivery"})
+PREVIEW_TYPES = frozenset({"po", "invoice", "proforma", "markup", "delivery"})
 
 SAMPLE_CUSTOMER = "PT Contoh Cetakan"
 SAMPLE_ADDRESS = "Jl. Contoh No. 10, Yogyakarta"
@@ -24,6 +24,7 @@ PREVIEW_FILENAMES = {
     "po": "Preview_Pesanan_Penjualan.pdf",
     "invoice": "Preview_Faktur_Penjualan.pdf",
     "proforma": "Preview_Proforma.pdf",
+    "markup": "Preview_Faktur_Markup.pdf",
     "delivery": "Preview_Surat_Jalan.pdf",
 }
 
@@ -181,6 +182,24 @@ async def render_print_design_preview(db, document_type: str, branch_id: Any = N
             dummy_invoice(),
             document_type=DOCUMENT_PROFORMA,
             design=design,
+        )
+    if kind == "markup":
+        from services.print_design_settings import prefetch_pdf_assets
+        from services.sales_invoice_markup import apply_markup_design_and_bank
+
+        markup_design = apply_markup_design_and_bank(
+            design,
+            {
+                "bank_name": "Bank Contoh Markup",
+                "account_number": "0123456789",
+                "account_holder": "Reseller Contoh",
+            },
+        )
+        markup_design["_pdf_assets"] = await prefetch_pdf_assets(db, markup_design)
+        return generate_sales_invoice_pdf_bytes(
+            dummy_invoice(),
+            document_type=DOCUMENT_MARKUP,
+            design=markup_design,
         )
     return generate_sales_delivery_pdf_bytes(dummy_delivery(), None, design=design)
 

@@ -142,13 +142,17 @@ def build_generic_invoice_header_flowables(
 
     # Document title stays hardcoded when provided (business document identity).
     title = str(document_title or "").strip()
+    is_markup = title == "Faktur Markup"
+    warn_style = sty["markup_warn"] if is_markup and sty.get("markup_warn") else sty["warn"]
     if title:
         out.append(Paragraph(esc(title), sty["title"]))
         if proforma_warning:
-            out.append(Paragraph(esc(proforma_warning), sty["warn"]))
+            out.append(Paragraph(esc(proforma_warning), warn_style))
+            if is_markup:
+                out.append(Spacer(1, 1 * mm))
         out.append(Spacer(1, 2 * mm))
     elif proforma_warning:
-        out.append(Paragraph(esc(proforma_warning), sty["warn"]))
+        out.append(Paragraph(esc(proforma_warning), warn_style))
         out.append(Spacer(1, 2 * mm))
 
     col_w = width / 3.0

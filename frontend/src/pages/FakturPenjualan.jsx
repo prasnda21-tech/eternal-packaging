@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
+import InvoiceMarkupWorkspace from "../components/InvoiceMarkupWorkspace";
 import { formatDesktopListDate } from "../lib/constants";
 import { addSalesInvoiceCalendarDays, formatSalesInvoiceDate, salesInvoiceDateToIso } from "../lib/salesInvoiceDate";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
@@ -569,6 +570,8 @@ export default function FakturPenjualan() {
     hasPerm("po.view") ||
     hasPerm("sales.delivery.view") ||
     user?.role === "admin";
+  const canViewMarkup = hasPerm("sales.invoice_markup.view") || user?.role === "admin";
+  const canCreateMarkup = hasPerm("sales.invoice_markup.create") || user?.role === "admin";
 
   const queryPoId = searchParams.get("po_id") || "";
   const queryInvoiceId = searchParams.get("invoice_id") || "";
@@ -973,9 +976,10 @@ export default function FakturPenjualan() {
   // Bulk delete
 
   const [pdfLoadingId, setPdfLoadingId] = useState(null);
+  const [printChooserId, setPrintChooserId] = useState(null);
+  const [markupInvoiceId, setMarkupInvoiceId] = useState(null);
 
-  const handlePrintPdf = async (e, invoiceId) => {
-    if (e) e.stopPropagation();
+  const downloadOriginalInvoicePdf = async (invoiceId) => {
     if (!invoiceId) return;
     setPdfLoadingId(invoiceId);
     try {
@@ -991,6 +995,30 @@ export default function FakturPenjualan() {
     } finally {
       setPdfLoadingId(null);
     }
+  };
+
+  const handlePrintPdf = (e, invoiceId) => {
+    if (e) e.stopPropagation();
+    if (!invoiceId) return;
+    if (canViewMarkup) {
+      setPrintChooserId(invoiceId);
+      return;
+    }
+    downloadOriginalInvoicePdf(invoiceId);
+  };
+
+  const choosePrintOriginal = () => {
+    const id = printChooserId;
+    setPrintChooserId(null);
+    downloadOriginalInvoicePdf(id);
+  };
+
+  const choosePrintMarkup = () => {
+    const id = printChooserId;
+    setPrintChooserId(null);
+    if (!id) return;
+    setMarkupInvoiceId(id);
+    setViewMode("markup");
   };
 
   const handleBulkDelete = async () => {
@@ -1956,11 +1984,64 @@ export default function FakturPenjualan() {
   ];
   const columnCount = reserveCheckboxColumn ? 9 : 8;
 
+  if (viewMode === "markup" && markupInvoiceId) {
+    return (
+      <div
+        className="page-container penjualan-page penjualan-workspace sd-density fp-invoice-page sd-form-mode ux90-create-shell"
+        data-testid="faktur-penjualan-page"
+      >
+        <InvoiceMarkupWorkspace
+          invoiceId={markupInvoiceId}
+          canCreate={canCreateMarkup}
+          onClose={() => {
+            setMarkupInvoiceId(null);
+            setViewMode("list");
+            setSearchParams({});
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       className={"page-container penjualan-page penjualan-workspace sd-density fp-invoice-page " + (viewMode === "list" ? "sd-list-mode" : "sd-form-mode")}
       data-testid="faktur-penjualan-page"
     >
+      {printChooserId && (
+        <div className="modal-backdrop" data-testid="print-chooser-modal" role="dialog" aria-modal="true">
+          <div className="modal-card" style={{ maxWidth: 420, padding: 20 }}>
+            <h2 style={{ marginTop: 0 }}>Cetak PDF</h2>
+            <p style={{ marginBottom: 16 }}>Pilih jenis dokumen yang akan dicetak.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button
+                type="button"
+                className="primary"
+                data-testid="print-chooser-original"
+                onClick={choosePrintOriginal}
+              >
+                Faktur Penjualan
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                data-testid="print-chooser-markup"
+                onClick={choosePrintMarkup}
+              >
+                Faktur Markup
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                data-testid="print-chooser-cancel"
+                onClick={() => setPrintChooserId(null)}
+              >
+                Batal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <header className={viewMode === "list" ? "sd-list-header" : "sd-form-header"}>
         <div className={viewMode === "list" ? "sd-list-heading" : "sd-form-heading"}>
           {viewMode !== "list" && (
@@ -3158,6 +3239,7 @@ export default function FakturPenjualan() {
                 >
                   Kembali ke Daftar
                 </button>
+                {canPrint && (
                 <button
                   type="button"
                   onClick={(e) => handlePrintPdf(e, selectedInvoiceId)}
@@ -3180,6 +3262,7 @@ export default function FakturPenjualan() {
                   <FileText size={16} />
                   {pdfLoadingId === selectedInvoiceId ? "Memuat PDF..." : "Cetak PDF"}
                 </button>
+                )}
                 {canEdit && detailStatus === "draft" && !hideLegacyManualAccounting && (
                   <button
                     type="button"

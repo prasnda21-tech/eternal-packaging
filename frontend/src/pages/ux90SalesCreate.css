@@ -588,6 +588,25 @@
   border-color: #ef4444;
   background: #fef2f2;
 }
+.ux90-fp-create .ux90-qty-locked {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 96px;
+  min-height: 36px;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #475569;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+}
+
 .ux90-fp-create .ux90-price-input {
   width: 100%;
   min-width: 110px;
@@ -4361,4 +4380,34 @@
 .ux90-so-create [data-testid="so-order-summary"][hidden],
 .ux90-so-create [data-testid="so-create-side-panel"][hidden] {
   display: none !important;
+}
+
+/* ========== Faktur Markup toolbar parity ========== */
+.ux90-fp-create > .sd-form-header.ux90-fp-toolbar {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+}
+.ux90-fp-create .ux90-fp-toolbar-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.ux90-fp-create .ux90-fp-toolbar-title strong {
+  font-size: 1.05rem;
+}
+.ux90-fp-create .ux90-fp-toolbar-title span {
+  color: var(--ux90-muted, #64748b);
+  font-size: 0.92rem;
+}
+.ux90-fp-create .ux90-fp-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
 }
