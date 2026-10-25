@@ -165,9 +165,18 @@ test("compact ux9 contracts and akan datang label", async () => {
       po_number: "PO/9",
       customer_name: "Cust",
       branch: "YGY",
-      tanggal_pengiriman: "2026-10-25",
+      tanggal_pengiriman: "2026-10-26",
       tanggal_pengiriman_source: "automatic",
-      delivery_sla_effective: { date: "2026-10-25", source: "legacy", contract: "legacy_calendar", countable: false },
+      delivery_sla_effective: {
+        date: "2026-10-26",
+        source: "legacy",
+        contract: "legacy_working_days",
+        countable: false,
+        estimate_adjusted: true,
+        estimate_from: "2026-10-25",
+        estimate_to: "2026-10-26",
+        legacy_calendar_date: "2026-10-25",
+      },
       qty_total: 10,
       qty_delivered: 0,
       qty_remaining: 10,
@@ -182,7 +191,9 @@ test("compact ux9 contracts and akan datang label", async () => {
   });
   const { container, root } = renderPage();
   await act(async () => { await Promise.resolve(); });
-  expect(container.querySelector('[data-testid="dp-source-PO/9"]')?.textContent).toBe("Otomatis (Legacy)");
+  expect(container.querySelector('[data-testid="dp-source-PO/9"]')?.textContent).toBe("Otomatis (Legacy · Hari Kerja)");
+  expect(container.querySelector('[data-testid="dp-estimate-notice-PO/9"]')?.textContent)
+    .toBe("Estimasi menyesuaikan hari kerja: 25 Okt → 26 Okt");
   expect(container.querySelector('[data-testid="dp-status-PO/9"]')?.textContent).toMatch(/Akan Datang/);
   expect(container.querySelector('[data-testid="dp-kpi-total-po"]')?.textContent).toBe("1");
   expect(container.querySelector('[data-testid="dp-reset-cols-delivery-plan"]')).toBeTruthy();

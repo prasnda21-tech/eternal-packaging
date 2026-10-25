@@ -20,6 +20,7 @@ from services.shipment_status import shipment_status_row
 from services.workflow_stage_status import role_status_for_schedule_row, _sj_loaded_vs_need
 from services.tanggal_pengiriman import (
     DEFAULT_LEAD_TIME_DAYS,
+    _public_sla,
     delivery_sla_effective,
     effective_tanggal_pengiriman,
     manual_tanggal_pengiriman,
@@ -160,9 +161,10 @@ def manual_schedule_date(order: dict) -> Optional[str]:
 def effective_delivery_date(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[list] = None,
 ) -> Optional[str]:
     """Authoritative Tanggal Pengiriman — never falls back to legacy deadline."""
-    return effective_tanggal_pengiriman(order, lead_time_days)
+    return effective_tanggal_pengiriman(order, lead_time_days, holidays=holidays)
 
 
 def is_delivered(order: dict) -> bool:
@@ -195,6 +197,7 @@ def schedule_status_code(
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     schedule_date: Optional[str] = None,
+    holidays: Optional[list] = None,
 ) -> str:
     stamp = isinstance(order.get("delivery_sla_v2"), dict)
     urgent = str(order.get("priority") or "").lower() == "urgent"
@@ -203,7 +206,7 @@ def schedule_status_code(
             return "terkirim"
     elif is_delivered(order):
         return "terkirim"
-    eff = parse_date_key(schedule_date) or effective_delivery_date(order, lead_time_days)
+    eff = parse_date_key(schedule_date) or effective_delivery_date(order, lead_time_days, holidays=holidays)
     if not eff:
         return "belum_dijadwalkan"
     day = today or today_key()
@@ -416,15 +419,14 @@ def apply_effective_location_to_atom(atom: dict, shipment_override: Any) -> dict
     return atom
 
 
-def _public_delivery_sla(order: dict, lead_time_days: int, today: Optional[str]) -> dict:
-    fact = delivery_sla_effective(order, lead_time_days, today=today)
-    return {
-        "date": fact.get("date"),
-        "source": fact.get("source"),
-        "state": fact.get("state"),
-        "contract": fact.get("contract"),
-        "countable": bool(fact.get("countable")),
-    }
+def _public_delivery_sla(
+    order: dict,
+    lead_time_days: int,
+    today: Optional[str],
+    holidays: Optional[list] = None,
+) -> dict:
+    fact = delivery_sla_effective(order, lead_time_days, today=today, holidays=holidays)
+    return _public_sla(fact)
 
 
 def schedule_row(
@@ -432,12 +434,17 @@ def schedule_row(
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     shipment: Optional[dict] = None,
+    holidays: Optional[list] = None,
 ) -> dict:
     sh = shipment if isinstance(shipment, dict) else None
     batch_date = shipment_delivery_date(sh)
-    sla_public = _public_delivery_sla(order, lead_time_days, today)
-    tanggal = batch_date or sla_public.get("date") or effective_delivery_date(order, lead_time_days)
-    code = schedule_status_code(order, today, lead_time_days, schedule_date=tanggal)
+    sla_public = _public_delivery_sla(order, lead_time_days, today, holidays=holidays)
+    tanggal = batch_date or sla_public.get("date") or effective_delivery_date(
+        order, lead_time_days, holidays=holidays,
+    )
+    code = schedule_status_code(
+        order, today, lead_time_days, schedule_date=tanggal, holidays=holidays,
+    )
     # Same canonical Terkirim / Dapat Dikirim as Status Pengiriman (no new formula).
     ship = shipment_status_row(order)
     loc = effective_delivery_location(sh, order)
@@ -503,6 +510,7 @@ def schedule_rows(
     order: dict,
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[list] = None,
 ) -> List[dict]:
     """One Jadwal Pengiriman row per dated canonical Surat Jalan.
 
@@ -522,7 +530,13 @@ def schedule_rows(
         key=lambda sh: (shipment_delivery_date(sh) or "", _shipment_index(sh), str(sh.get("created_at") or "")),
     )
     return [
-        schedule_row(order, today=today, lead_time_days=lead_time_days, shipment=sh)
+        schedule_row(
+            order,
+            today=today,
+            lead_time_days=lead_time_days,
+            shipment=sh,
+            holidays=holidays,
+        )
         for sh in dated
     ]
 
@@ -749,8 +763,11 @@ def public_reschedule_snippet(order: dict) -> Optional[Dict[str, str]]:
 def attach_schedule_snapshot(
     order: dict,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[list] = None,
 ) -> None:
     from services.tanggal_pengiriman import attach_tanggal_pengiriman_snapshot
 
-    attach_tanggal_pengiriman_snapshot(order, lead_time_days)
-    order["delivery_schedule_status"] = schedule_status_code(order, lead_time_days=lead_time_days)
+    attach_tanggal_pengiriman_snapshot(order, lead_time_days, holidays=holidays)
+    order["delivery_schedule_status"] = schedule_status_code(
+        order, lead_time_days=lead_time_days, holidays=holidays,
+    )

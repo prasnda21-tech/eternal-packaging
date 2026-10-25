@@ -92,7 +92,8 @@ async def clean_db():
     app.dependency_overrides.pop(current_user, None)
 
 
-def test_sunday_rows_are_legacy_calendar_not_the_working_day_contract():
+def test_sunday_skipped_for_legacy_working_days_contract():
+    """Legacy automatic uses working days; Sunday is never the delivery date."""
     anchor = date(2026, 10, 22)
     assert anchor.weekday() == 3
     assert is_working_day(date(2026, 10, 24), []) is True
@@ -101,18 +102,21 @@ def test_sunday_rows_are_legacy_calendar_not_the_working_day_contract():
     assert add_working_days(anchor, 3, ["2026-10-24"]).isoformat() == "2026-10-27"
     assert add_working_days(anchor, 3, ["2026-10-26"]).isoformat() == "2026-10-27"
 
+    working_mon = "2026-10-26"  # Thu + 3 WD skips Sunday
     legacy = _order(id="wave3h-legacy", po_number="PO-LEGACY")
     fact = delivery_sla_effective(legacy, 3, today=date(2026, 10, 24))
-    assert fact["date"] == SUNDAY
-    assert fact["contract"] == "legacy_calendar"
+    assert fact["date"] == working_mon
+    assert fact["contract"] == "legacy_working_days"
     assert fact["source"] == "legacy"
+    assert fact["countable"] is False
+    assert fact["legacy_calendar_date"] == SUNDAY
     snap = resolve_tanggal_pengiriman(legacy, 3)
-    assert snap["tanggal_pengiriman"] == SUNDAY
+    assert snap["tanggal_pengiriman"] == working_mon
     assert snap["source"] == "automatic"
     row = plan_row(legacy, lead_time_days=3, today="2026-10-24")
-    assert row["tanggal_pengiriman"] == SUNDAY
+    assert row["tanggal_pengiriman"] == working_mon
     assert row["tanggal_pengiriman_source"] == "automatic"
-    assert row["delivery_sla_effective"]["contract"] == "legacy_calendar"
+    assert row["delivery_sla_effective"]["contract"] == "legacy_working_days"
 
     stamped = _order(id="wave3h-new", po_number="PO-NEW")
     assert stamp_delivery_sla(stamped, []) is True
@@ -289,11 +293,15 @@ async def test_branch_assignment_http_and_confirmation_ignore_client_branch(clea
         stamp_delivery_sla(stamped, [])
         await server.db.orders.insert_many([legacy, stamped])
         before_legacy = await server.db.orders.find_one({"id": "wave3h-plan-legacy"}, {"_id": 0})
+        # Isolate read-time calendar so leftover holidays/settings cannot shift Legacy.
+        await server.db.operational_holidays.delete_many({})
+        await server.db.app_settings.delete_many({"key": "delivery_deadline"})
+        expected_legacy = add_working_days(date(2026, 10, 22), 3, []).isoformat()
         plan = await client.get("/api/delivery/plan", params={"page_size": 100, "q": "PO-PLAN"})
         assert plan.status_code == 200
         rows = {row["po_number"]: row for row in plan.json()["rows"]}
-        assert rows["PO-PLAN-LEGACY"]["tanggal_pengiriman"] == SUNDAY
-        assert rows["PO-PLAN-LEGACY"]["delivery_sla_effective"]["contract"] == "legacy_calendar"
+        assert rows["PO-PLAN-LEGACY"]["tanggal_pengiriman"] == expected_legacy
+        assert rows["PO-PLAN-LEGACY"]["delivery_sla_effective"]["contract"] == "legacy_working_days"
         assert rows["PO-PLAN-NEW"]["tanggal_pengiriman"] == "2026-10-26"
         assert rows["PO-PLAN-NEW"]["delivery_sla_effective"]["source"] == "otomatis"
         after_legacy = await server.db.orders.find_one({"id": "wave3h-plan-legacy"}, {"_id": 0})

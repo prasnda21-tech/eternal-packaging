@@ -104,10 +104,11 @@ def test_stamped_normal_ignores_calendar_lead_and_later_holidays():
     assert automatic_tanggal_pengiriman(order, 3) == "2026-10-26"
     assert stamp_delivery_sla(order, []) is True
     assert order["delivery_sla_v2"]["automatic_date"] == "2026-10-27"
+    working_by_days = {1: "2026-10-24", 3: "2026-10-27", 5: "2026-10-29"}
     for days in (1, 3, 5):
         snap = resolve_tanggal_pengiriman(order, days)
         assert snap["tanggal_pengiriman"] == "2026-10-27"
-        assert snap["calculated"] == (date(2026, 10, 23) + timedelta(days=days)).isoformat()
+        assert snap["calculated"] == working_by_days[days]
         assert snap["delivery_sla_effective"]["source"] == "otomatis"
         assert snap["delivery_sla_effective"]["date"] == "2026-10-27"
     order["delivery_deadline_manual"] = "2026-11-02T00:00:00+07:00"
@@ -117,7 +118,7 @@ def test_stamped_normal_ignores_calendar_lead_and_later_holidays():
     assert manual["state"] == "scheduled"
 
 
-def test_urgent_never_uses_normal_stamp_and_legacy_stays_calendar():
+def test_urgent_never_uses_normal_stamp_and_legacy_uses_working_days():
     urgent = _base(id="po-u", priority="urgent")
     stamp_delivery_sla(urgent, [])
     fact = delivery_sla_effective(urgent, today=date(2026, 10, 30))
@@ -136,12 +137,16 @@ def test_urgent_never_uses_normal_stamp_and_legacy_stays_calendar():
     old = delivery_sla_effective(legacy, 5, today=date(2026, 10, 30))
     assert old["contract"] == "incomplete"
     assert old["countable"] is False
-    calendar = _base(id="po-cal")
-    kept = delivery_sla_effective(calendar, 1, today=date(2026, 10, 30))
-    assert kept["contract"] == "legacy_calendar"
-    assert kept["date"] == "2026-10-24"
+    unstamped = _base(id="po-cal")
+    kept = delivery_sla_effective(unstamped, 1, today=date(2026, 10, 30))
+    assert kept["contract"] == "legacy_working_days"
+    assert kept["date"] == "2026-10-24"  # Fri + 1 WD = Sat
     assert kept["countable"] is False
-    assert "delivery_sla_v2" not in calendar
+    assert kept["legacy_calendar_date"] == "2026-10-24"
+    assert "delivery_sla_v2" not in unstamped
+    with_holiday = delivery_sla_effective(unstamped, 1, today=date(2026, 10, 30), holidays=["2026-10-24"])
+    assert with_holiday["date"] == "2026-10-26"  # Sat holiday → Mon
+    assert with_holiday["contract"] == "legacy_working_days"
 
 
 def test_buffer_partial_and_full_delivery_share_the_overdue_rule():
@@ -521,8 +526,9 @@ async def test_http_working_day_setting_and_plan_matrix(db):
     assert rows["po-plan-u"]["delivery_sla_effective"]["source"] == "jadwal_pengiriman"
     assert rows["po-plan-m"]["delivery_sla_effective"]["date"] == "2026-11-02"
     assert rows["po-plan-m"]["delivery_sla_effective"]["source"] == "manual"
-    assert rows["po-plan-l"]["delivery_sla_effective"]["contract"] == "legacy_calendar"
-    assert rows["po-plan-l"]["delivery_sla_effective"]["date"] == "2026-10-28"
+    assert rows["po-plan-l"]["delivery_sla_effective"]["contract"] == "legacy_working_days"
+    assert rows["po-plan-l"]["delivery_sla_effective"]["date"] == "2026-10-29"  # Fri + 5 WD
+    assert rows["po-plan-l"]["delivery_sla_effective"]["countable"] is False
     assert rows["po-plan-b"]["delivery_sla_effective"]["state"] == "buffer"
     assert rows["po-plan-b"]["delivery_schedule_status"] != "terlambat"
     sched = [row for row in schedule.json()["rows"] if row["id"] == "po-plan-n"]

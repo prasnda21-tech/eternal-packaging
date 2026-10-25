@@ -1267,6 +1267,8 @@ async def list_orders(
     q.update(scope)
     orders = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     for o in orders:
         _apply_hold_snapshot(o)
         # Bagian 7: attach semantic work-queue membership so frontend can filter
@@ -1274,7 +1276,7 @@ async def list_orders(
         o["pending_queues"] = _compute_pending_queues(o)
         # Batch 1: attach delivery deadline effective + status (source of truth
         # sama untuk Dashboard/Schedule/PODetail).
-        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
         # Task 14 bugfix: expose terkirim_confirmed juga di list (agar Jadwal
         # dan Timeline konsisten memakai source of truth yang sama).
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
@@ -1841,10 +1843,12 @@ async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
         {"$project": _orders_dashboard_list_projection()},
     ]).to_list(_ORDERS_DASHBOARD_LIMIT)
     _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     for o in raw:
         _apply_hold_snapshot(o)
         o["pending_queues"] = _compute_pending_queues(o)
-        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
         _strip_tracking_secret(o)
     orders = [_finalize_orders_dashboard_row(o) for o in raw]
@@ -1932,13 +1936,17 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     operational = _is_operational_view(view)
     if operational:
         _dd_settings = await _get_delivery_deadline_settings()
+        _sales_delivery_summary = None
     else:
         _dd_settings, _sales_delivery_summary = await asyncio.gather(
             _get_delivery_deadline_settings(),
             _get_po_delivery_summary(db, order),
         )
-    _attach_deadline_snapshot(order, _dd_settings["lead_time_days"])
-    attach_schedule_snapshot(order)
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
+    lead_days = _dd_settings["lead_time_days"]
+    _attach_deadline_snapshot(order, lead_days, holidays=holidays)
+    attach_schedule_snapshot(order, lead_days, holidays=holidays)
     if not operational:
         order["sales_delivery_summary"] = _sales_delivery_summary
         try:
@@ -2000,23 +2008,33 @@ _DELIVERY_DEADLINE_ALLOWED_DAYS = [1, 3, 5]
 
 
 async def _get_delivery_deadline_settings() -> dict:
-    """Calendar days stay on ``lead_time_days`` for unstamped legacy reads.
+    """Official Normal SLA is ``sla_working_days`` (1/3/5).
 
-    New Normal stamps use ``sla_working_days``. A stored document without
-    ``unit: working_days`` does not become a working-day duration.
+    ``lead_time_days`` / ``calendar_lead_time_days`` keep the archived calendar
+    setting for the settings UI only. Active Legacy automatic dates use
+    ``sla_working_days`` plus operational holidays at read time.
     """
     from services.tanggal_pengiriman import classify_delivery_deadline_setting
 
     doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
     info = classify_delivery_deadline_setting(doc)
     return {
-        "lead_time_days": info["calendar_lead_time_days"],
+        # Date readers use this key for the official 1/3/5 working-day SLA.
+        "lead_time_days": info["sla_working_days"],
         "calendar_lead_time_days": info["calendar_lead_time_days"],
         "sla_working_days": info["sla_working_days"],
         "sla_unit": info["sla_unit"],
         "sla_source": info["sla_source"],
         "legacy_unit": info["legacy_unit"],
     }
+
+
+async def _sla_read_context() -> tuple:
+    """Return (sla_working_days, operational holiday YYYY-MM-DD list). Read only."""
+    settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates
+
+    return int(settings["sla_working_days"]), await holiday_dates(db)
 
 
 def _latest_approval_at(order: dict) -> Optional[str]:
@@ -2027,10 +2045,14 @@ def _latest_approval_at(order: dict) -> Optional[str]:
     return latest.isoformat() if latest else None
 
 
-def _calculated_delivery_deadline(order: dict, lead_time_days: int) -> Optional[str]:
-    from services.tanggal_pengiriman import automatic_tanggal_pengiriman, calendar_date_to_wib_iso
+def _calculated_delivery_deadline(
+    order: dict,
+    lead_time_days: int,
+    holidays: Optional[list] = None,
+) -> Optional[str]:
+    from services.tanggal_pengiriman import automatic_working_tanggal_pengiriman, calendar_date_to_wib_iso
 
-    key = automatic_tanggal_pengiriman(order, lead_time_days)
+    key = automatic_working_tanggal_pengiriman(order, lead_time_days, holidays)
     return calendar_date_to_wib_iso(key) if key else None
 
 
@@ -2081,15 +2103,16 @@ def _deadline_status_for(deadline_iso: Optional[str], order: dict, *, qty_basis:
     return "normal"
 
 
-def _attach_deadline_snapshot(order: dict, lead_time_days: int):
+def _attach_deadline_snapshot(order: dict, lead_time_days: int, holidays: Optional[list] = None):
     """Attach authoritative Tanggal Pengiriman (+ legacy delivery_deadline_* mirrors).
 
     Manual override lives in delivery_deadline_manual / scheduled_delivery_date.
     Legacy order.deadline is never used as the scheduling source.
+    ``lead_time_days`` is official ``sla_working_days``.
     """
     from services.tanggal_pengiriman import attach_tanggal_pengiriman_snapshot
 
-    attach_tanggal_pengiriman_snapshot(order, lead_time_days)
+    attach_tanggal_pengiriman_snapshot(order, lead_time_days, holidays=holidays)
     fact = order.get("delivery_sla_effective") if isinstance(order.get("delivery_sla_effective"), dict) else {}
     contract = fact.get("contract")
     state = fact.get("state")
@@ -2446,11 +2469,14 @@ async def _persist_order(order, *, require_lock: bool = False, persist_keys: Opt
         # Motor collection method returns coroutine; namun kita fetch dari cache
         # tidak available. Simplify: refresh via a lightweight fetch.
         _dd_doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
-        _lt = int((_dd_doc or {}).get("lead_time_days", _DELIVERY_DEADLINE_DEFAULT["lead_time_days"]))
-        _attach_deadline_snapshot(order, _lt)
+        from services.tanggal_pengiriman import classify_delivery_deadline_setting as _classify_dd
+        from services.production_wave2 import holiday_dates as _holiday_dates
+        _lt = _classify_dd(_dd_doc)["sla_working_days"]
+        holidays = await _holiday_dates(db)
+        _attach_deadline_snapshot(order, _lt, holidays=holidays)
+        attach_schedule_snapshot(order, _lt, holidays=holidays)
     except Exception:
-        pass
-    attach_schedule_snapshot(order)
+        attach_schedule_snapshot(order)
     _strip_tracking_secret(order)
     public = _strip_sj_bytes(order)
     if public is not order:
@@ -4502,9 +4528,11 @@ async def dashboard_action_items(user=Depends(current_user)):
         {"$project": _orders_action_center_projection()},
     ]).to_list(_ACTION_CENTER_LIMIT)
     dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     for o in raw:
         _apply_hold_snapshot(o)
-        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, dd_settings["lead_time_days"], holidays=holidays)
         o["requires_printing"] = _requires_printing(o)
         o["terkirim_confirmed"] = _terkirim_confirmed(o)
 
@@ -4603,9 +4631,11 @@ async def work_division_tasks(
             query["operator_splits.operator_email"] = email
     raw = await db.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
     dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     lead_days = dd_settings["lead_time_days"]
     for o in raw:
-        _attach_deadline_snapshot(o, lead_days)
+        _attach_deadline_snapshot(o, lead_days, holidays=holidays)
         if div == "kepala_produksi":
             _apply_hold_snapshot(o)
     tasks = _build_division_tasks(raw, div, user, mine_only=mine_only)
@@ -7794,7 +7824,13 @@ async def create_delivery_reschedule(order_id: str, payload: DeliveryRescheduleP
             user=user,
         )
     persisted = await _persist_order(order)
-    attach_schedule_snapshot(persisted)
+    try:
+        _dd = await _get_delivery_deadline_settings()
+        from services.production_wave2 import holiday_dates as _holiday_dates
+        _hol = await _holiday_dates(db)
+        attach_schedule_snapshot(persisted, _dd["lead_time_days"], holidays=_hol)
+    except Exception:
+        attach_schedule_snapshot(persisted)
     on_rs = getattr(_delivery_route_api, "_hooks", {}).get("on_rescheduled")
     if callable(on_rs):
         try:
@@ -7811,9 +7847,13 @@ async def list_delivery_schedule(user=Depends(current_user)):
         {"cancelled": {"$ne": True}},
         SCHEDULE_PROJECTION,
     ).sort("deadline", 1).to_list(None)
+    dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
+    lead_days = dd_settings["lead_time_days"]
     rows = []
     for o in docs:
-        rows.extend(_delivery_schedule_rows(o))
+        rows.extend(_delivery_schedule_rows(o, lead_time_days=lead_days, holidays=holidays))
     # Enrich optimization status (pure read; no writes).
     try:
         from services.independent_route.delivery_bridge import optimization_status_map
@@ -7859,6 +7899,8 @@ async def list_delivery_plan(
     match = _delivery_plan_mongo_match(scope)
     docs = await db.orders.find(match, _DELIVERY_PLAN_PROJECTION).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     lead_days = dd_settings["lead_time_days"]
     filters = {
         "q": q,
@@ -7870,6 +7912,7 @@ async def list_delivery_plan(
     rows = _build_delivery_plan_rows(
         docs,
         lead_time_days=lead_days,
+        holidays=holidays,
         filters=filters,
         sort_by=sort_by,
         sort_dir=sort_dir,
@@ -7902,11 +7945,14 @@ async def delivery_plan_qty_widget(
     match = _delivery_plan_mongo_match(scope)
     docs = await db.orders.find(match, _DELIVERY_QTY_PROJECTION).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     return _aggregate_delivery_plan_qty(
         docs,
         lead_time_days=dd_settings["lead_time_days"],
         today=wib_today(),
         days=days,
+        holidays=holidays,
     )
 
 
@@ -7971,7 +8017,13 @@ async def set_delivery_reschedule_date(
             user=user,
         )
     persisted = await _persist_order(order)
-    attach_schedule_snapshot(persisted)
+    try:
+        _dd = await _get_delivery_deadline_settings()
+        from services.production_wave2 import holiday_dates as _holiday_dates
+        _hol = await _holiday_dates(db)
+        attach_schedule_snapshot(persisted, _dd["lead_time_days"], holidays=_hol)
+    except Exception:
+        attach_schedule_snapshot(persisted)
     return {"order": persisted, "reschedule": rec, "mutated": mutated}
 
 
@@ -8214,8 +8266,10 @@ async def set_delivery_deadline_manual(order_id: str, payload: DeliveryDeadlineM
                     after={"deadline_manual": order["delivery_deadline_manual"], "tanggal_pengiriman": key},
                     note=payload.reason or "")
     dd_settings = await _get_delivery_deadline_settings()
-    _attach_deadline_snapshot(order, dd_settings["lead_time_days"])
-    attach_schedule_snapshot(order, dd_settings["lead_time_days"])
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
+    _attach_deadline_snapshot(order, dd_settings["lead_time_days"], holidays=holidays)
+    attach_schedule_snapshot(order, dd_settings["lead_time_days"], holidays=holidays)
     return {"order": order}
 
 
@@ -8236,8 +8290,10 @@ async def reset_delivery_deadline_manual(order_id: str, user=Depends(current_use
     await _audit_po(order, "delivery.deadline.manual.reset", user,
                     before={"deadline_manual": before}, after={"deadline_manual": None})
     dd_settings = await _get_delivery_deadline_settings()
-    _attach_deadline_snapshot(order, dd_settings["lead_time_days"])
-    attach_schedule_snapshot(order, dd_settings["lead_time_days"])
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
+    _attach_deadline_snapshot(order, dd_settings["lead_time_days"], holidays=holidays)
+    attach_schedule_snapshot(order, dd_settings["lead_time_days"], holidays=holidays)
     return {"order": order}
 
 
@@ -8584,9 +8640,11 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
     # Attach HOLD snapshot (canonical predicate) — dipakai untuk card HOLD.
     # Batch 1: attach delivery deadline snapshot (source of truth H-1/H-6/Overdue).
     _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     for o in orders:
         _apply_hold_snapshot(o)
-        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
 
     now = datetime.now(timezone.utc)
     today = wib_today(now)
@@ -8978,10 +9036,12 @@ async def production_dashboard(
     else:
         orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
     _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     for o in orders:
         _apply_hold_snapshot(o)
         # Batch 1: attach delivery deadline snapshot (source of truth sama).
-        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
     if not include_completed:
         orders = [o for o in orders if o.get("current_stage", 0) < 14]
     rows = [_production_row(o) for o in orders]
@@ -8999,9 +9059,11 @@ async def shipment_status_dashboard(
         q["cancelled"] = {"$ne": True}
     orders = await db.orders.find(q, SHIPMENT_STATUS_PROJECTION).sort("deadline", 1).to_list(1000)
     _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     rows = []
     for o in orders:
-        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
         rows.append(shipment_status_row(o))
     return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
 
@@ -9197,6 +9259,8 @@ async def status_po_dashboard(
     }
     status_filter = (status or "").strip()
     _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     lead_days = _dd_settings["lead_time_days"]
 
     # Pass 1: stream classify projection; retain only sort keys + status facets.
@@ -9212,7 +9276,7 @@ async def status_po_dashboard(
         docs_scanned += 1
         o = raw
         _apply_hold_snapshot(o)
-        _attach_deadline_snapshot(o, lead_days)
+        _attach_deadline_snapshot(o, lead_days, holidays=holidays)
         if not filter_orders_for_view([o], view_key or None):
             continue
         if not order_matches_search_date_filters(o, filters):
@@ -9237,7 +9301,7 @@ async def status_po_dashboard(
         ).to_list(len(page_ids))
         for o in found:
             _apply_hold_snapshot(o)
-            _attach_deadline_snapshot(o, lead_days)
+            _attach_deadline_snapshot(o, lead_days, holidays=holidays)
             page_orders.append(o)
     rows = build_status_po_page_rows(page_orders, page_ids=page_ids)
     data = {
@@ -11935,8 +11999,10 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
     ]
     await _persist_order(order, persist_keys=tuple(dict.fromkeys(persist_keys)))
     dd_settings = await _get_delivery_deadline_settings()
-    _attach_deadline_snapshot(order, dd_settings["lead_time_days"])
-    attach_schedule_snapshot(order, dd_settings["lead_time_days"])
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
+    _attach_deadline_snapshot(order, dd_settings["lead_time_days"], holidays=holidays)
+    attach_schedule_snapshot(order, dd_settings["lead_time_days"], holidays=holidays)
     await _audit_po(
         order,
         "po.info.update",
@@ -12673,6 +12739,8 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
     from services.sales_order_delivery_display import build_sales_order_delivery_progress
 
     dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     po_ids = [o["id"] for o in orders if o.get("id")]
     # Batch invoiceable qty before line_items are reduced to quantity_by_unit.
     invoiceable_by_po = await batch_po_invoiceable_summaries(db, orders) if po_ids else {}
@@ -12748,7 +12816,7 @@ async def _decorate_sales_order_list_rows(orders: list) -> None:
         _apply_hold_snapshot(o)
         # Five-tab classification before file existence flags are stripped.
         o["list_tab"] = classify_sales_order_list_tab(o)
-        _attach_deadline_snapshot(o, dd_settings["lead_time_days"])
+        _attach_deadline_snapshot(o, dd_settings["lead_time_days"], holidays=holidays)
         _strip_tracking_secret(o)
         o.pop("design_files", None)
         o.pop("payment_files", None)

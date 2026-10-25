@@ -48,6 +48,7 @@ from services.status_po import (
 from services.tanggal_pengiriman import (
     DEFAULT_LEAD_TIME_DAYS,
     attach_tanggal_pengiriman_snapshot,
+    classify_delivery_deadline_setting,
     parse_calendar_date,
 )
 from services.customer_tracking import public_design_approval
@@ -199,12 +200,18 @@ async def require_owned_order(db, user: dict, order_id: str) -> dict:
     return order
 
 
+async def _sla_read_context(db) -> tuple:
+    """Official sla_working_days + operational holidays. Read only."""
+    doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
+    from services.production_wave2 import holiday_dates
+
+    days = int(classify_delivery_deadline_setting(doc)["sla_working_days"])
+    return days, await holiday_dates(db)
+
+
 async def _lead_time_days(db) -> int:
-    doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0, "lead_time_days": 1})
-    try:
-        return int((doc or {}).get("lead_time_days") or DEFAULT_LEAD_TIME_DAYS)
-    except (TypeError, ValueError):
-        return DEFAULT_LEAD_TIME_DAYS
+    days, _ = await _sla_read_context(db)
+    return days
 
 
 def _workflow_progress(workflow: dict) -> int:
@@ -545,8 +552,15 @@ async def _serialize_owned_page(db, page_orders: List[dict]) -> List[dict]:
     await _merge_page_document_fields(db, page_orders)
     po_ids = [order.get("id") for order in page_orders if order.get("id")]
     deliveries_map, invoices_map = await _load_docs_for_pos(db, po_ids)
+    lead, holidays = await _sla_read_context(db)
     page = [
-        serialize_list_row(order, deliveries_map.get(order.get("id"), []), invoices_map.get(order.get("id"), []))
+        serialize_list_row(
+            order,
+            deliveries_map.get(order.get("id"), []),
+            invoices_map.get(order.get("id"), []),
+            lead_time_days=lead,
+            holidays=holidays,
+        )
         for order in page_orders
     ]
     raw_by_id = {order.get("id"): order for order in page_orders if order.get("id")}
@@ -835,8 +849,15 @@ async def attach_page_design_approvals(db, page: List[dict], raw_by_id: Dict[str
         row["design_approvals"] = design_approval_rows(order, grouped.get(str(order.get("id") or ""), []))
 
 
-def serialize_list_row(order: dict, deliveries: List[dict], invoices: List[dict]) -> dict:
-    attach_tanggal_pengiriman_snapshot(order)
+def serialize_list_row(
+    order: dict,
+    deliveries: List[dict],
+    invoices: List[dict],
+    *,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    holidays: Optional[list] = None,
+) -> dict:
+    attach_tanggal_pengiriman_snapshot(order, lead_time_days, holidays=holidays)
     workflow, reasons = status_po_workflow_detail(order)
     counts = _document_counts(order, deliveries, invoices)
     kirim = order.get("tanggal_pengiriman")
@@ -899,9 +920,9 @@ async def list_sales_pwa_orders(
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
     raw = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
-    lead = await _lead_time_days(db)
+    lead, holidays = await _sla_read_context(db)
     for o in raw:
-        attach_tanggal_pengiriman_snapshot(o, lead)
+        attach_tanggal_pengiriman_snapshot(o, lead, holidays=holidays)
 
     filtered, counts = select_sales_pwa_order_rows(
         raw,
@@ -988,9 +1009,9 @@ async def sales_pwa_field_actions(db, user: dict, *, month: str = "") -> dict:
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
     raw = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
-    lead = await _lead_time_days(db)
+    lead, holidays = await _sla_read_context(db)
     for order in raw:
-        attach_tanggal_pengiriman_snapshot(order, lead)
+        attach_tanggal_pengiriman_snapshot(order, lead, holidays=holidays)
     date_from, date_to = _sales_month_bounds(month)
     design, payment, selesai = _field_action_buckets(raw, date_from, date_to)
     design.sort(key=lambda order: _list_sort_pair(order, "order_date"), reverse=True)
@@ -1700,12 +1721,14 @@ def _line_public(li: dict, idx: int) -> dict:
 
 async def get_sales_pwa_order(db, user: dict, order_id: str) -> dict:
     order = await require_owned_order(db, user, order_id)
-    lead = await _lead_time_days(db)
-    attach_tanggal_pengiriman_snapshot(order, lead)
+    lead, holidays = await _sla_read_context(db)
+    attach_tanggal_pengiriman_snapshot(order, lead, holidays=holidays)
     deliveries_map, invoices_map = await _load_docs_for_pos(db, [order.get("id")])
     deliveries = deliveries_map.get(order.get("id"), [])
     invoices = invoices_map.get(order.get("id"), [])
-    row = serialize_list_row(order, deliveries, invoices)
+    row = serialize_list_row(
+        order, deliveries, invoices, lead_time_days=lead, holidays=holidays,
+    )
     await attach_page_design_approvals(db, [row], {order.get("id"): order})
     timeline = []
     for ev in order.get("timeline") or []:
@@ -1785,10 +1808,10 @@ async def list_sales_pwa_customers(db, user: dict, *, q: str = "") -> dict:
     require_sales_pwa(user)
     match = {"cancelled": {"$ne": True}, **sales_owner_match(user)}
     orders = await _cursor_rows(db.orders.find(match, LIST_PROJECTION))
-    lead = await _lead_time_days(db)
+    lead, holidays = await _sla_read_context(db)
     groups: Dict[str, dict] = {}
     for o in orders:
-        attach_tanggal_pengiriman_snapshot(o, lead)
+        attach_tanggal_pengiriman_snapshot(o, lead, holidays=holidays)
         key = extract_stable_customer_id(o) or f"name:{_norm(display_customer_name(o))}"
         if not key:
             continue

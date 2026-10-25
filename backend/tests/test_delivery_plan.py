@@ -40,10 +40,10 @@ def _po(**extra):
 
 
 def test_automatic_date_included_without_sj():
-    o = _po()  # auto = 10 + 3 = 13
+    o = _po()  # Sat 10 + 3 working days = Wed 14 (skip Sunday)
     row = plan_row(o, lead_time_days=3, today="2026-10-12")
     assert row is not None
-    assert row["tanggal_pengiriman"] == "2026-10-13"
+    assert row["tanggal_pengiriman"] == "2026-10-14"
     assert row["tanggal_pengiriman_source"] == "automatic"
     assert row["qty_remaining"] == 100
 
@@ -380,13 +380,13 @@ def test_estimation_bypass_matrix_and_lead_time_and_manual_reset():
     clear_manual_tanggal_pengiriman(o4)
     snap = resolve_tanggal_pengiriman(o4, 3)
     assert snap["source"] == "automatic"
-    assert snap["tanggal_pengiriman"] == "2026-10-13"
-    assert plan_row(o4, lead_time_days=3)["tanggal_pengiriman"] == "2026-10-13"
+    assert snap["tanggal_pengiriman"] == "2026-10-14"
+    assert plan_row(o4, lead_time_days=3)["tanggal_pengiriman"] == "2026-10-14"
 
-    # lead_time_days change on GET (no DB write — pure resolve)
-    assert resolve_tanggal_pengiriman(o4, 1)["tanggal_pengiriman"] == "2026-10-11"
-    assert resolve_tanggal_pengiriman(o4, 5)["tanggal_pengiriman"] == "2026-10-15"
-    assert plan_row(o4, lead_time_days=5)["tanggal_pengiriman"] == "2026-10-15"
+    # sla_working_days change on GET (no DB write — pure resolve)
+    assert resolve_tanggal_pengiriman(o4, 1)["tanggal_pengiriman"] == "2026-10-12"
+    assert resolve_tanggal_pengiriman(o4, 5)["tanggal_pengiriman"] == "2026-10-16"
+    assert plan_row(o4, lead_time_days=5)["tanggal_pengiriman"] == "2026-10-16"
 
 
 def test_buffer_included_in_rows_not_terlambat():
