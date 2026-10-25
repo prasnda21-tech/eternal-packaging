@@ -70,6 +70,7 @@ EOF
 chmod +x "$BIN/mongodump"
 
 PATH="$BIN:$PATH" \
+BACKUP_MODE=LOCAL_ONLY \
 BACKUP_BACKEND_DIR="$BACKEND" \
 BACKUP_DIR="$BACKUP_DIR" \
 BACKUP_PYTHON_BIN="$BIN/python3" \
@@ -98,6 +99,7 @@ EOF
 chmod +x "$BIN/mongodump"
 
 PATH="$BIN:$PATH" \
+BACKUP_MODE=LOCAL_ONLY \
 BACKUP_BACKEND_DIR="$BACKEND" \
 BACKUP_DIR="$BACKUP_DIR" \
 BACKUP_PYTHON_BIN="$BIN/python3" \
@@ -125,6 +127,7 @@ EOF
 chmod +x "$BIN/mongodump"
 
 PATH="$BIN:$PATH" \
+BACKUP_MODE=S3 \
 BACKUP_BACKEND_DIR="$BACKEND" \
 BACKUP_DIR="$BACKUP_DIR" \
 BACKUP_PYTHON_BIN="$BIN/python3" \
@@ -135,6 +138,8 @@ final_count="$(find "$BACKUP_DIR" -name 'eternal_packaging_*.archive.gz' | wc -l
 assert_eq "failed S3 preserves local completed backup" "1" "$final_count"
 assert_true "status FAIL after S3 failure" grep -q 'status=FAIL' "$BACKUP_DIR/status.txt"
 assert_true "log mentions local archive preserved" grep -q 'local archive preserved' "$WORKDIR/out3.txt"
+assert_true "S3 failure skips local retention deletes" \
+  bash -c "! grep -q 'LOCAL_DELETED:' '$WORKDIR/out3.txt'"
 
 # --- 4) retention only targets known MongoDB filenames + never sole valid ---
 PYTHONPATH="$ROOT/scripts" /usr/bin/python3 - <<PY

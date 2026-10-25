@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -815,29 +816,52 @@ def run_s3_backup_phase(
     return summary
 
 
+REGULAR_LOCAL_BACKUP_RE = (
+    r"^eternal_packaging_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.archive\.gz$"
+)
+
+
+def is_regular_local_backup_name(name: str) -> bool:
+    return re.match(REGULAR_LOCAL_BACKUP_RE, name) is not None
+
+
 def retain_local_backups(
     backup_dir: Path,
     keep: int,
     *,
     is_valid: Optional[Callable[[Path], bool]] = None,
+    protected_names: Optional[Iterable[str]] = None,
 ) -> dict[str, list[str]]:
-    """Keep newest `keep` valid eternal_packaging_*.archive.gz files by name sort.
+    """Keep newest `keep` valid regular local MongoDB backup archives.
 
-    Never deletes the sole valid local backup. Only matches known MongoDB
-    backup filenames.
+    Only exact timestamp names
+    ``eternal_packaging_YYYY-MM-DD_HH-MM-SS.archive.gz`` are eligible.
+    Symlinks, special/migration names, and protected names are never deleted.
+    ``LOCAL_DELETED`` semantics: a name is returned in ``deleted`` only after
+    the path is verified gone.
     """
     if keep < 1:
         raise BackupS3Error("BACKUP_LOCAL_KEEP must be >= 1")
 
+    protected = {n for n in (protected_names or ()) if n}
+
     def _default_valid(path: Path) -> bool:
-        return path.is_file() and path.stat().st_size > 0
+        return (
+            path.is_file()
+            and not path.is_symlink()
+            and path.stat().st_size > 0
+        )
 
     checker = is_valid or _default_valid
+    backup_dir = backup_dir.resolve()
     names = sorted(
         (
             p.name
-            for p in backup_dir.glob("eternal_packaging_*.archive.gz")
+            for p in backup_dir.iterdir()
             if p.is_file()
+            and not p.is_symlink()
+            and is_regular_local_backup_name(p.name)
+            and p.name not in protected
         ),
         reverse=True,
     )
@@ -846,6 +870,16 @@ def retain_local_backups(
     ignored: list[str] = []
     for name in names:
         path = backup_dir / name
+        if path.is_symlink() or not path.is_file():
+            ignored.append(name)
+            continue
+        try:
+            if path.resolve().parent != backup_dir:
+                ignored.append(name)
+                continue
+        except OSError:
+            ignored.append(name)
+            continue
         if not checker(path):
             ignored.append(name)
             continue
@@ -857,8 +891,16 @@ def retain_local_backups(
                 kept.append(name)
                 continue
             path.unlink(missing_ok=True)
+            if path.exists() or path.is_symlink():
+                raise BackupS3Error(
+                    f"Local retention delete did not remove: {name}"
+                )
             deleted.append(name)
-    if not kept and any(backup_dir.glob("eternal_packaging_*.archive.gz")):
+    if not kept and any(
+        p
+        for p in backup_dir.glob("eternal_packaging_*.archive.gz")
+        if p.is_file() and not p.is_symlink() and is_regular_local_backup_name(p.name)
+    ):
         raise BackupS3Error(
             "Local retention refused: would leave zero valid local backups"
         )

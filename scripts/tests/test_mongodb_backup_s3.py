@@ -926,3 +926,45 @@ def test_local_retention_ignores_non_mongodb_names(tmp_path: Path):
     retain_local_backups(tmp_path, keep=3)
     assert (tmp_path / "random.gz").is_file()
     assert (tmp_path / "production_customers.bin").is_file()
+
+
+def test_local_retention_keep7_and_preserves_special_and_symlink(tmp_path: Path):
+    outside = tmp_path / "outside.gz"
+    outside.write_bytes(b"outside")
+    for i in range(1, 9):
+        (
+            tmp_path / f"eternal_packaging_2026-11-{i:02d}_01-00-00.archive.gz"
+        ).write_bytes(b"ok")
+    special = tmp_path / "eternal_packaging_migration_manual.archive.gz"
+    special.write_bytes(b"special")
+    link = tmp_path / "eternal_packaging_2026-10-01_01-00-00.archive.gz"
+    link.symlink_to(outside)
+    protected = "eternal_packaging_2026-09-30_08-11-33.archive.gz"
+    (tmp_path / protected).write_bytes(b"ckpt")
+    result = retain_local_backups(
+        tmp_path, keep=7, protected_names={protected}, is_valid=lambda p: True
+    )
+    assert len(result["kept"]) == 7
+    assert len(result["deleted"]) == 1
+    assert special.is_file()
+    assert link.is_symlink()
+    assert outside.is_file()
+    assert (tmp_path / protected).is_file()
+    assert protected not in result["deleted"]
+
+
+def test_local_retention_delete_failure_fail_closed(tmp_path: Path, monkeypatch):
+    for i in range(1, 9):
+        (
+            tmp_path / f"eternal_packaging_2026-10-{i:02d}_01-00-00.archive.gz"
+        ).write_bytes(b"x")
+    real_unlink = Path.unlink
+
+    def sticky_unlink(self, missing_ok=False):
+        if "2026-10-01" in self.name:
+            return None
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", sticky_unlink)
+    with pytest.raises(BackupS3Error, match="did not remove"):
+        retain_local_backups(tmp_path, keep=7, is_valid=lambda p: True)
