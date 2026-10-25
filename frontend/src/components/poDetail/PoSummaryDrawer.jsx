@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { STAGES, formatDate } from "../../lib/constants";
 import { isCustomerDesignApproved } from "../../lib/designEvidence";
+import { formatPhysicalOrderQty } from "../../lib/orderPhysicalQty";
 import PoIdentityBadges from "../PoIdentityBadges";
 
 /**
@@ -91,8 +92,10 @@ export default function PoSummaryDrawer({
               </dd>
             </div>
             <div>
-              <dt>Total quantity</dt>
-              <dd>{Number(order.total_quantity ?? 0).toLocaleString("id-ID")} pcs</dd>
+              <dt>Total fisik</dt>
+              <dd data-testid="po-summary-physical-qty">
+                {formatPhysicalOrderQty(order) ?? "Qty fisik tidak tersedia"}
+              </dd>
             </div>
             <div>
               <dt>Line item</dt>

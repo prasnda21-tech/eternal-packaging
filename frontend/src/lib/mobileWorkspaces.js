@@ -3,6 +3,7 @@
 import { canAccessRoutePage } from "./independentRoute";
 import { NAV_KEYS } from "./navAccess";
 import { MOBILE_DELIVERY_SCHEDULE_PATH, MOBILE_DELIVERY_SCHEDULE_VIEW_PERMS } from "./mobileDeliverySchedule";
+import { physicalOrderQty } from "./orderPhysicalQty";
 
 export const MOBILE_WORKSPACES = [
   { id: "screener", label: "Screener", permission: "screen.update", division: "screener" },
@@ -250,7 +251,8 @@ export function poCardPresentation(order) {
   if (lines.length > 1) {
     return {
       product: `${lines[0].name} · +${lines.length - 1} line`,
-      qty: null,
+      // Multi-line cards: show physical PO total (not sum of SERVICE work qty).
+      qty: physicalOrderQty(order),
       lines,
     };
   }
@@ -259,7 +261,7 @@ export function poCardPresentation(order) {
   }
   const fallbackName = order?.item || order?.product_name || "—";
   const fallbackQty = order?.item != null || order?.product_name != null
-    ? Number(order?.total_quantity || 0) || null
+    ? physicalOrderQty(order)
     : null;
   return { product: fallbackName, qty: fallbackQty, lines };
 }

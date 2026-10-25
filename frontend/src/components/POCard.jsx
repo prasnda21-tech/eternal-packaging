@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Package, UserRound, ChevronRight } from "lucide-react";
 import { STAGES, formatDeadline } from "../lib/constants";
 import { useAuth } from "../lib/auth";
+import { formatPhysicalOrderQty } from "../lib/orderPhysicalQty";
 import { schedulePoHref } from "../lib/workPanel";
 import StageBar from "./StageBar";
 import PoIdentityBadges from "./PoIdentityBadges";
@@ -12,6 +13,7 @@ export default function POCard({ order }) {
   const operators = order.operator_splits?.length
     ? order.operator_splits.map((s) => s.operator_name).join(" / ")
     : "Belum ditentukan";
+  const physicalQtyLabel = formatPhysicalOrderQty(order);
 
   return (
     <Link
@@ -40,9 +42,11 @@ export default function POCard({ order }) {
       </div>
       <h3 data-testid={`order-outlet-${order.po_number}`}>{order.outlet}</h3>
       <div className="job-meta">
-        <span>
+        <span data-testid={`order-physical-qty-${order.po_number}`}>
           <Package size={14} />
-          {(order.total_quantity || 0).toLocaleString("id-ID")} pcs · {order.item_count} item
+          {physicalQtyLabel != null
+            ? `${physicalQtyLabel} · ${order.item_count} item`
+            : `Qty fisik tidak tersedia · ${order.item_count} item`}
         </span>
         <span>
           <UserRound size={14} />
