@@ -654,3 +654,122 @@ async def test_summarize_physical_stock_status_counts_without_item_payload(db):
     assert "Secret Cup" not in blob
     assert await db[BALANCE_COLLECTION].count_documents({}) == before_bal
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_led
+
+
+async def test_summarize_counts_unverified_beyond_first_page(db):
+    """status-summary must count UNVERIFIED on catalog pages 2+ (not only ≤200)."""
+    from services.physical_stock import _MAX_READ_LIMIT
+
+    assert _MAX_READ_LIMIT == 200
+    branch = await _seed_branch(db, "YGY")
+    wh = await _seed_warehouse(db, branch, "MAIN")
+    branch_id = branch["id"]
+
+    # Page-1 fillers (sort before Z*): READY / no Belum unproven.
+    for i in range(_MAX_READ_LIMIT):
+        item = await _seed_item(
+            db,
+            item_code=f"A{i:04d}",
+            item_name=f"A-Fill-{i:04d}",
+            unit="pcs",
+        )
+        await _seed_balance(db, item, branch, wh, 10)
+        await db[BALANCE_COLLECTION].update_one(
+            {"master_item_id": item["id"], "warehouse_id": wh["id"]},
+            {"$set": {"baseline_status": "reconciled"}},
+        )
+
+    # SERVICE Add On master (excluded from physical catalog).
+    svc = await _seed_item(
+        db,
+        item_code="SVC-ADDON",
+        item_name="Process Add On",
+        unit="pcs",
+        item_type="SERVICE",
+    )
+
+    # Six masters on later pages: each PO has unlinked SERVICE → completion_unproven.
+    late_items = []
+    orders = []
+    for i in range(6):
+        item = await _seed_item(
+            db,
+            item_code=f"Z{i:04d}",
+            item_name=f"Z-Late-{i:04d}",
+            unit="pcs",
+        )
+        await _seed_balance(db, item, branch, wh, 100)
+        await db[BALANCE_COLLECTION].update_one(
+            {"master_item_id": item["id"], "warehouse_id": wh["id"]},
+            {"$set": {"baseline_status": "reconciled"}},
+        )
+        late_items.append(item)
+        orders.append({
+            "id": f"so-unlinked-{i}",
+            "cancelled": False,
+            "branch_id": branch_id,
+            "line_items": [
+                {
+                    "line_id": f"ln-p-{i}",
+                    "master_item_id": item["id"],
+                    "quantity": 100,
+                    "production_process": "print",
+                },
+                {
+                    "line_id": f"ln-s-{i}",
+                    "master_item_id": svc["id"],
+                    "quantity": 100,
+                    "production_process": "print",
+                    "item_type": "SERVICE",
+                    # intentionally no parent_line_id → completion_unproven
+                },
+            ],
+            "operator_splits": [
+                {"line_idx": 0, "qty_completed": 100},
+                {"line_idx": 1, "qty_completed": 100},
+            ],
+        })
+    await db.orders.insert_many(orders)
+
+    page1 = await list_physical_stock_catalog(
+        db, branch_id=branch_id, page=1, limit=_MAX_READ_LIMIT,
+    )
+    page2 = await list_physical_stock_catalog(
+        db, branch_id=branch_id, page=2, limit=_MAX_READ_LIMIT,
+    )
+    page3 = await list_physical_stock_catalog(
+        db, branch_id=branch_id, page=3, limit=_MAX_READ_LIMIT,
+    )
+    assert page1["total"] == _MAX_READ_LIMIT + 6
+    assert len(page1["items"]) == _MAX_READ_LIMIT
+    assert all(
+        str(r.get("belum_terkirim_status") or "") == "READY"
+        for r in page1["items"]
+    )
+    late_pages = list(page2["items"]) + list(page3["items"])
+    unverified_late = [
+        r for r in late_pages
+        if str(r.get("belum_terkirim_status") or "") == "BELUM_TERVERIFIKASI"
+    ]
+    assert len(unverified_late) == 6
+    # Belum stays null — never coerced to 0.
+    assert all(r.get("qty_belum_terkirim") is None for r in unverified_late)
+
+    # Legacy page-1-only counter (pre-fix behavior) under-counts.
+    page1_only_unverified = sum(
+        1 for r in page1["items"]
+        if str(r.get("belum_terkirim_status") or "") in (
+            "BELUM_TERVERIFIKASI", "CUTOVER_PENDING",
+        )
+    )
+    assert page1_only_unverified == 0
+
+    summary = await summarize_physical_stock_status(db, branch_id=branch_id)
+    assert summary["truncated"] is False
+    assert summary["items_scanned"] == _MAX_READ_LIMIT + 6
+    assert summary["items_total"] == _MAX_READ_LIMIT + 6
+    assert summary["counts"]["items_belum_terkirim_unverified"] == 6
+    assert summary["reason_codes"]["BELUM_TERVERIFIKASI"] == 6
+    assert "items" not in summary
+    # Identity leak guard
+    assert "Z-Late-" not in repr(summary)

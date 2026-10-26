@@ -3542,6 +3542,104 @@ def _warehouse_engine_catalog_envelope(
     }
 
 
+def _status_totals_from_catalog_rows(items: List[dict]) -> dict:
+    """Aggregate Stock Saat Ini diagnostic counts from full catalog rows.
+
+    Counts only — never item codes, names, quantities, or actors. Used so
+    status-summary is not limited to a single page slice (_MAX_READ_LIMIT).
+    """
+    missing_balance_slots = 0
+    unreconciled_balance_slots = 0
+    items_physical_incomplete = 0
+    items_physical_missing = 0
+    items_belum_unverified = 0
+    items_tersedia_invalid = 0
+    items_tersedia_invalid_baseline = 0
+    items_tersedia_invalid_belum = 0
+    items_physical_ok = 0
+
+    for row in items:
+        wh_rows = list(row.get("warehouse_balances") or [])
+        if wh_rows:
+            slot_missing = 0
+            slot_unrec = 0
+            for wb in wh_rows:
+                present = bool(wb.get("balance_present"))
+                status = str(wb.get("baseline_status") or "").strip()
+                if not present:
+                    slot_missing += 1
+                elif status == BASELINE_UNRECONCILED:
+                    slot_unrec += 1
+            missing_balance_slots += slot_missing
+            unreconciled_balance_slots += slot_unrec
+            if slot_missing and slot_missing == len(wh_rows):
+                items_physical_missing += 1
+            elif slot_missing or slot_unrec:
+                items_physical_incomplete += 1
+            else:
+                items_physical_ok += 1
+        else:
+            # Compatibility / single-scope rows without warehouse_balances.
+            status = str(row.get("baseline_status") or "").strip()
+            if status == BASELINE_UNRECONCILED:
+                items_physical_incomplete += 1
+            else:
+                items_physical_ok += 1
+
+        belum_status = str(row.get("belum_terkirim_status") or "").strip()
+        if belum_status in ("BELUM_TERVERIFIKASI", "CUTOVER_PENDING"):
+            items_belum_unverified += 1
+
+        if row.get("qty_tersedia_valid") is False:
+            items_tersedia_invalid += 1
+            if belum_status in ("BELUM_TERVERIFIKASI", "CUTOVER_PENDING"):
+                items_tersedia_invalid_belum += 1
+            if str(row.get("baseline_status") or "").strip() != BASELINE_RECONCILED:
+                items_tersedia_invalid_baseline += 1
+
+    operational_actions: List[str] = []
+    if missing_balance_slots or items_physical_missing or items_physical_incomplete:
+        operational_actions.append(
+            "Tetapkan Saldo Awal atau konfirmasi Stock Opname per barang×gudang "
+            "yang belum punya saldo reconciled — jangan memaksa angka 0 di UI."
+        )
+    if unreconciled_balance_slots:
+        operational_actions.append(
+            "Saldo buku unreconciled biasanya dari mutasi outbound tanpa "
+            "Saldo Awal/Opname; rekonsiliasi lewat Opname (count=book) atau "
+            "penetapan opening yang sah."
+        )
+    if items_belum_unverified:
+        operational_actions.append(
+            "Qty Belum Terkirim BELUM_TERVERIFIKASI berasal dari bukti pengiriman "
+            "ambigu / cutover legacy — perbaiki provenance pengiriman, bukan "
+            "mengarang qty 0."
+        )
+
+    return {
+        "items_scanned": len(items),
+        "counts": {
+            "items_physical_ok": items_physical_ok,
+            "items_physical_incomplete": items_physical_incomplete,
+            "items_physical_missing": items_physical_missing,
+            "warehouse_slots_missing_balance": missing_balance_slots,
+            "warehouse_slots_unreconciled": unreconciled_balance_slots,
+            "items_belum_terkirim_unverified": items_belum_unverified,
+            "items_qty_tersedia_invalid": items_tersedia_invalid,
+            "items_qty_tersedia_invalid_baseline": items_tersedia_invalid_baseline,
+            "items_qty_tersedia_invalid_belum": items_tersedia_invalid_belum,
+        },
+        "reason_codes": {
+            "BASELINE_MISSING_OR_UNRECONCILED": (
+                items_physical_incomplete + items_physical_missing
+            ),
+            "BELUM_TERVERIFIKASI": items_belum_unverified,
+            "QTY_TERSEDIA_INVALID": items_tersedia_invalid,
+        },
+        "operational_actions": operational_actions,
+    }
+
+
 async def list_physical_stock_catalog(
     db,
     *,
@@ -3550,6 +3648,7 @@ async def list_physical_stock_catalog(
     warehouse_id: Optional[str] = None,
     page: int = 1,
     limit: int = 50,
+    include_status_totals: bool = False,
 ) -> dict:
     """Operational Stock Saat Ini.
 
@@ -3563,6 +3662,10 @@ async def list_physical_stock_catalog(
 
     Standalone mode reuses the same balance documents as R2 reads but never
     activates R2 authority or multi-document transactions.
+
+    When include_status_totals is True, attach diagnostic counts computed from
+    the full in-memory catalog rows (before page slice) so status-summary is
+    not capped by _MAX_READ_LIMIT. Orders/deliveries are still aggregated once.
     """
     from services.r2_go_live import is_r2_authority_active
     from services.stock_compatibility_read import list_compatibility_stock_catalog
@@ -3574,7 +3677,13 @@ async def list_physical_stock_catalog(
     r2_on = await is_r2_authority_active(db)
     standalone_on = False if r2_on else await is_warehouse_stock_standalone_active(db)
     if not r2_on and not standalone_on:
-        return await list_compatibility_stock_catalog(db, q=q, page=page, limit=limit)
+        return await list_compatibility_stock_catalog(
+            db,
+            q=q,
+            page=page,
+            limit=limit,
+            include_status_totals=include_status_totals,
+        )
     catalog_mode = "r2" if r2_on else MODE_WAREHOUSE_STANDALONE
 
     all_branches = await db[BRANCHES_COLLECTION].find({}, {"_id": 0, "id": 1, "code": 1, "name": 1}).to_list(500)
@@ -3633,7 +3742,7 @@ async def list_physical_stock_catalog(
     if not masters:
         # Keep mode metadata identical to a non-empty catalog so the FE does not
         # collapse warehouse chrome to compatibility when search/SERVICE yields 0.
-        return _warehouse_engine_catalog_envelope(
+        empty = _warehouse_engine_catalog_envelope(
             items=[],
             total=0,
             page=safe_page,
@@ -3646,6 +3755,10 @@ async def list_physical_stock_catalog(
             standalone_on=standalone_on,
             selected_warehouse=selected_warehouse,
         )
+        if include_status_totals:
+            empty["status_totals"] = _status_totals_from_catalog_rows([])
+            empty["status_totals_complete"] = True
+        return empty
     units = await _catalog_units(db, masters)
     owners = await _unique_accurate_owners(db)
     from services.mode_b_legacy_demand import (
@@ -3897,7 +4010,7 @@ async def list_physical_stock_catalog(
     page_items = rows[start:start + safe_limit]
     # Batch enrich only the current page — avoid N+1 on the full catalog.
     await _attach_last_stock_actors(db, page_items)
-    return _warehouse_engine_catalog_envelope(
+    envelope = _warehouse_engine_catalog_envelope(
         items=page_items,
         total=total,
         page=safe_page,
@@ -3910,6 +4023,11 @@ async def list_physical_stock_catalog(
         standalone_on=standalone_on,
         selected_warehouse=selected_warehouse,
     )
+    if include_status_totals:
+        # Count from full rows before page slice — same aggregation pass.
+        envelope["status_totals"] = _status_totals_from_catalog_rows(rows)
+        envelope["status_totals_complete"] = True
+    return envelope
 
 
 async def summarize_physical_stock_status(
@@ -3922,6 +4040,10 @@ async def summarize_physical_stock_status(
 
     Returns aggregate counts and reason buckets only — never item codes, names,
     quantities, actors, or other sensitive row payloads. Does not write.
+
+    Counts are derived from the full catalog row set built in one
+    list_physical_stock_catalog pass (include_status_totals), not from the
+    page-1 slice capped by _MAX_READ_LIMIT.
     """
     catalog = await list_physical_stock_catalog(
         db,
@@ -3929,80 +4051,51 @@ async def summarize_physical_stock_status(
         branch_id=branch_id,
         warehouse_id=warehouse_id,
         page=1,
-        limit=1000,
+        limit=1,
+        include_status_totals=True,
     )
-    items = list(catalog.get("items") or [])
     total = int(catalog.get("total") or 0)
-    truncated = total > len(items)
+    totals = catalog.get("status_totals") if catalog.get("status_totals_complete") else None
+    if not isinstance(totals, dict):
+        # Fail closed on incomplete diagnostic plumbing — never invent zeros.
+        return {
+            "read_only": True,
+            "writes": False,
+            "stock_read_mode": catalog.get("stock_read_mode"),
+            "r2_authority_active": bool(catalog.get("r2_authority_active")),
+            "warehouse_stock_standalone": bool(catalog.get("warehouse_stock_standalone")),
+            "effective_branch_id": catalog.get("effective_branch_id") or branch_id,
+            "effective_warehouse_id": catalog.get("effective_warehouse_id") or warehouse_id,
+            "warehouse_count": int(catalog.get("warehouse_count") or 0),
+            "items_scanned": 0,
+            "items_total": total,
+            "truncated": True,
+            "counts": {
+                "items_physical_ok": 0,
+                "items_physical_incomplete": 0,
+                "items_physical_missing": 0,
+                "warehouse_slots_missing_balance": 0,
+                "warehouse_slots_unreconciled": 0,
+                "items_belum_terkirim_unverified": 0,
+                "items_qty_tersedia_invalid": 0,
+                "items_qty_tersedia_invalid_baseline": 0,
+                "items_qty_tersedia_invalid_belum": 0,
+            },
+            "reason_codes": {
+                "BASELINE_MISSING_OR_UNRECONCILED": 0,
+                "BELUM_TERVERIFIKASI": 0,
+                "QTY_TERSEDIA_INVALID": 0,
+            },
+            "operational_actions": [
+                "Diagnostik status tidak lengkap — ulangi setelah perbaikan katalog."
+            ],
+            "never_forces_verified_zero": True,
+        }
 
-    missing_balance_slots = 0
-    unreconciled_balance_slots = 0
-    items_physical_incomplete = 0
-    items_physical_missing = 0
-    items_belum_unverified = 0
-    items_tersedia_invalid = 0
-    items_tersedia_invalid_baseline = 0
-    items_tersedia_invalid_belum = 0
-    items_physical_ok = 0
-
-    for row in items:
-        wh_rows = list(row.get("warehouse_balances") or [])
-        if wh_rows:
-            slot_missing = 0
-            slot_unrec = 0
-            for wb in wh_rows:
-                present = bool(wb.get("balance_present"))
-                status = str(wb.get("baseline_status") or "").strip()
-                if not present:
-                    slot_missing += 1
-                elif status == BASELINE_UNRECONCILED:
-                    slot_unrec += 1
-            missing_balance_slots += slot_missing
-            unreconciled_balance_slots += slot_unrec
-            if slot_missing and slot_missing == len(wh_rows):
-                items_physical_missing += 1
-            elif slot_missing or slot_unrec:
-                items_physical_incomplete += 1
-            else:
-                items_physical_ok += 1
-        else:
-            # Compatibility / single-scope rows without warehouse_balances.
-            status = str(row.get("baseline_status") or "").strip()
-            if status == BASELINE_UNRECONCILED:
-                items_physical_incomplete += 1
-            else:
-                items_physical_ok += 1
-
-        belum_status = str(row.get("belum_terkirim_status") or "").strip()
-        if belum_status in ("BELUM_TERVERIFIKASI", "CUTOVER_PENDING"):
-            items_belum_unverified += 1
-
-        if row.get("qty_tersedia_valid") is False:
-            items_tersedia_invalid += 1
-            if belum_status in ("BELUM_TERVERIFIKASI", "CUTOVER_PENDING"):
-                items_tersedia_invalid_belum += 1
-            if str(row.get("baseline_status") or "").strip() != BASELINE_RECONCILED:
-                items_tersedia_invalid_baseline += 1
-
-    operational_actions: List[str] = []
-    if missing_balance_slots or items_physical_missing or items_physical_incomplete:
-        operational_actions.append(
-            "Tetapkan Saldo Awal atau konfirmasi Stock Opname per barang×gudang "
-            "yang belum punya saldo reconciled — jangan memaksa angka 0 di UI."
-        )
-    if unreconciled_balance_slots:
-        operational_actions.append(
-            "Saldo buku unreconciled biasanya dari mutasi outbound tanpa "
-            "Saldo Awal/Opname; rekonsiliasi lewat Opname (count=book) atau "
-            "penetapan opening yang sah."
-        )
-    if items_belum_unverified:
-        operational_actions.append(
-            "Qty Belum Terkirim BELUM_TERVERIFIKASI berasal dari bukti pengiriman "
-            "ambigu / cutover legacy — perbaiki provenance pengiriman, bukan "
-            "mengarang qty 0."
-        )
-
+    scanned = int(totals.get("items_scanned") or 0)
+    # Complete when totals cover every catalog row. Master fetch still capped at
+    # 1000 in the catalog builder — that existing catalog ceiling is unchanged.
+    truncated = scanned != total
     return {
         "read_only": True,
         "writes": False,
@@ -4012,28 +4105,12 @@ async def summarize_physical_stock_status(
         "effective_branch_id": catalog.get("effective_branch_id") or branch_id,
         "effective_warehouse_id": catalog.get("effective_warehouse_id") or warehouse_id,
         "warehouse_count": int(catalog.get("warehouse_count") or 0),
-        "items_scanned": len(items),
+        "items_scanned": scanned,
         "items_total": total,
         "truncated": truncated,
-        "counts": {
-            "items_physical_ok": items_physical_ok,
-            "items_physical_incomplete": items_physical_incomplete,
-            "items_physical_missing": items_physical_missing,
-            "warehouse_slots_missing_balance": missing_balance_slots,
-            "warehouse_slots_unreconciled": unreconciled_balance_slots,
-            "items_belum_terkirim_unverified": items_belum_unverified,
-            "items_qty_tersedia_invalid": items_tersedia_invalid,
-            "items_qty_tersedia_invalid_baseline": items_tersedia_invalid_baseline,
-            "items_qty_tersedia_invalid_belum": items_tersedia_invalid_belum,
-        },
-        "reason_codes": {
-            "BASELINE_MISSING_OR_UNRECONCILED": (
-                items_physical_incomplete + items_physical_missing
-            ),
-            "BELUM_TERVERIFIKASI": items_belum_unverified,
-            "QTY_TERSEDIA_INVALID": items_tersedia_invalid,
-        },
-        "operational_actions": operational_actions,
+        "counts": dict(totals.get("counts") or {}),
+        "reason_codes": dict(totals.get("reason_codes") or {}),
+        "operational_actions": list(totals.get("operational_actions") or []),
         # Explicit: diagnostics never invent verified zeros.
         "never_forces_verified_zero": True,
     }
