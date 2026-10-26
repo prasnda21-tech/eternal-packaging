@@ -10,12 +10,14 @@ import {
   EMPTY_DELIVERY_FILTERS,
   EMPTY_DELIVERY_SORT,
   buildDeliveryDetailsSummary,
+  countActiveColumnFilters,
   countActiveDeliveryFilters,
-  dateKey,
+  deliveryScheduleFiltersEqual,
   matchesDeliveryScheduleFilters,
   normalizeDeliveryScheduleFilters,
   normalizeDeliveryScheduleStatus,
   orderIdsForSelectedScheduleKeys,
+  scheduleRowDeliveryDateKey,
   scheduleRowSelectionKey,
   scheduleVisibleSelectionKeys,
 } from "../lib/deliverySchedule";
@@ -32,6 +34,7 @@ import {
 } from "../lib/rowSelection";
 import {
   capturePoOpenFromList,
+  clearListUiState,
   poNavStateFromList,
   readListUiState,
   storageUserKey,
@@ -42,6 +45,7 @@ import OutletLocationModal from "../components/OutletLocationModal";
 import PoIdentityBadges from "../components/PoIdentityBadges";
 import DeliveryPlanDateRangeField from "../components/deliveryPlan/DeliveryPlanDateRangeField";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
+import { formatDdMmmYyyy, formatRangeLabel } from "../components/deliveryPlan/deliveryPlanDateRange";
 import {
   clientFilterRows,
   clientSortRows,
@@ -235,7 +239,8 @@ export default function DeliverySchedulePage() {
   );
 
   const tableRows = useMemo(() => toolbarFiltered.map((r) => {
-    const eff = dateKey(r.sj_delivery_date || r.effective_delivery_date);
+    // Same key as matchesDeliveryScheduleFilters / Tanggal Pengiriman column.
+    const eff = scheduleRowDeliveryDateKey(r);
     const pctDelivered = Number(r.percent_delivered_display ?? r.percent_delivered) || 0;
     const pctReady = Number(r.percent_ready_to_ship_display ?? r.percent_ready_to_ship) || 0;
     return {
@@ -277,6 +282,23 @@ export default function DeliverySchedulePage() {
   }, [sortedRows, safePage, pageSize]);
 
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
+  const activeColumnFilterCount = useMemo(() => countActiveColumnFilters(colFilters), [colFilters]);
+  const draftPending = useMemo(
+    () => !deliveryScheduleFiltersEqual(draftFilters, filters),
+    [draftFilters, filters],
+  );
+  const draftDateLabel = useMemo(() => {
+    const from = draftFilters.dateFrom;
+    const to = draftFilters.dateTo;
+    if (from && to && from === to) return formatDdMmmYyyy(from);
+    return formatRangeLabel(from, to);
+  }, [draftFilters.dateFrom, draftFilters.dateTo]);
+  const appliedDateLabel = useMemo(() => {
+    const from = filters.dateFrom;
+    const to = filters.dateTo;
+    if (from && to && from === to) return formatDdMmmYyyy(from);
+    return formatRangeLabel(from, to);
+  }, [filters.dateFrom, filters.dateTo]);
   // Eligible selection universe = full filtered SJ set (survives pagination). Select-all = current page only.
   // Keys are shipment_id (SJ), not order.id — multi-SJ on one PO stay independent.
   const eligibleIds = useMemo(() => scheduleVisibleSelectionKeys(sortedRows), [sortedRows]);
@@ -337,11 +359,22 @@ export default function DeliverySchedulePage() {
     setPage(1);
     setFilterOpen(false);
   };
+  const clearColumnFilters = () => {
+    setColFilters({});
+    setPage(1);
+  };
   const resetFilters = () => {
     const empty = { ...EMPTY_DELIVERY_FILTERS };
     setDraftFilters(empty);
     setFilters(empty);
+    setColFilters({});
     setPage(1);
+    // Drop persisted toolbar/advanced bag so reload cannot restore stale filters.
+    clearListUiState(userKey, "delivery-schedule");
+    writeListUiState(userKey, "delivery-schedule", {
+      filters: empty,
+      sort: sortBy ? { key: sortBy, direction: sortDir || "asc" } : { ...EMPTY_DELIVERY_SORT },
+    });
     const params = new URLSearchParams(location.search || "");
     if (params.has("status")) {
       params.delete("status");
@@ -668,10 +701,15 @@ export default function DeliverySchedulePage() {
             <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
           </button>
           <div className="dp-filter-actions">
-            <button type="submit" className="dp-btn-primary" data-testid="ds-filter-apply" title="Terapkan filter">
+            <button
+              type="submit"
+              className={"dp-btn-primary" + (draftPending ? " is-pending" : "")}
+              data-testid="ds-filter-apply"
+              title={draftPending ? "Terapkan draft filter ke tabel" : "Terapkan filter"}
+            >
               Terapkan
             </button>
-            <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset" title="Reset filter">
+            <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset" title="Reset semua filter bisnis (bukan layout kolom)">
               <RotateCcw size={12} aria-hidden /> Reset
             </button>
             <button
@@ -685,6 +723,37 @@ export default function DeliverySchedulePage() {
             </button>
           </div>
         </form>
+        {(draftPending || activeColumnFilterCount > 0) && (
+          <div className="ds-filter-state" data-testid="ds-filter-state">
+            {draftPending ? (
+              <div className="ds-filter-pending" data-testid="ds-filter-pending" role="status">
+                <strong>Belum diterapkan.</strong>
+                {" "}
+                Draft tanggal: <span data-testid="ds-draft-date-label">{draftDateLabel}</span>
+                {" · "}
+                Tabel memakai: <span data-testid="ds-applied-date-label">{appliedDateLabel}</span>
+                {" · "}
+                Klik Terapkan untuk memperbarui hasil.
+              </div>
+            ) : null}
+            {activeColumnFilterCount > 0 ? (
+              <div className="ds-col-filter-bar" data-testid="ds-col-filter-bar">
+                <span data-testid="ds-col-filter-count">
+                  Filter kolom aktif ({activeColumnFilterCount}) — data dipersempit oleh filter header kolom.
+                </span>
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={clearColumnFilters}
+                  data-testid="ds-col-filter-clear"
+                  title="Hapus semua filter kolom"
+                >
+                  Hapus filter kolom
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
         {canOptimize && selected.size > 0 && (
           <div className="bulk-bar" data-testid="ds-bulk-bar">
             <span data-testid="ds-selected-count"><b>{selected.size}</b> SJ dipilih</span>
