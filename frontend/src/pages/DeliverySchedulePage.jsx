@@ -152,6 +152,7 @@ export default function DeliverySchedulePage() {
   const selectedRef = useRef(selected);
   const pageVisibleIdsRef = useRef([]);
   const headerCheckRef = useRef({ checked: false, indeterminate: false });
+  const resetColumnsRef = useRef(null);
   selectedRef.current = selected;
 
   const load = useCallback(async () => {
@@ -407,13 +408,13 @@ export default function DeliverySchedulePage() {
         key: "effective_delivery_date",
         label: "Tanggal Pengiriman",
         type: "date",
-        minWidth: 120,
+        minWidth: 148,
         render: (v, r) => (
-          <span className="mono">
-            {formatDate(v, { dateOnly: true })}
+          <span className="ds-date-cell">
+            <span className="mono">{formatDate(v, { dateOnly: true })}</span>
             {r.sj_delivery_date && r.po_sla_date && r.sj_delivery_date !== r.po_sla_date ? (
-              <span className="muted small" data-testid={`ds-sla-${r.order_number}`}>
-                {" "}SLA PO {formatDate(r.po_sla_date, { dateOnly: true })}
+              <span className="ds-sla-note muted" data-testid={`ds-sla-${r.order_number}`}>
+                SLA PO {formatDate(r.po_sla_date, { dateOnly: true })}
               </span>
             ) : null}
           </span>
@@ -423,7 +424,7 @@ export default function DeliverySchedulePage() {
         key: "order_number",
         label: "No PO",
         type: "text",
-        minWidth: 160,
+        minWidth: 220,
         render: (v, r) => (
           <span className="dp-po-identity">
             {r.id ? (
@@ -432,6 +433,7 @@ export default function DeliverySchedulePage() {
                 to={desktopDeliveryPoHref(r.id, r.shipment_id)}
                 state={listNavState}
                 onClick={() => onOpenPo(r.id)}
+                title={v || ""}
                 data-testid={r.shipment_id ? `ds-po-link-${r.order_number}-${r.shipment_id}` : `ds-po-link-${r.order_number}`}
               >
                 {v || "—"}
@@ -672,6 +674,15 @@ export default function DeliverySchedulePage() {
             <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset" title="Reset filter">
               <RotateCcw size={12} aria-hidden /> Reset
             </button>
+            <button
+              type="button"
+              className="ghost sm ds-reset-cols-btn"
+              onClick={() => resetColumnsRef.current?.()}
+              data-testid="dp-reset-cols-delivery-schedule"
+              title="Reset layout kolom tabel (bukan filter bisnis)"
+            >
+              <RotateCcw size={12} aria-hidden /> Reset Kolom
+            </button>
           </div>
         </form>
         {canOptimize && selected.size > 0 && (
@@ -710,6 +721,9 @@ export default function DeliverySchedulePage() {
           }}
           emptyLabel="Tidak ada jadwal pengiriman."
           testId="delivery-schedule-table"
+          hideTools
+          resetLayoutRef={resetColumnsRef}
+          enforceColMinWidth
           rowClassName={(r) => {
             const key = scheduleRowSelectionKey(r);
             return canOptimize && key && selected.has(key) ? "is-selected" : "";
@@ -891,30 +905,32 @@ export default function DeliverySchedulePage() {
                       <strong>{day.dateLabel}</strong>
                       <span data-testid={`ds-rincian-day-total-${day.date || "none"}`}>{day.totalLabel}</span>
                     </header>
-                    <table className="ds-rincian-table">
-                      <thead>
-                        <tr>
-                          <th>Tanggal Pengiriman</th>
-                          <th>Nomor SJ</th>
-                          <th>Nomor PO</th>
-                          <th>Customer</th>
-                          <th className="num">Qty Pengiriman</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {day.rows.map((r) => (
-                          <tr key={r.key} data-testid={`ds-rincian-row-${r.key}`}>
-                            <td>{r.date ? formatDate(r.date, { dateOnly: true }) : "—"}</td>
-                            <td>{r.sjNumber}</td>
-                            <td>{r.orderNumber}</td>
-                            <td>{r.customerName}</td>
-                            <td className="num">{r.qtyLabel}</td>
-                            <td>{r.status}</td>
+                    <div className="ds-rincian-table-wrap" data-testid="ds-rincian-table-wrap">
+                      <table className="ds-rincian-table">
+                        <thead>
+                          <tr>
+                            <th>Tanggal Pengiriman</th>
+                            <th>Nomor SJ</th>
+                            <th>Nomor PO</th>
+                            <th>Customer</th>
+                            <th className="num">Qty Pengiriman</th>
+                            <th>Status</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {day.rows.map((r) => (
+                            <tr key={r.key} data-testid={`ds-rincian-row-${r.key}`}>
+                              <td>{r.date ? formatDate(r.date, { dateOnly: true }) : "—"}</td>
+                              <td>{r.sjNumber}</td>
+                              <td>{r.orderNumber}</td>
+                              <td>{r.customerName}</td>
+                              <td className="num">{r.qtyLabel}</td>
+                              <td>{r.status}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </section>
                 ))
               )}

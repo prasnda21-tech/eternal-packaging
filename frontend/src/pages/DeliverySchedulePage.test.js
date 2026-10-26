@@ -1197,10 +1197,112 @@ describe("DeliverySchedulePage Advanced Table parity", () => {
     mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
     await act(async () => { root.render(<DeliverySchedulePage />); });
     expect(container.querySelector('[data-testid="delivery-schedule-table"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="dp-reset-cols-delivery-schedule"]')).toBeTruthy();
+    const resetCols = container.querySelector('[data-testid="dp-reset-cols-delivery-schedule"]');
+    expect(resetCols).toBeTruthy();
+    // Reset Kolom lives in the filter toolbar — not above the table tools strip.
+    expect(container.querySelector('[data-testid="delivery-schedule-filters"]')
+      .contains(resetCols)).toBe(true);
+    expect(container.querySelector(".dp-adv-tools")).toBeFalsy();
     expect(container.querySelector('[data-testid="delivery-schedule-pager"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
     expect(container.querySelector('[data-testid="ds-page-size"]')).toBeTruthy();
+  });
+
+  test("Reset Kolom restores layout without clearing applied business filters", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-filter-q"]'), "PO-100");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-filter-apply"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/1 SJ/);
+    await act(async () => {
+      container.querySelector('[data-testid="dp-reset-cols-delivery-schedule"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-filter-q"]').value).toBe("PO-100");
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/1 SJ/);
+  });
+
+  test("SLA PO note stacks under SJ date when dates differ; long PO stays in cell", async () => {
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        order_number: "PO/2026/10/24/000011",
+        shipment_id: "sh-sla",
+        sj_label: "SJ/2026/10/24/000011",
+        effective_delivery_date: "2026-10-27",
+        sj_delivery_date: "2026-10-27",
+        po_sla_date: "2026-10-14",
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    const sla = container.querySelector('[data-testid="ds-sla-PO/2026/10/24/000011"]');
+    expect(sla).toBeTruthy();
+    expect(sla.textContent).toMatch(/SLA PO/);
+    expect(container.querySelector(".ds-date-cell")).toBeTruthy();
+    const po = container.querySelector('[data-testid="ds-po-link-PO/2026/10/24/000011-sh-sla"]');
+    expect(po).toBeTruthy();
+    expect(po.textContent).toBe("PO/2026/10/24/000011");
+    expect(po.getAttribute("title")).toBe("PO/2026/10/24/000011");
+  });
+
+  test("legacy narrow persisted widths are lifted to column minWidth without Reset Kolom", async () => {
+    // Schema key matches deliveryPlanTableLayout.dpLayoutKey for tableId=delivery-schedule
+    const key = "delivery-plan-table-layout-v2:u-ds:delivery-schedule";
+    localStorage.setItem(key, JSON.stringify({
+      order: ["effective_delivery_date", "order_number", "customer_name", "status"],
+      hidden: [],
+      widths: {
+        effective_delivery_date: 100,
+        order_number: 110,
+        customer_name: 140,
+        status: 110,
+      },
+    }));
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => { await Promise.resolve(); });
+    const saved = JSON.parse(localStorage.getItem(key));
+    expect(saved.widths.order_number).toBeGreaterThanOrEqual(220);
+    expect(saved.widths.effective_delivery_date).toBeGreaterThanOrEqual(148);
+    // Reorder preference preserved
+    expect(saved.order[0]).toBe("effective_delivery_date");
+    const poCol = container.querySelector('colgroup col');
+    expect(poCol).toBeTruthy();
+  });
+
+  test("Rincian modal exposes horizontal scroll wrap and Status column", async () => {
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        order_number: "PO/2026/10/24/000011",
+        shipment_id: "sh-r",
+        sj_label: "SJ/2026/10/24/000011",
+        qty_sj: 50000,
+        sj_item_lines: [{ qty: 50000, unit: "pcs" }],
+        status_label: "Terjadwal",
+      }],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-rincian-table-wrap"]')).toBeTruthy();
+    const headers = Array.from(container.querySelectorAll(".ds-rincian-table th")).map((th) => th.textContent);
+    expect(headers).toEqual([
+      "Tanggal Pengiriman",
+      "Nomor SJ",
+      "Nomor PO",
+      "Customer",
+      "Qty Pengiriman",
+      "Status",
+    ]);
+    expect(container.querySelector(".ds-rincian-table td.num")?.textContent).toMatch(/50\.000/);
   });
 
   test("column filter composes with toolbar and resets page", async () => {

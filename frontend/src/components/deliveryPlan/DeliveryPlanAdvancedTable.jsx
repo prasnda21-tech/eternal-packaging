@@ -50,9 +50,16 @@ export default function DeliveryPlanAdvancedTable({
   testId,
   rowClassName,
   rowTestId,
+  /** When true, hide the built-in Reset Kolom strip (parent may host the control). */
+  hideTools = false,
+  /** Optional ref; assigned `() => void` resetLayout for external toolbar buttons. */
+  resetLayoutRef = null,
+  /** Lift persisted widths below each column minWidth (Schedule hotfix; Plan stays off). */
+  enforceColMinWidth = false,
 }) {
   const defs = useMemo(() => columns.filter((c) => c && c.key), [columns]);
-  const [layout, setLayout] = useState(() => mergeDpLayout(defs, readDpLayout(userId, tableId)));
+  const mergeOpts = useMemo(() => ({ enforceColMinWidth }), [enforceColMinWidth]);
+  const [layout, setLayout] = useState(() => mergeDpLayout(defs, readDpLayout(userId, tableId), mergeOpts));
   const [filterOpen, setFilterOpen] = useState(null);
   const [draftFilter, setDraftFilter] = useState({ op: "contains", value: "" });
   const [dragging, setDragging] = useState(null);
@@ -61,8 +68,8 @@ export default function DeliveryPlanAdvancedTable({
   const filterWrapRef = useRef(null);
 
   useEffect(() => {
-    setLayout(mergeDpLayout(defs, readDpLayout(userId, tableId)));
-  }, [userId, tableId, defs]);
+    setLayout(mergeDpLayout(defs, readDpLayout(userId, tableId), mergeOpts));
+  }, [userId, tableId, defs, mergeOpts]);
 
   useEffect(() => {
     writeDpLayout(userId, tableId, layout);
@@ -115,11 +122,19 @@ export default function DeliveryPlanAdvancedTable({
     return clientSortRows(filtered, sortBy, sortDir, "id");
   }, [mode, rows, filters, sortBy, sortDir]);
 
-  const resetLayout = () => {
-    const next = mergeDpLayout(defs, {});
+  const resetLayout = useCallback(() => {
+    const next = mergeDpLayout(defs, {}, mergeOpts);
     setLayout(next);
     writeDpLayout(userId, tableId, next);
-  };
+  }, [defs, userId, tableId, mergeOpts]);
+
+  useEffect(() => {
+    if (!resetLayoutRef) return undefined;
+    resetLayoutRef.current = resetLayout;
+    return () => {
+      if (resetLayoutRef.current === resetLayout) resetLayoutRef.current = null;
+    };
+  }, [resetLayout, resetLayoutRef]);
 
   const toggleSort = (key) => {
     if (dragging || dragArmed) return;
@@ -175,11 +190,13 @@ export default function DeliveryPlanAdvancedTable({
 
   return (
     <div className="dp-adv" data-testid={testId || `dp-adv-${tableId}`}>
-      <div className="dp-adv-tools">
-        <button type="button" className="dp-adv-reset" onClick={resetLayout} data-testid={`dp-reset-cols-${tableId}`}>
-          <RotateCcw size={12} aria-hidden /> Reset Kolom
-        </button>
-      </div>
+      {!hideTools ? (
+        <div className="dp-adv-tools">
+          <button type="button" className="dp-adv-reset" onClick={resetLayout} data-testid={`dp-reset-cols-${tableId}`}>
+            <RotateCcw size={12} aria-hidden /> Reset Kolom
+          </button>
+        </div>
+      ) : null}
       <div className="dp-adv-scroll" role="region" aria-label="Tabel data" tabIndex={0}>
         <table className="dp-adv-table">
           <colgroup>
