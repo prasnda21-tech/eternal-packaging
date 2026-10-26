@@ -31,6 +31,50 @@ WARNING_PARTIAL_INVENTORY_COVERAGE = "PARTIAL_INVENTORY_ACCOUNTING_COVERAGE"
 
 ITEM_TYPE_INVENTORY = "INVENTORY"
 ITEM_TYPE_SERVICE = "SERVICE"
+ITEM_TYPE_NON_INVENTORY = "NON_INVENTORY"
+
+# Stock Saat Ini catalog read-model only — never mutates master_items.
+# Null / unknown / NON_INVENTORY / SERVICE are excluded from the catalog;
+# they are not reclassified and do not affect Master Barang/Jasa or accounting.
+STOCK_SAAT_INI_CATALOG_ITEM_TYPES = frozenset({ITEM_TYPE_INVENTORY})
+
+STOCK_CONDITION_STATUS_UNAVAILABLE = "BELUM_TERSEDIA"
+STOCK_CONDITION_REASON_POLOS = "NO_WAREHOUSE_CONDITION_SPLIT"
+STOCK_CONDITION_REASON_CETAK = "NO_WAREHOUSE_PRINT_STOCK"
+STOCK_CONDITION_REASON_SIAP_JUAL = "NO_FREE_STOCK_LOCK_PROOF"
+STOCK_CONDITION_NOTE_POLOS = (
+    "Belum tersedia — saldo gudang belum memisahkan barang polos vs sudah cetak."
+)
+STOCK_CONDITION_NOTE_CETAK = (
+    "Belum tersedia — hasil cetak operator belum tercatat sebagai mutasi stok gudang."
+)
+STOCK_CONDITION_NOTE_SIAP_JUAL = (
+    "Belum tersedia — belum ada bukti kunci/alokasi stok polos per gudang."
+)
+
+
+def is_stock_saat_ini_inventory_catalog_item(item_type: Any) -> bool:
+    """True only for explicit INVENTORY. Null/unknown never default to INVENTORY."""
+    return str(item_type or "").strip().upper() in STOCK_SAAT_INI_CATALOG_ITEM_TYPES
+
+
+def stock_saat_ini_condition_unavailable_fields() -> Dict[str, Any]:
+    """Honest null fields for polos/cetak/siap jual — never coerce to 0."""
+    return {
+        "qty_polos_gudang": None,
+        "qty_polos_gudang_status": STOCK_CONDITION_STATUS_UNAVAILABLE,
+        "qty_polos_gudang_reason": STOCK_CONDITION_REASON_POLOS,
+        "qty_polos_gudang_note": STOCK_CONDITION_NOTE_POLOS,
+        "qty_sudah_cetak_gudang": None,
+        "qty_sudah_cetak_gudang_status": STOCK_CONDITION_STATUS_UNAVAILABLE,
+        "qty_sudah_cetak_gudang_reason": STOCK_CONDITION_REASON_CETAK,
+        "qty_sudah_cetak_gudang_note": STOCK_CONDITION_NOTE_CETAK,
+        "qty_siap_jual": None,
+        "qty_siap_jual_status": STOCK_CONDITION_STATUS_UNAVAILABLE,
+        "qty_siap_jual_reason": STOCK_CONDITION_REASON_SIAP_JUAL,
+        "qty_siap_jual_note": STOCK_CONDITION_NOTE_SIAP_JUAL,
+    }
+
 
 FATAL_LINE_REASONS = frozenset({
     REASON_UNKNOWN_ITEM_TYPE,

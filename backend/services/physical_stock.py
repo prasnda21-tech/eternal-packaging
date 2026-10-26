@@ -3606,20 +3606,34 @@ async def list_physical_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
-    from services.inventory_accounting import ITEM_TYPE_SERVICE
+    from services.inventory_accounting import (
+        ITEM_TYPE_SERVICE,
+        is_stock_saat_ini_inventory_catalog_item,
+        stock_saat_ini_condition_unavailable_fields,
+    )
 
     type_rows = await db[MASTER_ITEMS_COLLECTION].find(
         {}, {"_id": 0, "id": 1, "item_type": 1},
     ).to_list(5000)
+    # SERVICE masters stay available for delivery/process remap — not catalog rows.
     service_master_ids = {
         str(row.get("id") or "").strip()
         for row in type_rows
         if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
         and str(row.get("id") or "").strip()
     }
+    type_by_id = {
+        str(row.get("id") or "").strip(): row.get("item_type")
+        for row in type_rows
+        if str(row.get("id") or "").strip()
+    }
+    # Stock Saat Ini catalog: explicit INVENTORY only (exclude SERVICE,
+    # NON_INVENTORY, null/unknown). Does not mutate master_items.
     masters = [
         row for row in masters
-        if str(row.get("id") or "").strip() not in service_master_ids
+        if is_stock_saat_ini_inventory_catalog_item(
+            type_by_id.get(str(row.get("id") or "").strip(), row.get("item_type"))
+        )
     ]
     safe_page, safe_limit = _catalog_page(page, limit)
     selected_warehouse_id = str(warehouse_id or "").strip()
@@ -3832,10 +3846,12 @@ async def list_physical_stock_catalog(
             "qty_pesanan": buckets["qty_pesanan"],
             "qty_belum_terkirim": buckets["qty_belum_terkirim"],
             # Informational book math only — not definitive until baseline reconciled
-            # and Belum Terkirim is verified.
+            # and Belum Terkirim is verified. Legacy field retained for API clients.
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
             "qty_tersedia_note": tersedia_note,
+            # Honest warehouse-condition fields — null, never fabricated 0.
+            **stock_saat_ini_condition_unavailable_fields(),
             "delivery_provenance": delivery_provenance.get(str(mid) or mid),
             # Provisional from balance stamps; replaced by the same final movement
             # used for updated_by_name during page enrich (never master_items.updated_by).

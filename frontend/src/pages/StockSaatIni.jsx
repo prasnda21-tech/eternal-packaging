@@ -31,6 +31,41 @@ import {
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
+/** Fase 1: warehouse condition columns — honest “Belum tersedia”, never 0. */
+const STOCK_CONDITION_UNAVAILABLE = {
+  polos: {
+    label: "Qty Polos Gudang",
+    note: "Belum tersedia — saldo gudang belum memisahkan barang polos vs sudah cetak.",
+    testId: "stock-polos",
+  },
+  cetak: {
+    label: "Qty Sudah Cetak",
+    note: "Belum tersedia — hasil cetak operator belum tercatat sebagai mutasi stok gudang.",
+    testId: "stock-cetak",
+  },
+  siapJual: {
+    label: "Qty Siap Jual",
+    note: "Belum tersedia — belum ada bukti kunci/alokasi stok polos per gudang.",
+    testId: "stock-siap-jual",
+  },
+};
+
+function conditionUnavailableCell(kind, masterItemId) {
+  const meta = STOCK_CONDITION_UNAVAILABLE[kind];
+  return (
+    <td
+      className="col-fit num"
+      data-testid={`${meta.testId}-${masterItemId}`}
+      data-condition-status="BELUM_TERSEDIA"
+      title={meta.note}
+    >
+      <span className="stock-status-badge stock-status-badge--missing" title={meta.note}>
+        Belum tersedia
+      </span>
+    </td>
+  );
+}
+
 function newKey() {
   return globalThis.crypto?.randomUUID?.() || `saldo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -280,8 +315,10 @@ export default function StockSaatIni() {
   const showBranchAggregate = Boolean(warehouseActive && !selectedFilterWarehouse);
 
   const physicalHeader = warehouseActive
-    ? "Stock Fisik"
+    ? "Stock Fisik Gudang"
     : "Stock Fisik (perusahaan)";
+  // Pesanan / Belum / Tersedia kept in-table (smallest safe UI) — not Siap Jual.
+  const tableColCount = showBranchAggregate ? 12 : 11;
 
   const toggleRowExpand = (masterItemId) => {
     setExpandedRows((prev) => ({ ...prev, [masterItemId]: !prev[masterItemId] }));
@@ -293,6 +330,9 @@ export default function StockSaatIni() {
       "Satuan Dasar",
       "Lokasi",
       physicalHeader,
+      STOCK_CONDITION_UNAVAILABLE.polos.label,
+      STOCK_CONDITION_UNAVAILABLE.cetak.label,
+      STOCK_CONDITION_UNAVAILABLE.siapJual.label,
       "Qty Pesanan",
       "Qty Belum Terkirim",
       "Qty Tersedia",
@@ -300,6 +340,8 @@ export default function StockSaatIni() {
       "Terakhir Update",
     ];
     const lines = [header.join(",")];
+    // Null condition fields export as empty string — never coerce to 0.
+    const conditionCsvEmpty = "";
     items.forEach((row) => {
       const location = selectedFilterWarehouse
         ? warehouseLocationLabel(selectedFilterWarehouse, branches)
@@ -311,6 +353,9 @@ export default function StockSaatIni() {
         row.base_unit,
         location,
         book.present ? book.qty : "",
+        row.qty_polos_gudang == null ? conditionCsvEmpty : row.qty_polos_gudang,
+        row.qty_sudah_cetak_gudang == null ? conditionCsvEmpty : row.qty_sudah_cetak_gudang,
+        row.qty_siap_jual == null ? conditionCsvEmpty : row.qty_siap_jual,
         row.qty_pesanan,
         row.qty_belum_terkirim,
         row.qty_tersedia_valid === false ? "" : row.qty_tersedia,
@@ -338,6 +383,9 @@ export default function StockSaatIni() {
             row.base_unit,
             whLabel,
             qty,
+            conditionCsvEmpty,
+            conditionCsvEmpty,
+            conditionCsvEmpty,
             "",
             "",
             "",
@@ -731,25 +779,48 @@ export default function StockSaatIni() {
                   >
                     {physicalHeader}
                   </th>
-                  <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
+                  <th
+                    className="col-fit num"
+                    data-testid="stock-polos-header"
+                    title={STOCK_CONDITION_UNAVAILABLE.polos.note}
+                  >
+                    {STOCK_CONDITION_UNAVAILABLE.polos.label}
+                  </th>
+                  <th
+                    className="col-fit num"
+                    data-testid="stock-cetak-header"
+                    title={STOCK_CONDITION_UNAVAILABLE.cetak.note}
+                  >
+                    {STOCK_CONDITION_UNAVAILABLE.cetak.label}
+                  </th>
+                  <th
+                    className="col-fit num"
+                    data-testid="stock-siap-jual-header"
+                    title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}
+                  >
+                    {STOCK_CONDITION_UNAVAILABLE.siapJual.label}
+                  </th>
+                  <th className="col-fit num" title="Lingkup cabang — permintaan/komitmen, bukan stok gudang">
                     Qty Pesanan
                   </th>
-                  <th className="col-fit num" title="Lingkup cabang — bukan alokasi per gudang">
+                  <th className="col-fit num" title="Lingkup cabang — permintaan/komitmen, bukan stok gudang">
                     Qty Belum Terkirim
                   </th>
-                  <th className="col-fit num">Qty Tersedia</th>
+                  <th className="col-fit num" title="Rumus legacy komitmen pesanan — bukan Qty Siap Jual gudang">
+                    Qty Tersedia
+                  </th>
                   <th className="col-fit">Terakhir Update</th>
                 </tr>
               </thead>
               <tbody data-testid="stock-tbody" data-search-state={tableView}>
                 {tableView === "loading" && (
                   <tr data-testid="stock-loading">
-                    <td colSpan={showBranchAggregate ? 9 : 8} className="muted small">Memuat…</td>
+                    <td colSpan={tableColCount} className="muted small">Memuat…</td>
                   </tr>
                 )}
                 {tableView === "empty" && (
                   <tr>
-                    <td colSpan={showBranchAggregate ? 9 : 8} className="muted small" data-testid="stock-empty">{emptyText}</td>
+                    <td colSpan={tableColCount} className="muted small" data-testid="stock-empty">{emptyText}</td>
                   </tr>
                 )}
                 {tableView === "results" && items.map((it) => {
@@ -834,6 +905,9 @@ export default function StockSaatIni() {
                     >
                       {renderPhysicalCell(it, primary, physicalText, book)}
                     </td>
+                    {conditionUnavailableCell("polos", it.master_item_id)}
+                    {conditionUnavailableCell("cetak", it.master_item_id)}
+                    {conditionUnavailableCell("siapJual", it.master_item_id)}
                     <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
                     <td
                       className="col-fit num mono"
@@ -876,14 +950,17 @@ export default function StockSaatIni() {
                   </tr>
                   {canExpand && expanded && (
                     <tr className="stock-expand-row" data-testid={`stock-expand-row-${it.master_item_id}`}>
-                      <td colSpan={9}>
+                      <td colSpan={tableColCount}>
                         <div className="stock-expand-panel" data-testid={`stock-warehouse-breakdown-${it.master_item_id}`}>
                           <div className="stock-expand-panel-title">Detail per gudang</div>
                           <table className="stock-expand-table">
                             <thead>
                               <tr>
                                 <th>Gudang</th>
-                                <th className="num">Stock Fisik</th>
+                                <th className="num">Stock Fisik Gudang</th>
+                                <th className="num" title={STOCK_CONDITION_UNAVAILABLE.polos.note}>Qty Polos Gudang</th>
+                                <th className="num" title={STOCK_CONDITION_UNAVAILABLE.cetak.note}>Qty Sudah Cetak</th>
+                                <th className="num" title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}>Qty Siap Jual</th>
                                 <th className="num" title="Lingkup cabang">Qty Pesanan</th>
                                 <th className="num" title="Lingkup cabang">Qty Belum Terkirim</th>
                                 <th className="num" title="Lingkup cabang">Qty Tersedia</th>
@@ -911,6 +988,15 @@ export default function StockSaatIni() {
                                       ) : (
                                         <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                       )}
+                                    </td>
+                                    <td className="num" title={STOCK_CONDITION_UNAVAILABLE.polos.note}>
+                                      <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
+                                    </td>
+                                    <td className="num" title={STOCK_CONDITION_UNAVAILABLE.cetak.note}>
+                                      <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
+                                    </td>
+                                    <td className="num" title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}>
+                                      <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                     </td>
                                     <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
                                     <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
@@ -995,6 +1081,18 @@ export default function StockSaatIni() {
                     </div>
                   </div>
                   <div className="stock-mobile-metrics" data-status={statusKey}>
+                    <div>
+                      <span>Polos Gudang</span>
+                      <strong title={STOCK_CONDITION_UNAVAILABLE.polos.note}>Belum tersedia</strong>
+                    </div>
+                    <div>
+                      <span>Sudah Cetak</span>
+                      <strong title={STOCK_CONDITION_UNAVAILABLE.cetak.note}>Belum tersedia</strong>
+                    </div>
+                    <div>
+                      <span>Siap Jual</span>
+                      <strong title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}>Belum tersedia</strong>
+                    </div>
                     <div><span>Pesanan</span><strong>{fmtQty(it.qty_pesanan)}</strong></div>
                     <div><span>Belum Terkirim</span><strong>{formatBelumTerkirim(it)}</strong></div>
                     <div><span>Tersedia</span><strong>{formatTersedia(it)}</strong></div>
