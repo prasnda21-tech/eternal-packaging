@@ -81,13 +81,6 @@
   height: 32px;
 }
 
-/* Narrow desktop: allow wrap like Plan .dp-filters (flex-wrap: wrap) */
-@media (max-width: 1280px) {
-  .ship-status-page.dp-page .dp-filters {
-    flex-wrap: wrap;
-  }
-}
-
 /* ---- Advanced table schedule integrations (scoped) ---- */
 .ship-status-page.dp-page .dp-adv-table tbody tr.is-selected {
   background: #ecfdf5;
@@ -127,12 +120,75 @@
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.pill) {
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.pill),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.dp-po-identity),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-date-cell) {
   height: auto;
   max-height: none;
   min-height: 31px;
   padding-top: 4px;
   padding-bottom: 4px;
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+}
+
+/* Date + optional SLA PO note stacked — avoids inline "SLA PO …" clipping */
+.ship-status-page.dp-page .ds-date-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.2;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ship-status-page.dp-page .ds-sla-note {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ship-status-page.dp-page .dp-po-identity .dp-link-po {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+/* Reset Kolom in filter toolbar — peer of Reset filter */
+.ship-status-page.dp-page .dp-filters .ds-reset-cols-btn {
+  min-height: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.ship-status-page.dp-page .dp-filters .dp-filter-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+/* Keep filter toolbar one row on wide desktops; compact wrap only ≤1280 */
+.ship-status-page.dp-page .dp-filters {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+@media (max-width: 1280px) {
+  .ship-status-page.dp-page .dp-filters {
+    flex-wrap: wrap;
+  }
+  .ship-status-page.dp-page .dp-filters .dp-filter-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* No duplicate Reset Kolom above the table when hosted in toolbar */
+.ship-status-page.dp-page .dp-adv-tools {
+  display: none;
 }
 
 .ship-status-page.dp-page .dp-adv-table .ship-bar {
@@ -152,9 +208,10 @@
   justify-content: flex-end;
 }
 
-/* Rincian Pengiriman modal */
+/* Rincian Pengiriman modal — wider + internal H-scroll so SJ/PO/Qty never clip */
 .ds-rincian-modal {
-  width: min(920px, calc(100vw - 32px));
+  width: min(1120px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
   max-height: min(85vh, 720px);
   display: flex;
   flex-direction: column;
@@ -206,10 +263,19 @@
   font-size: 13px;
 }
 
+.ds-rincian-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .ds-rincian-table {
   width: 100%;
+  min-width: 880px;
   border-collapse: collapse;
   font-size: 12.5px;
+  table-layout: auto;
 }
 
 .ds-rincian-table th {
@@ -228,12 +294,20 @@
   padding: 6px 8px;
   border-bottom: 1px solid #eef2f7;
   vertical-align: middle;
+  white-space: nowrap;
+}
+
+.ds-rincian-table td:nth-child(4) {
+  white-space: normal;
+  min-width: 140px;
+  max-width: 240px;
 }
 
 .ds-rincian-table .num,
 .ds-rincian-table th.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ds-rincian-foot {
