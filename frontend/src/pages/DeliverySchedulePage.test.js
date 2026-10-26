@@ -53,6 +53,20 @@ jest.mock("react-day-picker", () => ({
       </button>
       <button
         type="button"
+        data-testid="mock-range-24-27"
+        onClick={() => onSelect({ from: new Date(2026, 9, 24), to: new Date(2026, 9, 27) })}
+      >
+        24-27
+      </button>
+      <button
+        type="button"
+        data-testid="mock-range-26"
+        onClick={() => onSelect({ from: new Date(2026, 9, 26), to: new Date(2026, 9, 26) })}
+      >
+        26
+      </button>
+      <button
+        type="button"
         data-testid="mock-range-reverse"
         onClick={() => onSelect({ from: new Date(2026, 9, 15), to: new Date(2026, 9, 12) })}
       >
@@ -995,7 +1009,12 @@ describe("DeliverySchedulePage draft/applied filters + date range", () => {
     await click("mock-range-12-15");
     expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toMatch(/12 Okt 2026/);
     expect(container.querySelector('[data-testid="ds-row-PO-out"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-filter-pending"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-filter-pending"]').textContent).toMatch(/Belum diterapkan/);
+    expect(container.querySelector('[data-testid="ds-draft-date-label"]').textContent).toMatch(/12 Okt 2026/);
+    expect(container.querySelector('[data-testid="ds-applied-date-label"]').textContent).toBe("Semua tanggal");
     await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-filter-pending"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-row-PO-mid"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-row-PO-out"]')).toBeFalsy();
@@ -1557,6 +1576,257 @@ describe("DeliverySchedulePage Rincian Pengiriman + multi-SJ selection", () => {
     });
     expect(container.querySelector('[data-testid="ds-rincian-sj-count"]').textContent).toBe("30");
     expect(container.querySelector('[data-testid="ds-rincian-total-qty"]').textContent).toMatch(/30\.000/);
+  });
+});
+
+describe("DeliverySchedulePage filter completeness", () => {
+  let container;
+  let root;
+
+  const click = async (testid) => {
+    await act(async () => {
+      container.querySelector(`[data-testid="${testid}"]`)
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  };
+
+  const octRangeRows = [
+    {
+      ...sampleRows[0],
+      id: "ord-24",
+      order_number: "PO-24",
+      shipment_id: "sh-24",
+      sj_label: "SJ-24",
+      sj_delivery_date: "2026-10-24",
+      effective_delivery_date: "2026-10-24",
+      buffer_stock: true,
+      status: "terjadwal",
+      status_label: "Terjadwal",
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-25",
+      order_number: "PO-25",
+      shipment_id: "sh-25",
+      sj_label: "SJ-25",
+      sj_delivery_date: "2026-10-25",
+      effective_delivery_date: "2026-10-20",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-26a",
+      order_number: "PO-MULTI",
+      shipment_id: "sh-26a",
+      sj_label: "SJ-26A",
+      sj_delivery_date: "2026-10-26",
+      effective_delivery_date: "2026-10-26",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-26a",
+      order_number: "PO-MULTI",
+      shipment_id: "sh-26b",
+      sj_label: "SJ-26B",
+      sj_delivery_date: "2026-10-26",
+      effective_delivery_date: "2026-10-26",
+      status: "terkirim",
+      status_label: "Terkirim",
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-27",
+      order_number: "PO-27",
+      shipment_id: "sh-27",
+      sj_label: "SJ-27",
+      sj_delivery_date: "2026-10-27",
+      effective_delivery_date: "2026-10-27",
+      status: "hari_ini",
+      status_label: "Hari Ini",
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-out",
+      order_number: "PO-OUT",
+      shipment_id: "sh-out",
+      sj_label: "SJ-OUT",
+      sj_delivery_date: "2026-10-23",
+      effective_delivery_date: "2026-10-23",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+    },
+  ];
+
+  beforeEach(() => {
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
+    sessionStorage.clear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockHasPerm.mockReset();
+    mockDeliverySchedule.mockReset();
+    mockNavigate.mockReset();
+    mockHasPerm.mockImplementation((p) => p === "schedule.view" || p === "delivery.schedule.optimize");
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    sessionStorage.clear();
+  });
+
+  test("date 24–27 inclusive shows all eligible SJ including multi-SJ and buffer", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: octRangeRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-24-27");
+    expect(container.querySelector('[data-testid="ds-filter-pending"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid^="ds-row-PO-OUT"]')).toBeTruthy();
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-filter-pending"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/5 SJ/);
+    expect(container.querySelector('[data-testid^="ds-row-PO-24"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid^="ds-row-PO-25"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-MULTI-sh-26a"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-MULTI-sh-26b"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid^="ds-row-PO-27"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid^="ds-row-PO-OUT"]')).toBeFalsy();
+  });
+
+  test("draft date differs from applied — Belum diterapkan until Terapkan", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: octRangeRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-26");
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
+
+    await click("ds-period-trigger");
+    await click("mock-range-24-27");
+    expect(container.querySelector('[data-testid="ds-filter-pending"]').textContent).toMatch(/Belum diterapkan/);
+    expect(container.querySelector('[data-testid="ds-draft-date-label"]').textContent).toMatch(/24 Okt 2026/);
+    expect(container.querySelector('[data-testid="ds-applied-date-label"]').textContent).toMatch(/26 Okt 2026/);
+    // Table still on applied 26 only.
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
+    expect(container.querySelector('[data-testid^="ds-row-PO-24"]')).toBeFalsy();
+
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-filter-pending"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/5 SJ/);
+    expect(container.querySelector('[data-testid^="ds-row-PO-24"]')).toBeTruthy();
+  });
+
+  test("Reset clears toolbar + advanced + column filters; Reset Kolom keeps business filters", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: octRangeRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-24-27");
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/5 SJ/);
+
+    const filterBtn = container.querySelector('[data-testid="dp-filter-delivery-schedule-order_number"]');
+    await act(async () => { filterBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const pop = container.querySelector(".dp-adv-filter-pop input");
+    await act(async () => { fireChange(pop, "MULTI"); });
+    await act(async () => {
+      Array.from(container.querySelectorAll(".dp-adv-filter-actions button"))
+        .find((b) => b.textContent.includes("Apply"))
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-col-filter-bar"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-col-filter-count"]').textContent).toMatch(/Filter kolom aktif \(1\)/);
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
+
+    // Reset Kolom must not clear business / column filters.
+    await click("dp-reset-cols-delivery-schedule");
+    expect(container.querySelector('[data-testid="ds-col-filter-bar"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toMatch(/24 Okt 2026/);
+
+    await click("ds-filter-reset");
+    expect(container.querySelector('[data-testid="ds-col-filter-bar"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-filter-pending"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toBe("Semua tanggal");
+    expect(container.querySelector('[data-testid="ds-filter-status"]').value).toBe("semua");
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/6 SJ/);
+  });
+
+  test("Hapus filter kolom clears only column filters", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: octRangeRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-24-27");
+    await click("ds-filter-apply");
+    const filterBtn = container.querySelector('[data-testid="dp-filter-delivery-schedule-order_number"]');
+    await act(async () => { filterBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await act(async () => { fireChange(container.querySelector(".dp-adv-filter-pop input"), "MULTI"); });
+    await act(async () => {
+      Array.from(container.querySelectorAll(".dp-adv-filter-actions button"))
+        .find((b) => b.textContent.includes("Apply"))
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
+    await click("ds-col-filter-clear");
+    expect(container.querySelector('[data-testid="ds-col-filter-bar"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/5 SJ/);
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toMatch(/24 Okt 2026/);
+  });
+
+  test("Rincian totals follow full filtered set after date apply", async () => {
+    mockDeliverySchedule.mockResolvedValue({
+      rows: octRangeRows.map((r) => ({
+        ...r,
+        qty_sj: 1000,
+        sj_item_lines: [{ qty: 1000, unit: "pcs" }],
+      })),
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-24-27");
+    await click("ds-filter-apply");
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-sj-count"]').textContent).toBe("5");
+    expect(container.querySelector('[data-testid="ds-rincian-total-qty"]').textContent).toMatch(/5\.000/);
+  });
+
+  test("persisted filters restore on remount; URL status still applies", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: octRangeRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-24-27");
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/5 SJ/);
+
+    act(() => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toMatch(/24 Okt 2026/);
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/5 SJ/);
+
+    mockLocation.search = "?status=hari_ini";
+    act(() => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    // Session date + URL hari_ini: only SJ dated today key among restored range — use delivery date.
+    // With restored 24–27 and hari_ini, only rows whose delivery date == today WIB remain.
+    const today = wibTodayKey();
+    const expectTodayOnly = octRangeRows.filter((r) => (r.sj_delivery_date || r.effective_delivery_date) === today).length;
+    // If today is outside fixture dates, count may be 0 — assert status applied without Terapkan.
+    expect(container.querySelector('[data-testid="ds-filter-status"]').value).toBe("hari_ini");
+    expect(Number(container.querySelector('[data-testid="ds-total-count"]').textContent.match(/(\d+)/)?.[1] || 0))
+      .toBe(expectTodayOnly);
   });
 });
 

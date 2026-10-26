@@ -43,6 +43,11 @@ function matchesProgressBand(pct, band) {
   return true;
 }
 
+/** Same date key as Tanggal Pengiriman column — SJ date first, then schedule effective. */
+export function scheduleRowDeliveryDateKey(row) {
+  return dateKey(row?.sj_delivery_date || row?.effective_delivery_date);
+}
+
 export function matchesDeliveryScheduleFilters(row, filters = {}, today = null) {
   // Combined toolbar search: match No PO OR customer name.
   const q = (filters.q || "").trim().toLowerCase();
@@ -56,19 +61,20 @@ export function matchesDeliveryScheduleFilters(row, filters = {}, today = null) 
   if (po && !String(row.order_number || "").toLowerCase().includes(po)) return false;
   const customer = (filters.customer || "").trim().toLowerCase();
   if (customer && !String(row.customer_name || "").toLowerCase().includes(customer)) return false;
+  // Display date for Tanggal Pengiriman — keep filter + column identical.
+  const deliveryDate = scheduleRowDeliveryDateKey(row);
   const status = (filters.status || "").trim().toLowerCase();
   if (status && status !== "semua") {
     if (status === "hari_ini") {
-      if (dateKey(row.effective_delivery_date) !== resolveFilterTodayKey(today)) return false;
+      if (deliveryDate !== resolveFilterTodayKey(today)) return false;
     } else if (row.status !== status) {
       return false;
     }
   }
   const from = dateKey(filters.dateFrom);
   const to = dateKey(filters.dateTo);
-  const eff = dateKey(row.effective_delivery_date);
-  if (from && (!eff || eff < from)) return false;
-  if (to && (!eff || eff > to)) return false;
+  if (from && (!deliveryDate || deliveryDate < from)) return false;
+  if (to && (!deliveryDate || deliveryDate > to)) return false;
   const driver = (filters.driver || "").trim().toLowerCase();
   if (driver && !String(row.driver_name || "").toLowerCase().includes(driver)) return false;
   if (!matchesProgressBand(shipDeliveredPercent(row), filters.terkirim)) return false;
@@ -196,6 +202,26 @@ export function countActiveDeliveryFilters(filters = {}) {
   if ((f.driver || "").trim()) n += 1;
   if ((f.terkirim || "all") !== "all") n += 1;
   if ((f.dapatDikirim || "all") !== "all") n += 1;
+  return n;
+}
+
+/** True when draft toolbar/advanced bag differs from applied (normalized). */
+export function deliveryScheduleFiltersEqual(a = {}, b = {}) {
+  const left = normalizeDeliveryScheduleFilters(a);
+  const right = normalizeDeliveryScheduleFilters(b);
+  const keys = Object.keys(EMPTY_DELIVERY_FILTERS);
+  return keys.every((k) => String(left[k] ?? "") === String(right[k] ?? ""));
+}
+
+/** Active Advanced Table column filters — counted separately from toolbar/advanced. */
+export function countActiveColumnFilters(colFilters = {}) {
+  if (!colFilters || typeof colFilters !== "object") return 0;
+  let n = 0;
+  for (const conf of Object.values(colFilters)) {
+    if (!conf || conf.value == null) continue;
+    if (String(conf.value).trim() === "") continue;
+    n += 1;
+  }
   return n;
 }
 

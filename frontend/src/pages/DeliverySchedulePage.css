@@ -166,6 +166,47 @@
   white-space: nowrap;
 }
 
+/* Draft ≠ applied — clear signal that the table has not updated yet */
+.ship-status-page.dp-page .ds-filter-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.ship-status-page.dp-page .ds-filter-pending {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #7c2d12;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.ship-status-page.dp-page .dp-filters .dp-btn-primary.is-pending {
+  box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.25);
+}
+
+.ship-status-page.dp-page .ds-col-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #14532d;
+  background: #ecfdf5;
+  border: 1px solid #86efac;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.ship-status-page.dp-page .ds-col-filter-bar .ghost.sm {
+  min-height: 28px;
+  height: 28px;
+}
+
 .ship-status-page.dp-page .dp-filters .dp-filter-actions {
   flex-wrap: nowrap;
   gap: 6px;
