@@ -499,3 +499,90 @@ def test_header_filter_and_sort_before_pagination():
     assert page[0]["id"] == "c"
     assert meta["total"] == 2
     assert meta["totals"]["total_po"] == 2
+
+
+def test_plan_row_notes_and_delivery_zone_from_same_po():
+    o = _po(
+        id="nz-1",
+        notes="SABLON WARNA MERAH",
+        delivery_zone="JT",
+        scheduled_delivery_date="2026-10-20",
+        line_items=[{
+            "name": "Karton",
+            "quantity": 100,
+            "production_process": "Cetak",
+            "notes": "line-only-not-used",
+        }],
+    )
+    row = plan_row(o, lead_time_days=3, today="2026-10-12")
+    assert row["id"] == "nz-1"
+    assert row["notes"] == "SABLON WARNA MERAH"
+    assert row["delivery_zone"] == "JT"
+    assert "line-only" not in row["notes"]
+
+
+def test_plan_row_notes_zone_empty_legacy():
+    o = _po(id="legacy", scheduled_delivery_date="2026-10-20", notes=None, delivery_zone="")
+    row = plan_row(o, lead_time_days=3, today="2026-10-12")
+    assert row["notes"] == ""
+    assert row["delivery_zone"] == ""
+
+
+def test_same_customer_name_independent_notes_zone():
+    a = _po(
+        id="a1",
+        po_number="PO/A1",
+        customer_name="Same Co",
+        notes="Catatan A",
+        delivery_zone="JS",
+        scheduled_delivery_date="2026-10-20",
+    )
+    b = _po(
+        id="b1",
+        po_number="PO/B1",
+        customer_name="Same Co",
+        notes="Catatan B",
+        delivery_zone="JT",
+        scheduled_delivery_date="2026-10-21",
+    )
+    rows = build_plan_rows([a, b], lead_time_days=3, today="2026-10-12")
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["a1"]["notes"] == "Catatan A" and by_id["a1"]["delivery_zone"] == "JS"
+    assert by_id["b1"]["notes"] == "Catatan B" and by_id["b1"]["delivery_zone"] == "JT"
+
+
+def test_date_range_inclusive_cross_month_year_totals():
+    orders = [
+        _po(id="d12", po_number="PO/12", scheduled_delivery_date="2026-12-12"),
+        _po(id="d13", po_number="PO/13", scheduled_delivery_date="2026-12-13"),
+        _po(id="d14", po_number="PO/14", scheduled_delivery_date="2026-12-14"),
+        _po(id="d15", po_number="PO/15", scheduled_delivery_date="2026-12-15"),
+        _po(id="d16", po_number="PO/16", scheduled_delivery_date="2026-12-16"),
+        _po(id="y27", po_number="PO/27", scheduled_delivery_date="2027-01-02"),
+    ]
+    rows = build_plan_rows(
+        orders,
+        lead_time_days=3,
+        today="2026-12-01",
+        filters={"date_from": "2026-12-12", "date_to": "2026-12-15"},
+    )
+    assert [r["id"] for r in rows] == ["d12", "d13", "d14", "d15"]
+    page, meta = paginate_rows(rows, page=1, page_size=2)
+    assert len(page) == 2
+    assert meta["total"] == 4
+    assert meta["totals"]["total_po"] == 4
+
+    cross = build_plan_rows(
+        orders,
+        lead_time_days=3,
+        today="2026-12-01",
+        filters={"date_from": "2026-12-15", "date_to": "2027-01-02"},
+    )
+    assert [r["id"] for r in cross] == ["d15", "d16", "y27"]
+
+
+def test_projection_includes_notes_and_zone():
+    from services.delivery_plan import PLAN_PROJECTION
+
+    assert PLAN_PROJECTION.get("notes") == 1
+    assert PLAN_PROJECTION.get("delivery_zone") == 1

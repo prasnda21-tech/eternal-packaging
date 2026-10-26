@@ -56,8 +56,8 @@ def _user(uid="u-driver", name="Budi", email="driver@example.com"):
 def test_effective_uses_automatic_when_no_manual():
     o = _po()
     assert original_deadline(o) == "2026-08-30"
-    # latest approval 27 + 3 = 30
-    assert effective_delivery_date(o) == "2026-08-30"
+    # latest approval Thu 27 + 3 working days (Mon–Sat; Sun 30 skipped) = Mon 31
+    assert effective_delivery_date(o) == "2026-08-31"
 
 
 def test_manual_schedule_wins_over_automatic():
@@ -85,7 +85,8 @@ def test_reschedule_wins_and_preserves_deadline():
     )
     assert mutated is True
     assert rec["status"] == "scheduled"
-    assert rec["previous_date"] == "2026-08-30"
+    # previous = automatic working-day date (Sun skipped), not legacy calendar +3
+    assert rec["previous_date"] == "2026-08-31"
     assert rec["new_date"] == "2026-08-31"
     assert o["deadline"] == "2026-08-30"
     assert original_deadline(o) == "2026-08-30"
@@ -104,7 +105,7 @@ def test_empty_reason_rejected():
     except RescheduleError as e:
         assert "Alasan" in str(e)
     assert o.get("delivery_reschedules") in (None, [])
-    assert effective_delivery_date(o) == "2026-08-30"
+    assert effective_delivery_date(o) == "2026-08-31"
 
 
 def test_invalid_date_rejected_when_can_set_date():
@@ -114,7 +115,7 @@ def test_invalid_date_rejected_when_can_set_date():
         assert False, "expected reject"
     except RescheduleError as e:
         assert "Tanggal" in str(e)
-    assert effective_delivery_date(o) == "2026-08-30"
+    assert effective_delivery_date(o) == "2026-08-31"
 
 
 def test_request_without_date_permission_is_pending():
@@ -131,7 +132,7 @@ def test_request_without_date_permission_is_pending():
     assert rec["new_date"] is None
     assert rec["reason"] == "Pelanggan tidak di tempat"
     assert o.get("scheduled_delivery_date") is None
-    assert effective_delivery_date(o) == "2026-08-30"
+    assert effective_delivery_date(o) == "2026-08-31"
 
 
 def test_authorized_set_date_appends_history():
@@ -148,7 +149,7 @@ def test_authorized_set_date_appends_history():
     )
     assert mutated is True
     assert rec["status"] == "scheduled"
-    assert rec["previous_date"] == "2026-08-30"
+    assert rec["previous_date"] == "2026-08-31"
     assert rec["new_date"] == "2026-08-31"
     assert rec["fulfills_reschedule_id"] == pending["reschedule_id"]
     assert len(o["delivery_reschedules"]) == 2
@@ -161,8 +162,9 @@ def test_history_append_only_second_reschedule():
     apply_reschedule(o, reason="A", new_date="2026-08-31", can_set_date=True, user=_user("a", "A"))
     apply_reschedule(o, reason="B", new_date="2026-09-02", can_set_date=True, user=_user("a", "A"))
     rows = reschedule_rows(o)
+    # first previous is automatic working-day Mon 31 (not calendar Sun 30)
     assert [(r["previous_date"], r["new_date"]) for r in rows] == [
-        ("2026-08-30", "2026-08-31"),
+        ("2026-08-31", "2026-08-31"),
         ("2026-08-31", "2026-09-02"),
     ]
     assert effective_delivery_date(o) == "2026-09-02"
@@ -243,12 +245,87 @@ def test_filter_and_reset_semantics():
     # Automatic future date → terjadwal (not belum).
     row = schedule_row(_po(customer="PT Contoh"), today="2026-08-20")
     assert row["status"] == "terjadwal"
-    assert row["effective_delivery_date"] == "2026-08-30"
+    assert row["effective_delivery_date"] == "2026-08-31"
     assert matches_schedule_filters(row, {"po": "PO/2026", "customer": "contoh", "status": "terjadwal"})
     assert not matches_schedule_filters(row, {"po": "ZZZ"})
     assert not matches_schedule_filters(row, {"status": "terkirim"})
-    assert matches_schedule_filters(row, {"date_from": "2026-08-30", "date_to": "2026-08-30"})
+    assert matches_schedule_filters(row, {"date_from": "2026-08-31", "date_to": "2026-08-31"})
     assert not matches_schedule_filters(row, {"date_from": "2026-09-01"})
+
+
+def test_automatic_working_days_skip_sunday():
+    """Owner contract: Minggu libur — Mon–Sat working days for automatic Tanggal Pengiriman."""
+    from datetime import date
+    from services.tanggal_pengiriman import automatic_tanggal_pengiriman, automatic_working_tanggal_pengiriman
+
+    o = _po(
+        design_approved_at="2026-08-27T10:00:00+07:00",
+        payment_approved_at="2026-08-27T12:00:00+07:00",
+    )
+    # Calendar +3 lands on Sunday 30 — not the active automatic contract.
+    assert automatic_tanggal_pengiriman(o, 3) == "2026-08-30"
+    assert date.fromisoformat("2026-08-30").weekday() == 6  # Sunday
+    # Working-day +3: Fri 28, Sat 29, skip Sun 30 → Mon 31
+    assert automatic_working_tanggal_pengiriman(o, 3, None) == "2026-08-31"
+    assert effective_delivery_date(o) == "2026-08-31"
+
+
+def test_manual_and_reschedule_accept_sunday_override():
+    """Authorized manual / reschedule may land on Sunday; auto still skips Minggu."""
+    from datetime import date
+
+    sunday = "2026-08-30"
+    assert date.fromisoformat(sunday).weekday() == 6
+
+    # B + D: authorized manual Sunday wins over automatic Monday.
+    o = _po(
+        design_approved_at="2026-08-27T10:00:00+07:00",
+        payment_approved_at="2026-08-27T12:00:00+07:00",
+    )
+    assert effective_delivery_date(o) == "2026-08-31"
+    apply_manual_tanggal_pengiriman(o, sunday)
+    assert effective_delivery_date(o) == sunday
+
+    # C: authorized reschedule to Sunday is accepted and becomes effective.
+    o2 = _po(
+        design_approved_at="2026-08-27T10:00:00+07:00",
+        payment_approved_at="2026-08-27T12:00:00+07:00",
+    )
+    rec, mutated = apply_reschedule(
+        o2, reason="Request Minggu", new_date=sunday, can_set_date=True, user=_user("u-admin", "Admin")
+    )
+    assert mutated is True
+    assert rec["status"] == "scheduled"
+    assert rec["previous_date"] == "2026-08-31"
+    assert rec["new_date"] == sunday
+    assert effective_delivery_date(o2) == sunday
+
+    # E: unauthorized override stays pending; automatic Monday remains.
+    o3 = _po(
+        design_approved_at="2026-08-27T10:00:00+07:00",
+        payment_approved_at="2026-08-27T12:00:00+07:00",
+    )
+    pending, mutated3 = apply_reschedule(
+        o3, reason="Minta Minggu", new_date=sunday, can_set_date=False, user=_user()
+    )
+    assert mutated3 is True
+    assert pending["status"] == "pending"
+    assert pending["new_date"] is None
+    assert o3.get("scheduled_delivery_date") is None
+    assert effective_delivery_date(o3) == "2026-08-31"
+
+    # F: SJ scheduled on Sunday remains visible via date filters.
+    sh = {
+        "id": "sh-sun",
+        "number": "SJSUN",
+        "shipment_index": 1,
+        "delivery_date": sunday,
+        "lines": [{"line_id": "lid-a", "line_idx": 0, "name": "Cup", "qty": 1000}],
+    }
+    row = schedule_rows(_po(shipments=[sh]), today="2026-08-20")[0]
+    assert row["effective_delivery_date"] == sunday
+    assert matches_schedule_filters(row, {"date_from": sunday, "date_to": sunday})
+    assert not matches_schedule_filters(row, {"date_from": "2026-08-31", "date_to": "2026-08-31"})
 
 
 def test_public_snippet_hides_reason_and_actors():
@@ -480,6 +557,9 @@ def test_schedule_row_missing_shipments_or_lines_is_empty_safe():
     assert schedule_row(_po(), shipment={"id": "sh-x", "number": "SJ/X", "lines": None})["sj_item_lines"] == []
     assert sj_item_lines({}, {"id": "sh-x", "lines": ["skip", {"name": "Ok", "qty": 5}]}) == [
         {"shipment_id": "sh-x", "sj_number": None, "line_id": None, "line_idx": None, "name": "Ok", "qty": 5},
+    ]
+    assert sj_item_lines({}, {"id": "sh-u", "lines": [{"name": "Ok", "qty": 5, "unit": "pcs"}]}) == [
+        {"shipment_id": "sh-u", "sj_number": None, "line_id": None, "line_idx": None, "name": "Ok", "qty": 5, "unit": "pcs"},
     ]
     assert sj_item_lines(_po(shipments=[{"id": "sh-x", "number": "SJ/X", "lines": [{"name": "Nope", "qty": 1}]}])) == []
 

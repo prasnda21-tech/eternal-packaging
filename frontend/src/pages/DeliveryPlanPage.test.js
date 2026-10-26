@@ -22,6 +22,12 @@ jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...rest }) => <a href={to} {...rest}>{children}</a>,
 }), { virtual: true });
 
+jest.mock("react-day-picker", () => ({
+  DayPicker: () => <div data-testid="dp-daterange-calendar-mock" />,
+}));
+
+jest.mock("react-day-picker/dist/style.css", () => ({}), { virtual: true });
+
 const api = require("../lib/api").default;
 
 function renderPage() {
@@ -55,7 +61,7 @@ test("loading empty and read-only actions", async () => {
     resolvePlan({ rows: [], total: 0, total_pages: 1, page: 1, counts: {} });
     await Promise.resolve();
   });
-  expect(container.querySelector('[data-testid="delivery-plan-empty"]')?.textContent).toMatch(
+  expect(container.querySelector('[data-testid="delivery-plan-table-empty"]')?.textContent).toMatch(
     /Tidak ada PO dengan tanggal pengiriman/,
   );
   expect(container.querySelector('[data-testid="delivery-plan-page"]')).toBeTruthy();
@@ -156,15 +162,28 @@ test("compact ux9 contracts and akan datang label", async () => {
   expect(src).toMatch(/DeliveryPlanAdvancedTable/);
   expect(src).toMatch(/encodeHeaderFilters/);
   expect(src).toMatch(/Akan Datang/);
-  expect(src).toMatch(/dp-period/);
+  expect(src).toMatch(/DeliveryPlanDateRangeField/);
+  expect(src).toMatch(/label:\s*"Keterangan"/);
+  expect(src).toMatch(/label:\s*"Zona"/);
+  const rangeSrc = fs.readFileSync(
+    path.join(__dirname, "../components/deliveryPlan/DeliveryPlanDateRangeField.jsx"),
+    "utf8",
+  );
+  expect(rangeSrc).toMatch(/data-testid=\{testIdPrefix\}/);
+  expect(rangeSrc).toMatch(/testIdPrefix = "dp-period"/);
+  expect(rangeSrc).toMatch(/DayPicker/);
+  expect(rangeSrc).toMatch(/mode="range"/);
   expect(css).toMatch(/--dp-green:\s*#166534/);
   expect(css).toMatch(/overflow-x:\s*hidden/);
+  expect(css).toMatch(/dp-notes-cell/);
   api.deliveryPlan.mockResolvedValue({
     rows: [{
       id: "o9",
       po_number: "PO/9",
       customer_name: "Cust",
       branch: "YGY",
+      delivery_zone: "JT",
+      notes: "SABLON MERAH\nCETAK 2 WARNA",
       tanggal_pengiriman: "2026-10-26",
       tanggal_pengiriman_source: "automatic",
       delivery_sla_effective: {
@@ -197,5 +216,21 @@ test("compact ux9 contracts and akan datang label", async () => {
   expect(container.querySelector('[data-testid="dp-status-PO/9"]')?.textContent).toMatch(/Akan Datang/);
   expect(container.querySelector('[data-testid="dp-kpi-total-po"]')?.textContent).toBe("1");
   expect(container.querySelector('[data-testid="dp-reset-cols-delivery-plan"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="dp-notes-cell"]')?.textContent).toMatch(/SABLON MERAH/);
+  expect(container.textContent).toMatch(/JT/);
+  expect(container.querySelector('[data-testid="dp-period-trigger"]')).toBeTruthy();
+  act(() => root.unmount());
+});
+
+test("date range apply sends date_from and date_to", async () => {
+  api.deliveryPlan.mockResolvedValue({ rows: [], total: 0, total_pages: 1, page: 1 });
+  const { container, root } = renderPage();
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => {
+    container.querySelector('[data-testid="dp-period-trigger"]').click();
+    await Promise.resolve();
+  });
+  expect(container.querySelector('[data-testid="dp-period-panel"]')).toBeTruthy();
+  expect(container.querySelectorAll('input[type="date"]').length).toBe(0);
   act(() => root.unmount());
 });

@@ -12,11 +12,13 @@ const mockHasPerm = jest.fn(() => false);
 const mockDeliverySchedule = jest.fn();
 const mockNavigate = jest.fn();
 
+const mockLocation = { pathname: "/produksi/jadwal-pengiriman", search: "" };
+
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, state, onClick, ...props }) => (
     <a href={typeof to === "string" ? to : "#"} onClick={onClick} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/produksi/jadwal-pengiriman", search: "" }),
+  useLocation: () => mockLocation,
   useNavigate: () => mockNavigate,
 }), { virtual: true });
 
@@ -31,6 +33,43 @@ jest.mock("../lib/api", () => ({
     listDeliveryOutlets: jest.fn(async () => ({ outlets: [] })),
   },
 }));
+
+jest.mock("react-day-picker", () => ({
+  DayPicker: ({ onSelect }) => (
+    <div data-testid="ds-daterange-calendar-mock">
+      <button
+        type="button"
+        data-testid="mock-range-partial"
+        onClick={() => onSelect({ from: new Date(2026, 9, 12), to: undefined })}
+      >
+        partial
+      </button>
+      <button
+        type="button"
+        data-testid="mock-range-12-15"
+        onClick={() => onSelect({ from: new Date(2026, 9, 12), to: new Date(2026, 9, 15) })}
+      >
+        12-15
+      </button>
+      <button
+        type="button"
+        data-testid="mock-range-reverse"
+        onClick={() => onSelect({ from: new Date(2026, 9, 15), to: new Date(2026, 9, 12) })}
+      >
+        reverse
+      </button>
+      <button
+        type="button"
+        data-testid="mock-range-cross-month"
+        onClick={() => onSelect({ from: new Date(2026, 11, 28), to: new Date(2027, 0, 3) })}
+      >
+        cross
+      </button>
+    </div>
+  ),
+}));
+
+jest.mock("react-day-picker/dist/style.css", () => ({}), { virtual: true });
 
 jest.mock("../components/SuratJalanPreviewModal", () => ({
   __esModule: true,
@@ -146,8 +185,12 @@ describe("delivery reschedule UI (static)", () => {
     expect(schedule).not.toMatch(/Jadwal Manual/);
     expect(schedule).not.toMatch(/ds-sort-deadline/);
     expect(schedule).not.toMatch(/ds-sort-manual/);
-    expect(schedule).toMatch(/Tanggal Mulai/);
+    expect(schedule).toMatch(/DeliveryPlanDateRangeField/);
+    expect(schedule).toMatch(/ds-period/);
+    expect(schedule).toMatch(/ds-filter-apply/);
     expect(schedule).toMatch(/ds-filter-reset/);
+    expect(schedule).not.toMatch(/Tanggal Mulai/);
+    expect(schedule).not.toMatch(/Tanggal Akhir/);
     expect(schedule).not.toMatch(/Buat Jadwal Pengiriman/);
     expect(schedule).not.toMatch(/delivery.schedule.create/);
     expect(schedule).toMatch(/Atur Lokasi/);
@@ -164,7 +207,8 @@ describe("delivery reschedule UI (static)", () => {
     expect(schedule).toMatch(/Dapat Dikirim/);
     expect(schedule).not.toMatch(/Shipment \/ Item/);
     expect(schedule).toMatch(/ds-filter-btn/);
-    expect(schedule).toMatch(/ds-sort-customer/);
+    expect(schedule).toMatch(/DeliveryPlanAdvancedTable/);
+    expect(schedule).toMatch(/customer_name/);
   });
 
   test("desktop Optimasi Rute uses desktop review href (not /m/...) and permissions", () => {
@@ -174,8 +218,7 @@ describe("delivery reschedule UI (static)", () => {
     expect(schedule).toMatch(/locationSetupStatusLabel/);
     expect(schedule).toMatch(/ds-optimasi-rute/);
     expect(schedule).toMatch(/Status Lokasi/);
-    expect(schedule).toMatch(/ds-sort-status-lokasi/);
-    expect(schedule).toMatch(/DELIVERY_SORT_KEYS\.location_status/);
+    expect(schedule).toMatch(/location_status_sort/);
     expect(schedule).toMatch(/navigate\(/);
     expect(schedule).not.toMatch(/window\.open/);
     expect(schedule).not.toMatch(/target=["']_blank["']/);
@@ -202,6 +245,9 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
   let root;
 
   beforeEach(() => {
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
+    sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -313,8 +359,7 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     await act(async () => {
       root.render(<DeliverySchedulePage />);
     });
-    expect(container.querySelector('[data-testid="ds-col-status-lokasi"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="ds-sort-status-lokasi"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="dp-sort-delivery-schedule-location_status_sort"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-100"]').textContent).toBe("Sudah Diatur");
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-200"]').textContent).toBe("Belum Diatur");
     expect(container.querySelector('[data-testid="ds-status-lokasi-PO-ZERO"]').textContent).toBe("Belum Diatur");
@@ -332,7 +377,7 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
       root.render(<DeliverySchedulePage />);
     });
 
-    const sortBtn = container.querySelector('[data-testid="ds-sort-status-lokasi"]');
+    const sortBtn = container.querySelector('[data-testid="dp-sort-delivery-schedule-location_status_sort"]');
     expect(sortBtn).toBeTruthy();
 
     const labelsInOrder = () => Array.from(
@@ -382,7 +427,7 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     ]);
 
     // Customer sort still works after location sort
-    const customerBtn = container.querySelector('[data-testid="ds-sort-customer"]');
+    const customerBtn = container.querySelector('[data-testid="dp-sort-delivery-schedule-customer_name"]');
     await act(async () => {
       customerBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -437,6 +482,8 @@ describe("DeliverySchedulePage Surat Jalan column", () => {
   let root;
 
   beforeEach(() => {
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
     sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -573,6 +620,9 @@ describe("DeliverySchedulePage Surat Jalan column", () => {
     await act(async () => { root.render(<DeliverySchedulePage />); });
     const status = container.querySelector('[data-testid="ds-filter-status"]');
     await act(async () => { fireChange(status, "hari_ini"); });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-filter-apply"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(container.querySelector('[data-testid="ds-sj-PO-X-sh-a"]').textContent).toBe("SJ/001");
     expect(container.querySelector('[data-testid="ds-row-PO-X-sh-b"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="ds-sj-PO-X-sh-a"]').textContent).not.toBe("SJ/002");
@@ -597,8 +647,11 @@ describe("DeliverySchedulePage Surat Jalan column", () => {
       ],
     });
     await act(async () => { root.render(<DeliverySchedulePage />); });
-    const po = container.querySelector('[data-testid="ds-filter-po"]');
-    await act(async () => { fireChange(po, "PO-100"); });
+    const q = container.querySelector('[data-testid="ds-filter-q"]');
+    await act(async () => { fireChange(q, "PO-100"); });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-filter-apply"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(container.querySelector('[data-testid="ds-sj-PO-100-sh-1"]').textContent).toBe("SJ/001");
     expect(container.querySelector('[data-testid="ds-row-PO-200-sh-9"]')).toBeFalsy();
   });
@@ -757,6 +810,8 @@ describe("DeliverySchedulePage table without Driver column", () => {
   };
 
   beforeEach(() => {
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
     sessionStorage.clear();
     mockHasPerm.mockReset();
     mockDeliverySchedule.mockReset();
@@ -774,15 +829,19 @@ describe("DeliverySchedulePage table without Driver column", () => {
     expect(scheduleSource).not.toMatch(/data-testid="ds-sort-driver"/);
     expect(scheduleSource).not.toMatch(/<td>{r\.driver_name \|\| "—"}<\/td>/);
     expect(scheduleSource).toMatch(/data-testid="ds-adv-driver"/);
-    expect(scheduleSource).toMatch(/const colCount = canOptimize \? 10 : 9/);
+    expect(scheduleSource).toMatch(/DeliveryPlanAdvancedTable/);
+    expect(scheduleSource).toMatch(/delivery-schedule-pager/);
   });
 
   test("Status Lokasi is followed directly by Terkirim", async () => {
     await renderSchedule();
     const headers = Array.from(container.querySelectorAll("thead th"));
-    const labels = headers.map((header) => header.textContent.trim());
-    expect(labels).not.toContain("Driver");
-    expect(labels.indexOf("Terkirim")).toBe(labels.indexOf("Status Lokasi") + 1);
+    const labels = headers.map((header) => header.textContent.replace(/\s+/g, " ").trim());
+    expect(labels.some((l) => l.includes("Driver"))).toBe(false);
+    const lokasiIdx = labels.findIndex((l) => l.includes("Status Lokasi"));
+    const terkirimIdx = labels.findIndex((l) => l.includes("Terkirim"));
+    expect(lokasiIdx).toBeGreaterThanOrEqual(0);
+    expect(terkirimIdx).toBe(lokasiIdx + 1);
     expect(headers).toHaveLength(10);
   });
 
@@ -790,7 +849,7 @@ describe("DeliverySchedulePage table without Driver column", () => {
     await renderSchedule({ canOptimize: false });
     const headers = Array.from(container.querySelectorAll("thead th"));
     expect(headers).toHaveLength(9);
-    expect(headers.map((header) => header.textContent.trim())).not.toContain("Driver");
+    expect(headers.map((header) => header.textContent).join(" ")).not.toMatch(/Driver/);
     expect(container.querySelector('[data-testid="ds-select-all"]')).toBeNull();
   });
 
@@ -814,13 +873,13 @@ describe("DeliverySchedulePage table without Driver column", () => {
 
   test("empty-state colSpan matches both permission variants", async () => {
     await renderSchedule({ rows: [] });
-    expect(container.querySelector("tbody td.empty-state").colSpan).toBe(10);
+    expect(container.querySelector('[data-testid="delivery-schedule-table-empty"]').colSpan).toBe(10);
 
     act(() => root.unmount());
     container.remove();
     setupDom();
     await renderSchedule({ canOptimize: false, rows: [] });
-    expect(container.querySelector("tbody td.empty-state").colSpan).toBe(9);
+    expect(container.querySelector('[data-testid="delivery-schedule-table-empty"]').colSpan).toBe(9);
   });
 
   test("driver filter data and existing row actions remain available", async () => {
@@ -832,6 +891,570 @@ describe("DeliverySchedulePage table without Driver column", () => {
     expect(container.querySelector('[data-testid="ds-adv-driver"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-kerja-link-PO-100"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-atur-lokasi-PO-100"]')).toBeTruthy();
+  });
+});
+
+describe("DeliverySchedulePage draft/applied filters + date range", () => {
+  let container;
+  let root;
+
+  const click = async (testid) => {
+    await act(async () => {
+      container.querySelector(`[data-testid="${testid}"]`)
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  };
+
+  beforeEach(() => {
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
+    sessionStorage.clear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockHasPerm.mockReset();
+    mockDeliverySchedule.mockReset();
+    mockNavigate.mockReset();
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    sessionStorage.clear();
+  });
+
+  test("toolbar has Plan-parity header, combined search, date range, Terapkan/Reset", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector(".dp-header")).toBeTruthy();
+    expect(container.textContent).toMatch(/Produksi · Pengiriman/);
+    expect(container.querySelector('[data-testid="ds-filter-q"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-filter-po"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-filter-customer"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-period-trigger"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-filter-apply"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-filter-reset"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-refresh"]')).toBeTruthy();
+    const status = container.querySelector('[data-testid="ds-filter-status"]');
+    const labels = Array.from(status.options).map((o) => o.textContent);
+    expect(labels).toContain("Tanggal Hari Ini");
+    expect(labels).not.toContain("Belum Dijadwalkan");
+    expect(Array.from(status.options).map((o) => o.value)).not.toContain("belum_dijadwalkan");
+  });
+
+  test("draft edits do not filter until Terapkan; Reset clears applied + draft", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeTruthy();
+
+    await act(async () => { fireChange(container.querySelector('[data-testid="ds-filter-q"]'), "PO-100"); });
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeTruthy();
+
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeFalsy();
+
+    await click("ds-filter-reset");
+    expect(container.querySelector('[data-testid="ds-filter-q"]').value).toBe("");
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeTruthy();
+  });
+
+  test("combined search matches customer OR PO after Terapkan", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => { fireChange(container.querySelector('[data-testid="ds-filter-q"]'), "Beta"); });
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeTruthy();
+
+    await click("ds-filter-reset");
+    await act(async () => { fireChange(container.querySelector('[data-testid="ds-filter-q"]'), "PO-100"); });
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeFalsy();
+  });
+
+  test("date range two-click applies to draft then Terapkan filters inclusively; reverse sorts", async () => {
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        { ...sampleRows[0], effective_delivery_date: "2026-10-12" },
+        { ...sampleRows[1], order_number: "PO-mid", id: "ord-mid", effective_delivery_date: "2026-10-13" },
+        {
+          ...sampleRows[1],
+          id: "ord-out",
+          order_number: "PO-out",
+          effective_delivery_date: "2026-10-20",
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    expect(container.querySelector('[data-testid="ds-period-panel"]')).toBeTruthy();
+    await click("mock-range-12-15");
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toMatch(/12 Okt 2026/);
+    expect(container.querySelector('[data-testid="ds-row-PO-out"]')).toBeTruthy();
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-mid"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-out"]')).toBeFalsy();
+
+    await click("ds-filter-reset");
+    await click("ds-period-trigger");
+    await click("mock-range-reverse");
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toBe("12 Okt 2026 – 15 Okt 2026");
+  });
+
+  test("dismiss incomplete range does not apply partial dates", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-partial");
+    expect(container.querySelector('[data-testid="ds-period-panel"]')).toBeTruthy();
+    await click("ds-period-dismiss");
+    expect(container.querySelector('[data-testid="ds-period-panel"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent).toBe("Semua tanggal");
+  });
+
+  test("Tanggal Hari Ini includes delivered SJ dated today and excludes other dates", async () => {
+    const today = wibTodayKey();
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          order_number: "PO-DELIVERED-TODAY",
+          id: "ord-dt",
+          effective_delivery_date: today,
+          status: "terkirim",
+          status_label: "Terkirim",
+        },
+        {
+          ...sampleRows[1],
+          order_number: "PO-OTHER-DAY",
+          id: "ord-od",
+          effective_delivery_date: "2020-01-01",
+          status: "terjadwal",
+          status_label: "Terjadwal",
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => { fireChange(container.querySelector('[data-testid="ds-filter-status"]'), "hari_ini"); });
+    await click("ds-filter-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-DELIVERED-TODAY"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-OTHER-DAY"]')).toBeFalsy();
+  });
+
+  test("advanced modal shares draft with toolbar Terapkan", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-filter-btn");
+    expect(container.querySelector('[data-testid="ds-filter-panel"]')).toBeTruthy();
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-adv-q"]'), "Beta");
+    });
+    expect(container.querySelector('[data-testid="ds-filter-q"]').value).toBe("Beta");
+    await click("ds-adv-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeTruthy();
+  });
+
+  test("?status=hari_ini bookmark applies without Terapkan; legacy belum_dijadwalkan clears", async () => {
+    mockLocation.search = "?status=hari_ini";
+    const today = wibTodayKey();
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        { ...sampleRows[0], effective_delivery_date: today, status: "terkirim", status_label: "Terkirim" },
+        { ...sampleRows[1], effective_delivery_date: "2019-01-01", status: "terjadwal" },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-filter-status"]').value).toBe("hari_ini");
+    expect(container.querySelector('[data-testid="ds-row-PO-100"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeFalsy();
+
+    act(() => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockNavigate.mockClear();
+    mockLocation.search = "?status=belum_dijadwalkan";
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(mockNavigate).toHaveBeenCalled();
+    expect(mockNavigate.mock.calls[0][0]).toEqual({
+      pathname: "/produksi/jadwal-pengiriman",
+      search: "",
+    });
+  });
+
+  test("refresh keeps applied filters; session restore normalizes legacy status", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => { fireChange(container.querySelector('[data-testid="ds-filter-q"]'), "PO-100"); });
+    await click("ds-filter-apply");
+    expect(mockDeliverySchedule).toHaveBeenCalledTimes(1);
+    await click("ds-refresh");
+    expect(mockDeliverySchedule).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="ds-filter-q"]').value).toBe("PO-100");
+    expect(container.querySelector('[data-testid="ds-row-PO-200"]')).toBeFalsy();
+
+    act(() => root.unmount());
+    container.remove();
+    const key = Object.keys(sessionStorage).find((k) => k.includes("delivery-schedule"));
+    expect(key).toBeTruthy();
+    const raw = JSON.parse(sessionStorage.getItem(key));
+    raw.filters = { ...raw.filters, status: "belum_dijadwalkan" };
+    sessionStorage.setItem(key, JSON.stringify(raw));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-filter-status"]').value).toBe("semua");
+  });
+
+  test("cross-year range label and driver+date AND compose after apply", async () => {
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          order_number: "PO-DRV",
+          id: "ord-drv",
+          driver_name: "Budi",
+          effective_delivery_date: "2026-12-30",
+        },
+        {
+          ...sampleRows[1],
+          order_number: "PO-OTHER",
+          id: "ord-other",
+          driver_name: "Andi",
+          effective_delivery_date: "2026-12-30",
+        },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await click("ds-period-trigger");
+    await click("mock-range-cross-month");
+    expect(container.querySelector('[data-testid="ds-period-value"]').textContent)
+      .toBe("28 Des 2026 – 03 Jan 2027");
+    await click("ds-filter-btn");
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-adv-driver"]'), "bud");
+    });
+    await click("ds-adv-apply");
+    expect(container.querySelector('[data-testid="ds-row-PO-DRV"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-row-PO-OTHER"]')).toBeFalsy();
+  });
+});
+
+describe("DeliverySchedulePage Advanced Table parity", () => {
+  let container;
+  let root;
+
+  const manyRows = Array.from({ length: 30 }, (_, i) => ({
+    ...sampleRows[0],
+    id: `ord-${i}`,
+    order_number: `PO-${String(i).padStart(3, "0")}`,
+    customer_name: i % 2 === 0 ? "Alpha Co" : "Beta Co",
+    status: i % 3 === 0 ? "terkirim" : "terjadwal",
+    status_label: i % 3 === 0 ? "Terkirim" : "Terjadwal",
+    effective_delivery_date: `2026-10-${String((i % 28) + 1).padStart(2, "0")}`,
+    percent_delivered: i % 3 === 0 ? 100 : 10,
+    shipment_id: `sh-${i}`,
+    sj_label: `SJ-${i}`,
+    latest_sj_number: `SJ-${i}`,
+    lat: i % 2 === 0 ? -6.2 : null,
+    lng: i % 2 === 0 ? 106.8 : null,
+  }));
+
+  beforeEach(() => {
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
+    sessionStorage.clear();
+    localStorage.clear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockHasPerm.mockReset();
+    mockDeliverySchedule.mockReset();
+    mockNavigate.mockReset();
+    mockHasPerm.mockImplementation((p) => (
+      p === "schedule.view" || p === "route_optimizer.create" || p === "route_optimizer.optimize"
+    ));
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  test("renders Advanced Table, Reset Kolom, and pager", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: sampleRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="delivery-schedule-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="dp-reset-cols-delivery-schedule"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="delivery-schedule-pager"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/2 SJ/);
+    expect(container.querySelector('[data-testid="ds-page-size"]')).toBeTruthy();
+  });
+
+  test("column filter composes with toolbar and resets page", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: manyRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/30 SJ/);
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-page-size"]'), "25");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-page-next"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-page-indicator"]').textContent).toMatch(/Halaman 2/);
+
+    const filterBtn = container.querySelector('[data-testid="dp-filter-delivery-schedule-customer_name"]');
+    await act(async () => { filterBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const pop = container.querySelector(".dp-adv-filter-pop input");
+    expect(pop).toBeTruthy();
+    await act(async () => { fireChange(pop, "Beta"); });
+    await act(async () => {
+      Array.from(container.querySelectorAll(".dp-adv-filter-actions button"))
+        .find((b) => b.textContent.includes("Apply"))
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-page-indicator"]').textContent).toMatch(/Halaman 1/);
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/15 SJ/);
+    expect(container.querySelector('[data-testid^="ds-row-PO-001"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid^="ds-row-PO-000"]')).toBeFalsy();
+  });
+
+  test("select-all is current page only; selection survives page change until filtered out", async () => {
+    mockDeliverySchedule.mockResolvedValue({ rows: manyRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-page-size"]'), "25");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-select-all"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-optimasi-rute"]').disabled).toBe(false);
+    expect(container.querySelector('[data-testid="ds-selected-count"]').textContent).toMatch(/25/);
+
+    await act(async () => {
+      container.querySelector('[data-testid="ds-page-next"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // Page 2 still keeps prior page selection (eligible universe); bulk bar remains.
+    expect(container.querySelector('[data-testid="ds-selected-count"]').textContent).toMatch(/25/);
+
+    await act(async () => {
+      container.querySelector('[data-testid="ds-optimasi-rute"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalled();
+    const href = mockNavigate.mock.calls[0][0];
+    expect(href).toMatch(/review-optimasi\?ids=/);
+    expect(href).toContain("ord-0");
+    expect(href).not.toContain("ord-29");
+  });
+
+  test("numeric percent sort and date sort use Advanced Table headers", async () => {
+    mockDeliverySchedule.mockResolvedValue({
+      rows: [
+        { ...sampleRows[0], id: "a", order_number: "PO-A", percent_delivered: 10, effective_delivery_date: "2026-10-20", shipment_id: "s1" },
+        { ...sampleRows[0], id: "b", order_number: "PO-B", percent_delivered: 90, effective_delivery_date: "2026-10-10", shipment_id: "s2" },
+      ],
+    });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    const pctSort = container.querySelector('[data-testid="dp-sort-delivery-schedule-percent_delivered"]');
+    await act(async () => { pctSort.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    let pos = Array.from(container.querySelectorAll('tbody tr[data-testid^="ds-row-"]'))
+      .map((el) => el.getAttribute("data-testid"));
+    expect(pos[0]).toContain("PO-A");
+    await act(async () => { pctSort.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    pos = Array.from(container.querySelectorAll('tbody tr[data-testid^="ds-row-"]'))
+      .map((el) => el.getAttribute("data-testid"));
+    expect(pos[0]).toContain("PO-B");
+
+    const dateSort = container.querySelector('[data-testid="dp-sort-delivery-schedule-effective_delivery_date"]');
+    await act(async () => { dateSort.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    pos = Array.from(container.querySelectorAll('tbody tr[data-testid^="ds-row-"]'))
+      .map((el) => el.getAttribute("data-testid"));
+    expect(pos[0]).toContain("PO-B");
+  });
+});
+
+describe("DeliverySchedulePage Rincian Pengiriman + multi-SJ selection", () => {
+  let container;
+  let root;
+
+  const multiSjRows = [
+    {
+      ...sampleRows[0],
+      id: "ord-multi",
+      order_number: "PO-MULTI",
+      customer_name: "PT Multi",
+      shipment_id: "sh-a",
+      sj_label: "SJ-001",
+      latest_sj_number: "SJ-001",
+      effective_delivery_date: "2026-10-23",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+      qty_sj: 50000,
+      qty_total: 80000,
+      sj_item_lines: [{ qty: 50000, unit: "pcs" }],
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-multi",
+      order_number: "PO-MULTI",
+      customer_name: "PT Multi",
+      shipment_id: "sh-b",
+      sj_label: "SJ-002",
+      latest_sj_number: "SJ-002",
+      effective_delivery_date: "2026-10-23",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+      qty_sj: 30000,
+      qty_total: 80000,
+      sj_item_lines: [{ qty: 30000, unit: "pcs" }],
+    },
+    {
+      ...sampleRows[0],
+      id: "ord-d2",
+      order_number: "PO-D2",
+      customer_name: "PT Day2",
+      shipment_id: "sh-c",
+      sj_label: "SJ-003",
+      latest_sj_number: "SJ-003",
+      effective_delivery_date: "2026-10-24",
+      status: "terkirim",
+      status_label: "Terkirim",
+      qty_sj: 10000,
+      qty_total: 10000,
+      sj_item_lines: [{ qty: 10000, unit: "pcs" }],
+    },
+  ];
+
+  beforeEach(async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    mockNavigate.mockReset();
+    mockHasPerm.mockImplementation(() => true);
+    mockDeliverySchedule.mockReset();
+    mockDeliverySchedule.mockResolvedValue({ rows: multiSjRows });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    console.error.mockRestore?.();
+  });
+
+  test("multi-SJ selection is independent; Optimasi gets unique order of selected SJ only", async () => {
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    const boxA = container.querySelector('[data-testid="ds-checkbox-PO-MULTI-sh-a"]');
+    const boxB = container.querySelector('[data-testid="ds-checkbox-PO-MULTI-sh-b"]');
+    expect(boxA).toBeTruthy();
+    expect(boxB).toBeTruthy();
+    await act(async () => { boxA.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(boxA.checked).toBe(true);
+    expect(boxB.checked).toBe(false);
+    expect(container.querySelector('[data-testid="ds-selected-count"]').textContent).toMatch(/1/);
+    await act(async () => { boxB.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(boxA.checked).toBe(true);
+    expect(boxB.checked).toBe(true);
+    expect(container.querySelector('[data-testid="ds-selected-count"]').textContent).toMatch(/2/);
+    await act(async () => { boxB.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(boxA.checked).toBe(true);
+    expect(boxB.checked).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="ds-optimasi-rute"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith(desktopScheduleReviewHref(["ord-multi"]));
+  });
+
+  test("Rincian Pengiriman uses applied filters and full filtered set, not page slice", async () => {
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-filter-status"]'), "terjadwal");
+    });
+    // Draft only — modal must still see unapplied full set until Terapkan.
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-sj-count"]').textContent).toBe("3");
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-close"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-filter-apply"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-rincian-sj-count"]').textContent).toBe("2");
+    expect(container.querySelector('[data-testid="ds-rincian-total-qty"]').textContent).toMatch(/80\.000/);
+    expect(container.querySelector('[data-testid="ds-rincian-day-2026-10-23"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-rincian-day-2026-10-24"]')).toBeFalsy();
+    expect(container.querySelector('[data-testid="ds-rincian-grand-total"]').textContent).toMatch(/80\.000/);
+  });
+
+  test("Rincian multi-day grouping and empty after impossible filter", async () => {
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-day-2026-10-23"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-rincian-day-2026-10-24"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-rincian-day-total-2026-10-23"]').textContent).toMatch(/80\.000/);
+    expect(container.querySelector('[data-testid="ds-rincian-day-total-2026-10-24"]').textContent).toMatch(/10\.000/);
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-close"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-filter-q"]'), "NO-SUCH-PO");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-filter-apply"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-empty"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ds-rincian-sj-count"]').textContent).toBe("0");
+  });
+
+  test("Rincian ignores pagination page — totals use all filtered SJ", async () => {
+    const pageRows = Array.from({ length: 30 }, (_, i) => ({
+      ...multiSjRows[0],
+      id: `ord-p-${i}`,
+      order_number: `PO-P-${i}`,
+      shipment_id: `shp-${i}`,
+      sj_label: `SJ-P-${i}`,
+      qty_sj: 1000,
+      sj_item_lines: [{ qty: 1000, unit: "pcs" }],
+      effective_delivery_date: "2026-10-23",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+    }));
+    mockDeliverySchedule.mockResolvedValue({ rows: pageRows });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    await act(async () => {
+      fireChange(container.querySelector('[data-testid="ds-page-size"]'), "25");
+    });
+    expect(container.querySelectorAll('tbody tr[data-testid^="ds-row-"]').length).toBe(25);
+    await act(async () => {
+      container.querySelector('[data-testid="ds-rincian-pengiriman"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="ds-rincian-sj-count"]').textContent).toBe("30");
+    expect(container.querySelector('[data-testid="ds-rincian-total-qty"]').textContent).toMatch(/30\.000/);
   });
 });
 

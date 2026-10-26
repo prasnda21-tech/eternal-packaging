@@ -640,6 +640,9 @@ export default function FakturPenjualan() {
 
   const [invoiceDate, setInvoiceDate] = useState(getTodayString());
   const createDateRef = useRef(null);
+  const previewReqRef = useRef(0);
+  const notesPrefillPoRef = useRef("");
+  const notesManualRef = useRef(false);
   const [paymentTermDays, setPaymentTermDays] = useState(0);
   const [discountAmount, setDiscountAmount] = useState(0);
   const [ppnPercent, setPpnPercent] = useState(0);
@@ -1123,14 +1126,20 @@ export default function FakturPenjualan() {
   // Load PO preview when creating invoice from PO
   const loadPoPreview = useCallback(async (poId) => {
     if (!poId) {
+      previewReqRef.current += 1;
       setPreviewData(null);
+      notesPrefillPoRef.current = "";
+      notesManualRef.current = false;
+      setInvoiceNotes("");
       return;
     }
+    const reqId = ++previewReqRef.current;
     setPreviewLoading(true);
     setPreviewErr("");
     setFormErr("");
     try {
       const data = await api.getPoInvoicePreview(poId);
+      if (reqId !== previewReqRef.current) return;
       setPreviewData(data);
       const initialPrices = {};
       const initialQtys = {};
@@ -1140,7 +1149,14 @@ export default function FakturPenjualan() {
       });
       setLinePrices(initialPrices);
       setLineQuantities(initialQtys);
+      // Prefill Keterangan from orders.notes once per PO selection; never overwrite manual edits.
+      if (notesPrefillPoRef.current !== poId || !notesManualRef.current) {
+        notesPrefillPoRef.current = poId;
+        notesManualRef.current = false;
+        setInvoiceNotes(String(data.notes || "").trim());
+      }
     } catch (e) {
+      if (reqId !== previewReqRef.current) return;
       const det = e.response?.data?.detail;
       setPreviewErr(
         typeof det === "object"
@@ -1148,7 +1164,7 @@ export default function FakturPenjualan() {
           : det || "Gagal memuat data PO untuk Faktur"
       );
     } finally {
-      setPreviewLoading(false);
+      if (reqId === previewReqRef.current) setPreviewLoading(false);
     }
   }, []);
 
@@ -1290,6 +1306,9 @@ export default function FakturPenjualan() {
     }
     if (!nextId) {
       setSelectedPoId("");
+      notesPrefillPoRef.current = "";
+      notesManualRef.current = false;
+      setInvoiceNotes("");
       return;
     }
     const previousId = selectedPoId || previewData?.po_id || queryPoId || "";
@@ -1301,6 +1320,10 @@ export default function FakturPenjualan() {
     ) {
       setSelectedPoId(previousId);
       return;
+    }
+    if (nextId !== previousId) {
+      notesPrefillPoRef.current = "";
+      notesManualRef.current = false;
     }
     setSelectedPoId(nextId);
     setOtherCharges([]);
@@ -2773,13 +2796,16 @@ export default function FakturPenjualan() {
                           <div className="ux90-fp-dlrow">
                             <label htmlFor="invoice-notes-input">Keterangan</label>
                             <div className="ux90-fp-dlrow-control">
-                              <input
+                              <textarea
                                 id="invoice-notes-input"
-                                className="ux90-input"
-                                type="text"
+                                className="ux90-input ux90-notes-multiline"
+                                rows={2}
                                 placeholder="Catatan tambahan faktur penjualan..."
                                 value={invoiceNotes}
-                                onChange={(e) => setInvoiceNotes(e.target.value)}
+                                onChange={(e) => {
+                                  notesManualRef.current = true;
+                                  setInvoiceNotes(e.target.value);
+                                }}
                                 data-testid="invoice-notes-input"
                               />
                             </div>

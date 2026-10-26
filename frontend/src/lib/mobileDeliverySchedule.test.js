@@ -131,6 +131,7 @@ describe("mobile delivery schedule filter parity with Web", () => {
       "dateTo",
       "driver",
       "po",
+      "q",
       "status",
       "terkirim",
     ].sort());
@@ -139,12 +140,13 @@ describe("mobile delivery schedule filter parity with Web", () => {
     expect(EMPTY_DELIVERY_FILTERS.dapatDikirim).toBe("all");
     expect(DELIVERY_SCHEDULE_STATUS_OPTIONS.map((o) => o.key)).toEqual([
       "semua",
-      "belum_dijadwalkan",
       "terjadwal",
       "hari_ini",
       "terlambat",
       "terkirim",
     ]);
+    expect(DELIVERY_SCHEDULE_STATUS_OPTIONS.find((o) => o.key === "hari_ini")?.label)
+      .toBe("Tanggal Hari Ini");
   });
 
   test("reset restores EMPTY_DELIVERY_FILTERS and count is zero", () => {

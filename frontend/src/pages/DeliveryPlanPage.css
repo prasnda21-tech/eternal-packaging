@@ -92,7 +92,7 @@
 
 .dp-filters {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
@@ -100,7 +100,8 @@
   background: #f8faf9;
   border: 1px solid var(--dp-border);
   border-radius: 8px;
-  overflow-x: auto;
+  /* visible so the date-range popover is not clipped (overflow-x:auto creates a clip box) */
+  overflow: visible;
   min-height: 50px;
 }
 
@@ -155,84 +156,27 @@
   width: 100%;
 }
 
-.dp-period {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.dp-period-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  height: 34px;
-  padding: 0 10px;
-  border: 1px solid #D5E3DB;
-  border-radius: 6px;
-  background: #fff;
-  color: #0f172a;
-  font-size: 12.5px;
-  cursor: pointer;
-  white-space: nowrap;
-  max-width: 280px;
-}
-
-.dp-period-btn.is-active {
-  border-color: var(--dp-green);
-  background: var(--dp-green-soft);
-}
-
-.dp-period-label {
-  color: var(--dp-muted);
-  font-weight: 600;
-}
-
-.dp-period-value {
-  font-weight: 600;
+.dp-notes-cell {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dp-period-panel {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 4px);
-  z-index: 14;
-  width: 260px;
-  padding: 10px;
-  background: #fff;
-  border: 1px solid var(--dp-border);
-  border-radius: 8px;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.dp-period-panel label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 220px;
+  line-height: 1.25;
+  font-size: 12px;
   color: #334155;
 }
 
-.dp-period-panel input {
-  width: 100%;
-  min-height: 32px;
-  height: 32px;
-  border: 1px solid #D5E3DB;
-  border-radius: 6px;
-  padding: 0 8px;
-  background: #fff;
-  font-size: 12.5px;
-}
-
-.dp-period-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
+.dp-zone-cell {
+  display: inline-block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .dp-filter-actions {

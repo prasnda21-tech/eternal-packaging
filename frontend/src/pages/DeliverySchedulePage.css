@@ -1,0 +1,254 @@
+/* Jadwal Pengiriman — pixel parity with Rencana Jadwal Kirim header/toolbar.
+   Reuses DeliveryPlanPage.css (.dp-page / .dp-header / .dp-filters).
+   Only schedule-specific deltas: Filter control + Optimasi Rute in header actions. */
+
+/* Beat .content.content-workspace:has(.ship-status-page) > .ship-status-page padding */
+.content.content-workspace:has(.ship-status-page) > .ship-status-page.dp-page,
+.content:has(.ship-status-page) > .ship-status-page.dp-page {
+  padding: 8px 12px 12px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.ship-status-page.dp-page .ship-status-chrome {
+  overflow: visible;
+}
+
+/* Keep Plan flex tokens for search — do NOT cap max-width */
+.ship-status-page.dp-page .dp-filters .dp-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+  max-width: none;
+}
+
+/* Status shares Plan select sizing */
+.ship-status-page.dp-page .dp-filters select[data-testid="ds-filter-status"] {
+  max-width: 150px;
+  flex: 0 0 auto;
+}
+
+/* Filter lanjutan — visual + flex peer of Plan "Sumber" select */
+.ship-status-page.dp-page .dp-filters .ds-adv-filter-btn {
+  min-height: 34px;
+  height: 34px;
+  max-height: 34px;
+  min-width: 118px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  font-size: 12.5px;
+  font-weight: 400;
+  font-family: inherit;
+  line-height: 1.2;
+  border: 1px solid #d5e3db;
+  background: #fff;
+  color: #173b2b;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  max-width: 150px;
+}
+
+.ship-status-page.dp-page .dp-filters .ds-adv-filter-btn:hover {
+  border-color: #166534;
+  background: #fff;
+}
+
+.ship-status-page.dp-page .dp-filters .ds-adv-filter-btn:focus-visible {
+  outline: 2px solid rgba(22, 101, 52, 0.35);
+  border-color: #166534;
+}
+
+.ship-status-page.dp-page .dp-filters .ds-adv-filter-btn.is-active {
+  border-color: #166534;
+  color: #14532d;
+  background: #ecfdf5;
+}
+
+/* Date trigger height matches Plan (32) — keep; search/select stay 34 */
+.ship-status-page.dp-page .dp-filters .dp-daterange-trigger {
+  min-height: 32px;
+  height: 32px;
+}
+
+/* Header actions: Optimasi uses Plan primary token; refresh uses .ghost.sm */
+.ship-status-page.dp-page .dp-header-actions .dp-btn-primary {
+  min-height: 32px;
+  height: 32px;
+}
+
+/* Narrow desktop: allow wrap like Plan .dp-filters (flex-wrap: wrap) */
+@media (max-width: 1280px) {
+  .ship-status-page.dp-page .dp-filters {
+    flex-wrap: wrap;
+  }
+}
+
+/* ---- Advanced table schedule integrations (scoped) ---- */
+.ship-status-page.dp-page .dp-adv-table tbody tr.is-selected {
+  background: #ecfdf5;
+}
+
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell) {
+  overflow: visible;
+  text-overflow: unset;
+  white-space: nowrap;
+}
+
+.ship-status-page.dp-page .ds-aksi-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.ship-status-page.dp-page .ds-sj-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  max-width: 100%;
+}
+
+/* Row density: match Plan Advanced Table cell height; keep ops controls unclipped */
+.ship-status-page.dp-page .dp-adv-table tbody td {
+  height: 31px;
+  max-height: 34px;
+  padding: 0 8px;
+  vertical-align: middle;
+}
+
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.pill) {
+  height: auto;
+  max-height: none;
+  min-height: 31px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.ship-status-page.dp-page .dp-adv-table .ship-bar {
+  max-height: 22px;
+  min-width: 72px;
+}
+
+.ship-status-page.dp-page .dp-adv-table .pill {
+  line-height: 1.2;
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+.ship-status-page.dp-page .dp-header-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* Rincian Pengiriman modal */
+.ds-rincian-modal {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(85vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ds-rincian-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  flex: 0 0 auto;
+}
+
+.ds-rincian-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ds-rincian-summary .muted {
+  font-size: 11px;
+}
+
+.ds-rincian-summary strong {
+  font-size: 13.5px;
+  color: #14532d;
+}
+
+.ds-rincian-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px 14px;
+}
+
+.ds-rincian-day {
+  margin-bottom: 14px;
+}
+
+.ds-rincian-day-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.ds-rincian-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.ds-rincian-table th {
+  background: #14532d;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-align: left;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.ds-rincian-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: middle;
+}
+
+.ds-rincian-table .num,
+.ds-rincian-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ds-rincian-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.ds-rincian-foot strong {
+  margin-right: auto;
+  color: #14532d;
+  font-size: 14px;
+}
+

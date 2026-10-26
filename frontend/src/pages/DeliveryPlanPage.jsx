@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, RefreshCw, RotateCcw, Search } from "lucide-react";
+import { RefreshCw, RotateCcw, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { legacyEstimateNotice } from "../lib/legacyEstimateNotice";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
+import DeliveryPlanDateRangeField from "../components/deliveryPlan/DeliveryPlanDateRangeField";
 import { encodeHeaderFilters } from "../components/deliveryPlan/deliveryPlanTableLayout";
 import PoIdentityBadges from "../components/PoIdentityBadges";
 import "./DeliveryPlanPage.css";
@@ -56,121 +57,14 @@ function statusClass(status) {
   return "";
 }
 
-function formatDdMmYyyy(iso) {
-  if (!iso) return "";
-  const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return iso;
-  return `${m[3]}/${m[2]}/${m[1]}`;
-}
-
-function periodSummary(dateFrom, dateTo) {
-  if (!dateFrom && !dateTo) return "Semua tanggal";
-  if (dateFrom && dateTo) return `${formatDdMmYyyy(dateFrom)} – ${formatDdMmYyyy(dateTo)}`;
-  if (dateFrom) return `Dari ${formatDdMmYyyy(dateFrom)}`;
-  return `Sampai ${formatDdMmYyyy(dateTo)}`;
-}
-
 function fmtQty(n) {
   const v = Number(n) || 0;
   return v.toLocaleString("id-ID");
 }
 
-function PeriodRangeControl({ dateFrom, dateTo, onApply }) {
-  const [open, setOpen] = useState(false);
-  const [draftFrom, setDraftFrom] = useState(dateFrom || "");
-  const [draftTo, setDraftTo] = useState(dateTo || "");
-  const wrapRef = useRef(null);
-
-  useEffect(() => {
-    if (open) {
-      setDraftFrom(dateFrom || "");
-      setDraftTo(dateTo || "");
-    }
-  }, [open, dateFrom, dateTo]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    function onDoc(e) {
-      if (!wrapRef.current?.contains(e.target)) setOpen(false);
-    }
-    function onKey(e) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const active = Boolean(dateFrom || dateTo);
-  return (
-    <div className="dp-period" ref={wrapRef} data-testid="dp-period">
-      <button
-        type="button"
-        className={`dp-period-btn${active ? " is-active" : ""}`}
-        aria-label={`Periode ${periodSummary(dateFrom, dateTo)}`}
-        aria-expanded={open}
-        data-testid="dp-period-trigger"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <CalendarDays size={14} aria-hidden />
-        <span className="dp-period-label">Periode:</span>
-        <span className="dp-period-value">{periodSummary(dateFrom, dateTo)}</span>
-      </button>
-      {open && (
-        <div className="dp-period-panel" role="dialog" aria-label="Pilih periode" data-testid="dp-period-panel">
-          <label>
-            Dari
-            <input
-              type="date"
-              value={draftFrom}
-              onChange={(e) => setDraftFrom(e.target.value)}
-              data-testid="dp-filter-date-from"
-              aria-label="Tanggal dari"
-            />
-          </label>
-          <label>
-            Sampai
-            <input
-              type="date"
-              value={draftTo}
-              onChange={(e) => setDraftTo(e.target.value)}
-              data-testid="dp-filter-date-to"
-              aria-label="Tanggal sampai"
-            />
-          </label>
-          <div className="dp-period-actions">
-            <button
-              type="button"
-              className="ghost sm"
-              data-testid="dp-period-clear"
-              onClick={() => {
-                setDraftFrom("");
-                setDraftTo("");
-                onApply("", "");
-                setOpen(false);
-              }}
-            >
-              Hapus
-            </button>
-            <button
-              type="button"
-              className="dp-btn-primary sm"
-              data-testid="dp-period-apply"
-              onClick={() => {
-                onApply(draftFrom, draftTo);
-                setOpen(false);
-              }}
-            >
-              Terapkan
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function cellOrDash(value) {
+  const text = String(value || "").trim();
+  return text || "—";
 }
 
 export default function DeliveryPlanPage() {
@@ -289,6 +183,37 @@ export default function DeliveryPlanPage() {
     },
     { key: "customer_name", label: "Customer", type: "text", minWidth: 140 },
     { key: "branch", label: "Cabang", type: "text", minWidth: 100 },
+    {
+      key: "delivery_zone",
+      label: "Zona",
+      type: "text",
+      minWidth: 88,
+      maxWidth: 140,
+      render: (v) => (
+        <span className="dp-zone-cell" title={String(v || "").trim() || undefined}>
+          {cellOrDash(v)}
+        </span>
+      ),
+    },
+    {
+      key: "notes",
+      label: "Keterangan",
+      type: "text",
+      minWidth: 140,
+      maxWidth: 220,
+      render: (v) => {
+        const text = String(v || "").trim();
+        return (
+          <span
+            className="dp-notes-cell"
+            title={text || undefined}
+            data-testid="dp-notes-cell"
+          >
+            {text || "—"}
+          </span>
+        );
+      },
+    },
     {
       key: "tanggal_pengiriman_source",
       label: "Sumber Tanggal",
@@ -412,13 +337,20 @@ export default function DeliveryPlanPage() {
             aria-label="Cari nomor PO atau customer"
           />
         </div>
-        <PeriodRangeControl
-          dateFrom={draft.date_from}
-          dateTo={draft.date_to}
+        <DeliveryPlanDateRangeField
+          dateFrom={filters.date_from}
+          dateTo={filters.date_to}
           onApply={(from, to) => {
             setDraft((p) => ({ ...p, date_from: from, date_to: to }));
             setPage(1);
-            setFilters((p) => ({ ...p, date_from: from, date_to: to, q: draft.q, source: draft.source, status: draft.status }));
+            setFilters((p) => ({
+              ...p,
+              date_from: from,
+              date_to: to,
+              q: draft.q,
+              source: draft.source,
+              status: draft.status,
+            }));
           }}
         />
         <select

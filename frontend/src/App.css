@@ -4621,7 +4621,9 @@ html:has(.ship-status-page) #root{
 .prediksi-order-page .ship-status-heading.page-heading h1{
   line-height:1.3;letter-spacing:0;
 }
-.ship-status-toolbar{display:flex;align-items:flex-end;gap:8px;margin:0 0 8px;flex-wrap:wrap}
+.ship-status-toolbar{display:flex;align-items:flex-end;gap:8px;margin:0 0 8px;flex-wrap:wrap;overflow:visible;position:relative}
+.ship-status-toolbar .dp-daterange{z-index:40}
+.ship-status-page .ship-filter-panel-body .dp-daterange{z-index:90}
 .ship-status-toolbar select,
 .ship-status-toolbar input{
   min-height:var(--ship-ctrl-h);height:var(--ship-ctrl-h);box-sizing:border-box;

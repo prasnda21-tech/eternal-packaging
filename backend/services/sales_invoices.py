@@ -686,6 +686,8 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
     address = (order.get("address") or order.get("shipping_address") or order.get("delivery_address") or "").strip()
     delivery_zone = (order.get("delivery_zone") or order.get("zona_kirim") or order.get("zona") or order.get("shipping_zone") or "").strip()
     sales = (order.get("sales") or order.get("seller") or order.get("sales_rep") or order.get("sales_name") or "").strip()
+    # Header Keterangan PO (orders.notes) for create-form prefill only; invoice stores its own snapshot.
+    notes = (order.get("notes") or "").strip()
 
     # Query all existing invoices for this PO to compute cumulative invoiced quantity per exact line
     invoice_filter: Dict[str, Any] = {"po_id": po_id}
@@ -756,6 +758,7 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         "address": address,
         "delivery_zone": delivery_zone,
         "sales": sales,
+        "notes": notes,
         "total_ordered_qty": total_ordered_qty,
         "total_remaining_invoice_qty": total_remaining_invoice_qty,
         "total_qty": total_remaining_invoice_qty,

@@ -2163,6 +2163,13 @@
   font-size: 13px !important;
   border-radius: 6px !important;
 }
+.ux90-pj-delivery-host .ux90-pj-delivery textarea.ux90-input.ux90-notes-multiline {
+  min-height: 52px !important;
+  max-height: 72px !important;
+  line-height: 1.35 !important;
+  resize: vertical;
+  white-space: pre-wrap;
+}
 
 /* Legacy horizontal tab rules disabled — CREATE uses vertical Accurate rail */
 
@@ -3055,6 +3062,16 @@
   height: 30px !important;
   min-height: 30px !important;
   font-size: 12.5px !important;
+}
+/* Compact multiline: preserve PO notes newlines without blowing Info viewport */
+.ux90-fp-pane-info textarea.ux90-input.ux90-notes-multiline {
+  height: auto !important;
+  min-height: 52px !important;
+  max-height: 72px !important;
+  padding: 6px 8px !important;
+  line-height: 1.35 !important;
+  resize: vertical;
+  white-space: pre-wrap;
 }
 
 /* Document totals — not KPI cards */
