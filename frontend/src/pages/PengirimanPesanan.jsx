@@ -345,27 +345,33 @@ export default function PengirimanPesanan() {
     }
   }, [canCreate]);
 
+  const poSummaryReqRef = useRef(0);
+
   // Load PO summary when selectedPoId changes
   const loadPoSummary = useCallback(async (poId) => {
     setManualPhone("");
     setPhoneError("");
     setPhoneSource("manual");
     if (!poId) {
+      poSummaryReqRef.current += 1;
       setPoSummary(null);
       setSjLocationOverride(null);
+      setFormData((prev) => ({ ...prev, notes: "" }));
       return;
     }
+    const reqId = ++poSummaryReqRef.current;
     setPoSummaryLoading(true);
     setPoSummaryErr("");
     setFormErr("");
     try {
       const data = await api.getPoDeliverySummary(poId);
+      if (reqId !== poSummaryReqRef.current) return;
       setPoSummary(data);
       setSjLocationOverride(null);
       const customerPhone = String(data.customer_phone || "").trim();
       setPhoneSource(customerPhone ? "customer" : "manual");
 
-      // Pre-fill header fields
+      // Pre-fill header fields; Keterangan from orders.notes (API summary).
       setFormData((prev) => {
         const initialQtys = {};
         const initialNotes = {};
@@ -383,16 +389,17 @@ export default function PengirimanPesanan() {
           delivery_zone: data.delivery_zone || "",
           sales: data.sales || "",
           expedition: data.expedition || "Internal fleet",
-          notes: "",
+          notes: String(data.notes || "").trim(),
           line_qtys: initialQtys,
           line_notes: initialNotes,
         };
       });
     } catch (e) {
+      if (reqId !== poSummaryReqRef.current) return;
       const det = e.response?.data?.detail;
       setPoSummaryErr(typeof det === "object" ? det.message : (det || "Gagal memuat rincian PO"));
     } finally {
-      setPoSummaryLoading(false);
+      if (reqId === poSummaryReqRef.current) setPoSummaryLoading(false);
     }
   }, []);
 
@@ -1369,9 +1376,9 @@ export default function PengirimanPesanan() {
                       ) : null}
                       <div className="ux90-field is-span-all">
                         <span>Catatan Pengiriman</span>
-                        <input
-                          className="ux90-input"
-                          type="text"
+                        <textarea
+                          className="ux90-input ux90-notes-multiline"
+                          rows={2}
                           value={formData.notes}
                           onChange={(e) => setFormData((p) => ({ ...p, notes: e.target.value }))}
                           placeholder="Instruksi, kontak, nomor resi…"

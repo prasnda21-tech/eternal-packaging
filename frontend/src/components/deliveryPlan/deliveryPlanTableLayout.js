@@ -1,6 +1,6 @@
 import { moveReportColumn, normalizeReportColumns } from "../reportWorkspace/ReportColumnSettings";
 
-export const DP_TABLE_SCHEMA = 1;
+export const DP_TABLE_SCHEMA = 2;
 
 export function dpLayoutKey(userId, tableId) {
   const user = String(userId || "anon").slice(0, 80);
@@ -54,7 +54,11 @@ export function clientSortRows(rows, sortBy, sortDir, tieBreak = "id") {
       cmp = String(av ?? "").localeCompare(String(bv ?? ""), "id", { sensitivity: "base", numeric: true });
     }
     if (cmp === 0) {
-      cmp = String(a?.[tieBreak] ?? "").localeCompare(String(b?.[tieBreak] ?? ""));
+      // Stable secondary key — do not reverse with primary direction.
+      return String(a?.[tieBreak] ?? "").localeCompare(String(b?.[tieBreak] ?? ""), "id", {
+        sensitivity: "base",
+        numeric: true,
+      });
     }
     return cmp * dir;
   });

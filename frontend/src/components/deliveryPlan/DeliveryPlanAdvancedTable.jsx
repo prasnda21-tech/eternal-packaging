@@ -48,6 +48,8 @@ export default function DeliveryPlanAdvancedTable({
   onFiltersChange,
   emptyLabel = "Tidak ada data",
   testId,
+  rowClassName,
+  rowTestId,
 }) {
   const defs = useMemo(() => columns.filter((c) => c && c.key), [columns]);
   const [layout, setLayout] = useState(() => mergeDpLayout(defs, readDpLayout(userId, tableId)));
@@ -205,57 +207,65 @@ export default function DeliveryPlanAdvancedTable({
                     }}
                   >
                     <div className="dp-adv-th">
-                      <button
-                        type="button"
-                        className="dp-adv-grip"
-                        draggable
-                        aria-label={`Geser kolom ${col.label}`}
-                        title="Tarik untuk urutkan kolom"
-                        onDragStart={() => {
-                          setDragging(k);
-                          setDragArmed(true);
-                        }}
-                        onDragEnd={() => {
-                          setDragging(null);
-                          setTimeout(() => setDragArmed(false), 0);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "ArrowLeft") {
-                            e.preventDefault();
-                            moveKeyboard(k, -1);
-                          }
-                          if (e.key === "ArrowRight") {
-                            e.preventDefault();
-                            moveKeyboard(k, 1);
-                          }
-                        }}
-                      >
-                        <GripVertical size={12} aria-hidden />
-                      </button>
-                      {col.sortable === false ? (
-                        <span className="dp-adv-label">{col.label}</span>
+                      {typeof col.headerRender === "function" ? (
+                        col.headerRender()
                       ) : (
-                        <button
-                          type="button"
-                          className={`dp-adv-sort${sorted ? " is-active" : ""}`}
-                          onClick={() => toggleSort(k)}
-                          aria-label={`Urutkan ${col.label}`}
-                          data-testid={`dp-sort-${tableId}-${k}`}
-                        >
-                          <span className="dp-adv-label">{col.label}</span>
-                          {sorted ? (sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />) : null}
-                        </button>
-                      )}
-                      {col.filterable !== false && (
-                        <button
-                          type="button"
-                          className={`dp-adv-filter-btn${activeFilter ? " is-active" : ""}`}
-                          onClick={(e) => openFilter(k, e)}
-                          aria-label={`Filter ${col.label}`}
-                          data-testid={`dp-filter-${tableId}-${k}`}
-                        >
-                          <Filter size={11} aria-hidden />
-                        </button>
+                        <>
+                          {col.reorderable === false ? null : (
+                            <button
+                              type="button"
+                              className="dp-adv-grip"
+                              draggable
+                              aria-label={`Geser kolom ${col.label}`}
+                              title="Tarik untuk urutkan kolom"
+                              onDragStart={() => {
+                                setDragging(k);
+                                setDragArmed(true);
+                              }}
+                              onDragEnd={() => {
+                                setDragging(null);
+                                setTimeout(() => setDragArmed(false), 0);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "ArrowLeft") {
+                                  e.preventDefault();
+                                  moveKeyboard(k, -1);
+                                }
+                                if (e.key === "ArrowRight") {
+                                  e.preventDefault();
+                                  moveKeyboard(k, 1);
+                                }
+                              }}
+                            >
+                              <GripVertical size={12} aria-hidden />
+                            </button>
+                          )}
+                          {col.sortable === false ? (
+                            <span className="dp-adv-label">{col.label}</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className={`dp-adv-sort${sorted ? " is-active" : ""}`}
+                              onClick={() => toggleSort(k)}
+                              aria-label={`Urutkan ${col.label}`}
+                              data-testid={`dp-sort-${tableId}-${k}`}
+                            >
+                              <span className="dp-adv-label">{col.label}</span>
+                              {sorted ? (sortDir === "asc" ? <ArrowUp size={11} /> : <ArrowDown size={11} />) : null}
+                            </button>
+                          )}
+                          {col.filterable !== false && (
+                            <button
+                              type="button"
+                              className={`dp-adv-filter-btn${activeFilter ? " is-active" : ""}`}
+                              onClick={(e) => openFilter(k, e)}
+                              aria-label={`Filter ${col.label}`}
+                              data-testid={`dp-filter-${tableId}-${k}`}
+                            >
+                              <Filter size={11} aria-hidden />
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                     <span
@@ -347,15 +357,25 @@ export default function DeliveryPlanAdvancedTable({
           <tbody>
             {!displayed.length && (
               <tr>
-                <td colSpan={visibleKeys.length || 1} className="muted" data-testid="delivery-plan-empty">
+                <td
+                  colSpan={visibleKeys.length || 1}
+                  className="muted empty-state"
+                  data-testid={testId ? `${testId}-empty` : "delivery-plan-empty"}
+                >
                   {emptyLabel}
                 </td>
               </tr>
             )}
             {displayed.map((row, idx) => {
               const key = typeof rowKey === "function" ? rowKey(row, idx) : row?.[rowKey] || idx;
+              const extraClass = typeof rowClassName === "function" ? rowClassName(row, idx) : "";
+              const testRowId = typeof rowTestId === "function" ? rowTestId(row, idx) : undefined;
               return (
-                <tr key={key}>
+                <tr
+                  key={key}
+                  className={extraClass || undefined}
+                  data-testid={testRowId}
+                >
                   {visibleKeys.map((k) => {
                     const col = byKey.get(k);
                     const raw = row?.[k];

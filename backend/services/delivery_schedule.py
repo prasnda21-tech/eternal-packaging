@@ -328,14 +328,18 @@ def sj_item_lines_for_shipment(sh: Optional[dict]) -> List[dict]:
         line_id_out = str(line_id).strip() if line_id is not None and str(line_id).strip() else None
         qty_raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
         name = ln.get("name")
-        out.append({
+        item = {
             "shipment_id": shipment_id,
             "sj_number": sj_number,
             "line_id": line_id_out,
             "line_idx": _optional_int(ln.get("line_idx")),
             "name": str(name) if name is not None else "",
             "qty": _optional_int(qty_raw),
-        })
+        }
+        unit_raw = ln.get("unit") if ln.get("unit") is not None else ln.get("satuan")
+        if unit_raw is not None and str(unit_raw).strip():
+            item["unit"] = str(unit_raw).strip()
+        out.append(item)
     return out
 
 
