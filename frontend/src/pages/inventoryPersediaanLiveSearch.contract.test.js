@@ -9,6 +9,7 @@ const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8")
 const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
 const master = fs.readFileSync(path.join(__dirname, "MasterBarangJasa.jsx"), "utf8");
 const stock = fs.readFileSync(path.join(__dirname, "StockSaatIni.jsx"), "utf8");
+const ssiStatus = fs.readFileSync(path.join(__dirname, "../lib/ssiStatusDisplay.js"), "utf8");
 const value = fs.readFileSync(path.join(__dirname, "NilaiPersediaan.jsx"), "utf8");
 const hook = fs.readFileSync(path.join(__dirname, "../hooks/useDebouncedLiveSearch.js"), "utf8");
 const currentStockPy = fs.readFileSync(
@@ -141,7 +142,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/qty_polos/);
     expect(stock).toMatch(/tercetak_belum_kirim/);
     expect(stock).toMatch(/cetak_sudah_dikirim/);
-    expect(stock).toMatch(/NO_OPERATOR_EVIDENCE/);
+    // Reason codes live in shared status contract helper (P0-B1).
+    expect(ssiStatus).toMatch(/NO_OPERATOR_EVIDENCE/);
+    expect(ssiStatus).toMatch(/INDICATIVE/);
+    expect(ssiStatus).toMatch(/BASELINE_INCOMPLETE/);
+    expect(stock).toMatch(/resolveDapatDijualDisplay/);
+    expect(stock).toMatch(/resolvePolosDisplay/);
+    expect(stock).toMatch(/Indikatif/);
     expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 
