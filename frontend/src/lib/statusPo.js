@@ -20,6 +20,7 @@ export const STATUS_PO_VIEWS = {
   today: "Deadline Hari Ini",
   h1: "H-1 Pengiriman",
   h6: "Deadline ≤ 6 Jam",
+  h24: "Deadline ≤ 24 Jam",
   overdue: "Overdue",
   design: "Menunggu Approval Design",
   payment: "Menunggu Approval Payment",

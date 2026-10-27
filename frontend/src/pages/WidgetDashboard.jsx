@@ -301,6 +301,8 @@ export default function WidgetDashboard() {
       allowed={allowed}
       onNavigate={go}
       periodLabel={periodLabel}
+      periodStart={start}
+      periodEnd={end}
       narrow={narrow}
       periodControl={periodControl}
     />

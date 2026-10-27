@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { RefreshCw, RotateCcw, Search } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -17,7 +17,26 @@ const EMPTY_FILTERS = {
   status: "",
   date_from: "",
   date_to: "",
+  unit: "",
 };
+
+const STATUS_VALUES = new Set(["", "hari_ini", "terlambat", "terjadwal"]);
+
+function filtersFromSearchParams(params) {
+  const statusRaw = String(params.get("status") || "").trim().toLowerCase();
+  const status = STATUS_VALUES.has(statusRaw) ? statusRaw : "";
+  const dateFrom = String(params.get("date_from") || "").trim();
+  const dateTo = String(params.get("date_to") || "").trim();
+  const unit = String(params.get("unit") || "").trim();
+  const ymd = /^\d{4}-\d{2}-\d{2}$/;
+  return {
+    ...EMPTY_FILTERS,
+    status,
+    date_from: ymd.test(dateFrom) ? dateFrom : "",
+    date_to: ymd.test(dateTo) ? dateTo : "",
+    unit,
+  };
+}
 
 const STATUS_OPTIONS = [
   { value: "", label: "Semua status" },
@@ -69,9 +88,12 @@ function cellOrDash(value) {
 
 export default function DeliveryPlanPage() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const userId = user?.id || user?.email || "anon";
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [draft, setDraft] = useState(EMPTY_FILTERS);
+  const seedKey = searchParams.toString();
+  const seeded = useMemo(() => filtersFromSearchParams(searchParams), [seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [filters, setFilters] = useState(seeded);
+  const [draft, setDraft] = useState(seeded);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [sortBy, setSortBy] = useState("");
@@ -81,6 +103,12 @@ export default function DeliveryPlanPage() {
   const [meta, setMeta] = useState({ total: 0, total_pages: 1, counts: {}, totals: null });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setFilters(seeded);
+    setDraft(seeded);
+    setPage(1);
+  }, [seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -95,6 +123,7 @@ export default function DeliveryPlanPage() {
       if (filters.status) params.status = filters.status;
       if (filters.date_from) params.date_from = filters.date_from;
       if (filters.date_to) params.date_to = filters.date_to;
+      if (filters.unit) params.unit = filters.unit;
       if (sortBy) {
         params.sort_by = sortBy;
         params.sort_dir = sortDir || "asc";
@@ -309,6 +338,12 @@ export default function DeliveryPlanPage() {
           <p className="subhead">
             Daftar PO dengan tanggal pengiriman valid, manual atau otomatis.
           </p>
+          {filters.unit ? (
+            <p className="muted small" data-testid="dp-unit-filter-note">
+              Filter satuan dari Qty Rencana Pengiriman: <strong>{filters.unit}</strong>
+              {" "}(hanya sisa qty &gt; 0, selaras kartu dashboard).
+            </p>
+          ) : null}
         </div>
         <div className="dp-header-actions">
           <button

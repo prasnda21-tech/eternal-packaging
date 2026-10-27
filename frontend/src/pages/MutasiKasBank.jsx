@@ -45,6 +45,7 @@ export default function MutasiKasBank() {
   const urlStart = searchParams.get("start_date") || "";
   const urlEnd = searchParams.get("end_date") || "";
   const urlSource = searchParams.get("source_type") || "";
+  const excludeInternalTransfer = searchParams.get("exclude_internal_transfer") === "1";
   const [banks, setBanks] = useState([]);
   const [cashBankId, setCashBankId] = useState(urlBank);
   const [startDate, setStartDate] = useState(urlStart || monthStart);
@@ -83,6 +84,7 @@ export default function MutasiKasBank() {
         end_date: endDate,
         q: q || undefined,
         source_type: sourceType || undefined,
+        exclude_internal_transfer: excludeInternalTransfer || undefined,
       });
       setData(res);
     } catch (ex) {
@@ -91,11 +93,15 @@ export default function MutasiKasBank() {
     } finally {
       setLoading(false);
     }
-  }, [cashBankId, startDate, endDate, q, sourceType]);
+  }, [cashBankId, startDate, endDate, q, sourceType, excludeInternalTransfer]);
 
   useEffect(() => { load(); }, [load]);
 
-  const items = useMemo(() => (Array.isArray(data?.items) ? data.items : []), [data]);
+  // Rows + totals come from the API; exclude_internal_transfer is server-side.
+  const items = useMemo(
+    () => (Array.isArray(data?.items) ? data.items : []),
+    [data],
+  );
 
   const openSource = (row) => {
     if (!row?.source_path || !row?.source_id) return;
@@ -108,6 +114,11 @@ export default function MutasiKasBank() {
         <div>
           <h1>Mutasi Kas &amp; Bank</h1>
           <p className="muted">Ledger dari jurnal posted — saldo berjalan dari baris jurnal.</p>
+          {excludeInternalTransfer ? (
+            <p className="muted small" data-testid="kas-bank-mutasi-exclude-transfer-note">
+              Transfer antar rekening sendiri dikeluarkan dari baris, total, dan hitungan agar selaras dengan kartu Arus Kas dashboard.
+            </p>
+          ) : null}
         </div>
       </div>
 

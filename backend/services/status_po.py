@@ -9,6 +9,7 @@ from quantity_rules import (
     PRINT_STATUS_IN_PROGRESS,
     PRINT_STATUS_NOT_STARTED,
     find_shipment,
+    is_fully_delivered,
     packing_status_semantic,
     print_completed_qty,
     print_status,
@@ -38,9 +39,16 @@ STAGES = (
 )
 
 STATUS_PO_VIEWS = (
-    "active", "urgent", "due_today", "today", "h1", "h6", "overdue",
+    "active", "urgent", "due_today", "today", "h1", "h6", "h24", "overdue",
     "design", "payment", "hold", "completed", "cancelled", "all",
     "work_today", "delivery_today",
+)
+
+# Dashboard snapshot deep-links: active population matches production KPI
+# (is_fully_delivered), not the stage<14 special-view legacy subset.
+DASHBOARD_SPECIAL_VIEWS = (
+    "urgent", "due_today", "today", "h1", "h6", "h24", "overdue",
+    "design", "payment", "hold",
 )
 
 STATUS_PO_DEFAULT_PAGE_SIZE = 50
@@ -273,7 +281,13 @@ def _parse_dt(iso: Any):
         return None
 
 
-def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: Optional[datetime] = None) -> List[dict]:
+def filter_orders_for_view(
+    orders: Iterable[dict],
+    view: Optional[str],
+    *,
+    now: Optional[datetime] = None,
+    basis: Optional[str] = None,
+) -> List[dict]:
     """Filter orders for Status PO tabs and dashboard deep-links.
 
     Tab views (empty/all, active, completed, cancelled):
@@ -281,12 +295,19 @@ def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: 
       - Aktif = non-cancelled and not po_is_fully_delivered
       - Selesai = non-cancelled and po_is_fully_delivered
       - Dibatalkan = cancelled only
-    Special dashboard views keep prior stage-based active subset semantics.
+
+    When ``basis=snapshot``, Aktif uses ``is_fully_delivered`` so the list
+    matches Dashboard Produksi PO Aktif (empty ``qty_delivered`` edge case).
+
+    Special dashboard views (urgent/hold/deadline/approval) use the same
+    snapshot active population — not the legacy ``current_stage < 14`` subset.
     """
     now = now or datetime.now(timezone.utc)
     today_iso = now.strftime("%Y-%m-%d")
     today = wib_today(now)
     key = (view or "").strip().lower()
+    basis_key = (basis or "").strip().lower()
+    snapshot_basis = basis_key == "snapshot"
     if key == "today":
         key = "due_today"
     if key in ("semua",):
@@ -299,17 +320,24 @@ def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: 
     if not key or key == "all":
         return src
 
+    def _active_delivery(order: dict) -> bool:
+        if snapshot_basis or key in DASHBOARD_SPECIAL_VIEWS:
+            return not is_fully_delivered(order)
+        return not po_is_fully_delivered(order)
+
     # Four-tab classification uses canonical delivery evidence.
     if key == "active":
-        return [o for o in src if not po_is_fully_delivered(o)]
+        return [o for o in src if _active_delivery(o)]
     if key == "completed":
+        if snapshot_basis:
+            return [o for o in src if is_fully_delivered(o)]
         return [o for o in src if po_is_fully_delivered(o)]
 
     if key not in STATUS_PO_VIEWS:
         return src
 
-    # Special dashboard views: preserve stage < 14 active-subset semantics.
-    active = [o for o in src if (o.get("current_stage") or 0) < 14]
+    # Dashboard deep-links: delivery-active via is_fully_delivered (snapshot KPI).
+    active = [o for o in src if not is_fully_delivered(o)]
     if key == "urgent":
         return [o for o in active if o.get("priority") == "urgent"]
     if key == "hold":
@@ -331,6 +359,12 @@ def filter_orders_for_view(orders: Iterable[dict], view: Optional[str], *, now: 
         return [o for o in active if o.get("delivery_deadline_status") == "h1"]
     if key == "h6":
         return [o for o in active if o.get("delivery_deadline_status") == "h6"]
+    if key == "h24":
+        # ≤ 24 jam window on the snapshot: h6 ∪ h1 (overlapping, not summed).
+        return [
+            o for o in active
+            if o.get("delivery_deadline_status") in ("h6", "h1")
+        ]
     if key == "work_today":
         return [o for o in src if is_work_today(o, today)]
     if key == "delivery_today":
@@ -428,6 +462,7 @@ def select_status_po_eligible(
     *,
     now: Optional[datetime] = None,
     filters: Optional[dict] = None,
+    basis: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Stream-friendly eligibility: view + search/date + status label.
 
@@ -435,7 +470,7 @@ def select_status_po_eligible(
     status_options for the tab/search/date/customer scope (before status filter).
     """
     status_filter = str((filters or {}).get("status") or "").strip()
-    scoped = filter_orders_for_view(orders, view, now=now)
+    scoped = filter_orders_for_view(orders, view, now=now, basis=basis)
     status_options: set = set()
     eligible: List[tuple] = []
     docs_scanned = 0
@@ -623,14 +658,17 @@ def build_status_po(
     page: Any = 1,
     page_size: Any = STATUS_PO_DEFAULT_PAGE_SIZE,
     paginate: bool = True,
+    basis: Optional[str] = None,
 ) -> dict:
     """Classify → filter → sort → count → paginate; build rows only for the page.
 
-    Classification (po_is_fully_delivered) runs on the scoped set before
-    pagination so totals and page membership are globally accurate.
+    Classification (po_is_fully_delivered / snapshot is_fully_delivered) runs on
+    the scoped set before pagination so totals and page membership are accurate.
     """
     orders_list = list(orders)
-    selected = select_status_po_eligible(orders_list, view, now=now, filters=filters)
+    selected = select_status_po_eligible(
+        orders_list, view, now=now, filters=filters, basis=basis,
+    )
     view_key = (view or "").strip().lower() or None
     if view_key == "semua":
         view_key = "all"

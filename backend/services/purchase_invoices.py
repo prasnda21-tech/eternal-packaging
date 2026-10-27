@@ -542,6 +542,8 @@ async def list_purchase_invoices(
     purchase_order_id: Optional[str] = None,
     with_outstanding: bool = False,
     include_cancelled: bool = False,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> List[dict]:
     filters: Dict[str, Any] = {}
     if purchase_order_id:
@@ -553,6 +555,15 @@ async def list_purchase_invoices(
             {"po_number": {"$regex": needle, "$options": "i"}},
             {"supplier": {"$regex": needle, "$options": "i"}},
         ]
+    start = str(date_from or "").strip()[:10]
+    end = str(date_to or "").strip()[:10]
+    if start or end:
+        date_clause: Dict[str, Any] = {}
+        if start:
+            date_clause["$gte"] = start
+        if end:
+            date_clause["$lte"] = end
+        filters["invoice_date"] = date_clause
     if not include_cancelled:
         filters = with_active_filter(filters)
     rows = await db[COLLECTION].find(filters, {"_id": 0}).sort("created_at", -1).to_list(1000)

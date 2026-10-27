@@ -405,10 +405,21 @@ function deleteBlockerIds(det, fallbackIds) {
 
 const EMPTY_INVOICE_COLUMN_FILTERS = {
   datePreset: "all",
+  dateFrom: "",
+  dateTo: "",
   financialStatus: "",
   accountingStatus: "",
   paymentStatus: "",
+  sales: "",
+  customerId: "",
 };
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validYmd(value) {
+  const text = String(value || "").trim();
+  return YMD_RE.test(text) ? text : "";
+}
 
 const INVOICE_PAGE_SIZES = [...SALES_LIST_PAGE_SIZES];
 const INVOICE_FINANCIAL_FILTER_VALUES = new Set(["", "draft", "finalized", "cancelled"]);
@@ -434,23 +445,34 @@ function invoiceFiltersActive(filters, query) {
   if (String(query || "").trim()) return true;
   const f = filters || EMPTY_INVOICE_COLUMN_FILTERS;
   if (f.datePreset && f.datePreset !== "all") return true;
+  if (String(f.dateFrom || "").trim() || String(f.dateTo || "").trim()) return true;
   if (String(f.financialStatus || "").trim()) return true;
   if (String(f.accountingStatus || "").trim()) return true;
   if (String(f.paymentStatus || "").trim()) return true;
+  if (String(f.sales || "").trim() || String(f.customerId || "").trim()) return true;
   return false;
 }
 
 function invoiceColumnFiltersFromSearchParams(params) {
+  const dateFrom = validYmd(params.get("date_from"));
+  const dateTo = validYmd(params.get("date_to"));
+  const hasCustomRange = Boolean(dateFrom || dateTo);
   const datePresetRaw = String(params.get("date_preset") || "all").trim() || "all";
-  const datePreset = INVOICE_DATE_PRESET_VALUES.has(datePresetRaw) ? datePresetRaw : "all";
+  const datePreset = hasCustomRange
+    ? "all"
+    : (INVOICE_DATE_PRESET_VALUES.has(datePresetRaw) ? datePresetRaw : "all");
   const financialStatus = String(params.get("financial_status") || "").trim();
   const accountingStatus = String(params.get("accounting_status") || "").trim();
   const paymentStatus = String(params.get("payment_status") || "").trim().toUpperCase();
   return {
     datePreset,
+    dateFrom,
+    dateTo,
     financialStatus: INVOICE_FINANCIAL_FILTER_VALUES.has(financialStatus) ? financialStatus : "",
     accountingStatus: INVOICE_ACCOUNTING_FILTER_VALUES.has(accountingStatus) ? accountingStatus : "",
     paymentStatus: INVOICE_PAYMENT_FILTER_VALUES.has(paymentStatus) ? paymentStatus : "",
+    sales: String(params.get("sales") || "").trim(),
+    customerId: String(params.get("customer_id") || "").trim(),
   };
 }
 
@@ -474,7 +496,11 @@ function invoiceDeletable(inv, { allowBusinessCancel = false } = {}) {
 }
 
 function invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize }) {
-  const range = invoiceDatePresetRange(columnFilters.datePreset || "all");
+  const customFrom = validYmd(columnFilters.dateFrom);
+  const customTo = validYmd(columnFilters.dateTo);
+  const range = (customFrom || customTo)
+    ? { date_from: customFrom, date_to: customTo }
+    : invoiceDatePresetRange(columnFilters.datePreset || "all");
   return salesFiveTabListParams({
     listTab,
     page,
@@ -486,6 +512,8 @@ function invoiceListParams({ searchQuery, listTab, columnFilters, page, pageSize
       financial_status: columnFilters.financialStatus || undefined,
       accounting_status: columnFilters.accountingStatus || undefined,
       payment_status: columnFilters.paymentStatus || undefined,
+      sales: columnFilters.sales || undefined,
+      customer_id: columnFilters.customerId || undefined,
     },
   });
 }
@@ -1224,12 +1252,17 @@ export default function FakturPenjualan() {
     if (listTab && listTab !== "active") next.set("tab", listTab);
     if (page > 1) next.set("page", String(page));
     if (pageSize !== SALES_LIST_DEFAULT_PAGE_SIZE) next.set("page_size", String(pageSize));
-    if (columnFilters.datePreset && columnFilters.datePreset !== "all") {
+    if (columnFilters.dateFrom || columnFilters.dateTo) {
+      if (columnFilters.dateFrom) next.set("date_from", columnFilters.dateFrom);
+      if (columnFilters.dateTo) next.set("date_to", columnFilters.dateTo);
+    } else if (columnFilters.datePreset && columnFilters.datePreset !== "all") {
       next.set("date_preset", columnFilters.datePreset);
     }
     if (columnFilters.financialStatus) next.set("financial_status", columnFilters.financialStatus);
     if (columnFilters.accountingStatus) next.set("accounting_status", columnFilters.accountingStatus);
     if (columnFilters.paymentStatus) next.set("payment_status", columnFilters.paymentStatus);
+    if (columnFilters.sales) next.set("sales", columnFilters.sales);
+    if (columnFilters.customerId) next.set("customer_id", columnFilters.customerId);
     const nextStr = next.toString();
     if (nextStr === searchParams.toString()) return;
     setSearchParams(next, { replace: true });
@@ -2317,7 +2350,7 @@ export default function FakturPenjualan() {
                       options={INVOICE_DATE_PRESET_OPTIONS}
                       value={columnFilters.datePreset || "all"}
                       emptyValue="all"
-                      onChange={(next) => patchColumnFilter({ datePreset: next })}
+                      onChange={(next) => patchColumnFilter({ datePreset: next, dateFrom: "", dateTo: "" })}
                     />
                   </th>
                   <th>Total Faktur</th>

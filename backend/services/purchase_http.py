@@ -361,10 +361,19 @@ def register_purchase_routes(api_router, *, get_db, current_user, require_perm, 
         q: Optional[str] = None,
         purchase_order_id: Optional[str] = None,
         with_outstanding: bool = False,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         user=Depends(current_user),
     ):
         await require_any_perm(user, "purchase_invoices.view", "purchase_payments.view", "purchase_orders.view")
-        rows = await list_purchase_invoices(get_db(), q=q, purchase_order_id=purchase_order_id, with_outstanding=with_outstanding)
+        rows = await list_purchase_invoices(
+            get_db(),
+            q=q,
+            purchase_order_id=purchase_order_id,
+            with_outstanding=with_outstanding,
+            date_from=date_from,
+            date_to=date_to,
+        )
         return {"invoices": rows, "count": len(rows)}
 
     @api_router.get("/purchase-invoices/from-po/{po_id}/preview")

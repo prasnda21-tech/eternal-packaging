@@ -728,6 +728,7 @@ def register_cash_bank_routes(
         end_date: str = Query(..., min_length=1),
         q: Optional[str] = Query(None),
         source_type: Optional[str] = Query(None),
+        exclude_internal_transfer: bool = Query(False),
         user=Depends(require_perm(PERM_VIEW)),
     ):
         """Mutasi / ledger from journal_lines. Zero-write."""
@@ -740,6 +741,7 @@ def register_cash_bank_routes(
                 end_date=end_date,
                 q=q,
                 source_type=source_type,
+                exclude_internal_transfer=exclude_internal_transfer,
             )
         except MutasiValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
