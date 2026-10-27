@@ -1,10 +1,13 @@
 /**
- * SSI P0-B1 display-status contract (qualification only — numerics unchanged).
+ * SSI P0-B1 UI-only display-status contract.
  *
- * Precedence: UNVERIFIED > INDICATIVE > READY (verified).
- * Stock Dapat Dijual: INDICATIVE when physical baseline incomplete.
- * Qty Polos: never READY/terverifikasi — no WIP/rusak/plain coverage field;
- *   UNVERIFIED when no defensible calc; INDICATIVE when formula produced a number.
+ * Uses existing catalog fields + stockPhysicalPrimaryDisplay incompleteness.
+ * Does not change API payloads or Excel formulas.
+ *
+ * Precedence: UNVERIFIED > INDICATIVE > READY (display verified).
+ * - Stock Dapat Dijual: Indikatif when Stock cell is Belum lengkap / Belum saldo.
+ * - Qty Polos: never shown as fully verified (no WIP/rusak/plain coverage in API);
+ *   Belum terverifikasi when qty null / UNVERIFIED; Indikatif when a number exists.
  */
 
 export const SSI_STATUS = {
@@ -36,34 +39,32 @@ export function normalizeSsiStatus(status, { qty } = {}) {
 }
 
 /**
- * Physical baseline incomplete when Stock cell would hide the number
- * (Belum saldo / Belum lengkap) OR API marks physical_baseline_complete false /
- * baseline unreconciled.
+ * Physical baseline incomplete when the Stock cell hides the number
+ * (Belum saldo / Belum lengkap). Prefer physicalPrimary from
+ * stockPhysicalPrimaryDisplay; fall back to warehouse_balances / baseline_status.
  */
 export function isPhysicalBaselineIncomplete(item, physicalPrimary) {
   if (physicalPrimary && physicalPrimary.present === false) return true;
-  if (item && item.physical_baseline_complete === false) return true;
   if (item && String(item.baseline_status || "") === "unreconciled") return true;
+  const balances = Array.isArray(item?.warehouse_balances) ? item.warehouse_balances : [];
+  if (balances.length > 0) {
+    if (balances.some((wb) => wb?.balance_present === false)) return true;
+    if (balances.some((wb) => String(wb?.baseline_status || "") === "unreconciled")) return true;
+  }
   return false;
 }
 
 /**
- * Resolve Stock Dapat Dijual display.
- * @returns {{ mode: 'unverified'|'indicative'|'qty', qty: number|null, status: string, reason: string|null, label: string|null, title: string }}
+ * Resolve Stock Dapat Dijual display from existing API numerics + FE completeness.
  */
 export function resolveDapatDijualDisplay(item, physicalPrimary) {
   const qty = item?.stock_dapat_dijual ?? item?.qty_siap_jual;
-  const apiStatus = normalizeSsiStatus(
-    item?.stock_dapat_dijual_status || item?.qty_siap_jual_status,
-    { qty },
-  );
+  const apiStatus = normalizeSsiStatus(item?.qty_siap_jual_status, { qty });
   const incomplete = isPhysicalBaselineIncomplete(item, physicalPrimary);
   const note = String(item?.qty_siap_jual_note || "").trim();
-  const reasonCode = String(
-    item?.stock_dapat_dijual_reason || item?.qty_siap_jual_reason || "",
-  ).trim();
+  const reasonCode = String(item?.qty_siap_jual_reason || "").trim();
 
-  if (qty == null && apiStatus === SSI_STATUS.UNVERIFIED) {
+  if (qty == null) {
     return {
       mode: "unverified",
       qty: null,
@@ -74,8 +75,8 @@ export function resolveDapatDijualDisplay(item, physicalPrimary) {
     };
   }
 
-  // Precedence: incomplete baseline or API INDICATIVE → Indikatif (keep number)
-  if (incomplete || apiStatus === SSI_STATUS.INDICATIVE) {
+  // Keep negatives; qualify when Stock baseline incomplete or API says unavailable.
+  if (incomplete || apiStatus === SSI_STATUS.UNVERIFIED) {
     const title = [
       "Indikatif — stok fisik belum lengkap",
       SSI_REASON_LABEL[reasonCode] || reasonCode,
@@ -84,7 +85,7 @@ export function resolveDapatDijualDisplay(item, physicalPrimary) {
     ].filter(Boolean).join(" — ");
     return {
       mode: "indicative",
-      qty: qty ?? null,
+      qty,
       status: SSI_STATUS.INDICATIVE,
       reason: reasonCode || "BASELINE_INCOMPLETE",
       label: "Indikatif",
@@ -103,7 +104,7 @@ export function resolveDapatDijualDisplay(item, physicalPrimary) {
 }
 
 /**
- * Resolve Qty Polos display.
+ * Resolve Qty Polos display — never fully verified without WIP coverage evidence.
  */
 export function resolvePolosDisplay(item, physicalPrimary) {
   const qty = item?.qty_polos ?? item?.qty_polos_gudang;
@@ -131,9 +132,10 @@ export function resolvePolosDisplay(item, physicalPrimary) {
     };
   }
 
-  // Safe subset: never VERIFIED — INDICATIVE whenever a number exists
-  const reason = reasonCode
-    || (incomplete ? "BASELINE_INCOMPLETE" : "SIMPLE_POLOS_NO_WIP_COVERAGE");
+  // Numeric exists (often API READY when print/SJ ready) — still Indikatif only.
+  const reason = incomplete
+    ? "BASELINE_INCOMPLETE"
+    : (reasonCode || "SIMPLE_POLOS_NO_WIP_COVERAGE");
   return {
     mode: "indicative",
     qty,

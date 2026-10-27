@@ -23,6 +23,7 @@ import {
   resolveDapatDijualDisplay,
   resolvePolosDisplay,
 } from "../lib/ssiStatusDisplay";
+import "./StockSaatIni.status.css";
 import { storageUserKey } from "../lib/poListReturn";
 import {
   buildStockSaatIniPageCacheKey,
@@ -83,10 +84,8 @@ const EXCEL_SSI_COLUMNS = [
     label: "Stock Dapat Dijual",
     testId: "stock-siap-jual",
     note: "Stock − (PO aktif − qty sudah dikirim); boleh negatif; Indikatif bila stok belum lengkap",
-    statusKey: "stock_dapat_dijual_status",
-    legacyStatusKey: "qty_siap_jual_status",
-    reasonKey: "stock_dapat_dijual_reason",
-    legacyReasonKey: "qty_siap_jual_reason",
+    statusKey: "qty_siap_jual_status",
+    reasonKey: "qty_siap_jual_reason",
     noteKey: "qty_siap_jual_note",
   },
   {

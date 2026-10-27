@@ -10,6 +10,7 @@ import {
   resolveDapatDijualDisplay,
   resolvePolosDisplay,
 } from "../lib/ssiStatusDisplay";
+import "./StockSaatIni.status.css";
 
 const EXCEL_DETAIL_FIELDS = [
   { key: "saldo_awal", label: "Saldo Awal" },
@@ -18,10 +19,8 @@ const EXCEL_DETAIL_FIELDS = [
   {
     key: "stock_dapat_dijual",
     label: "Stock Dapat Dijual",
-    statusKey: "stock_dapat_dijual_status",
-    legacyStatusKey: "qty_siap_jual_status",
-    reasonKey: "stock_dapat_dijual_reason",
-    legacyReasonKey: "qty_siap_jual_reason",
+    statusKey: "qty_siap_jual_status",
+    reasonKey: "qty_siap_jual_reason",
     noteKey: "qty_siap_jual_note",
     contract: "dapat",
   },

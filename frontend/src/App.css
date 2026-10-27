@@ -9130,13 +9130,6 @@ button.ghost.sm.icon{padding:4px 6px}
   display:inline-flex;align-items:center;min-height:22px;padding:2px 8px;border-radius:999px;
   background:#f4f1ea;border:1px solid #d9d0c0;color:#6b5a3e;font:600 11.5px/1.2 'IBM Plex Sans',sans-serif
 }
-.stock-status-badge--indicative{
-  display:inline-flex;align-items:center;min-height:20px;padding:1px 7px;border-radius:999px;
-  background:#eef3f8;border:1px solid #c5d0db;color:#3d5568;font:600 10.5px/1.2 'IBM Plex Sans',sans-serif
-}
-.stock-indicative-cell{
-  display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end
-}
 .ssi-detail-overlay{
   position:fixed;inset:0;z-index:80;display:flex;justify-content:flex-end;
 }

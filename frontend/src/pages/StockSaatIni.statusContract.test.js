@@ -57,7 +57,7 @@ async function flush() {
   });
 }
 
-describe("StockSaatIni P0-B1 status contract", () => {
+describe("StockSaatIni P0-B1 UI-only status contract", () => {
   let container;
   let root;
 
@@ -100,11 +100,8 @@ describe("StockSaatIni P0-B1 status contract", () => {
           base_unit: "PCS",
           physical_qty: 0,
           baseline_status: "unreconciled",
-          physical_baseline_complete: false,
           stock_dapat_dijual: -8000,
-          stock_dapat_dijual_status: "INDICATIVE",
-          qty_siap_jual_status: "INDICATIVE",
-          qty_siap_jual_reason: "BASELINE_INCOMPLETE",
+          qty_siap_jual_status: "READY",
           qty_polos: null,
           qty_polos_status: "UNVERIFIED",
           warehouse_balances: [
@@ -146,12 +143,10 @@ describe("StockSaatIni P0-B1 status contract", () => {
           base_unit: "PCS",
           physical_qty: 6000,
           baseline_status: "reconciled",
-          physical_baseline_complete: true,
           stock_dapat_dijual: -22000,
           qty_siap_jual_status: "READY",
           qty_polos: 2000,
-          qty_polos_status: "INDICATIVE",
-          qty_polos_reason: "SIMPLE_POLOS_NO_WIP_COVERAGE",
+          qty_polos_status: "READY",
           warehouse_balances: [
             {
               warehouse_id: "wh-a",

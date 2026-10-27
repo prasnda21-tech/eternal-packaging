@@ -4149,16 +4149,10 @@ async def list_physical_stock_catalog(
             print_delivery_proven=print_proven and not print_unproven,
             stock_book=buckets["physical_qty"] if balance_present_any else None,
         )
-        # Completeness for status contract: every operational WH in scope has a
-        # RECONCILED balance (same gate as branch baseline_status). Partial WH
-        # sums still feed numeric formulas; display marks Dapat Dijual/Polos
-        # INDICATIVE — never invent verified zero or WIP coverage.
-        physical_baseline_complete = baseline_status == BASELINE_RECONCILED
         apply_excel_fields_to_catalog_row(
             row,
             excel,
             balance_present=balance_present_any or bool(comp),
-            physical_baseline_complete=physical_baseline_complete,
         )
         row["print_delivery_provenance"] = print_prov or (
             "verified_zero" if print_proven else ""

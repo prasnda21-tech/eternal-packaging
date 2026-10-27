@@ -45,17 +45,11 @@ FORMULA_VERSION = "ssi_excel_v1_2"
 
 STATUS_READY = "READY"
 STATUS_UNVERIFIED = "UNVERIFIED"
-STATUS_INDICATIVE = "INDICATIVE"
-
-# Display precedence (highest wins): UNVERIFIED > INDICATIVE > READY(VERIFIED).
-STATUS_PRECEDENCE = (STATUS_UNVERIFIED, STATUS_INDICATIVE, STATUS_READY)
 
 REASON_PRINT_DELIVERY_UNPROVEN = "PRINT_DELIVERY_UNPROVEN"
 REASON_COMPLETION_UNPROVEN = "COMPLETION_UNPROVEN"
 REASON_DEPENDENT_UNKNOWN = "DEPENDENT_UNKNOWN"
 REASON_NO_OPERATOR_EVIDENCE = "NO_OPERATOR_EVIDENCE"
-REASON_BASELINE_INCOMPLETE = "BASELINE_INCOMPLETE"
-REASON_SIMPLE_POLOS_NO_WIP_COVERAGE = "SIMPLE_POLOS_NO_WIP_COVERAGE"
 
 SOURCE_SALDO_AWAL = "physical_stock_ledger.OPENING_BALANCE"
 SOURCE_PEMBELIAN = "physical_stock_ledger.PURCHASE_RECEIPT"
@@ -98,50 +92,6 @@ def _known(qty: Any, *, reason: Optional[str] = None) -> Dict[str, Any]:
         "status": STATUS_READY,
         "reason": reason,
     }
-
-
-def _normalize_status(status: Optional[str], *, qty: Any = None) -> str:
-    st = str(status or "").strip().upper()
-    if st in (STATUS_UNVERIFIED, STATUS_INDICATIVE, STATUS_READY):
-        return st
-    if st in ("BELUM_TERSEDIA", "UNKNOWN"):
-        return STATUS_UNVERIFIED
-    if qty is None:
-        return STATUS_UNVERIFIED
-    return STATUS_READY
-
-
-def qualify_column_status(
-    *,
-    formula_status: Optional[str],
-    qty: Any,
-    physical_baseline_complete: bool,
-    column: str,
-) -> Tuple[str, Optional[str]]:
-    """Qualify display status without changing numeric payloads.
-
-    column:
-      - \"dapat\": Stock Dapat Dijual — READY only when baseline complete
-      - \"polos\": Qty Polos — never READY; no API WIP/rusak/plain coverage field
-    Precedence: UNVERIFIED > INDICATIVE > READY.
-    """
-    st = _normalize_status(formula_status, qty=qty)
-    if qty is None or st == STATUS_UNVERIFIED:
-        return STATUS_UNVERIFIED, None
-
-    if column == "dapat":
-        if not physical_baseline_complete:
-            return STATUS_INDICATIVE, REASON_BASELINE_INCOMPLETE
-        return STATUS_READY, None
-
-    if column == "polos":
-        # Safe subset (P0-B1 STOP): no field proves WIP/rusak/plain-shipment coverage.
-        # Keep numeric when formula computed; never label VERIFIED/READY.
-        if not physical_baseline_complete:
-            return STATUS_INDICATIVE, REASON_BASELINE_INCOMPLETE
-        return STATUS_INDICATIVE, REASON_SIMPLE_POLOS_NO_WIP_COVERAGE
-
-    return st, None
 
 
 def compute_stock_book(
@@ -354,23 +304,9 @@ def apply_excel_fields_to_catalog_row(
     excel: Dict[str, Any],
     *,
     balance_present: bool = True,
-    physical_baseline_complete: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Merge Excel columns into an existing SSI catalog row (mutates + returns).
-
-    Numeric formulas are preserved. Status fields are qualified for display:
-    incomplete physical baseline → INDICATIVE on Stock Dapat Dijual; Qty Polos
-    never READY (no WIP/rusak/plain coverage contract in API).
-    """
+    """Merge Excel columns into an existing SSI catalog row (mutates + returns)."""
     out = row
-    # Default: treat balance_present as completeness (legacy callers / unit tests).
-    # Catalog wiring should pass explicit physical_baseline_complete from
-    # reconciled warehouse coverage.
-    baseline_complete = (
-        bool(balance_present)
-        if physical_baseline_complete is None
-        else bool(physical_baseline_complete)
-    )
     out["saldo_awal"] = excel["saldo_awal"]
     out["pembelian"] = excel["pembelian"]
     out["stock"] = excel["stock"]
@@ -379,6 +315,8 @@ def apply_excel_fields_to_catalog_row(
     out["qty_tercetak_status"] = excel.get("qty_tercetak_status") or STATUS_READY
     out["qty_tercetak_reason"] = excel.get("qty_tercetak_reason")
     out["qty_polos"] = excel["qty_polos"]
+    out["qty_polos_status"] = excel.get("qty_polos_status") or STATUS_READY
+    out["qty_polos_reason"] = excel.get("qty_polos_reason")
     out["tercetak_belum_kirim"] = excel["tercetak_belum_kirim"]
     out["tercetak_belum_kirim_status"] = excel.get("tercetak_belum_kirim_status") or STATUS_READY
     out["tercetak_belum_kirim_reason"] = excel.get("tercetak_belum_kirim_reason")
@@ -388,7 +326,6 @@ def apply_excel_fields_to_catalog_row(
     out["ssi_formula_version"] = excel["formula_version"]
     out["ssi_sources"] = excel.get("sources") or {}
     out["ssi_excel_ready"] = bool(balance_present)
-    out["physical_baseline_complete"] = baseline_complete
 
     def _unverified_note(reason: Optional[str], fallback: str) -> str:
         code = str(reason or "").strip().upper()
@@ -409,92 +346,48 @@ def apply_excel_fields_to_catalog_row(
                 "Belum terverifikasi: bergantung kolom Qty Tercetak / Cetak Sudah Dikirim "
                 "yang belum pasti; WIP/rusak tidak dihitung dari data fiktif."
             ),
-            REASON_BASELINE_INCOMPLETE: (
-                "Indikatif — saldo fisik belum lengkap / belum direkonsiliasi untuk semua "
-                "gudang operasional dalam lingkup."
-            ),
-            REASON_SIMPLE_POLOS_NO_WIP_COVERAGE: (
-                "Indikatif — Qty Polos = Stock − Tercetak Belum Kirim (formula sederhana); "
-                "belum ada field bukti terpisah untuk WIP/rusak/pengiriman polos."
-            ),
         }
         return mapping.get(code, fallback)
 
-    # --- Qty Polos: qualify; keep numeric when formula produced one ---
-    polos_formula_st = excel.get("qty_polos_status")
-    polos_q = excel["qty_polos"]
-    polos_st, polos_qual_rs = qualify_column_status(
-        formula_status=polos_formula_st,
-        qty=polos_q,
-        physical_baseline_complete=baseline_complete,
-        column="polos",
-    )
-    if polos_st == STATUS_UNVERIFIED:
-        polos_rs = excel.get("qty_polos_reason") or REASON_DEPENDENT_UNKNOWN
-        out["qty_polos_status"] = STATUS_UNVERIFIED
-        out["qty_polos_reason"] = polos_rs
-        out["qty_polos_gudang"] = None
-        out["qty_polos_gudang_status"] = "BELUM_TERSEDIA"
-        out["qty_polos_gudang_reason"] = polos_rs
-        out["qty_polos_gudang_note"] = _unverified_note(
-            polos_rs,
-            "Qty Polos belum terverifikasi — bukti cetak/kirim/WIP/rusak tidak cukup.",
-        )
-    else:
-        # INDICATIVE (safe subset) — number retained, never READY/terverifikasi
-        out["qty_polos_status"] = STATUS_INDICATIVE
-        out["qty_polos_reason"] = polos_qual_rs
-        out["qty_polos_gudang"] = polos_q
-        out["qty_polos_gudang_status"] = STATUS_INDICATIVE
-        out["qty_polos_gudang_reason"] = polos_qual_rs
-        out["qty_polos_gudang_note"] = _unverified_note(
-            polos_qual_rs,
-            "Qty Polos indikatif (formula sederhana; tanpa bukti WIP/rusak terpisah).",
-        )
+    def _map_condition(qty, status, reason, note_ready: str, note_unverified: str):
+        st = status or (STATUS_UNVERIFIED if qty is None else STATUS_READY)
+        if st == STATUS_UNVERIFIED or qty is None:
+            code = reason or REASON_DEPENDENT_UNKNOWN
+            return None, "BELUM_TERSEDIA", code, _unverified_note(code, note_unverified)
+        return qty, "READY", None, note_ready
 
-    # --- Qty Tercetak legacy gudang mapping (unchanged readiness semantics) ---
-    tercetak_st = _normalize_status(
-        excel.get("qty_tercetak_status"), qty=excel["qty_tercetak"]
+    polos_q, polos_st, polos_rs, polos_note = _map_condition(
+        excel["qty_polos"],
+        excel.get("qty_polos_status"),
+        excel.get("qty_polos_reason"),
+        "Qty Polos = Stock − Barang Tercetak Belum Kirim (PCS); tanpa WIP/rusak terpisah",
+        "Qty Polos belum terverifikasi — bukti cetak/kirim/WIP/rusak tidak cukup.",
     )
-    if tercetak_st == STATUS_UNVERIFIED or excel["qty_tercetak"] is None:
-        cetak_rs = excel.get("qty_tercetak_reason") or REASON_DEPENDENT_UNKNOWN
-        out["qty_sudah_cetak_gudang"] = None
-        out["qty_sudah_cetak_gudang_status"] = "BELUM_TERSEDIA"
-        out["qty_sudah_cetak_gudang_reason"] = cetak_rs
-        out["qty_sudah_cetak_gudang_note"] = _unverified_note(
-            cetak_rs,
-            "Qty Tercetak belum terverifikasi — proses multiwarna/Add On ambigu.",
-        )
-    else:
-        out["qty_sudah_cetak_gudang"] = excel["qty_tercetak"]
-        out["qty_sudah_cetak_gudang_status"] = STATUS_READY
-        out["qty_sudah_cetak_gudang_reason"] = None
-        out["qty_sudah_cetak_gudang_note"] = (
-            "Qty Tercetak dari konfirmasi operator (parent SO)"
-        )
+    out["qty_polos_gudang"] = polos_q
+    out["qty_polos_gudang_status"] = (
+        "BELUM_TERSEDIA" if not balance_present and polos_q is None else polos_st
+    )
+    out["qty_polos_gudang_reason"] = polos_rs if polos_q is None else None
+    out["qty_polos_gudang_note"] = polos_note
 
-    # --- Stock Dapat Dijual: keep numeric; qualify status ---
-    dapat_q = excel["stock_dapat_dijual"]
-    dapat_st, dapat_rs = qualify_column_status(
-        formula_status=STATUS_READY,
-        qty=dapat_q,
-        physical_baseline_complete=baseline_complete,
-        column="dapat",
+    cetak_q, cetak_st, cetak_rs, cetak_note = _map_condition(
+        excel["qty_tercetak"],
+        excel.get("qty_tercetak_status"),
+        excel.get("qty_tercetak_reason"),
+        "Qty Tercetak dari konfirmasi operator (parent SO)",
+        "Qty Tercetak belum terverifikasi — proses multiwarna/Add On ambigu.",
     )
-    out["qty_siap_jual"] = dapat_q
-    out["qty_siap_jual_status"] = dapat_st
-    out["qty_siap_jual_reason"] = dapat_rs
-    out["stock_dapat_dijual_status"] = dapat_st
-    out["stock_dapat_dijual_reason"] = dapat_rs
-    if dapat_st == STATUS_INDICATIVE:
-        out["qty_siap_jual_note"] = (
-            "Indikatif — stok fisik belum lengkap; angka komitmen SO tetap dihitung "
-            "dari stock buku yang tersedia (boleh negatif)."
-        )
-    else:
-        out["qty_siap_jual_note"] = (
-            "Stock Dapat Dijual = Stock − (PO aktif − qty sudah dikirim); boleh negatif"
-        )
+    out["qty_sudah_cetak_gudang"] = cetak_q
+    out["qty_sudah_cetak_gudang_status"] = cetak_st
+    out["qty_sudah_cetak_gudang_reason"] = cetak_rs
+    out["qty_sudah_cetak_gudang_note"] = cetak_note
+
+    out["qty_siap_jual"] = excel["stock_dapat_dijual"]
+    out["qty_siap_jual_status"] = "READY" if balance_present else "BELUM_TERSEDIA"
+    out["qty_siap_jual_reason"] = None if balance_present else "NO_BALANCE"
+    out["qty_siap_jual_note"] = (
+        "Stock Dapat Dijual = Stock − (PO aktif − qty sudah dikirim); boleh negatif"
+    )
     return out
 
 
