@@ -36,6 +36,7 @@ MOVEMENT_PEMAKAIAN_CETAK = "PEMAKAIAN_CETAK"  # Backward-compatible alias
 MOVEMENT_PENGIRIMAN = "PENGIRIMAN"
 MOVEMENT_KOREKSI = "KOREKSI"
 MOVEMENT_REVERSAL_PENERIMAAN = "REVERSAL_PENERIMAAN"
+MOVEMENT_REVERSAL_PENGIRIMAN = "REVERSAL_PENGIRIMAN"
 MOVEMENT_PEMBATALAN_PENERIMAAN = "PEMBATALAN_PENERIMAAN"
 MOVEMENT_SALDO_AWAL = "SALDO_AWAL"
 MOVEMENT_OPENING_BALANCE = "SALDO_AWAL"
@@ -48,6 +49,7 @@ VALID_MOVEMENT_TYPES = frozenset({
     MOVEMENT_PENGIRIMAN,
     MOVEMENT_KOREKSI,
     MOVEMENT_REVERSAL_PENERIMAAN,
+    MOVEMENT_REVERSAL_PENGIRIMAN,
     MOVEMENT_PEMBATALAN_PENERIMAAN,
     MOVEMENT_SALDO_AWAL,
     "OPENING_BALANCE",
@@ -208,6 +210,8 @@ async def record_stock_movement(
         # 3. PENGIRIMAN:
         #    If line is CETAK: shipped from Sudah Dicetak
         #    If line is NON CETAK: shipped from Belum Dicetak
+        # 3b. REVERSAL_PENGIRIMAN:
+        #    Bucket-correct inverse of PENGIRIMAN (restore printed or unprinted).
         # 4. KOREKSI:
         #    Adjustment directly on specified stock states.
         if m_type in (MOVEMENT_SALDO_AWAL, "OPENING_BALANCE"):
@@ -242,6 +246,22 @@ async def record_stock_movement(
                 d_unprinted = 0.0
                 d_printed = -abs(base_qty)
             delta = -abs(base_qty)
+            bal_before = await get_latest_balance(db, mid, aid)
+            bal_after = safe_float(bal_before + delta) if bal_before is not None else None
+        elif m_type == MOVEMENT_REVERSAL_PENGIRIMAN:
+            # Prefer explicit deltas from durable claim/finalize when provided.
+            if delta_unprinted is not None or delta_printed is not None:
+                d_unprinted = safe_float(delta_unprinted)
+                d_printed = safe_float(delta_printed)
+                delta = safe_float(d_unprinted + d_printed)
+            elif is_p is False:
+                d_unprinted = abs(base_qty)
+                d_printed = 0.0
+                delta = abs(base_qty)
+            else:
+                d_unprinted = 0.0
+                d_printed = abs(base_qty)
+                delta = abs(base_qty)
             bal_before = await get_latest_balance(db, mid, aid)
             bal_after = safe_float(bal_before + delta) if bal_before is not None else None
         else:  # KOREKSI

@@ -3,7 +3,7 @@ Coverage:
   Part A: work_date per operator split (independent PATCH).
   Part B: workflow 15 stages (Driver removed as stage), list orders status filter,
           dashboard summary 15 stages (no 'Driver' label).
-  Part C: POST /orders/{id}/surat-jalan gates + advance 12->13 gate + no auto SJ on 11->12.
+  Part C: legacy POST /surat-jalan disabled (BUG-04) + advance 12->13 gate + no auto SJ on 11->12.
 Uses pymongo to seed POs directly (no public POST /orders endpoint).
 """
 import os
@@ -226,14 +226,17 @@ class TestPartCSuratJalan:
         r = operator_sess.post(f"{API}/orders/{doc['id']}/surat-jalan", json={}, timeout=10)
         assert r.status_code == 403, f"expected 403, got {r.status_code} {r.text}"
 
-    def test_create_sj_admin_before_stage_12_returns_400(self, admin_sess, mongo, cleanup_pos):
+    def test_create_sj_admin_legacy_disabled_409(self, admin_sess, mongo, cleanup_pos):
+        """BUG-04: legacy POST /surat-jalan is disabled (use POST /sales-deliveries)."""
         doc = _seed_po(mongo, stage=10, packing_status="Belum", packing_info=None)
         cleanup_pos.append(doc["id"])
         r = admin_sess.post(f"{API}/orders/{doc['id']}/surat-jalan", json={}, timeout=10)
-        assert r.status_code == 400, f"{r.status_code} {r.text}"
-        assert "Packing" in r.text
+        assert r.status_code == 409, f"{r.status_code} {r.text}"
+        detail = r.json().get("detail") or {}
+        assert detail.get("code") == "LEGACY_SJ_CREATE_DISABLED"
+        assert "sales-deliveries" in str(detail.get("canonical_endpoint") or "")
 
-    def test_create_sj_admin_at_stage_12_no_autoadvance(self, admin_sess, mongo, cleanup_pos):
+    def test_create_sj_admin_at_stage_12_legacy_disabled_no_mutation(self, admin_sess, mongo, cleanup_pos):
         doc = _seed_po(mongo, stage=12)
         cleanup_pos.append(doc["id"])
         oid = doc["id"]
@@ -245,20 +248,22 @@ class TestPartCSuratJalan:
 
         r = admin_sess.post(f"{API}/orders/{oid}/surat-jalan",
                             json={"delivery_note_number": "SJ-TEST-27", "notes": "test"}, timeout=10)
-        assert r.status_code == 200, r.text
-        order = r.json().get("order") or {}
-        assert order.get("delivery_note_number") == "SJ-TEST-27"
-        assert order.get("delivery_note_created_by") == ADMIN["email"]
-        assert order.get("delivery_note_created_at")
-        assert order.get("current_stage") == 12, f"should NOT auto-advance; got {order.get('current_stage')}"
-        assert order.get("surat_jalan_created") is True
-        assert order.get("loading_ready") is True
+        assert r.status_code == 409, r.text
+        detail = r.json().get("detail") or {}
+        assert detail.get("code") == "LEGACY_SJ_CREATE_DISABLED"
 
-        # Now advance 12->13 succeeds
+        # Order unchanged — canonical create is POST /sales-deliveries
+        o1 = _get_order(admin_sess, oid)
+        assert o1.get("surat_jalan_created") is False
+        assert o1.get("current_stage") == 12
+        assert not o1.get("delivery_note_number")
+
+        # Advance 12→13 still blocked without real SJ
         r2 = admin_sess.post(f"{API}/orders/{oid}/advance", json={}, timeout=10)
-        assert r2.status_code == 200, r2.text
-        o2 = r2.json().get("order") or {}
-        assert o2.get("current_stage") == 13
+        assert r2.status_code == 400, r2.text
+        detail2 = r2.json().get("detail") or {}
+        reasons = detail2.get("prereq_reasons") if isinstance(detail2, dict) else []
+        assert any("Surat Jalan" in str(x) for x in (reasons or []))
 
     def test_advance_12_to_13_blocked_without_sj(self, admin_sess, mongo, cleanup_pos):
         doc = _seed_po(mongo, stage=12)
@@ -289,16 +294,14 @@ class TestPartCSuratJalan:
         assert o.get("surat_jalan_created") is False
         assert o.get("loading_ready") is False
 
-    def test_create_sj_response_exposes_flags(self, admin_sess, mongo, cleanup_pos):
+    def test_create_sj_legacy_disabled_keeps_flags_false(self, admin_sess, mongo, cleanup_pos):
         doc = _seed_po(mongo, stage=12)
         cleanup_pos.append(doc["id"])
         oid = doc["id"]
         r = admin_sess.post(f"{API}/orders/{oid}/surat-jalan", json={}, timeout=10)
-        assert r.status_code == 200, r.text
-        order = r.json().get("order") or {}
-        assert order.get("delivery_note_number"), "auto-gen SJ number missing"
-        # get_order also exposes flags
+        assert r.status_code == 409, r.text
+        detail = r.json().get("detail") or {}
+        assert detail.get("code") == "LEGACY_SJ_CREATE_DISABLED"
         o2 = _get_order(admin_sess, oid)
-        assert o2.get("surat_jalan_created") is True
-        assert o2.get("loading_ready") is True
-        assert o2.get("loading_prereq_reasons") == []
+        assert o2.get("surat_jalan_created") is False
+        assert o2.get("loading_ready") is False

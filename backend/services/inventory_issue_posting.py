@@ -6,7 +6,7 @@ Dr COGS / Cr Inventory. No reversal in Phase 4B.3.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from fastapi import HTTPException
@@ -25,12 +25,18 @@ from services.inventory_issue_accounting import (
     ACCOUNTING_CLAIM_TTL_SECONDS,
     CLAIM_AT_FIELD,
     CLAIM_FIELD,
+    CODE_LOADING_CANCEL_ISSUE_POSTED,
+    CODE_LOADING_CANCEL_POSTING_IN_PROGRESS,
+    CODE_LOADING_REVERSED,
     CODE_LOCK_CONFLICT,
     COLLECTION,
     CONTROL_COLLECTION,
     CONTROL_KEY,
     InventoryIssueError,
     METHOD_CHOICES,
+    MOVEMENT_PENGIRIMAN,
+    MSG_LOADING_CANCEL_ISSUE_POSTED,
+    MSG_LOADING_CANCEL_POSTING_IN_PROGRESS,
     POSTING_BASIS_FIELD,
     SOURCE_TYPE,
     STATUS_PENDING,
@@ -40,7 +46,9 @@ from services.inventory_issue_accounting import (
     assert_no_later_posted_issue,
     build_cogs_posting_basis,
     evaluate_inventory_issue,
+    find_active_inventory_issue_journal,
     find_inventory_issue_source_journal,
+    find_loading_pengiriman_reversal,
     infer_frozen_method_from_posted,
     issue_item_key,
     journal_lines_from_basis,
@@ -133,6 +141,104 @@ async def clear_posting_claim(db, movement_id: str, *, token: Optional[str] = No
             "$set": {"updated_at": now_iso()},
         },
     )
+
+
+async def renew_posting_claim(db, movement_id: str, token: str) -> bool:
+    """Refresh claim_at while holding token — prevents TTL steal during cancel reverse."""
+    mid = str(movement_id or "").strip()
+    tok = str(token or "").strip()
+    if not mid or not tok:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db[COLLECTION].update_one(
+        {"movement_id": mid, CLAIM_FIELD: tok},
+        {"$set": {CLAIM_AT_FIELD: now, "updated_at": now}},
+    )
+    return int(getattr(result, "matched_count", 0) or 0) > 0
+
+
+async def release_loading_cancel_inventory_issue_fence(
+    db, held: List[Tuple[str, str]]
+) -> None:
+    for mid, token in held or []:
+        try:
+            await clear_posting_claim(db, mid, token=token)
+        except Exception:
+            continue
+
+
+async def touch_loading_cancel_inventory_issue_fence(
+    db, held: List[Tuple[str, str]]
+) -> None:
+    for mid, token in held or []:
+        ok = await renew_posting_claim(db, mid, token)
+        if not ok:
+            raise HTTPException(409, {
+                "message": MSG_LOADING_CANCEL_POSTING_IN_PROGRESS,
+                "code": CODE_LOADING_CANCEL_POSTING_IN_PROGRESS,
+                "movement_id": mid,
+            })
+
+
+async def fence_loading_cancel_against_inventory_issues(
+    db, movements: List[dict]
+) -> List[Tuple[str, str]]:
+    """Claim inventory_issue posting fences for Loading PENGIRIMAN before reverse.
+
+    Fail-closed:
+    - Active posted inventory_issue journal → HTTP 409 (Finance must handle).
+    - Concurrent posting/cancel holding the claim → HTTP 409.
+    Caller must release returned (movement_id, token) pairs in finally.
+    """
+    held: List[Tuple[str, str]] = []
+    try:
+        for mov in movements or []:
+            m_type = str(mov.get("movement_type") or "").strip().upper()
+            if m_type not in (MOVEMENT_PENGIRIMAN, "STOK_KELUAR"):
+                continue
+            mid = movement_id_of(mov)
+            if not mid:
+                continue
+            claimed = await acquire_posting_claim(db, mid)
+            if claimed is None:
+                active = await find_active_inventory_issue_journal(db, mid)
+                if active:
+                    raise HTTPException(409, {
+                        "message": MSG_LOADING_CANCEL_ISSUE_POSTED,
+                        "code": CODE_LOADING_CANCEL_ISSUE_POSTED,
+                        "movement_id": mid,
+                        "accounting_journal_id": active.get("id"),
+                    })
+                raise HTTPException(409, {
+                    "message": MSG_LOADING_CANCEL_POSTING_IN_PROGRESS,
+                    "code": CODE_LOADING_CANCEL_POSTING_IN_PROGRESS,
+                    "movement_id": mid,
+                })
+            token = str(claimed.get(CLAIM_FIELD) or "")
+            held.append((mid, token))
+            active = await find_active_inventory_issue_journal(db, mid)
+            if active:
+                raise HTTPException(409, {
+                    "message": MSG_LOADING_CANCEL_ISSUE_POSTED,
+                    "code": CODE_LOADING_CANCEL_ISSUE_POSTED,
+                    "movement_id": mid,
+                    "accounting_journal_id": active.get("id"),
+                })
+        return held
+    except Exception:
+        await release_loading_cancel_inventory_issue_fence(db, held)
+        raise
+
+
+async def assert_movement_not_loading_reversed(db, movement_id: str) -> None:
+    """Reject inventory_issue post when Loading REVERSAL_PENGIRIMAN exists."""
+    mid = str(movement_id or "").strip()
+    if not mid:
+        return
+    rev = await find_loading_pengiriman_reversal(db, mid)
+    if rev:
+        code, msg = _blocker(CODE_LOADING_REVERSED)
+        raise InventoryIssueError(code, msg)
 
 
 async def persist_accounting_posting_basis(
@@ -317,6 +423,9 @@ async def post_inventory_issue_accounting(
     item_key = issue_item_key(movement)
     item_lock = None
     try:
+        # After claim: Loading cancel reverse must not race a journal write.
+        await assert_movement_not_loading_reversed(db, mid)
+
         existing = await find_inventory_issue_source_journal(db, mid)
         if existing:
             await _heal_posted_metadata(db, mid, existing, user)
@@ -394,6 +503,8 @@ async def post_inventory_issue_accounting(
         if cover_err:
             code, msg = _blocker(cover_err)
             raise InventoryIssueError(code, msg)
+        # Final fence before journal write (cancel may have reversed under claim race).
+        await assert_movement_not_loading_reversed(db, mid)
         await _write_source_journal_from_basis(db, movement, user, basis)
         written = await find_inventory_issue_source_journal(db, mid)
         if written:

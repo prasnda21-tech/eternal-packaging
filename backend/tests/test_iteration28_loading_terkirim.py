@@ -76,6 +76,18 @@ def _assert_loading_incomplete(resp):
     assert "Checklist Loading" not in blob
 
 
+def _assert_legacy_terkirim_rejected(resp):
+    """BUG-01: /advance from 13 and /delivered must not complete Terkirim."""
+    assert resp.status_code == 409, resp.text
+    body = resp.json()
+    detail = body.get("detail", body)
+    if isinstance(detail, dict):
+        assert detail.get("code") == "USE_CONFIRM_DELIVERED", detail
+        assert "confirm-delivered" in str(detail.get("use") or detail.get("message") or "")
+    else:
+        assert "confirm-delivered" in str(detail).lower()
+
+
 def _confirm_loading(sess, oid, qty, line_idx=0, surat_jalan_id=None):
     sid = surat_jalan_id or _sj_id(oid)
     return sess.post(
@@ -304,34 +316,39 @@ def test_5_actor_sj_to_loading_timeline(db, admin_tok, cleanup):
 
 
 def test_6_advance_terkirim_gate(db, admin_tok, cleanup):
+    """BUG-01: /advance from Loading never completes Terkirim (use confirm-delivered)."""
     oid = _mk_order(db, current_stage=13, with_sj=True, loading_complete=False)
     cleanup.append(oid)
     r_block = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/advance", json={"note": ""})
-    _assert_loading_incomplete(r_block)
+    _assert_legacy_terkirim_rejected(r_block)
 
     r_ok = _confirm_loading(admin_tok, oid, 100)
     assert r_ok.status_code == 200, r_ok.text
     r_adv = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/advance", json={"note": ""})
-    assert r_adv.status_code == 200, r_adv.text
-    assert r_adv.json()["order"]["current_stage"] == 14
+    _assert_legacy_terkirim_rejected(r_adv)
+    o = admin_tok.get(f"{BASE_URL}/api/orders/{oid}").json()
+    if "order" in o:
+        o = o["order"]
+    assert o["current_stage"] == 13
 
 
 def test_7_delivered_gate_same_validator(db, admin_tok, cleanup):
+    """BUG-01: legacy /delivered rejected; Loading confirm alone does not set Terkirim."""
     oid = _mk_order(db, current_stage=13, with_sj=True, loading_complete=False)
     cleanup.append(oid)
     r_block = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered")
-    _assert_loading_incomplete(r_block)
+    _assert_legacy_terkirim_rejected(r_block)
 
     r_load = _confirm_loading(admin_tok, oid, 100)
     assert r_load.status_code == 200, r_load.text
     r_ok = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered")
-    assert r_ok.status_code == 200, r_ok.text
-    o = r_ok.json()["order"]
-    assert o["current_stage"] == 14
-    assert o["delivery_status"] == "Terkirim"
-    assert o["delivered_by"] == ADMIN_EMAIL
-    assert o["delivered_at"]
-    assert o["terkirim_confirmed"] is True
+    _assert_legacy_terkirim_rejected(r_ok)
+    o = admin_tok.get(f"{BASE_URL}/api/orders/{oid}").json()
+    if "order" in o:
+        o = o["order"]
+    assert o["current_stage"] == 13
+    assert o.get("delivery_status") in (None, "Belum", "Belum Terkirim", "")
+    assert not o.get("delivered_at")
 
 
 def test_8_delivered_perm_operator_403(db, admin_tok, op_tok, cleanup):
@@ -348,15 +365,10 @@ def test_9_driver_needs_delivery_proofs(db, driver_tok, cleanup):
     oid = _mk_order(db, current_stage=13, with_sj=True, loading_complete=True)
     cleanup.append(oid)
     r = driver_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered")
-    assert r.status_code in (400, 403), r.text
-    if r.status_code == 400:
-        low = r.text.lower()
-        assert (
-            "foto bukti" in low
-            or "delivery_proofs" in low
-            or "bukti kirim" in low
-            or "tanda tangan" in low
-        ), r.text
+    # Perm may 403; with delivery.update legacy path returns 409 (BUG-01).
+    assert r.status_code in (403, 409), r.text
+    if r.status_code == 409:
+        _assert_legacy_terkirim_rejected(r)
 
 
 def test_10_terkirim_confirmed_derived(db, admin_tok, cleanup):
@@ -371,14 +383,13 @@ def test_10_terkirim_confirmed_derived(db, admin_tok, cleanup):
     assert not o.get("delivered_at")
 
     r2 = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered")
-    assert r2.status_code == 200, r2.text
+    _assert_legacy_terkirim_rejected(r2)
     r3 = admin_tok.get(f"{BASE_URL}/api/orders/{oid}")
     o3 = r3.json()
     if "order" in o3:
         o3 = o3["order"]
-    assert o3["terkirim_confirmed"] is True
-    assert o3["delivered_at"]
-    assert o3["delivered_by"] == ADMIN_EMAIL
+    assert o3.get("terkirim_confirmed") is False
+    assert not o3.get("delivered_at")
 
 
 def test_11_existing_delivered_intact(db, admin_tok, cleanup):
@@ -394,8 +405,10 @@ def test_11_existing_delivered_intact(db, admin_tok, cleanup):
     assert o["delivered_at"] == HIST_DELIVERED_AT
 
     r2 = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered")
-    assert r2.status_code == 200, r2.text
-    after = r2.json()["order"]
+    _assert_legacy_terkirim_rejected(r2)
+    after = admin_tok.get(f"{BASE_URL}/api/orders/{oid}").json()
+    if "order" in after:
+        after = after["order"]
     assert after["delivered_at"] == HIST_DELIVERED_AT
     assert after["qty_delivered"] == 100
     assert after["delivery_status"] == "Terkirim"
@@ -405,8 +418,10 @@ def test_11b_historical_delivered_without_loading_does_not_rewrite(db, admin_tok
     oid = _mk_order(db, current_stage=14, with_sj=True, loading_complete=False, delivered=True)
     cleanup.append(oid)
     r = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered")
-    assert r.status_code == 200, r.text
-    o = r.json()["order"]
+    _assert_legacy_terkirim_rejected(r)
+    o = admin_tok.get(f"{BASE_URL}/api/orders/{oid}").json()
+    if "order" in o:
+        o = o["order"]
     assert o["delivered_at"] == HIST_DELIVERED_AT
     assert o["qty_delivered"] == 100
     assert o["delivery_status"] == "Terkirim"
@@ -437,17 +452,19 @@ def test_13_dashboard_15_stages_no_driver(admin_tok):
 
 
 def test_14_partial_loading_caps_delivered_qty(db, admin_tok, cleanup):
+    """Partial Loading remains valid; legacy /delivered cannot apply qty (BUG-01)."""
     oid = _mk_order(db, current_stage=13, with_sj=True)
     cleanup.append(oid)
     r_load = _confirm_loading(admin_tok, oid, 40)
     assert r_load.status_code == 200, r_load.text
     r_over = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered", params={"qty_delivered": 100})
-    _assert_loading_incomplete(r_over)
+    _assert_legacy_terkirim_rejected(r_over)
     r_ok = admin_tok.post(f"{BASE_URL}/api/orders/{oid}/delivered", params={"qty_delivered": 40})
-    assert r_ok.status_code == 200, r_ok.text
-    o = r_ok.json()["order"]
-    assert o["qty_delivered"] == 40
-    assert o["delivery_status"] == "Sebagian Terkirim"
+    _assert_legacy_terkirim_rejected(r_ok)
+    o = admin_tok.get(f"{BASE_URL}/api/orders/{oid}").json()
+    if "order" in o:
+        o = o["order"]
+    assert o.get("qty_delivered") in (None, 0)
     assert o.get("terkirim_confirmed") is False
 
 
