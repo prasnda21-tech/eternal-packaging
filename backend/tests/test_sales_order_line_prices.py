@@ -9,7 +9,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
-os.environ.setdefault("DB_NAME", "eternal_packaging_test")
+# Dedicated DB: this module asserts global journal_entries / stock_movements
+# counts. Sharing eternal_packaging_test with xdist siblings (e.g. invoices)
+# races those counts (CI: expected 17, actual 18).
+_worker = os.environ.get("PYTEST_XDIST_WORKER") or "main"
+_TEST_DB = f"eternal_packaging_sales_order_line_prices_test_{_worker}"
+os.environ["DB_NAME"] = _TEST_DB
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 
@@ -26,8 +31,10 @@ def anyio_backend():
 def bind_motor():
     import server
     from motor.motor_asyncio import AsyncIOMotorClient
+    # Pin against sibling suites that mutate os.environ["DB_NAME"].
+    os.environ["DB_NAME"] = _TEST_DB
     server.client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    server.db = server.client[os.environ["DB_NAME"]]
+    server.db = server.client[_TEST_DB]
 
 
 def _user(role):
