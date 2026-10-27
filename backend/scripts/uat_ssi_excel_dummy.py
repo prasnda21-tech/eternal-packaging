@@ -38,6 +38,25 @@ async def reset(db, client):
     await client.drop_database(db.name)
 
 
+async def seed_preview_admin(db):
+    """Keep browser UAT login after isolated DB drop (preview-only)."""
+    import bcrypt
+    email = "admin@eternalpackaging.com"
+    if await db.users.find_one({"email": email}):
+        return
+    pw = bcrypt.hashpw(b"eternal123", bcrypt.gensalt()).decode()
+    await db.users.insert_one({
+        "id": "uat-admin-664",
+        "email": email,
+        "name": "Admin",
+        "role": "admin",
+        "is_super_admin": True,
+        "is_active": True,
+        "active": True,
+        "password_hash": pw,
+    })
+
+
 async def seed_master(db, code, *, item_type="INVENTORY"):
     item = {
         "id": f"mid-{code.lower()}-{uuid.uuid4().hex[:6]}",
@@ -90,6 +109,7 @@ async def main():
     db = client[os.environ["DB_NAME"]]
     assert db.name != "eternal_packaging"
     await reset(db, client)
+    await seed_preview_admin(db)
     server.db = db
     server.client = client
     await ensure_indexes(db)
