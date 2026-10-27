@@ -98,10 +98,12 @@ describe("Stock Saat Ini compatibility mode", () => {
       .toMatch(/legacy|gudang|direkonsiliasi/i);
     expect(container.querySelector('[data-testid="stock-physical-m1"]')?.textContent)
       .not.toMatch(/Stok fisik legacy|Saldo awal belum direkonsiliasi/i);
-    expect(container.querySelector('[data-testid="stock-unit-header"]')?.textContent).toMatch(/Satuan Dasar/i);
+    expect(container.querySelector('[data-testid="stock-unit-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-detail-header"]')?.textContent).toMatch(/Aksi/i);
+    expect(container.querySelector('[data-testid="stock-detail-m1"]')?.textContent).toMatch(/Lihat Detail/i);
   });
 
-  test("legacy CUTOVER_PENDING status still renders Belum terverifikasi", async () => {
+  test("legacy CUTOVER_PENDING status still keeps compact headers", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "compatibility",
       r2_authority_active: false,
@@ -121,6 +123,8 @@ describe("Stock Saat Ini compatibility mode", () => {
         qty_tersedia_valid: false,
         physical_qty_warehouse_valid: false,
         belum_terkirim_status: "CUTOVER_PENDING",
+        cetak_sudah_dikirim: null,
+        cetak_sudah_dikirim_status: "UNVERIFIED",
       }],
     });
     await act(async () => {
@@ -130,7 +134,9 @@ describe("Stock Saat Ini compatibility mode", () => {
       await Promise.resolve();
     });
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/^Stock$/);
-    expect(container.querySelector('[data-testid="stock-cetak-dikirim-header"]')?.textContent).toMatch(/Cetak Sudah Dikirim/i);
+    expect(container.querySelector('[data-testid="stock-cetak-dikirim-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-polos-header"]')?.textContent).toMatch(/Qty Polos/i);
+    expect(container.querySelector('[data-testid="stock-detail-m2"]')).toBeTruthy();
   });
 
   test("shows R2 mode when authority active", async () => {
@@ -155,7 +161,7 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock");
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("BRANCH");
     expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/Excel|cabang|Belum tersedia|defisit/i);
+    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/Excel|cabang|Belum saldo|Belum terverifikasi|defisit/i);
     expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toMatch(/stock-opname/);
     expect(container.textContent).not.toMatch(/Preview.*R2 OFF|R2 OFF/i);
   });

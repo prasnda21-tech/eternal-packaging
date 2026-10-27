@@ -15048,6 +15048,49 @@ async def master_item_physical_mutations_get(
         raise HTTPException(400, str(exc)) from exc
 
 
+@api_router.get("/master-items/{item_id}/ssi-activity")
+async def master_item_ssi_activity_get(
+    item_id: str,
+    branch_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    lane: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 100,
+    user=Depends(require_perm("current_stock.view")),
+):
+    """Read-only SSI activity timeline (Fisik / SO / Cetak). Does not write.
+
+    Fisik = physical_stock_ledger. SO = commitment events from orders.
+    Cetak = operator print confirmation + proven print SJ refs.
+    SO/Cetak never invent physical stock decreases.
+    """
+    from services.branch_access import authorize_stock_location
+    from services.physical_stock import (
+        PhysicalStockNotFoundError,
+        PhysicalStockValidationError,
+    )
+    from services.ssi_item_activity import list_ssi_item_activity
+    await authorize_stock_location(
+        db, user, branch_id=branch_id, warehouse_id=warehouse_id,
+    )
+    try:
+        return await list_ssi_item_activity(
+            db,
+            item_id,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+            lane=lane,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+        )
+    except PhysicalStockNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PhysicalStockValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_router.post("/master-items/{item_id}/physical-opening-balance")
 async def master_item_physical_opening_balance_post(
     item_id: str,

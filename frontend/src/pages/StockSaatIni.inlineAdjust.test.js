@@ -102,7 +102,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     document.body.innerHTML = "";
   });
 
-  test("Belum tersedia opens Saldo Awal (not a dead click) when opening permission exists", async () => {
+  test("Belum saldo opens Saldo Awal (not a dead click) when opening permission exists", async () => {
     mockHasPerm.mockImplementation((perm) => (
       perm === "current_stock.update" || perm === "permissions.manage"
     ));
@@ -134,8 +134,8 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
-    // Aggregate view: missing WH → "Belum lengkap"; filtered WH → "Belum tersedia".
-    expect(button?.textContent).toMatch(/Belum (tersedia|lengkap)/);
+    // Aggregate view: missing WH → "Belum lengkap"; filtered WH → "Belum saldo".
+    expect(button?.textContent).toMatch(/Belum (saldo|lengkap)/);
     await act(async () => { button.click(); });
     expect(container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="saldo-awal-item"]')?.value).toBe("item-1");
@@ -145,7 +145,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     container.remove();
   });
 
-  test("Belum tersedia without opening permission does not open Adjustment", async () => {
+  test("Belum saldo without opening permission does not open Adjustment", async () => {
     mockHasPerm.mockReturnValue(false);
     const missingItem = {
       ...ITEM,
@@ -181,7 +181,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     container.remove();
   });
 
-  test("filtered warehouse Belum tersedia opens Saldo Awal with warehouse seed", async () => {
+  test("filtered warehouse Belum saldo opens Saldo Awal with warehouse seed", async () => {
     mockHasPerm.mockImplementation((perm) => perm === "current_stock.update");
     api.masterItems.mockResolvedValue({ items: [] });
     api.physicalOpeningBalance.mockResolvedValue({ established: false });
@@ -232,7 +232,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     });
     await act(async () => { await Promise.resolve(); });
     const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
-    expect(button?.textContent).toMatch(/Belum tersedia/);
+    expect(button?.textContent).toMatch(/Belum saldo/);
     await act(async () => { button.click(); });
     expect(container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="saldo-awal-item"]')?.value).toBe("item-1");
@@ -469,7 +469,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     container.remove();
   });
 
-  test("warehouse without balance shows Belum tersedia, not zero", async () => {
+  test("warehouse without balance shows Belum saldo, not zero", async () => {
     const uatBranch = { id: "br-uat", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true };
     const whB = { id: "wh-b", branch_id: "br-uat", code: "GUD-B", name: "Gudang B", active: true, is_operational: true };
     api.branches.mockResolvedValue({ items: [uatBranch] });
@@ -512,7 +512,8 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     const physical = container.querySelector('[data-testid="stock-physical-item-1"]');
     expect(physical?.getAttribute("data-balance-present")).toBe("false");
-    expect(physical?.textContent).toMatch(/Belum tersedia/i);
+    expect(physical?.textContent).toMatch(/Belum saldo/i);
+    expect(physical?.textContent).not.toMatch(/Belum terverifikasi/i);
     expect(physical?.textContent).not.toMatch(/^0|[^0-9]0[^0-9]/);
     expect(physical?.textContent).not.toMatch(/belum direkonsiliasi/i);
     expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent).toMatch(/Stock Dapat Dijual/i);

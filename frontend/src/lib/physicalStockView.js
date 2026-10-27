@@ -124,7 +124,7 @@ export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
     const wb = balances.find((row) => String(row?.warehouse_id || "") === wid)
       || (balances.length === 1 ? balances[0] : null);
     if (wb && wb.balance_present === false) {
-      return { present: false, qty: null, text: "Belum tersedia" };
+      return { present: false, qty: null, text: "Belum saldo" };
     }
     if (wb && wb.balance_present === true) {
       const qty = wb.physical_qty;
@@ -132,10 +132,10 @@ export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
     }
   }
   if (balances.length > 0 && balances.every((row) => row?.balance_present === false)) {
-    return { present: false, qty: null, text: "Belum tersedia" };
+    return { present: false, qty: null, text: "Belum saldo" };
   }
   if (item?.balance_present === false) {
-    return { present: false, qty: null, text: "Belum tersedia" };
+    return { present: false, qty: null, text: "Belum saldo" };
   }
   return { present: true, qty: item?.physical_qty, text: null };
 }
@@ -145,10 +145,11 @@ export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
  *
  * OWNER rules (no dual badges):
  * - Semua Gudang + any missing/unreconciled WH → "Belum lengkap" only
- * - Selected WH + no balance → "Belum tersedia" only
+ * - Selected WH + no balance → "Belum saldo" only (absent book ≠ unverified activity)
  * - Valid book → numeric qty
  * - Negative book (or WH deficit in aggregate) → numeric qty + compact "Defisit"
  * Never invent 0 for unknown balances.
+ * "Belum terverifikasi" is reserved for missing activity/proof columns, not stock book.
  */
 export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggregate = false } = {}) {
   const wid = String(warehouseId || "").trim();
@@ -168,7 +169,7 @@ export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggr
       return {
         present: false,
         qty: null,
-        text: "Belum tersedia",
+        text: "Belum saldo",
         flag: null,
         negative: false,
         hints: [item?.baseline_label, "Saldo gudang belum ada"].filter(Boolean),
@@ -190,7 +191,7 @@ export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggr
   }
 
   if (aggregateIncomplete) {
-    // One primary status — never "Belum tersedia" + "Belum lengkap", never qty + "Belum lengkap".
+    // One primary status — never "Belum saldo" + "Belum lengkap", never qty + "Belum lengkap".
     return {
       present: false,
       qty: null,
@@ -210,7 +211,7 @@ export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggr
     return {
       present: false,
       qty: null,
-      text: "Belum tersedia",
+      text: "Belum saldo",
       flag: null,
       negative: false,
       hints: [item?.baseline_label].filter(Boolean),
