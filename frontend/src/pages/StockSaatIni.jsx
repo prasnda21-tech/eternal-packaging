@@ -363,8 +363,10 @@ export default function StockSaatIni() {
     setDetailItem(null);
     const y = listScrollYRef.current || 0;
     requestAnimationFrame(() => {
-      if (typeof window.scrollTo === "function") {
-        try { window.scrollTo(0, y); } catch { /* jsdom */ }
+      // jsdom implements scrollTo as a stub that logs "Not implemented".
+      const ua = String(globalThis.navigator?.userAgent || "");
+      if (typeof window.scrollTo === "function" && !/jsdom/i.test(ua)) {
+        window.scrollTo(0, y);
       }
     });
   }, []);
