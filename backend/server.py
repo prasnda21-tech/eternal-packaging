@@ -7947,6 +7947,7 @@ async def list_delivery_plan(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    unit: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_dir: Optional[str] = None,
     hf: Optional[list[str]] = Query(None),
@@ -7959,6 +7960,7 @@ async def list_delivery_plan(
     Reuses tanggal_pengiriman resolver. No writes. Buffer Stock / cancelled /
     fully delivered / missing date excluded. SJ not required.
     Filter/sort (incl. header hf) run before pagination; totals cover full set.
+    Optional unit matches Qty Rencana Pengiriman widget buckets (incl. campuran).
     """
     await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
     scope = sales_owner_match(user)
@@ -7974,6 +7976,7 @@ async def list_delivery_plan(
         "status": status,
         "date_from": date_from,
         "date_to": date_to,
+        "unit": unit,
     }
     rows = _build_delivery_plan_rows(
         docs,
@@ -9265,6 +9268,7 @@ async def status_po_dashboard(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    basis: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
     include_cancelled: bool = False,
@@ -9333,6 +9337,9 @@ async def status_po_dashboard(
     eligible_keys: List[tuple] = []
     status_options: set = set()
     docs_scanned = 0
+    basis_key = (basis or "").strip().lower() or None
+    if basis_key not in (None, "snapshot"):
+        basis_key = None
     cursor = db.orders.find(q, STATUS_PO_PROJECTION).sort([
         ("order_date", 1),
         ("po_number", 1),
@@ -9343,7 +9350,7 @@ async def status_po_dashboard(
         o = raw
         _apply_hold_snapshot(o)
         _attach_deadline_snapshot(o, lead_days, holidays=holidays)
-        if not filter_orders_for_view([o], view_key or None):
+        if not filter_orders_for_view([o], view_key or None, basis=basis_key):
             continue
         if not order_matches_search_date_filters(o, filters):
             continue
@@ -9372,6 +9379,7 @@ async def status_po_dashboard(
     rows = build_status_po_page_rows(page_orders, page_ids=page_ids)
     data = {
         "view": view_key or None,
+        "basis": basis_key,
         "rows": rows,
         "total": sliced["total_count"],
         "total_count": sliced["total_count"],
@@ -17032,6 +17040,45 @@ register_production_dashboard_routes(
     attach_deadline=_attach_deadline_snapshot,
     get_deadline_settings=_get_delivery_deadline_settings,
     now_iso=now_iso,
+    Depends=Depends,
+)
+from services.dashboard_rincian_http import register_dashboard_rincian_routes
+from services.cash_bank_master import list_cash_banks as _list_cash_banks_for_rincian
+from services.cash_bank_mutasi import get_mutasi as _get_mutasi_for_rincian
+from services.profit_loss import get_profit_loss as _get_profit_loss_for_rincian
+from services.purchase_invoices import list_purchase_invoices as _list_purchase_invoices_for_rincian
+
+
+async def _build_kepala_board_for_rincian(db_conn, user, *, lead_days, holidays):
+    """Read-only Kepala board for Dashboard Rincian (same predicates as division tasks)."""
+    query = {"cancelled": {"$ne": True}}
+    raw = await db_conn.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
+    for o in raw:
+        _attach_deadline_snapshot(o, lead_days, holidays=holidays)
+        _apply_hold_snapshot(o)
+    tasks = _build_division_tasks(raw, "kepala_produksi", user, mine_only=False)
+    stock_rows, _, _ = await _load_stock_context()
+    _enrich_tasks_current_stock(tasks, stock_rows)
+    return _build_kepala_produksi_board(raw, tasks)
+
+
+register_dashboard_rincian_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    apply_hold=_apply_hold_snapshot,
+    attach_deadline=_attach_deadline_snapshot,
+    get_deadline_settings=_get_delivery_deadline_settings,
+    status_po_projection=STATUS_PO_PROJECTION,
+    sales_owner_match=sales_owner_match,
+    list_delivery_schedule=list_delivery_schedule,
+    query_sales_invoices=_query_sales_invoices,
+    list_purchase_invoices=_list_purchase_invoices_for_rincian,
+    get_mutasi=_get_mutasi_for_rincian,
+    list_cash_banks=_list_cash_banks_for_rincian,
+    get_profit_loss=_get_profit_loss_for_rincian,
+    build_kepala_board_for_user=_build_kepala_board_for_rincian,
     Depends=Depends,
 )
 register_production_wave2_routes(

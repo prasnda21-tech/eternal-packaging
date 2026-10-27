@@ -336,3 +336,40 @@ async def test_http_aggregates_every_order_and_blocks_finance_only(clean_db):
     stored = await server.db.orders.find_one({"id": "http-0"}, {"_id": 0})
     assert stored["qty_delivered"] == before["qty_delivered"]
     assert stored["scheduled_delivery_date"] == before["scheduled_delivery_date"]
+
+
+def test_unit_filter_matches_qty_widget_buckets():
+    """Drill from Qty Rencana passes unit= so list matches widget PO counts."""
+    from services.delivery_plan import build_plan_rows, plan_qty_unit
+
+    orders = [
+        {
+            "id": "a",
+            "po_number": "PO-A",
+            "cancelled": False,
+            "customer_name": "Demo",
+            "scheduled_delivery_date": "2026-10-27",
+            "qty_delivered": 0,
+            "line_items": [{"name": "Cup", "quantity": 100, "unit": "pcs", "production_process": "print"}],
+            "shipments": [{"id": "s1", "delivery_date": "2026-10-27", "qty": 100}],
+        },
+        {
+            "id": "b",
+            "po_number": "PO-B",
+            "cancelled": False,
+            "customer_name": "Demo",
+            "scheduled_delivery_date": "2026-10-27",
+            "qty_delivered": 0,
+            "line_items": [
+                {"name": "Cup", "quantity": 80, "unit": "pcs", "production_process": "print"},
+                {"name": "Dus", "quantity": 10, "unit": "pack", "production_process": "print"},
+            ],
+            "shipments": [{"id": "s2", "delivery_date": "2026-10-27", "qty": 90}],
+        },
+    ]
+    assert plan_qty_unit(orders[0]) == "PCS"
+    assert plan_qty_unit(orders[1]) == "campuran"
+    pcs = build_plan_rows(orders, lead_time_days=3, today="2026-10-27", filters={"status": "hari_ini", "unit": "PCS"})
+    mix = build_plan_rows(orders, lead_time_days=3, today="2026-10-27", filters={"status": "hari_ini", "unit": "campuran"})
+    assert [r["po_number"] for r in pcs] == ["PO-A"]
+    assert [r["po_number"] for r in mix] == ["PO-B"]

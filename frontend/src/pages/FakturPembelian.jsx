@@ -62,6 +62,12 @@ export default function FakturPembelian() {
   const queryPoId = searchParams.get("purchase_order_id") || "";
   const queryReceiptId = searchParams.get("receipt_id") || "";
   const queryInvoiceId = searchParams.get("id") || searchParams.get("invoice_id") || "";
+  const queryDateFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(searchParams.get("date_from") || "").trim())
+    ? String(searchParams.get("date_from")).trim()
+    : "";
+  const queryDateTo = /^\d{4}-\d{2}-\d{2}$/.test(String(searchParams.get("date_to") || "").trim())
+    ? String(searchParams.get("date_to")).trim()
+    : "";
   const wantCreate = searchParams.get("action") === "create" || Boolean(queryPoId) || Boolean(queryReceiptId);
   const [view, setView] = useState(wantCreate && canCreate ? "create" : "list");
   const [rows, setRows] = useState([]);
@@ -69,6 +75,8 @@ export default function FakturPembelian() {
   const [loading, setLoading] = useState(false);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  // Date range is applied by GET /purchase-invoices (full dataset), not client page filter.
+  const visibleRows = rows;
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [detail, setDetail] = useState(null);
@@ -123,13 +131,17 @@ export default function FakturPembelian() {
     if (!soft) setLoading(true);
     setErr("");
     try {
-      setRows((await api.listPurchaseInvoices({ q })).invoices || []);
+      setRows((await api.listPurchaseInvoices({
+        q,
+        date_from: queryDateFrom || undefined,
+        date_to: queryDateTo || undefined,
+      })).invoices || []);
     } catch (ex) {
       setErr(friendlyLoadError(ex, "Tidak dapat memuat faktur. Periksa koneksi server lalu coba lagi."));
     } finally {
       setLoading(false);
     }
-  }, [q]);
+  }, [q, queryDateFrom, queryDateTo]);
   useEffect(() => {
     if (view !== "list") return;
     load({ soft: rowsRef.current.length > 0 });
@@ -550,12 +562,14 @@ export default function FakturPembelian() {
                     <td colSpan={6} className="muted small">Memuat…</td>
                   </tr>
                 )}
-                {!loading && rows.length === 0 && (
+                {!loading && visibleRows.length === 0 && (
                   <tr className="purchase-empty-row">
-                    <td colSpan={6} className="muted">Belum ada faktur.</td>
+                    <td colSpan={6} className="muted">
+                      {(queryDateFrom || queryDateTo) ? "Tidak ada faktur pada rentang tanggal drill." : "Belum ada faktur."}
+                    </td>
                   </tr>
                 )}
-                {rows.map((r) => (
+                {visibleRows.map((r) => (
                   <tr
                     key={r.id}
                     {...purchaseRowInteractionProps(() => openDetail(r.id), { testId: `invoice-row-${r.id}` })}

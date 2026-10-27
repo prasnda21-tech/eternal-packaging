@@ -895,6 +895,7 @@ export const api = {
   saveFinanceDashboardLayout: (body) => client.put(`/dashboard/keuangan/layout`, body).then((r) => r.data),
   resetFinanceDashboardLayout: () => client.post(`/dashboard/keuangan/layout/reset`).then((r) => r.data),
   productionSnapshot: () => client.get(`/dashboard/produksi/snapshot`).then((r) => r.data),
+  dashboardRincian: (params = {}) => client.get(`/dashboard/rincian`, { params }).then((r) => r.data),
   operationalHolidays: () => client.get(`/settings/operational-holidays`).then((r) => r.data),
   addOperationalHoliday: (payload) => client.post(`/settings/operational-holidays`, payload).then((r) => r.data),
   updateOperationalHoliday: (day, payload) => client.patch(`/settings/operational-holidays/${encodeURIComponent(day)}`, payload).then((r) => r.data),

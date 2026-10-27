@@ -389,6 +389,7 @@ export default function FinanceDashboard() {
           editing={editing}
           hasPerm={hasPerm}
           globalPreset={preset}
+          periodForWidget={(widget) => periodOf(widget, preset, globalRange)}
           onLayout={changeLayout}
           onSettings={changeSettings}
           onRetry={() => setReloadToken((value) => value + 1)}

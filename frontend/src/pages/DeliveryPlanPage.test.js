@@ -18,8 +18,11 @@ jest.mock("../lib/auth", () => ({
   useAuth: () => ({ user: { id: "u-test", email: "test@eternal.local" }, hasPerm: () => true }),
 }));
 
+const mockSearchParams = new URLSearchParams("");
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...rest }) => <a href={to} {...rest}>{children}</a>,
+  useNavigate: () => jest.fn(),
+  useSearchParams: () => [mockSearchParams, jest.fn()],
 }), { virtual: true });
 
 jest.mock("react-day-picker", () => ({

@@ -437,14 +437,155 @@ def test_filters_apply_before_pagination_count():
     assert all(r["customer"] == "Alpha" for r in data["rows"])
 
 
-def test_hold_view_keeps_stage_based_special_semantics():
+def test_hold_view_uses_delivery_active_not_stage():
+    """Dashboard HOLD deep-link matches snapshot active (is_fully_delivered)."""
     orders = [
         _po(id="hold-open", current_stage=5, hold=True, qty_delivered=0),
-        _po(id="hold-done-stage", current_stage=14, hold=True, qty_delivered=10000, delivery_status="Terkirim"),
+        _po(id="hold-late-stage", current_stage=14, hold=True, qty_delivered=0),
+        _po(id="hold-done", current_stage=14, hold=True, qty_delivered=10000, delivery_status="Terkirim"),
         _po(id="open", current_stage=5, hold=False, qty_delivered=0),
     ]
     got = filter_orders_for_view(orders, "hold")
-    assert [o["id"] for o in got] == ["hold-open"]
+    assert [o["id"] for o in got] == ["hold-open", "hold-late-stage"]
+
+
+def test_active_basis_snapshot_matches_is_fully_delivered_empty_qty():
+    """Empty qty_delivered + Terkirim/stage14: snapshot active keeps PO; default tab drops it."""
+    edge = _po(
+        id="empty-qty",
+        qty_delivered="",
+        delivery_status="Terkirim",
+        current_stage=14,
+        total_quantity=10,
+        line_items=[],
+    )
+    open_po = _po(id="open", qty_delivered=0)
+    assert [o["id"] for o in filter_orders_for_view([edge, open_po], "active")] == ["open"]
+    assert [o["id"] for o in filter_orders_for_view([edge, open_po], "active", basis="snapshot")] == [
+        "empty-qty",
+        "open",
+    ]
+
+
+def test_po_aktif_snapshot_matches_status_po_unique_set_and_legacy_differs():
+    """Dashboard PO Aktif count equals unique Status PO active+basis=snapshot set."""
+    from services.production_dashboard_snapshot import build_production_snapshot
+
+    def _line(name, qty, unit="pcs", lid="l0"):
+        return {
+            "name": name,
+            "quantity": qty,
+            "unit": unit,
+            "production_process": "print",
+            "line_id": lid,
+        }
+
+    def _ord(oid, **extra):
+        base = {
+            "id": oid,
+            "po_number": oid.upper(),
+            "cancelled": False,
+            "current_stage": 8,
+            "priority": "normal",
+            "design_status": "Approved",
+            "payment_status": "Approved",
+            "qty_delivered": 0,
+            "hold": False,
+            "delivery_deadline_status": "normal",
+            "line_items": [_line("Cup", 100, lid=f"{oid}-0")],
+            "operator_splits": [],
+            "shipments": [],
+            "customer": "Cust",
+            "order_date": "2026-10-01",
+            "total_quantity": 100,
+        }
+        base.update(extra)
+        return base
+
+    orders = [
+        _ord("drill-open", qty_delivered=0, current_stage=5),
+        _ord(
+            "drill-partial",
+            qty_delivered=40,
+            current_stage=12,
+            delivery_status="Sebagian Terkirim",
+            shipments=[{"id": "sj-a"}, {"id": "sj-b"}],
+        ),
+        _ord("drill-full", qty_delivered=100, current_stage=14, delivery_status="Terkirim"),
+        _ord("drill-cancel", cancelled=True, qty_delivered=0, current_stage=3),
+        _ord(
+            "drill-multisj",
+            qty_delivered=20,
+            current_stage=10,
+            delivery_status="Sebagian Terkirim",
+            shipments=[{"id": "sj1"}, {"id": "sj2"}, {"id": "sj3"}],
+            line_items=[_line("Cup", 80, lid="m0"), _line("Dus", 10, "pack", lid="m1")],
+            total_quantity=90,
+        ),
+        _ord(
+            "drill-emptyqty",
+            qty_delivered="",
+            delivery_status="Terkirim",
+            current_stage=14,
+            line_items=[_line("Cup", 50, lid="e0")],
+            total_quantity=50,
+        ),
+        _ord(
+            "drill-highstage",
+            qty_delivered=10,
+            current_stage=14,
+            delivery_status="Sebagian Terkirim",
+            line_items=[_line("Cup", 200, lid="h0")],
+            total_quantity=200,
+        ),
+        _ord(
+            "drill-multiline",
+            qty_delivered=5,
+            current_stage=9,
+            line_items=[
+                _line("A", 30, lid="ml0"),
+                _line("B", 20, lid="ml1"),
+                _line("C", 10, "pack", lid="ml2"),
+            ],
+            total_quantity=60,
+        ),
+    ]
+    live = [o for o in orders if not o.get("cancelled")]
+    snap = build_production_snapshot(live)
+    snap_ids = {o["id"] for o in filter_orders_for_view(orders, "active", basis="snapshot")}
+    legacy_ids = {o["id"] for o in filter_orders_for_view(orders, "active")}
+    expected = {
+        "drill-open",
+        "drill-partial",
+        "drill-multisj",
+        "drill-emptyqty",
+        "drill-highstage",
+        "drill-multiline",
+    }
+    assert snap["po_aktif"]["count"] == len(expected) == len(snap_ids)
+    assert snap_ids == expected
+    assert "drill-full" not in snap_ids
+    assert "drill-cancel" not in snap_ids
+    assert "drill-emptyqty" not in legacy_ids
+    assert snap["po_aktif"]["drill"]["path"] == "/dashboard/rincian?dashboard=produksi&widget=po_aktif&basis=snapshot"
+    # Pagination must not change unique total.
+    page = build_status_po(orders, view="active", basis="snapshot", page=1, page_size=2)
+    assert page["total_count"] == len(expected)
+    assert len(page["rows"]) == 2
+    page2 = build_status_po(orders, view="active", basis="snapshot", page=2, page_size=2)
+    assert page2["total_count"] == len(expected)
+    assert {r["id"] for r in page["rows"]}.isdisjoint({r["id"] for r in page2["rows"]})
+
+
+def test_h24_view_is_union_of_h6_and_h1():
+    orders = [
+        _po(id="h6", qty_delivered=0, delivery_deadline_status="h6"),
+        _po(id="h1", qty_delivered=0, delivery_deadline_status="h1"),
+        _po(id="over", qty_delivered=0, delivery_deadline_status="overdue"),
+        _po(id="ok", qty_delivered=0, delivery_deadline_status="normal"),
+    ]
+    got = filter_orders_for_view(orders, "h24")
+    assert [o["id"] for o in got] == ["h6", "h1"]
 
 
 def test_status_options_are_global_not_page_scoped():

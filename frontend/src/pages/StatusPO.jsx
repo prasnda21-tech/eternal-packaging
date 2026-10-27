@@ -22,6 +22,7 @@ import {
   STATUS_PO_PAGE_SIZE,
   STATUS_PO_TABS,
   statusPoFilterOptions,
+  statusPoViewLabel,
 } from "../lib/statusPo";
 import { isStatusPoMatrixPreviewEnabled, buildStatusPoMatrixPreviewRows } from "../lib/statusPoPreview";
 import {
@@ -66,6 +67,7 @@ export default function StatusPO() {
   const [params, setSearchParams] = useSearchParams();
   const deliveryTodayPage = location.pathname.startsWith("/produksi/pengiriman-hari-ini");
   const view = deliveryTodayPage ? "delivery_today" : (params.get("view") || "");
+  const basis = deliveryTodayPage ? "" : (params.get("basis") || "");
   const activeTab = deliveryTodayPage ? null : resolveStatusPoTab(view);
   const routeKey = deliveryTodayPage ? "pengiriman-hari-ini" : `status-po.${view || "default"}`;
   const userKey = storageUserKey(user);
@@ -112,7 +114,7 @@ export default function StatusPO() {
 
   useEffect(() => {
     setPage((prev) => (prev === 1 ? prev : 1));
-  }, [view, filterKey]);
+  }, [view, basis, filterKey]);
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
@@ -134,6 +136,7 @@ export default function StatusPO() {
         page_size: STATUS_PO_PAGE_SIZE,
       };
       if (view) req.view = view;
+      if (basis === "snapshot") req.basis = "snapshot";
       const po = (debouncedFilters.po || "").trim();
       const customer = (debouncedFilters.customer || "").trim();
       const status = (debouncedFilters.status || "").trim();
@@ -164,7 +167,7 @@ export default function StatusPO() {
     } finally {
       if (seq === loadSeq.current) setBusy(false);
     }
-  }, [view, page, debouncedFilters, location.search]);
+  }, [view, basis, page, debouncedFilters, location.search]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -284,6 +287,12 @@ export default function StatusPO() {
                 </span>
               )}
             </div>
+            {!deliveryTodayPage && view && activeTab == null ? (
+              <p className="muted small" data-testid="status-po-drill-view">
+                Filter dashboard: {statusPoViewLabel(view)}
+                {basis === "snapshot" ? " · basis snapshot" : ""}
+              </p>
+            ) : null}
           </div>
           <p className="spo-updated muted small" data-testid="status-po-updated">
             {updatedLabel ? `Diperbarui ${updatedLabel}` : (busy ? "Memuat…" : "\u00a0")}

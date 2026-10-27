@@ -30,6 +30,7 @@
   font-size: 12.5px;
 }
 .dp-adv-table thead th {
+  position: relative; /* filter popover anchor; rincian page may override to sticky */
   background: #14532d;
   color: #fff;
   font-size: 10.5px;
