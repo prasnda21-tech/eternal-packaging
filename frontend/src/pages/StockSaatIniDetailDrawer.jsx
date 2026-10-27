@@ -5,12 +5,26 @@ import api from "../lib/api";
 import { formatDate, formatTrackingPageDateTime } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { warehouseLocationLabel } from "../lib/physicalStockView";
+import {
+  SSI_REASON_LABEL,
+  resolveDapatDijualDisplay,
+  resolvePolosDisplay,
+} from "../lib/ssiStatusDisplay";
 
 const EXCEL_DETAIL_FIELDS = [
   { key: "saldo_awal", label: "Saldo Awal" },
   { key: "pembelian", label: "Pembelian" },
   { key: "stock", label: "Stock", physical: true },
-  { key: "stock_dapat_dijual", label: "Stock Dapat Dijual" },
+  {
+    key: "stock_dapat_dijual",
+    label: "Stock Dapat Dijual",
+    statusKey: "stock_dapat_dijual_status",
+    legacyStatusKey: "qty_siap_jual_status",
+    reasonKey: "stock_dapat_dijual_reason",
+    legacyReasonKey: "qty_siap_jual_reason",
+    noteKey: "qty_siap_jual_note",
+    contract: "dapat",
+  },
   {
     key: "qty_tercetak",
     label: "Qty Tercetak",
@@ -28,6 +42,7 @@ const EXCEL_DETAIL_FIELDS = [
     reasonKey: "qty_polos_reason",
     legacyReasonKey: "qty_polos_gudang_reason",
     noteKey: "qty_polos_gudang_note",
+    contract: "polos",
   },
   {
     key: "tercetak_belum_kirim",
@@ -42,13 +57,6 @@ const EXCEL_DETAIL_FIELDS = [
     reasonKey: "cetak_sudah_dikirim_reason",
   },
 ];
-
-const REASON_LABEL = {
-  PRINT_DELIVERY_UNPROVEN: "Pengiriman cetak belum terbukti dari SJ print",
-  COMPLETION_UNPROVEN: "Konfirmasi selesai cetak induk belum terverifikasi (multiwarna/Add On)",
-  NO_OPERATOR_EVIDENCE: "Belum ada konfirmasi cetak selesai operator yang valid",
-  DEPENDENT_UNKNOWN: "Nilai bergantung kolom yang belum terverifikasi",
-};
 
 const HISTORY_FILTERS = [
   { id: "SEMUA", label: "Semua" },
@@ -72,7 +80,7 @@ function fieldReason(row, field) {
     || "",
   ).trim();
   const note = String((field.noteKey && row?.[field.noteKey]) || "").trim();
-  return REASON_LABEL[code] || note || (code || "");
+  return SSI_REASON_LABEL[code] || note || (code || "");
 }
 
 function DetailQty({ row, field, physicalPrimary }) {
@@ -80,10 +88,18 @@ function DetailQty({ row, field, physicalPrimary }) {
     const present = physicalPrimary?.present;
     const qty = present ? physicalPrimary.qty : null;
     if (!present) {
+      const text = physicalPrimary?.text || "Belum saldo";
+      const badgeClass = text === "Belum lengkap"
+        ? "stock-status-badge--incomplete"
+        : "stock-status-badge--missing";
       return (
         <div className="ssi-detail-qty" data-testid={`ssi-detail-${field.key}`}>
-          <span className="stock-status-badge stock-status-badge--missing">Belum saldo</span>
-          <p className="muted small">Belum ada saldo fisik untuk gudang/lingkup ini.</p>
+          <span className={`stock-status-badge ${badgeClass}`}>{text}</span>
+          <p className="muted small">
+            {text === "Belum lengkap"
+              ? "Ada gudang operasional yang belum saldo / belum valid."
+              : "Belum ada saldo fisik untuk gudang/lingkup ini."}
+          </p>
         </div>
       );
     }
@@ -92,6 +108,53 @@ function DetailQty({ row, field, physicalPrimary }) {
       <div className={`ssi-detail-qty${neg ? " is-negative" : ""}`} data-testid={`ssi-detail-${field.key}`}>
         <strong className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(qty)}</strong>
         <span className="muted small">PCS</span>
+        {physicalPrimary?.flag ? (
+          <span className="stock-status-badge stock-status-badge--deficit">{physicalPrimary.flag}</span>
+        ) : null}
+      </div>
+    );
+  }
+  if (field.contract === "dapat") {
+    const disp = resolveDapatDijualDisplay(row, physicalPrimary);
+    if (disp.mode === "unverified") {
+      return (
+        <div className="ssi-detail-qty" data-testid={`ssi-detail-${field.key}`}>
+          <span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span>
+          <p className="muted small" data-testid={`ssi-detail-reason-${field.key}`}>{disp.title}</p>
+        </div>
+      );
+    }
+    const neg = Number(disp.qty) < 0;
+    return (
+      <div className={`ssi-detail-qty${neg ? " is-negative" : ""}`} data-testid={`ssi-detail-${field.key}`}>
+        <strong className={`mono${neg ? " stock-book-negative" : ""}`}>
+          {disp.qty == null ? "—" : fmtQty(disp.qty)}
+        </strong>
+        <span className="muted small">PCS</span>
+        {disp.mode === "indicative" ? (
+          <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
+        ) : null}
+        <p className="muted small" data-testid={`ssi-detail-reason-${field.key}`}>{disp.title}</p>
+      </div>
+    );
+  }
+  if (field.contract === "polos") {
+    const disp = resolvePolosDisplay(row, physicalPrimary);
+    if (disp.mode === "unverified") {
+      return (
+        <div className="ssi-detail-qty" data-testid={`ssi-detail-${field.key}`}>
+          <span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span>
+          <p className="muted small" data-testid={`ssi-detail-reason-${field.key}`}>{disp.title}</p>
+        </div>
+      );
+    }
+    const neg = Number(disp.qty) < 0;
+    return (
+      <div className={`ssi-detail-qty${neg ? " is-negative" : ""}`} data-testid={`ssi-detail-${field.key}`}>
+        <strong className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(disp.qty)}</strong>
+        <span className="muted small">PCS</span>
+        <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
+        <p className="muted small" data-testid={`ssi-detail-reason-${field.key}`}>{disp.title}</p>
       </div>
     );
   }
@@ -106,11 +169,23 @@ function DetailQty({ row, field, physicalPrimary }) {
       </div>
     );
   }
+  if (status === "INDICATIVE") {
+    const neg = Number(qty) < 0;
+    const reason = fieldReason(row, field);
+    return (
+      <div className={`ssi-detail-qty${neg ? " is-negative" : ""}`} data-testid={`ssi-detail-${field.key}`}>
+        <strong className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(qty)}</strong>
+        <span className="muted small">PCS</span>
+        <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
+        {reason ? <p className="muted small" data-testid={`ssi-detail-reason-${field.key}`}>{reason}</p> : null}
+      </div>
+    );
+  }
   const neg = Number(qty) < 0;
   return (
     <div className={`ssi-detail-qty${neg ? " is-negative" : ""}`} data-testid={`ssi-detail-${field.key}`}>
       <strong className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(qty)}</strong>
-      <span className="muted small">PCS · terverifikasi</span>
+      <span className="muted small">PCS</span>
     </div>
   );
 }

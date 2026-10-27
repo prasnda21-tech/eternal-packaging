@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from services.stock_saat_ini_excel import (
+    REASON_BASELINE_INCOMPLETE,
     REASON_DEPENDENT_UNKNOWN,
     REASON_NO_OPERATOR_EVIDENCE,
     REASON_PRINT_DELIVERY_UNPROVEN,
+    REASON_SIMPLE_POLOS_NO_WIP_COVERAGE,
+    STATUS_INDICATIVE,
     STATUS_READY,
     STATUS_UNVERIFIED,
     aggregate_ledger_components,
@@ -12,6 +15,7 @@ from services.stock_saat_ini_excel import (
     apply_excel_fields_to_catalog_row,
     compute_excel_columns,
     parent_qty_tercetak_from_progress,
+    qualify_column_status,
     resolve_qty_tercetak,
 )
 from services.physical_stock import aggregate_operational_orders
@@ -660,3 +664,142 @@ def test_apply_excel_maps_unverified_to_belum_tersedia():
     assert base["cetak_sudah_dikirim"] is None
     assert base["qty_polos_gudang"] is None
     assert base["qty_polos_gudang_status"] == "BELUM_TERSEDIA"
+
+
+def test_status_precedence_unverified_over_indicative_over_ready():
+    assert qualify_column_status(
+        formula_status=STATUS_UNVERIFIED,
+        qty=None,
+        physical_baseline_complete=False,
+        column="polos",
+    )[0] == STATUS_UNVERIFIED
+    assert qualify_column_status(
+        formula_status=STATUS_READY,
+        qty=100,
+        physical_baseline_complete=False,
+        column="dapat",
+    ) == (STATUS_INDICATIVE, REASON_BASELINE_INCOMPLETE)
+    assert qualify_column_status(
+        formula_status=STATUS_READY,
+        qty=-22000,
+        physical_baseline_complete=True,
+        column="dapat",
+    ) == (STATUS_READY, None)
+
+
+def test_p0b1_incomplete_baseline_marks_dapat_indicative_keeps_numeric():
+    """Partial multi-WH: numerics unchanged; Dapat Dijual INDICATIVE."""
+    excel = compute_excel_columns(
+        saldo_awal=10_000,
+        delivered_total=4_000,
+        po_ordered=32_000,
+        so_delivered=4_000,
+        qty_tercetak=8_000,
+        cetak_delivered_explicit=4_000,
+        stock_book=6_000,
+    )
+    assert excel["stock"] == 6_000
+    assert excel["stock_dapat_dijual"] == -22_000
+    assert excel["qty_polos"] == 2_000
+    base = {"master_item_id": "M1", "physical_qty": 6_000}
+    apply_excel_fields_to_catalog_row(
+        base,
+        excel,
+        balance_present=True,
+        physical_baseline_complete=False,
+    )
+    assert base["stock"] == 6_000
+    assert base["stock_dapat_dijual"] == -22_000
+    assert base["qty_siap_jual"] == -22_000
+    assert base["qty_siap_jual_status"] == STATUS_INDICATIVE
+    assert base["stock_dapat_dijual_status"] == STATUS_INDICATIVE
+    assert base["qty_siap_jual_reason"] == REASON_BASELINE_INCOMPLETE
+    assert base["qty_polos"] == 2_000
+    assert base["qty_polos_status"] == STATUS_INDICATIVE
+    assert base["qty_polos_reason"] == REASON_BASELINE_INCOMPLETE
+    assert base["qty_polos_gudang"] == 2_000
+    assert base["qty_polos_gudang_status"] == STATUS_INDICATIVE
+
+
+def test_p0b1_complete_baseline_dapat_ready_polos_never_verified():
+    """Complete baseline: Dapat READY (neg OK); Polos INDICATIVE (no WIP coverage field)."""
+    excel = compute_excel_columns(
+        saldo_awal=10_000,
+        delivered_total=4_000,
+        po_ordered=32_000,
+        so_delivered=4_000,
+        qty_tercetak=8_000,
+        cetak_delivered_explicit=4_000,
+        stock_book=6_000,
+    )
+    base = {"master_item_id": "M1", "physical_qty": 6_000}
+    apply_excel_fields_to_catalog_row(
+        base,
+        excel,
+        balance_present=True,
+        physical_baseline_complete=True,
+    )
+    assert base["stock_dapat_dijual"] == -22_000
+    assert base["qty_siap_jual_status"] == STATUS_READY
+    assert base["qty_polos"] == 2_000
+    assert base["qty_polos_status"] == STATUS_INDICATIVE
+    assert base["qty_polos_reason"] == REASON_SIMPLE_POLOS_NO_WIP_COVERAGE
+    assert base["qty_polos_status"] != STATUS_READY
+
+
+def test_p0b1_missing_print_keeps_polos_unverified_not_fake_zero():
+    excel = compute_excel_columns(
+        saldo_awal=10_000,
+        delivered_total=0,
+        po_ordered=0,
+        stock_book=10_000,
+        qty_tercetak=None,
+        qty_tercetak_status=STATUS_UNVERIFIED,
+        print_delivery_proven=False,
+    )
+    base = {"master_item_id": "M1"}
+    apply_excel_fields_to_catalog_row(
+        base, excel, balance_present=True, physical_baseline_complete=True
+    )
+    assert base["stock"] == 10_000
+    assert base["qty_siap_jual_status"] == STATUS_READY
+    assert base["qty_polos"] is None
+    assert base["qty_polos_status"] == STATUS_UNVERIFIED
+    assert base["qty_polos_gudang"] is None
+    assert base["qty_polos_gudang_status"] == "BELUM_TERSEDIA"
+
+
+def test_p0b1_apply_preserves_all_formula_numerics():
+    """Prove status qualification does not mutate Excel quantities."""
+    excel = compute_excel_columns(
+        saldo_awal=0,
+        pembelian=10_000,
+        delivered_total=4_000,
+        po_ordered=32_000,
+        so_delivered=4_000,
+        qty_tercetak=8_000,
+        cetak_delivered_explicit=4_000,
+        stock_book=6_000,
+    )
+    snapshot = {
+        k: excel[k]
+        for k in (
+            "saldo_awal",
+            "pembelian",
+            "stock",
+            "stock_dapat_dijual",
+            "qty_tercetak",
+            "qty_polos",
+            "tercetak_belum_kirim",
+            "cetak_sudah_dikirim",
+        )
+    }
+    open_commit = excel["open_so_commitment"]
+    base = {}
+    apply_excel_fields_to_catalog_row(
+        base, excel, balance_present=True, physical_baseline_complete=False
+    )
+    for k, v in snapshot.items():
+        assert base[k] == v
+    assert excel["stock_dapat_dijual"] == snapshot["stock_dapat_dijual"]
+    assert excel["open_so_commitment"] == open_commit

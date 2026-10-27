@@ -1,0 +1,189 @@
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import api from "../lib/api";
+import StockSaatIni from "./StockSaatIni";
+
+jest.mock("react-router-dom", () => require("../test/reactRouterMock"), { virtual: true });
+
+const authState = {
+  user: { id: "user-1", email: "ops@example.com" },
+  hasPerm: () => true,
+};
+
+jest.mock("../lib/auth", () => ({
+  useAuth: () => authState,
+}));
+
+jest.mock("../lib/api", () => ({
+  __esModule: true,
+  default: {
+    branches: jest.fn(),
+    warehouses: jest.fn(),
+    physicalStockCatalog: jest.fn(),
+    physicalStockStatusSummary: jest.fn().mockResolvedValue({
+      counts: {},
+      operational_actions: [],
+      read_only: true,
+    }),
+    ssiItemActivity: jest.fn().mockResolvedValue({ items: [], counts: {} }),
+  },
+}));
+
+global.IS_REACT_ACT_ENVIRONMENT = true;
+
+const BRANCH = { id: "br-a", code: "YGY", name: "Yogyakarta", active: true };
+const WH_A = {
+  id: "wh-a",
+  branch_id: "br-a",
+  code: "MAIN",
+  name: "Gudang A",
+  active: true,
+  is_operational: true,
+};
+const WH_B = {
+  id: "wh-b",
+  branch_id: "br-a",
+  code: "B",
+  name: "Gudang B",
+  active: true,
+  is_operational: true,
+};
+
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe("StockSaatIni P0-B1 status contract", () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    api.branches.mockResolvedValue([BRANCH]);
+    api.warehouses.mockResolvedValue([WH_A, WH_B]);
+    api.physicalStockCatalog.mockReset();
+    api.ssiItemActivity.mockResolvedValue({ items: [], counts: {} });
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  test("Belum lengkap → Dapat Dijual numeric Indikatif; Polos unverified stays badge", async () => {
+    api.physicalStockCatalog.mockResolvedValue({
+      stock_read_mode: "warehouse_standalone",
+      r2_authority_active: false,
+      warehouse_stock_standalone: true,
+      can_adjust_physical_stock: true,
+      can_switch_branches: true,
+      effective_branch_id: BRANCH.id,
+      effective_branch_code: "YGY",
+      master_item_count: 1,
+      warehouse_count: 2,
+      total: 1,
+      page: 1,
+      page_count: 1,
+      items: [
+        {
+          master_item_id: "m-partial",
+          item_code: "100146",
+          item_name: "Partial WH",
+          base_unit: "PCS",
+          physical_qty: 0,
+          baseline_status: "unreconciled",
+          physical_baseline_complete: false,
+          stock_dapat_dijual: -8000,
+          stock_dapat_dijual_status: "INDICATIVE",
+          qty_siap_jual_status: "INDICATIVE",
+          qty_siap_jual_reason: "BASELINE_INCOMPLETE",
+          qty_polos: null,
+          qty_polos_status: "UNVERIFIED",
+          warehouse_balances: [
+            { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: null, balance_present: false },
+            { warehouse_id: "wh-b", warehouse_code: "B", physical_qty: 0, balance_present: true },
+          ],
+        },
+      ],
+    });
+    await act(async () => { root.render(<StockSaatIni />); });
+    await flush();
+    expect(container.querySelector('[data-testid="stock-physical-m-partial"]')?.textContent)
+      .toMatch(/Belum lengkap/);
+    const dapat = container.querySelector('[data-testid="stock-siap-jual-m-partial"]');
+    expect(dapat?.getAttribute("data-condition-status")).toBe("INDICATIVE");
+    expect(dapat?.textContent).toMatch(/8/);
+    expect(dapat?.textContent).toMatch(/Indikatif/i);
+    expect(container.querySelector('[data-testid="stock-polos-m-partial"]')?.textContent)
+      .toMatch(/Belum terverifikasi/i);
+  });
+
+  test("complete baseline negative SO → Dapat without Indikatif; Polos Indikatif", async () => {
+    api.physicalStockCatalog.mockResolvedValue({
+      stock_read_mode: "warehouse_standalone",
+      can_adjust_physical_stock: true,
+      can_switch_branches: true,
+      effective_branch_id: BRANCH.id,
+      effective_branch_code: "YGY",
+      master_item_count: 1,
+      warehouse_count: 1,
+      total: 1,
+      page: 1,
+      page_count: 1,
+      items: [
+        {
+          master_item_id: "m-ok",
+          item_code: "12OZ",
+          item_name: "12 OZ SA",
+          base_unit: "PCS",
+          physical_qty: 6000,
+          baseline_status: "reconciled",
+          physical_baseline_complete: true,
+          stock_dapat_dijual: -22000,
+          qty_siap_jual_status: "READY",
+          qty_polos: 2000,
+          qty_polos_status: "INDICATIVE",
+          qty_polos_reason: "SIMPLE_POLOS_NO_WIP_COVERAGE",
+          warehouse_balances: [
+            {
+              warehouse_id: "wh-a",
+              warehouse_code: "MAIN",
+              physical_qty: 6000,
+              balance_present: true,
+              baseline_status: "reconciled",
+            },
+          ],
+        },
+      ],
+    });
+    await act(async () => { root.render(<StockSaatIni />); });
+    await flush();
+    const dapat = container.querySelector('[data-testid="stock-siap-jual-m-ok"]');
+    expect(dapat?.getAttribute("data-condition-status")).toBe("READY");
+    expect(dapat?.textContent).toMatch(/22/);
+    expect(dapat?.textContent).not.toMatch(/Indikatif/i);
+    const polos = container.querySelector('[data-testid="stock-polos-m-ok"]');
+    expect(polos?.getAttribute("data-condition-status")).toBe("INDICATIVE");
+    expect(polos?.textContent).toMatch(/2/);
+    expect(polos?.textContent).toMatch(/Indikatif/i);
+
+    await act(async () => {
+      container.querySelector('[data-testid="stock-detail-m-ok"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)
+      .toMatch(/22/);
+    expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)
+      .not.toMatch(/PCS · terverifikasi/);
+    expect(container.querySelector('[data-testid="ssi-detail-qty_polos"]')?.textContent)
+      .toMatch(/Indikatif/i);
+  });
+});
