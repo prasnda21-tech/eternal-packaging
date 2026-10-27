@@ -539,6 +539,73 @@ def test_reversal_excluded_from_ledger_components():
     assert agg["M1"]["delivered_total"] == 0
 
 
+def test_optional_opening_balance_not_prerequisite():
+    """Saldo Awal optional — SSI columns compute without OPENING_BALANCE."""
+    empty = aggregate_ledger_components([], master_item_ids=["M1"], branch_id="B1")
+    assert empty == {}
+    # Purchase-only path (no opening) still yields Stock via book or components.
+    movements = [
+        {"id": "p1", "master_item_id": "M1", "movement_type": "PURCHASE_RECEIPT", "qty_delta": 3_000, "branch_id": "B1"},
+    ]
+    agg = aggregate_ledger_components(movements, master_item_ids=["M1"], branch_id="B1")
+    assert agg["M1"]["saldo_awal"] == 0
+    assert agg["M1"]["pembelian"] == 3_000
+    row = compute_excel_columns(
+        saldo_awal=0,
+        pembelian=3_000,
+        delivered_total=0,
+        po_ordered=0,
+        qty_tercetak=None,
+        qty_tercetak_status=STATUS_UNVERIFIED,
+        print_delivery_proven=True,
+        cetak_delivered_proven=0,
+        stock_book=3_000,
+    )
+    assert row["saldo_awal"] == 0
+    assert row["pembelian"] == 3_000
+    assert row["stock"] == 3_000
+    assert row["stock_dapat_dijual"] == 3_000
+    assert row["qty_tercetak"] is None
+
+
+def test_repeated_manual_adjustment_no_double_post_in_components():
+    """Subsequent corrections are MANUAL_ADJUSTMENT deltas — summed once each."""
+    movements = [
+        {"id": "o1", "master_item_id": "M1", "movement_type": "OPENING_BALANCE", "qty_delta": 10_000, "branch_id": "B1"},
+        {"id": "a1", "master_item_id": "M1", "movement_type": "MANUAL_ADJUSTMENT", "qty_delta": -500, "branch_id": "B1"},
+        {"id": "a2", "master_item_id": "M1", "movement_type": "MANUAL_ADJUSTMENT", "qty_delta": 200, "branch_id": "B1"},
+        # Duplicate id must not appear in real ledger; components sum each movement once.
+        {"id": "a3", "master_item_id": "M1", "movement_type": "MANUAL_ADJUSTMENT", "qty_delta": 0, "branch_id": "B1"},
+    ]
+    agg = aggregate_ledger_components(movements, master_item_ids=["M1"], branch_id="B1")
+    assert agg["M1"]["saldo_awal"] == 10_000
+    assert agg["M1"]["adjustment_net"] == -300
+    row = compute_excel_columns(
+        saldo_awal=10_000,
+        pembelian=0,
+        adjustment_net=-300,
+        delivered_total=0,
+        po_ordered=0,
+        qty_tercetak=0,
+        print_delivery_proven=True,
+        cetak_delivered_proven=0,
+        stock_book=9_700,
+    )
+    assert row["stock"] == 9_700
+    assert row["adjustment_net"] == -300
+    # Without stock_book, component math matches book after adjustments.
+    computed = compute_excel_columns(
+        saldo_awal=10_000,
+        adjustment_net=-300,
+        delivered_total=0,
+        po_ordered=0,
+        qty_tercetak=0,
+        print_delivery_proven=True,
+        cetak_delivered_proven=0,
+    )
+    assert computed["stock"] == 9_700
+
+
 def test_branch_isolation_ygy_smg():
     movements = [
         {"id": "a", "master_item_id": "M1", "movement_type": "OPENING_BALANCE", "qty_delta": 100, "branch_id": "YGY"},

@@ -402,6 +402,7 @@ def aggregate_ledger_components(
     delivery_types: Iterable[str] = ("SALES_DELIVERY",),
     adjustment_types: Iterable[str] = (
         "STOCK_OPNAME_ADJUSTMENT",
+        "MANUAL_ADJUSTMENT",
         "ADJUSTMENT",
         "KOREKSI",
     ),
