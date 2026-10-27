@@ -46,6 +46,7 @@ export default function DeliveryPlanAdvancedTable({
   filters = {},
   onSortChange,
   onFiltersChange,
+  onRowClick,
   emptyLabel = "Tidak ada data",
   testId,
   rowClassName,
@@ -216,7 +217,6 @@ export default function DeliveryPlanAdvancedTable({
                     key={k}
                     scope="col"
                     className={`${col.align === "right" ? "num" : ""}${dragging === k ? " is-dragging" : ""}`}
-                    style={{ position: "relative" }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
                       e.preventDefault();
@@ -387,11 +387,21 @@ export default function DeliveryPlanAdvancedTable({
               const key = typeof rowKey === "function" ? rowKey(row, idx) : row?.[rowKey] || idx;
               const extraClass = typeof rowClassName === "function" ? rowClassName(row, idx) : "";
               const testRowId = typeof rowTestId === "function" ? rowTestId(row, idx) : undefined;
+              const clickable = typeof onRowClick === "function";
               return (
                 <tr
                   key={key}
-                  className={extraClass || undefined}
+                  className={[extraClass, clickable ? "is-row-click" : ""].filter(Boolean).join(" ") || undefined}
                   data-testid={testRowId}
+                  role={clickable ? "link" : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  onClick={clickable ? () => onRowClick(row, idx) : undefined}
+                  onKeyDown={clickable ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onRowClick(row, idx);
+                    }
+                  } : undefined}
                 >
                   {visibleKeys.map((k) => {
                     const col = byKey.get(k);

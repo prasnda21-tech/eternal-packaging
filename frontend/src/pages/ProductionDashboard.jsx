@@ -131,12 +131,16 @@ function modelsFromSnapshot(body) {
       within6h: body.deadline.within_6h,
       within24h: body.deadline.within_24h,
       drill: body.deadline.drill,
+      drill6h: body.deadline.drill_6h,
+      drill24h: body.deadline.drill_24h,
     },
     approval: {
       status: body.approval.design || body.approval.payment ? "complete" : "zero",
       design: body.approval.design,
       payment: body.approval.payment,
       drill: body.approval.drill,
+      drillDesign: body.approval.drill_design,
+      drillPayment: body.approval.drill_payment,
     },
     prioritas: {
       status: priorityRows.length ? "complete" : "empty",

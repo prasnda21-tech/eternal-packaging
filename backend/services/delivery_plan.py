@@ -63,6 +63,7 @@ PLAN_PROJECTION = {
     "quantity": 1,
     "line_items.name": 1,
     "line_items.quantity": 1,
+    "line_items.unit": 1,
     "line_items.production_process": 1,
     "line_items.physical_fulfillment": 1,
     "line_items.item_type": 1,
@@ -130,6 +131,7 @@ def plan_row(
         "qty_total": qty["total_po_qty"],
         "qty_delivered": qty["qty_delivered"],
         "qty_remaining": qty["qty_remaining"],
+        "qty_unit": plan_qty_unit(order),
         "delivery_schedule_status": status,
         "delivery_schedule_status_label": schedule_status_label(status),
         "design_ready": design_ok(order),
@@ -174,6 +176,18 @@ def _match_filters(row: dict, filters: dict) -> bool:
         return False
     if date_to and (not d or d > date_to):
         return False
+    # Qty Rencana Pengiriman drill: same unit bucket as the production widget.
+    unit = (f.get("unit") or "").strip()
+    if unit:
+        row_unit = str(row.get("qty_unit") or "").strip()
+        if row_unit != unit:
+            return False
+        try:
+            remaining = int(row.get("qty_remaining") or 0)
+        except (TypeError, ValueError):
+            remaining = 0
+        if remaining <= 0:
+            return False
     return True
 
 

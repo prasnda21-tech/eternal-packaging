@@ -10,6 +10,8 @@ jest.mock("react-router-dom", () => {
   return {
     MemoryRouter: ({ children }) => children,
     Link: ({ children, to, ...rest }) => React.createElement("a", { href: to, ...rest }, children),
+    useNavigate: () => jest.fn(),
+    useSearchParams: () => [new URLSearchParams(""), jest.fn()],
   };
 }, { virtual: true });
 
@@ -34,8 +36,14 @@ function widget(id, x, y, w, h) {
   return { widget_id: id, x, y, w, h, settings: {} };
 }
 
+const statusPoDrill = {
+  path: "/dashboard/rincian?dashboard=produksi&widget=po_aktif&basis=snapshot",
+  any_of: ["nav.reports.status_po"],
+  also_any_of: ["schedule.view"],
+};
+
 const snapshot = {
-  po_aktif: { count: 5, drill: null },
+  po_aktif: { count: 5, drill: statusPoDrill },
   perlu_produksi: { count: 3, drill: null },
   po_urgent: { count: 1, drill: null },
   po_hold: { count: 1, drill: null },
@@ -44,7 +52,7 @@ const snapshot = {
   approval: { design: 2, payment: 2, either_unique: 3, drill: null },
   prioritas: {
     rows: [{ order_id: "po-multi", line_idx: 0, po_number: "PO-MULTI", item: "Cup", unit: "pcs", qty_production_remaining: 85, labels: ["URGENT"] }],
-    drill: { path: "/tasks/kepala-produksi/prioritas/perlu-produksi", any_of: ["schedule.edit"] },
+    drill: { path: "/dashboard/rincian?dashboard=produksi&widget=prioritas", any_of: ["schedule.edit"] },
   },
 };
 
@@ -132,7 +140,7 @@ test("snapshot cards keep units and windows separate", async () => {
   expect(priority).toContain("URGENT");
   expect(view.host.querySelector("[data-testid='produksi-sim-banner']")).toBeNull();
   expect(view.host.textContent).not.toContain("Cup 12 oz");
-  expect(view.host.querySelector("[data-testid='produksi-widget-prioritas'] a").getAttribute("href")).toBe("/tasks/kepala-produksi/prioritas/perlu-produksi");
+  expect(view.host.querySelector("[data-testid='produksi-widget-prioritas'] a").getAttribute("href")).toBe("/dashboard/rincian?dashboard=produksi&widget=prioritas");
   expect(view.host.querySelector("[data-testid='produksi-widget-po_urgent'] a")).toBeNull();
   expect(apis.snapshotApi).toHaveBeenCalledTimes(1);
   view.unmount();
@@ -837,4 +845,35 @@ test("qty rencana pengiriman stays on production with separate today and overdue
   expect(blocked.host.querySelector("[data-testid='produksi-widget-delivery_qty']").textContent).toContain("Tidak ada izin");
   expect(denied.deliveryPlanQtyApi).not.toHaveBeenCalled();
   blocked.unmount();
+});
+
+test("PO Aktif Rincian shows in view mode and hides in edit mode without navigating", async () => {
+  const apis = apisFor(layout([widget("po_aktif", 0, 0, 3, 2)]));
+  const allow = (key) => (
+    key === "dashboard.production.view"
+    || key === "nav.reports.status_po"
+    || key === "schedule.view"
+    || key === "schedule.edit"
+  );
+  const view = await renderPage(allow, apis);
+  const card = view.host.querySelector("[data-testid='produksi-widget-po_aktif']");
+  expect(card.getAttribute("data-drill")).toBe("ready");
+  expect(card.className).toContain("is-drillable");
+  const rincian = [...card.querySelectorAll("a")].find((node) => node.textContent.includes("Rincian"));
+  expect(rincian).toBeTruthy();
+  expect(rincian.getAttribute("href")).toContain("/dashboard/rincian?");
+  expect(rincian.getAttribute("href")).toContain("widget=po_aktif");
+  expect(rincian.getAttribute("href")).toContain("dashboard=produksi");
+
+  await act(async () => { view.host.querySelector("[data-testid='produksi-edit-layout']").click(); });
+  const editingCard = view.host.querySelector("[data-testid='produksi-widget-po_aktif']");
+  expect(editingCard.className).toContain("is-edit");
+  expect(editingCard.className).not.toContain("is-drillable");
+  expect(editingCard.getAttribute("data-drill")).toBeNull();
+  expect([...editingCard.querySelectorAll("a")].some((node) => node.textContent.includes("Rincian"))).toBe(false);
+  expect(view.host.querySelector("[data-testid='produksi-drag-po_aktif']")).toBeTruthy();
+  expect(view.host.querySelector("[data-testid='produksi-menu-po_aktif']")).toBeTruthy();
+  await act(async () => { editingCard.click(); });
+  expect(view.host.querySelector("[data-testid='produksi-widget-po_aktif']")).toBeTruthy();
+  view.unmount();
 });

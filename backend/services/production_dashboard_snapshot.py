@@ -12,20 +12,38 @@ from workflow_gates import group2_complete
 from services.dashboard_today import partition_orders_by_delivery, wib_today
 from services.division_tasks import build_kepala_produksi_tasks
 from services.kepala_produksi_board import build_kepala_produksi_board
+from services.dashboard_rincian import rincian_path
 from services.production_wave2 import build_wave2
 
 PRIORITY_LIMIT = 8
 
 DRILL_STATUS_PO = {
-    "path": "/laporan/status-po?view=active",
+    "path": rincian_path("po_aktif", dashboard="produksi", basis="snapshot"),
     "any_of": ["nav.reports.status_po"],
     "also_any_of": ["schedule.view"],
 }
-DRILL_KEPALA = {
-    "perlu_produksi": "/tasks/kepala-produksi/prioritas/perlu-produksi",
-    "sisa_qty": "/tasks/kepala-produksi/prioritas/sisa-produksi",
-    "prioritas": "/tasks/kepala-produksi/prioritas/perlu-produksi",
+DRILL_STATUS_PO_VIEW = {
+    "urgent": ("po_urgent", {}),
+    "hold": ("po_hold", {}),
+    "h6": ("deadline_6h", {}),
+    "h24": ("deadline_24h", {}),
+    "design": ("approval_design", {}),
+    "payment": ("approval_payment", {}),
 }
+DRILL_KEPALA = {
+    "perlu_produksi": "perlu_produksi",
+    "sisa_qty": "sisa_qty",
+    "prioritas": "prioritas",
+}
+
+
+def _drill_status(view_key: str) -> dict:
+    widget, extra = DRILL_STATUS_PO_VIEW[view_key]
+    return {
+        "path": rincian_path(widget, dashboard="produksi", basis="snapshot", **extra),
+        "any_of": ["nav.reports.status_po"],
+        "also_any_of": ["schedule.view"],
+    }
 
 
 def summary_flags(order: dict) -> Dict[str, bool]:
@@ -60,7 +78,7 @@ def _ids(orders: Iterable[dict], predicate) -> set:
 
 def _drill_kepala(key: str) -> dict:
     return {
-        "path": DRILL_KEPALA[key],
+        "path": rincian_path(DRILL_KEPALA[key], dashboard="produksi"),
         "any_of": ["nav.tasks.kepala_produksi", "schedule.edit"],
     }
 
@@ -250,11 +268,11 @@ def build_production_snapshot(
         "po_urgent": {
             "count": len(flagged("urgent")),
             "rule": "priority",
-            "drill": None,
+            "drill": _drill_status("urgent"),
         },
         "po_hold": {
             "count": len(flagged("hold")),
-            "drill": None,
+            "drill": _drill_status("hold"),
         },
         "deadline": {
             "within_6h": len(within_6h),
@@ -262,12 +280,16 @@ def build_production_snapshot(
             "label_6h": "≤ 6 jam",
             "label_24h": "≤ 24 jam",
             "drill": None,
+            "drill_6h": _drill_status("h6"),
+            "drill_24h": _drill_status("h24"),
         },
         "approval": {
             "design": len(design),
             "payment": len(payment),
             "either_unique": len(design | payment),
             "drill": None,
+            "drill_design": _drill_status("design"),
+            "drill_payment": _drill_status("payment"),
         },
         "prioritas": {
             "rows": _priority_rows(priority_source),

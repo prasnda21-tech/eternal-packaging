@@ -1,10 +1,51 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowUpRight } from "lucide-react";
 import { formatAxisMoney, formatMoney } from "../../lib/financialDashboard";
+import {
+  deliveryScheduleDrillPath,
+  fakturPembelianDrillPath,
+  fakturPenjualanDrillPath,
+  isInteractiveDrillEventTarget,
+  labaRugiDrillPath,
+  mutasiKasDrillPath,
+} from "../../lib/dashboardDrillNav";
 import { chartWithheld } from "../../lib/widgetDashboardModel";
 import { TABS, WIDGETS } from "./widgetDashboardCatalog";
 import "./widgetDashboard.css";
 
 const BLOCKED = ["loading", "error", "empty", "unavailable", "forbidden"];
+
+function widgetDrillPath(id, { start = "", end = "" } = {}) {
+  // Period omzet only — per-seller / per-customer exact drill needs API filters (not supported).
+  if (id === "omzet" || id === "today" || id === "trend" || id === "settlement") {
+    return fakturPenjualanDrillPath({
+      dateFrom: start,
+      dateTo: end,
+      widget: id === "today" ? "today" : id,
+      dashboard: "penjualan",
+      datePreset: id === "today" || (start && end && start === end) ? "today" : "",
+    });
+  }
+  if (id === "shipToday") return deliveryScheduleDrillPath("hari_ini");
+  if (id === "shipLate") return deliveryScheduleDrillPath("terlambat");
+  if (id === "purchases") return fakturPembelianDrillPath({ dateFrom: start, dateTo: end, dashboard: "penjualan" });
+  if (id === "cash") return mutasiKasDrillPath({ start, end, dashboard: "penjualan" });
+  if (id === "expense" || id === "pl") {
+    return labaRugiDrillPath({
+      start,
+      end,
+      widget: id === "expense" ? "expense" : "profit",
+      dashboard: "penjualan",
+    });
+  }
+  // No exact transaction grain for these — keep ops deep-link or blocked upstream.
+  if (id === "ap") return "/buku-besar/hutang-usaha";
+  if (id === "assets") return "/buku-besar/neraca";
+  if (id === "overdue") return "/buku-besar/piutang-usaha";
+  if (id === "recon") return "/kas-bank/rekonsiliasi";
+  return null;
+}
 
 export function useNarrow() {
   const query = "(max-width: 900px)";
@@ -70,18 +111,45 @@ function StateLine({ status, detail }) {
   return <p className={`wp-state is-${status}`}>{label}.{detail ? ` ${detail}` : ""}</p>;
 }
 
-function Card({ id, meta, allowed, model, narrow, active, onInfo, children }) {
+function Card({ id, meta, allowed, model, narrow, active, onInfo, drillPath, children }) {
+  const navigate = useNavigate();
   const show = !narrow || active;
+  const canDrill = Boolean(allowed && drillPath && !BLOCKED.includes(model?.status));
   return (
-    <section className="wp-card" hidden={!show} data-testid={`widget-${id}`} data-area={id} data-status={allowed ? model.status : "forbidden"}>
+    <section
+      className={`wp-card${canDrill ? " is-drillable" : ""}`}
+      hidden={!show}
+      data-testid={`widget-${id}`}
+      data-area={id}
+      data-status={allowed ? model.status : "forbidden"}
+      data-drill={canDrill ? "ready" : undefined}
+    >
       <header>
         <div>
           <h2><span className="wp-code">{meta.code}</span> {meta.title}</h2>
           <p className="wp-kicker">{meta.kicker}</p>
         </div>
+        {canDrill ? <span className="wp-drill-icon" aria-hidden="true"><ArrowUpRight size={14} /></span> : null}
         <button type="button" className="wp-text-btn" data-testid={`info-${id}`} onClick={() => onInfo(id)}>Info</button>
       </header>
-      <div className="wp-body">
+      <div
+        className="wp-body"
+        role={canDrill ? "link" : undefined}
+        tabIndex={canDrill ? 0 : undefined}
+        aria-label={canDrill ? `Buka rincian ${meta.title}` : undefined}
+        data-testid={canDrill ? `widget-drill-${id}` : undefined}
+        onClick={(event) => {
+          if (!canDrill || isInteractiveDrillEventTarget(event.target)) return;
+          navigate(drillPath);
+        }}
+        onKeyDown={(event) => {
+          if (!canDrill) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            navigate(drillPath);
+          }
+        }}
+      >
         {allowed ? children : (
           <p className="wp-state is-forbidden" data-testid={`forbidden-${id}`}>Tidak ada izin {(meta.perms || [meta.perm]).join(" atau ")}. Angka tidak ditampilkan.</p>
         )}
@@ -312,6 +380,8 @@ export default function WidgetBoard({
   allowed,
   onNavigate,
   periodLabel,
+  periodStart = "",
+  periodEnd = "",
   sampleBadge = false,
   periodControl = null,
   narrow,
@@ -321,6 +391,7 @@ export default function WidgetBoard({
   const [dialog, setDialog] = useState(null);
   const [drawer, setDrawer] = useState(false);
   const [plSpan, setPlSpan] = useState("period");
+  const period = { start: periodStart, end: periodEnd };
 
   function body(id) {
     const model = models[id] || { status: "loading" };
@@ -570,7 +641,17 @@ export default function WidgetBoard({
       </header>
       <div className={`wp-board ${panel.layout}`} data-testid={`panel-${tab.id}-${panel.id}`}>
         {panel.widgets.map((id) => (
-          <Card key={id} id={id} meta={WIDGETS[id]} allowed={allowed(id)} model={models[id] || { status: "loading" }} narrow={narrow} active={id === widgetId} onInfo={(widget) => setDialog(`about:${widget}`)}>
+          <Card
+            key={id}
+            id={id}
+            meta={WIDGETS[id]}
+            allowed={allowed(id)}
+            model={models[id] || { status: "loading" }}
+            narrow={narrow}
+            active={id === widgetId}
+            onInfo={(widget) => setDialog(`about:${widget}`)}
+            drillPath={widgetDrillPath(id, period)}
+          >
             {body(id)}
           </Card>
         ))}
