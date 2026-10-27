@@ -350,23 +350,29 @@ export default function StockSaatIni() {
   /** Skip one catalog reload when syncing branchId from catalog effective_branch_id. */
   const skipBranchPinReload = useRef(false);
   const itemsRef = useRef([]);
-  /** Restore list scroll when leaving inline detail (no extra catalog fetch). */
+  /** Restore list scroll / focus when closing detail modal (no extra catalog fetch). */
   const listScrollYRef = useRef(0);
+  const detailReturnFocusRef = useRef(null);
 
   const openDetail = useCallback((item) => {
     if (!item?.master_item_id) return;
     listScrollYRef.current = window.scrollY || window.pageYOffset || 0;
+    detailReturnFocusRef.current = document.activeElement;
     setDetailItem(item);
   }, []);
 
   const closeDetail = useCallback(() => {
     setDetailItem(null);
     const y = listScrollYRef.current || 0;
+    const el = detailReturnFocusRef.current;
+    detailReturnFocusRef.current = null;
     requestAnimationFrame(() => {
-      // jsdom implements scrollTo as a stub that logs "Not implemented".
       const ua = String(globalThis.navigator?.userAgent || "");
       if (typeof window.scrollTo === "function" && !/jsdom/i.test(ua)) {
         window.scrollTo(0, y);
+      }
+      if (el && typeof el.focus === "function") {
+        try { el.focus(); } catch { /* ignore */ }
       }
     });
   }, []);
@@ -1137,45 +1143,6 @@ export default function StockSaatIni() {
             </div>
           )}
 
-          {detailItem ? (
-        <StockSaatIniDetailDrawer
-          item={detailItem}
-          physicalPrimary={stockPhysicalPrimaryDisplay(detailItem, {
-            warehouseId: selectedFilterWarehouse?.id || "",
-            branchAggregate: showBranchAggregate,
-          })}
-          branches={branches}
-          branchId={branchId}
-          warehouseId={warehouseId}
-          scopeLabel={[
-            branchLabel,
-            selectedFilterWarehouse
-              ? (selectedFilterWarehouse.code || selectedFilterWarehouse.name)
-              : "Semua Gudang",
-          ].filter(Boolean).join(" · ")}
-          canAdjust={canAdjust}
-          canOpening={canOpening}
-          adjustBlockedReason={data?.adjust_blocked_reason}
-          onClose={closeDetail}
-          onOpenOpening={(row) => {
-            closeDetail();
-            const wh = singleWarehouse
-              || (warehouseId ? adjustWarehouses.find((w) => w.id === warehouseId) : null)
-              || null;
-            setOpeningSeed({
-              itemId: row.master_item_id,
-              branchId: wh?.branch_id || effectiveBranchId || branchId || "",
-              warehouseId: wh?.id || warehouseId || "",
-            });
-            setOpeningOpen(true);
-          }}
-          onOpenAdjust={(row) => {
-            closeDetail();
-            beginAdjust(row, { balancePresent: true });
-          }}
-        />
-      ) : (
-        <>
           {(refreshing || (searchPending && items.length > 0)) && (
             <p className="stock-refreshing muted small" data-testid="stock-refreshing" role="status">
               Menyegarkan…
@@ -1396,7 +1363,42 @@ export default function StockSaatIni() {
               <button className="stock-btn-outline sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
             </div>
           )}
-        </>
+
+      {detailItem && (
+        <StockSaatIniDetailDrawer
+          item={detailItem}
+          physicalPrimary={stockPhysicalPrimaryDisplay(detailItem, {
+            warehouseId: selectedFilterWarehouse?.id || "",
+            branchAggregate: showBranchAggregate,
+          })}
+          branches={branches}
+          branchId={branchId}
+          warehouseId={warehouseId}
+          scopeLabel={[
+            branchLabel,
+            selectedFilterWarehouse
+              ? (selectedFilterWarehouse.code || selectedFilterWarehouse.name)
+              : "Semua Gudang",
+          ].filter(Boolean).join(" · ")}
+          canAdjust={canAdjust}
+          canOpening={canOpening}
+          adjustBlockedReason={data?.adjust_blocked_reason}
+          onClose={closeDetail}
+          onOpenOpening={(row) => {
+            const wh = singleWarehouse
+              || (warehouseId ? adjustWarehouses.find((w) => w.id === warehouseId) : null)
+              || null;
+            setOpeningSeed({
+              itemId: row.master_item_id,
+              branchId: wh?.branch_id || effectiveBranchId || branchId || "",
+              warehouseId: wh?.id || warehouseId || "",
+            });
+            setOpeningOpen(true);
+          }}
+          onOpenAdjust={(row) => {
+            beginAdjust(row, { balancePresent: true });
+          }}
+        />
       )}
 
       {openingOpen && (

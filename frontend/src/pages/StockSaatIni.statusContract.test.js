@@ -175,7 +175,9 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="ssi-detail-drawer"]')?.getAttribute("data-ssi-detail-mode"))
-      .toBe("inline-document");
+      .toBe("centered-modal");
+    expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ssi-detail-backdrop"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)
       .toMatch(/22/);
     expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)

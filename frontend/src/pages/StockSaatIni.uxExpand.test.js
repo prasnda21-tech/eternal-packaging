@@ -141,8 +141,11 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     await act(async () => { detailRow.click(); });
     await flush();
     expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="ssi-detail-close"]')?.textContent).toMatch(/Kembali ke Daftar/i);
-    expect(container.querySelector('[data-testid="stock-table"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ssi-detail-drawer"]')?.getAttribute("data-ssi-detail-mode"))
+      .toBe("centered-modal");
+    expect(container.querySelector('[data-testid="ssi-detail-close"]')?.getAttribute("aria-label")).toMatch(/Tutup/i);
+    expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ssi-detail-backdrop"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ssi-detail-title"]')?.textContent).toMatch(/Pouch Matte/i);
     expect(container.querySelector('[data-testid="ssi-detail-wh-wh-a"]')?.textContent).toMatch(/80/);
     expect(container.querySelector('[data-testid="ssi-detail-wh-wh-b"]')?.textContent).toMatch(/40/);

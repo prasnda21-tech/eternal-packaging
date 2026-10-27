@@ -48,7 +48,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini shows Owner Excel SSI compact list + inline detail", () => {
+  test("Stock Saat Ini shows Owner Excel SSI compact list + centered detail modal", () => {
     const detail = fs.readFileSync(path.join(__dirname, "StockSaatIniDetailDrawer.jsx"), "utf8");
     const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
     expect(stock).toMatch(/Stock Dapat Dijual = Stock [-\u2212] \(PO aktif [-\u2212] qty dikirim\)/);
@@ -63,7 +63,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-table-compact/);
     expect(stock).toMatch(/stock-row-clickable/);
     expect(stock).toMatch(/openDetail/);
-    expect(stock).toMatch(/Kembali ke Daftar|closeDetail/);
+    expect(stock).toMatch(/closeDetail/);
     expect(stock).not.toMatch(/Lihat Detail/);
     expect(stock).not.toMatch(/stock-detail-header/);
     expect(stock).toMatch(/StockSaatIniDetailDrawer/);
@@ -96,8 +96,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Belum saldo/);
     expect(stock).not.toMatch(/Belum tersedia/);
     expect(detail).toMatch(/Belum terverifikasi/);
-    expect(detail).toMatch(/ssi-item-detail|inline-document/);
-    expect(detail).toMatch(/Kembali ke Daftar/);
+    expect(detail).toMatch(/centered-modal/);
+    expect(detail).toMatch(/ssi-detail-modal-panel/);
+    expect(detail).toMatch(/ssi-detail-backdrop/);
+    expect(detail).toMatch(/nestedDialogOpen/);
+    expect(detail).not.toMatch(/Kembali ke Daftar/);
+    expect(detail).not.toMatch(/ssi-detail-overlay|drawer-panel/);
+    expect(detail).not.toMatch(/className="[^"]*drawer/);
     expect(detail).toMatch(/ssi-history-filter-\$\{f\.id\}/);
     expect(detail).toMatch(/id: "FISIK"/);
     expect(detail).toMatch(/id: "SO"/);

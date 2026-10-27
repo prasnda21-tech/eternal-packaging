@@ -67,42 +67,106 @@
   cursor: default;
 }
 
-/* Inline document detail (replaces side drawer) */
-.ssi-item-detail {
-  width: 100%;
-  max-width: none;
-  margin: 0 0 24px;
-  padding: 0 0 8px;
-  background: transparent;
-}
-.ssi-item-detail-toolbar {
+/* Centered detail modal (over SSI table; not side drawer / not full-page) */
+.ssi-detail-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 14px;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
 }
-.ssi-back-to-list {
+/* Nested Saldo Awal / Koreksi must stack above the SSI detail modal (App.css defaults are lower). */
+body:has(.ssi-detail-modal-root) .stock-adjust-overlay,
+body:has(.ssi-detail-modal-root) .saldo-awal-overlay {
+  z-index: 70;
+}
+.ssi-detail-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.42);
+  cursor: pointer;
+}
+.ssi-detail-modal-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(980px, calc(100vw - 32px));
+  max-width: 1050px;
+  max-height: 90vh;
+  background: #fff;
+  border: 1px solid #d0dbd4;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+.ssi-detail-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e4ebe5;
+  flex-shrink: 0;
+}
+.ssi-detail-modal-head-text {
+  min-width: 0;
+  flex: 1;
+}
+.ssi-detail-modal-head h2 {
+  margin: 0 0 4px;
+  font: 700 18px/1.25 "IBM Plex Sans", sans-serif;
+  color: #102a1f;
+  word-break: break-word;
+}
+.ssi-detail-modal-head p {
+  margin: 0;
+}
+.ssi-detail-modal-close {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #c9d5cc;
+  background: #fff;
+  color: #1f3b2e;
+  cursor: pointer;
 }
-.ssi-item-detail-actions {
+.ssi-detail-modal-close:hover {
+  background: #f3f7f4;
+}
+.ssi-detail-modal-close:focus-visible {
+  outline: 2px solid #2f6f4e;
+  outline-offset: 2px;
+}
+.ssi-detail-modal-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e4ebe5;
+  flex-shrink: 0;
 }
-.ssi-item-detail-head h2 {
-  margin: 0 0 4px;
-  font: 700 22px/1.25 "IBM Plex Sans", sans-serif;
-  color: #102a1f;
-}
-.ssi-item-detail-head p {
-  margin: 0 0 16px;
+.ssi-detail-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 16px 18px;
+  -webkit-overflow-scrolling: touch;
 }
 .ssi-item-detail-section {
-  margin: 0 0 22px;
+  margin: 0 0 18px;
+}
+.ssi-item-detail-section:last-child {
+  margin-bottom: 0;
 }
 .ssi-item-detail-section h3 {
   margin: 0 0 8px;
@@ -119,11 +183,11 @@
 .ssi-doc-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 520px;
+  min-width: 480px;
 }
 .ssi-doc-table th,
 .ssi-doc-table td {
-  padding: 8px 12px;
+  padding: 7px 10px;
   border-bottom: 1px solid #e4ebe5;
   text-align: left;
   vertical-align: top;
@@ -160,7 +224,7 @@
   flex-wrap: wrap;
 }
 .ssi-doc-table--wh {
-  min-width: 360px;
+  min-width: 320px;
 }
 .ssi-detail-history-head {
   display: flex;
@@ -224,7 +288,54 @@
   font-size: 12.5px;
 }
 
+/* Badges inside modal panel */
+.ssi-detail-modal-panel .stock-status-badge--indicative {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef3f8;
+  border: 1px solid #c5d0db;
+  color: #3d5568;
+  font: 600 10.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+.ssi-detail-modal-panel .stock-status-badge--unverified,
+.ssi-detail-modal-panel .stock-status-badge--missing,
+.ssi-detail-modal-panel .stock-status-badge--incomplete {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f4f1ea;
+  border: 1px solid #d9d0c0;
+  color: #6b5a3e;
+  font: 600 11.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+
 @media (max-width: 720px) {
+  .ssi-detail-modal-root {
+    padding: 0;
+    align-items: stretch;
+  }
+  .ssi-detail-modal-panel {
+    width: 100%;
+    max-width: none;
+    max-height: 100vh;
+    height: 100%;
+    border: 0;
+    box-shadow: none;
+  }
+  .ssi-detail-modal-head {
+    padding: 12px 12px 8px;
+  }
+  .ssi-detail-modal-actions {
+    padding: 8px 12px;
+  }
+  .ssi-detail-modal-body {
+    padding: 12px;
+  }
   .ssi-doc-table,
   .ssi-doc-table--wh {
     min-width: 0;
@@ -250,6 +361,7 @@
   }
   .ssi-doc-table td.num {
     text-align: left;
+    white-space: normal;
   }
   .ssi-history-grid {
     grid-template-columns: 90px 1fr;
