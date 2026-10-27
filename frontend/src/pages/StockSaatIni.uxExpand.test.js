@@ -130,17 +130,22 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/^Stock$/);
     expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent).toMatch(/Stock Dapat Dijual/i);
     expect(container.querySelector('[data-testid="stock-polos-header"]')?.textContent).toMatch(/Qty Polos/i);
-    expect(container.querySelector('[data-testid="stock-detail-header"]')?.textContent).toMatch(/Aksi/i);
+    expect(container.querySelector('[data-testid="stock-detail-header"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-item-m-dual"] .stock-item-primary')?.textContent)
       .toMatch(/Pouch Matte/i);
     expect(container.querySelector('[data-testid="stock-code-m-dual"]')?.textContent).toBe("UAT-606-004");
     expect(container.querySelector('[data-testid="stock-expand-m-dual"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-mutasi-nav-m-dual"]')).toBeNull();
-    const detailBtn = container.querySelector('[data-testid="stock-detail-m-dual"]');
-    expect(detailBtn?.textContent).toMatch(/Lihat Detail/i);
-    await act(async () => { detailBtn.click(); });
+    const detailRow = container.querySelector('[data-testid="stock-row-m-dual"]');
+    expect(detailRow?.getAttribute("role")).toBe("button");
+    await act(async () => { detailRow.click(); });
     await flush();
     expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ssi-detail-drawer"]')?.getAttribute("data-ssi-detail-mode"))
+      .toBe("centered-modal");
+    expect(container.querySelector('[data-testid="ssi-detail-close"]')?.getAttribute("aria-label")).toMatch(/Tutup/i);
+    expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ssi-detail-backdrop"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ssi-detail-title"]')?.textContent).toMatch(/Pouch Matte/i);
     expect(container.querySelector('[data-testid="ssi-detail-wh-wh-a"]')?.textContent).toMatch(/80/);
     expect(container.querySelector('[data-testid="ssi-detail-wh-wh-b"]')?.textContent).toMatch(/40/);
@@ -234,7 +239,7 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     expect(container.querySelector('[data-testid="stock-flag-m-miss"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-legend-bar"]')).toBeTruthy();
     await act(async () => {
-      container.querySelector('[data-testid="stock-detail-m-neg"]').click();
+      container.querySelector('[data-testid="stock-row-m-neg"]').click();
     });
     await flush();
     const negWh = container.querySelector('[data-testid="ssi-detail-wh-wh-a"]');
@@ -243,8 +248,10 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     await act(async () => {
       container.querySelector('[data-testid="ssi-detail-close"]').click();
     });
+    await flush();
+    expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
     await act(async () => {
-      container.querySelector('[data-testid="stock-detail-m-miss"]').click();
+      container.querySelector('[data-testid="stock-row-m-miss"]').click();
     });
     await flush();
     const missWh = container.querySelector('[data-testid="ssi-detail-wh-wh-a"]');
@@ -285,7 +292,7 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     expect(container.querySelector('[data-testid="stock-context-info"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/kompatibilitas|perusahaan/i);
     expect(container.querySelector('[data-testid="saldo-awal-button"]')?.disabled).toBe(true);
-    expect(container.querySelector('[data-testid="stock-detail-m1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stock-row-m1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-expand-m1"]')).toBeNull();
   });
 });

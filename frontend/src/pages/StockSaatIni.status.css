@@ -1,0 +1,370 @@
+/* SSI-only styles (P0-B1 status + row detail). Not global App.css. */
+
+.stock-page--mockup .stock-status-badge--indicative,
+.ssi-item-detail .stock-status-badge--indicative {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef3f8;
+  border: 1px solid #c5d0db;
+  color: #3d5568;
+  font: 600 10.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+
+.stock-page--mockup .stock-status-badge--unverified,
+.ssi-item-detail .stock-status-badge--unverified {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f4f1ea;
+  border: 1px solid #d9d0c0;
+  color: #6b5a3e;
+  font: 600 11.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+
+.stock-page--mockup .stock-indicative-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Clickable catalog rows */
+.stock-page--mockup tr.stock-row-clickable {
+  cursor: pointer;
+}
+.stock-page--mockup tr.stock-row-clickable:hover td {
+  background: #f3f7f4;
+}
+.stock-page--mockup tr.stock-row-clickable:focus {
+  outline: none;
+}
+.stock-page--mockup tr.stock-row-clickable:focus-visible td {
+  box-shadow: inset 0 0 0 2px #2f6f4e;
+}
+.stock-page--mockup tr.stock-row-clickable.is-locked {
+  cursor: default;
+}
+.stock-page--mockup tr.stock-row-clickable.is-locked:hover td {
+  background: inherit;
+}
+
+.stock-page--mockup .stock-mobile-card--clickable {
+  cursor: pointer;
+}
+.stock-page--mockup .stock-mobile-card--clickable:focus {
+  outline: none;
+}
+.stock-page--mockup .stock-mobile-card--clickable:focus-visible {
+  box-shadow: 0 0 0 2px #2f6f4e;
+}
+.stock-page--mockup .stock-mobile-card--clickable.is-locked {
+  cursor: default;
+}
+
+/* Centered detail modal (over SSI table; not side drawer / not full-page) */
+.ssi-detail-modal-root {
+  position: fixed;
+  inset: 0;
+  /* Above app sidebar rail (z-index 56) and topbar; below nothing critical in SSI. */
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+/* Nested Saldo Awal / Koreksi must stack above the SSI detail modal (App.css defaults are lower). */
+body:has(.ssi-detail-modal-root) .stock-adjust-overlay,
+body:has(.ssi-detail-modal-root) .saldo-awal-overlay {
+  z-index: 110;
+}
+.ssi-detail-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.42);
+  cursor: pointer;
+}
+.ssi-detail-modal-panel {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(980px, calc(100vw - 32px));
+  max-width: 1050px;
+  max-height: 90vh;
+  background: #fff;
+  border: 1px solid #d0dbd4;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+.ssi-detail-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e4ebe5;
+  flex-shrink: 0;
+}
+.ssi-detail-modal-head-text {
+  min-width: 0;
+  flex: 1;
+}
+.ssi-detail-modal-head h2 {
+  margin: 0 0 4px;
+  font: 700 18px/1.25 "IBM Plex Sans", sans-serif;
+  color: #102a1f;
+  word-break: break-word;
+}
+.ssi-detail-modal-head p {
+  margin: 0;
+}
+.ssi-detail-modal-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #c9d5cc;
+  background: #fff;
+  color: #1f3b2e;
+  cursor: pointer;
+}
+.ssi-detail-modal-close:hover {
+  background: #f3f7f4;
+}
+.ssi-detail-modal-close:focus-visible {
+  outline: 2px solid #2f6f4e;
+  outline-offset: 2px;
+}
+.ssi-detail-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e4ebe5;
+  flex-shrink: 0;
+}
+.ssi-detail-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 16px 18px;
+  -webkit-overflow-scrolling: touch;
+}
+.ssi-item-detail-section {
+  margin: 0 0 18px;
+}
+.ssi-item-detail-section:last-child {
+  margin-bottom: 0;
+}
+.ssi-item-detail-section h3 {
+  margin: 0 0 8px;
+  font: 700 14px/1.3 "IBM Plex Sans", sans-serif;
+  color: #1f3b2e;
+}
+.ssi-doc-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #d7e0d9;
+  background: #fff;
+}
+.ssi-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 480px;
+}
+.ssi-doc-table th,
+.ssi-doc-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e4ebe5;
+  text-align: left;
+  vertical-align: top;
+  font: 13px/1.4 "IBM Plex Sans", sans-serif;
+  color: #1e2934;
+}
+.ssi-doc-table thead th {
+  background: #f2f6f3;
+  font-weight: 600;
+  color: #3d5548;
+  white-space: nowrap;
+}
+.ssi-doc-table tbody th[scope="row"] {
+  width: 28%;
+  font-weight: 600;
+  color: #3d5548;
+  background: #fafcfb;
+}
+.ssi-doc-table th.num,
+.ssi-doc-table td.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ssi-doc-table td.is-negative .stock-book-negative,
+.ssi-doc-qty.is-neg .stock-book-negative {
+  color: #b42318;
+}
+.ssi-doc-qty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ssi-doc-table--wh {
+  min-width: 320px;
+}
+.ssi-detail-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.ssi-history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ssi-history-filters button {
+  border: 1px solid #c9d5cc;
+  background: #fff;
+  color: #31493c;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: 600 12px/1.2 "IBM Plex Sans", sans-serif;
+  cursor: pointer;
+}
+.ssi-history-filters button.is-active {
+  background: #e7f1ea;
+  border-color: #9cbcab;
+  color: #1f3b2e;
+}
+.ssi-history-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ssi-history-item {
+  border: 1px solid #e0e8e2;
+  background: #fff;
+  padding: 10px 12px;
+}
+.ssi-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.ssi-lane-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font: 600 11px/1.2 "IBM Plex Sans", sans-serif;
+  background: #eef2f0;
+  color: #3d5548;
+}
+.ssi-history-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 2px 10px;
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+
+/* Badges inside modal panel */
+.ssi-detail-modal-panel .stock-status-badge--indicative {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef3f8;
+  border: 1px solid #c5d0db;
+  color: #3d5568;
+  font: 600 10.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+.ssi-detail-modal-panel .stock-status-badge--unverified,
+.ssi-detail-modal-panel .stock-status-badge--missing,
+.ssi-detail-modal-panel .stock-status-badge--incomplete {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f4f1ea;
+  border: 1px solid #d9d0c0;
+  color: #6b5a3e;
+  font: 600 11.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+
+@media (max-width: 720px) {
+  .ssi-detail-modal-root {
+    padding: 0;
+    align-items: stretch;
+  }
+  .ssi-detail-modal-panel {
+    width: 100%;
+    max-width: none;
+    max-height: 100vh;
+    height: 100%;
+    border: 0;
+    box-shadow: none;
+  }
+  .ssi-detail-modal-head {
+    padding: 12px 12px 8px;
+  }
+  .ssi-detail-modal-actions {
+    padding: 8px 12px;
+  }
+  .ssi-detail-modal-body {
+    padding: 12px;
+  }
+  .ssi-doc-table,
+  .ssi-doc-table--wh {
+    min-width: 0;
+  }
+  .ssi-doc-table thead {
+    display: none;
+  }
+  .ssi-doc-table tbody,
+  .ssi-doc-table tr,
+  .ssi-doc-table th,
+  .ssi-doc-table td {
+    display: block;
+    width: 100%;
+  }
+  .ssi-doc-table tr {
+    border-bottom: 1px solid #e4ebe5;
+    padding: 8px 10px;
+  }
+  .ssi-doc-table tbody th[scope="row"] {
+    width: auto;
+    background: transparent;
+    padding-bottom: 2px;
+  }
+  .ssi-doc-table td.num {
+    text-align: left;
+    white-space: normal;
+  }
+  .ssi-history-grid {
+    grid-template-columns: 90px 1fr;
+  }
+}

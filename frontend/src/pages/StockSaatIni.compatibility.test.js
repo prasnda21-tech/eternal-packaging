@@ -99,8 +99,8 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-physical-m1"]')?.textContent)
       .not.toMatch(/Stok fisik legacy|Saldo awal belum direkonsiliasi/i);
     expect(container.querySelector('[data-testid="stock-unit-header"]')).toBeNull();
-    expect(container.querySelector('[data-testid="stock-detail-header"]')?.textContent).toMatch(/Aksi/i);
-    expect(container.querySelector('[data-testid="stock-detail-m1"]')?.textContent).toMatch(/Lihat Detail/i);
+    expect(container.querySelector('[data-testid="stock-detail-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-row-m1"]')?.getAttribute("role")).toBe("button");
   });
 
   test("legacy CUTOVER_PENDING status still keeps compact headers", async () => {
@@ -136,7 +136,7 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/^Stock$/);
     expect(container.querySelector('[data-testid="stock-cetak-dikirim-header"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-polos-header"]')?.textContent).toMatch(/Qty Polos/i);
-    expect(container.querySelector('[data-testid="stock-detail-m2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stock-row-m2"]')).toBeTruthy();
   });
 
   test("shows R2 mode when authority active", async () => {

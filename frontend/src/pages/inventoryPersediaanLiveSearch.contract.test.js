@@ -9,6 +9,7 @@ const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8")
 const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
 const master = fs.readFileSync(path.join(__dirname, "MasterBarangJasa.jsx"), "utf8");
 const stock = fs.readFileSync(path.join(__dirname, "StockSaatIni.jsx"), "utf8");
+const ssiStatus = fs.readFileSync(path.join(__dirname, "../lib/ssiStatusDisplay.js"), "utf8");
 const value = fs.readFileSync(path.join(__dirname, "NilaiPersediaan.jsx"), "utf8");
 const hook = fs.readFileSync(path.join(__dirname, "../hooks/useDebouncedLiveSearch.js"), "utf8");
 const currentStockPy = fs.readFileSync(
@@ -47,7 +48,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini shows Owner Excel SSI compact list + detail drawer", () => {
+  test("Stock Saat Ini shows Owner Excel SSI compact list + centered detail modal", () => {
     const detail = fs.readFileSync(path.join(__dirname, "StockSaatIniDetailDrawer.jsx"), "utf8");
     const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
     expect(stock).toMatch(/Stock Dapat Dijual = Stock [-\u2212] \(PO aktif [-\u2212] qty dikirim\)/);
@@ -60,7 +61,11 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).not.toMatch(/stock-filter-focus/);
     expect(stock).not.toMatch(/Filter \(fokus\)/);
     expect(stock).toMatch(/stock-table-compact/);
-    expect(stock).toMatch(/Lihat Detail/);
+    expect(stock).toMatch(/stock-row-clickable/);
+    expect(stock).toMatch(/openDetail/);
+    expect(stock).toMatch(/closeDetail/);
+    expect(stock).not.toMatch(/Lihat Detail/);
+    expect(stock).not.toMatch(/stock-detail-header/);
     expect(stock).toMatch(/StockSaatIniDetailDrawer/);
     expect(stock).toMatch(/stock-mobile-list/);
     expect(stock).toMatch(/data-testid="stock-filters"/);
@@ -86,12 +91,18 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-physical-header/);
     expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
     expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
-    expect(stock).toMatch(/stock-detail-header/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
     expect(stock).toMatch(/Belum terverifikasi/);
     expect(stock).toMatch(/Belum saldo/);
     expect(stock).not.toMatch(/Belum tersedia/);
     expect(detail).toMatch(/Belum terverifikasi/);
+    expect(detail).toMatch(/centered-modal/);
+    expect(detail).toMatch(/ssi-detail-modal-panel/);
+    expect(detail).toMatch(/ssi-detail-backdrop/);
+    expect(detail).toMatch(/nestedDialogOpen/);
+    expect(detail).not.toMatch(/Kembali ke Daftar/);
+    expect(detail).not.toMatch(/ssi-detail-overlay|drawer-panel/);
+    expect(detail).not.toMatch(/className="[^"]*drawer/);
     expect(detail).toMatch(/ssi-history-filter-\$\{f\.id\}/);
     expect(detail).toMatch(/id: "FISIK"/);
     expect(detail).toMatch(/id: "SO"/);
@@ -141,7 +152,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/qty_polos/);
     expect(stock).toMatch(/tercetak_belum_kirim/);
     expect(stock).toMatch(/cetak_sudah_dikirim/);
-    expect(stock).toMatch(/NO_OPERATOR_EVIDENCE/);
+    // Reason codes live in shared status contract helper (P0-B1).
+    expect(ssiStatus).toMatch(/NO_OPERATOR_EVIDENCE/);
+    expect(ssiStatus).toMatch(/INDICATIVE/);
+    expect(ssiStatus).toMatch(/BASELINE_INCOMPLETE/);
+    expect(stock).toMatch(/resolveDapatDijualDisplay/);
+    expect(stock).toMatch(/resolvePolosDisplay/);
+    expect(stock).toMatch(/Indikatif/);
     expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 

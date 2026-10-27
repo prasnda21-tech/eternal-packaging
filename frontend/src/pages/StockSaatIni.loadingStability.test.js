@@ -224,7 +224,8 @@ describe("Stock Saat Ini P0-A loading stability", () => {
     expect(container.querySelector('[data-testid="stock-row-m1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-refreshing"]')?.textContent)
       .toMatch(/Menyegarkan/i);
-    expect(container.querySelector('[data-testid="stock-detail-m1"]')?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="stock-row-m1"]')?.getAttribute("aria-disabled")).toBe("true");
+    expect(container.querySelector('[data-testid="stock-row-m1"]')?.tabIndex).toBe(-1);
     expect(container.querySelector('[data-testid="stock-loading"]')).toBeNull();
 
     await act(async () => {
@@ -244,7 +245,8 @@ describe("Stock Saat Ini P0-A loading stability", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="stock-refreshing"]')).toBeNull();
-    expect(container.querySelector('[data-testid="stock-detail-m1"]')?.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="stock-row-m1"]')?.getAttribute("aria-disabled")).toBeNull();
+    expect(container.querySelector('[data-testid="stock-row-m1"]')?.tabIndex).toBe(0);
   });
 
   test("branch switch clears prior rows before new catalog arrives", async () => {
