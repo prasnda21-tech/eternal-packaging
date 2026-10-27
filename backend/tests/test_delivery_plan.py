@@ -152,12 +152,38 @@ def test_filter_source_and_sort_pagination():
         today="2026-10-12",
         filters={"source": "manual"},
     )
-    assert [r["id"] for r in rows] == ["c", "a"]
+    # Default newest Tanggal Pengiriman first (DESC): 22 Oct before 15 Oct.
+    assert [r["id"] for r in rows] == ["a", "c"]
     page, meta = paginate_rows(rows, page=1, page_size=1)
     assert len(page) == 1
-    assert page[0]["id"] == "c"
+    assert page[0]["id"] == "a"
     assert meta["total"] == 2
     assert meta["counts"]["by_source"]["manual"] == 2
+
+
+def test_default_sort_newest_tanggal_pengiriman_first():
+    rows = build_plan_rows(
+        [
+            _po(id="old", po_number="PO/OLD", scheduled_delivery_date="2026-10-12"),
+            _po(id="new", po_number="PO/NEW", scheduled_delivery_date="2026-10-27"),
+            _po(id="mid", po_number="PO/MID", scheduled_delivery_date="2026-10-20"),
+        ],
+        lead_time_days=3,
+        today="2026-10-12",
+    )
+    assert [r["id"] for r in rows] == ["new", "mid", "old"]
+    asc = build_plan_rows(
+        [
+            _po(id="old", po_number="PO/OLD", scheduled_delivery_date="2026-10-12"),
+            _po(id="new", po_number="PO/NEW", scheduled_delivery_date="2026-10-27"),
+            _po(id="mid", po_number="PO/MID", scheduled_delivery_date="2026-10-20"),
+        ],
+        lead_time_days=3,
+        today="2026-10-12",
+        sort_by="tanggal_pengiriman",
+        sort_dir="asc",
+    )
+    assert [r["id"] for r in asc] == ["old", "mid", "new"]
 
 
 def test_mongo_match_excludes_cancelled_keeps_buffer():
@@ -289,12 +315,12 @@ def test_pagination_after_combined_filters():
         today="2026-10-12",
         filters={"q": "alpha", "source": "manual", "date_from": "2026-10-18", "date_to": "2026-10-22"},
     )
-    assert [r["id"] for r in rows] == ["m1", "m3"]
+    assert [r["id"] for r in rows] == ["m3", "m1"]
     page, meta = paginate_rows(rows, page=1, page_size=1)
     assert meta["total"] == 2
-    assert page[0]["id"] == "m1"
+    assert page[0]["id"] == "m3"
     page2, _ = paginate_rows(rows, page=2, page_size=1)
-    assert page2[0]["id"] == "m3"
+    assert page2[0]["id"] == "m1"
 
 
 def test_qty_ignores_sj_line_sum_uses_canonical_qty_delivered():
@@ -566,7 +592,7 @@ def test_date_range_inclusive_cross_month_year_totals():
         today="2026-12-01",
         filters={"date_from": "2026-12-12", "date_to": "2026-12-15"},
     )
-    assert [r["id"] for r in rows] == ["d12", "d13", "d14", "d15"]
+    assert [r["id"] for r in rows] == ["d15", "d14", "d13", "d12"]
     page, meta = paginate_rows(rows, page=1, page_size=2)
     assert len(page) == 2
     assert meta["total"] == 4
@@ -578,7 +604,7 @@ def test_date_range_inclusive_cross_month_year_totals():
         today="2026-12-01",
         filters={"date_from": "2026-12-15", "date_to": "2027-01-02"},
     )
-    assert [r["id"] for r in cross] == ["d15", "d16", "y27"]
+    assert [r["id"] for r in cross] == ["y27", "d16", "d15"]
 
 
 def test_projection_includes_notes_and_zone():
