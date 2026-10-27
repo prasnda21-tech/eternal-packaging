@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Check, ChevronDown, Download, Info, Search, SlidersHorizontal, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatTrackingPageDateTime } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
-import { useDebouncedLiveSearch, liveSearchTableView } from "../hooks/useDebouncedLiveSearch";
+import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import {
   bookPhysicalDisplay,
   stockPhysicalPrimaryDisplay,
@@ -18,6 +18,13 @@ import {
   warehouseChoices,
   warehouseLocationLabel,
 } from "../lib/physicalStockView";
+import { storageUserKey } from "../lib/poListReturn";
+import {
+  buildStockSaatIniPageCacheKey,
+  getStockSaatIniPageCache,
+  invalidateStockSaatIniPageCache,
+  setStockSaatIniPageCache,
+} from "../lib/stockSaatIniPageCache";
 import BranchScopeSelect from "../components/BranchScopeSelect";
 import StockSaatIniDetailDrawer from "./StockSaatIniDetailDrawer";
 import {
@@ -29,6 +36,19 @@ import {
   rowSelectKey,
   summarizeImportRows,
 } from "../lib/openingImportUi";
+
+/** Table body view that can keep rows visible while a soft refresh runs. */
+export function stockCatalogTableView({
+  pending,
+  loading,
+  refreshing,
+  itemCount,
+}) {
+  const count = Number(itemCount) || 0;
+  if (count > 0) return "results";
+  if (pending || loading || refreshing) return "loading";
+  return "empty";
+}
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
@@ -216,7 +236,8 @@ function newKey() {
 }
 
 export default function StockSaatIni() {
-  const { hasPerm } = useAuth();
+  const { user, hasPerm } = useAuth();
+  const userKey = storageUserKey(user);
   const canOpening = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canExport = hasPerm("current_stock.export");
   const [data, setData] = useState(null);
@@ -225,7 +246,9 @@ export default function StockSaatIni() {
   const [warehouses, setWarehouses] = useState([]);
   const [branchId, setBranchId] = useState("");
   const [warehouseId, setWarehouseId] = useState(""); // "" = Semua Gudang
+  const [filtersReady, setFiltersReady] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState("");
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
   const [page, setPage] = useState(1);
@@ -245,14 +268,11 @@ export default function StockSaatIni() {
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
   const summarySeq = useRef(0);
+  /** Skip one catalog reload when syncing branchId from catalog effective_branch_id. */
+  const skipBranchPinReload = useRef(false);
+  const itemsRef = useRef([]);
 
   useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
-
-  useEffect(() => {
-    if (!searchPending) return;
-    setLoading(true);
-    setData((prev) => (prev ? { ...prev, items: [] } : prev));
-  }, [searchPending]);
 
   useEffect(() => {
     let cancelled = false;
@@ -262,8 +282,7 @@ export default function StockSaatIni() {
         const branchRows = branchRes.items || [];
         setBranches(branchRows);
         setWarehouses(warehouseRes.items || []);
-        // Controlled <select> with value="" can visually show the first option
-        // while state stays empty — pin the sole active branch immediately.
+        // Pin sole active branch before the first catalog GET to avoid a bounce refetch.
         setBranchId((current) => {
           if (current) return current;
           const active = branchRows.filter((row) => row?.active !== false && row?.id);
@@ -272,15 +291,40 @@ export default function StockSaatIni() {
       })
       .catch(() => {
         if (!cancelled) setErr("Gagal memuat cabang dan gudang");
+      })
+      .finally(() => {
+        if (!cancelled) setFiltersReady(true);
       });
     return () => { cancelled = true; };
   }, []);
 
+  const cacheKey = useMemo(() => buildStockSaatIniPageCacheKey({
+    userId: userKey,
+    branchId,
+    warehouseId,
+    q,
+    page,
+    pageSize,
+  }), [userKey, branchId, warehouseId, q, page, pageSize]);
+
+  const identityOk = Boolean(userKey && userKey !== "anon");
+
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
-    setLoading(true);
     setErr("");
-    setData((prev) => (prev ? { ...prev, items: [] } : prev));
+    const hasVisibleRows = itemsRef.current.length > 0;
+    // Cache only when user identity is proven — never reuse anon/cross-user pages.
+    const cached = identityOk && !hasVisibleRows ? getStockSaatIniPageCache(cacheKey) : null;
+    if (cached?.data) {
+      setData(cached.data);
+      itemsRef.current = cached.data.items || [];
+      setRefreshing(true);
+      setLoading(false);
+    } else if (hasVisibleRows) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const params = { q, page, limit: pageSize };
       if (branchId) params.branch_id = branchId;
@@ -288,19 +332,46 @@ export default function StockSaatIni() {
       const d = await api.physicalStockCatalog(params);
       if (seq !== loadSeq.current) return;
       setData(d);
+      itemsRef.current = Array.isArray(d?.items) ? d.items : [];
+      if (identityOk) setStockSaatIniPageCache(cacheKey, d);
       if (!branchId && d?.effective_branch_id) {
+        // Sync controlled select without a second identical catalog GET.
+        skipBranchPinReload.current = true;
         setBranchId(d.effective_branch_id);
       }
     } catch (ex) {
       if (seq !== loadSeq.current) return;
       const det = ex.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Stock Saat Ini"));
+      // Keep prior in-scope rows; only blank when nothing was shown.
+      if (!itemsRef.current.length) {
+        setData(null);
+      }
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [q, page, pageSize, branchId, warehouseId]);
+  }, [q, page, pageSize, branchId, warehouseId, cacheKey, identityOk]);
 
-  useEffect(() => { load(); }, [load]);
+  const reloadAfterMutation = useCallback(async () => {
+    invalidateStockSaatIniPageCache();
+    await load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    if (skipBranchPinReload.current) {
+      skipBranchPinReload.current = false;
+      return;
+    }
+    load();
+  }, [load, filtersReady]);
+
+  useEffect(() => {
+    itemsRef.current = Array.isArray(data?.items) ? data.items : [];
+  }, [data]);
 
   useEffect(() => {
     const seq = ++summarySeq.current;
@@ -416,7 +487,7 @@ export default function StockSaatIni() {
         idempotency_key: newKey(),
       });
       close();
-      await load();
+      await reloadAfterMutation();
     } catch (ex) {
       const det = ex.response?.data?.detail;
       setCellError(typeof det === "object" ? det.message : (det || "Gagal menyimpan koreksi"));
@@ -426,39 +497,54 @@ export default function StockSaatIni() {
     }
   };
   const pageCount = data?.page_count || 1;
-  const tableBusy = searchPending || loading;
-  const tableView = liveSearchTableView({
+  const tableBusy = searchPending || loading || refreshing;
+  const tableView = stockCatalogTableView({
     pending: searchPending,
     loading,
+    refreshing,
     itemCount: items.length,
   });
-  const readMode = data?.stock_read_mode || (data?.r2_authority_active ? "r2" : "compatibility");
+  const modePending = data == null;
+  // Do not default to compatibility before the catalog response confirms mode.
+  const readMode = modePending
+    ? null
+    : (data?.stock_read_mode || (data?.r2_authority_active ? "r2" : "compatibility"));
   const r2Active = Boolean(data?.r2_authority_active);
   // Warehouse-scoped UI when R2 OR explicit warehouse_stock_standalone is on.
   const warehouseActive = Boolean(
-    r2Active
-    || data?.warehouse_stock_standalone
-    || readMode === "warehouse_standalone"
-    || readMode === "r2"
+    !modePending && (
+      r2Active
+      || data?.warehouse_stock_standalone
+      || readMode === "warehouse_standalone"
+      || readMode === "r2"
+    )
   );
   const emptyText = stockEmptyMessage({
     masterItemCount: data?.master_item_count || 0,
     warehouseCount: data?.warehouse_count || 0,
-    readMode,
+    readMode: readMode || "compatibility",
   });
   const modeChipLabel = r2Active
     ? "R2"
     : warehouseActive
       ? "Gudang"
       : "Kompatibilitas";
-  const modeFullLabel = r2Active
-    ? "Mode R2 — stok fisik per cabang/gudang."
+  const modeFullLabel = modePending
+    ? "Memuat mode stok…"
+    : r2Active
+      ? "Mode R2 — stok fisik per cabang/gudang."
+      : warehouseActive
+        ? (data?.stock_read_mode_label
+          || "Mode warehouse standalone — stok fisik per cabang/gudang (tanpa Replica Set).")
+        : (data?.stock_read_mode_label
+          || "Mode kompatibilitas — stok fisik legacy perusahaan (bukan per gudang).");
+  const subtitleText = modePending
+    ? "Memuat persediaan…"
     : warehouseActive
-      ? (data?.stock_read_mode_label
-        || "Mode warehouse standalone — stok fisik per cabang/gudang (tanpa Replica Set).")
-      : (data?.stock_read_mode_label
-        || "Mode kompatibilitas — stok fisik legacy perusahaan (bukan per gudang).");
+      ? "Persediaan barang per cabang dan gudang."
+      : "Persediaan barang (mode kompatibilitas perusahaan).";
   const showBranchAggregate = Boolean(warehouseActive && !selectedFilterWarehouse);
+  const actionsLocked = tableBusy;
 
   const physicalHeader = "Stock";
   // Owner Excel: Produk + 8 qty columns + unit/lokasi/update (+ expand).
@@ -579,7 +665,7 @@ export default function StockSaatIni() {
       </span>
     ) : null;
     // Inline koreksi hanya untuk saldo yang sudah ada. Tanpa balance → Saldo Awal.
-    if (canAdjust && inlineItemId === it.master_item_id && singleWarehouse && book.present) {
+    if (canAdjust && !actionsLocked && inlineItemId === it.master_item_id && singleWarehouse && book.present) {
       return (
         <InlinePhysicalEditor
           item={it}
@@ -589,7 +675,7 @@ export default function StockSaatIni() {
         />
       );
     }
-    if (canAdjust) {
+    if (canAdjust && !actionsLocked) {
       return (
         <span className="stock-physical-cell-inner">
           <button
@@ -619,19 +705,35 @@ export default function StockSaatIni() {
     return { text: "Valid", tone: "valid" };
   };
 
+  const clearCatalogScope = () => {
+    // Drop rows immediately so another branch/warehouse is never shown as current.
+    // Keep mode/permission envelope so Cabang/Gudang chrome does not collapse mid-switch.
+    setData((prev) => (
+      prev
+        ? { ...prev, items: [], total: 0, page: 1, page_count: 1 }
+        : prev
+    ));
+    itemsRef.current = [];
+    setRefreshing(false);
+    setLoading(true);
+    setErr("");
+    setInlineItemId(null);
+    setAdjustItem(null);
+    setDetailItem(null);
+    setStatusSummary(null);
+  };
+
   const onBranchChange = (next) => {
+    clearCatalogScope();
     setBranchId(next);
     setWarehouseId("");
     setPage(1);
-    setInlineItemId(null);
-    setAdjustItem(null);
   };
 
   const onWarehouseChange = (next) => {
+    clearCatalogScope();
     setWarehouseId(next);
     setPage(1);
-    setInlineItemId(null);
-    setAdjustItem(null);
   };
 
   const formatBelumTerkirim = (it) => (
@@ -651,7 +753,15 @@ export default function StockSaatIni() {
         <div className="prod-heading-copy">
           <div className="stock-title-row">
             <h1 data-testid="stock-title">Stock Saat Ini</h1>
-            {data && (
+            {modePending ? (
+              <span
+                className="stock-mode-chip stock-mode-chip--pending"
+                data-testid="stock-mode-chip-pending"
+                title={modeFullLabel}
+              >
+                …
+              </span>
+            ) : (
               <span
                 className={`stock-mode-chip stock-mode-chip--${r2Active ? "r2" : warehouseActive ? "warehouse" : "compat"}`}
                 data-testid="stock-mode-chip"
@@ -661,11 +771,7 @@ export default function StockSaatIni() {
               </span>
             )}
           </div>
-          <p className="subhead" data-testid="stock-subtitle">
-            {warehouseActive
-              ? "Persediaan barang per cabang dan gudang."
-              : "Persediaan barang (mode kompatibilitas perusahaan)."}
-          </p>
+          <p className="subhead" data-testid="stock-subtitle">{subtitleText}</p>
         </div>
         <div className="stock-heading-actions">
           <button
@@ -708,7 +814,7 @@ export default function StockSaatIni() {
       )}
 
       <div className="stock-filter-bar" data-testid="stock-filters">
-            <div className="stock-filter-field stock-filter-field--branch">
+            <div className="stock-filter-field stock-filter-field--branch" data-testid="stock-branch-filter-slot">
               {canSwitchBranches && warehouseActive ? (
                 <BranchScopeSelect
                   branches={branches}
@@ -725,14 +831,18 @@ export default function StockSaatIni() {
                 </label>
               )}
             </div>
-            {warehouseActive && (
-              <label className="stock-filter-field" data-testid="stock-warehouse-filter">
+            {warehouseActive ? (
+              <label
+                className="stock-filter-field stock-filter-field--warehouse"
+                data-testid="stock-warehouse-filter"
+              >
                 <span>Gudang</span>
                 <select
                   value={warehouseId}
                   onChange={(e) => onWarehouseChange(e.target.value)}
                   data-testid="stock-warehouse-select"
                   aria-label="Filter gudang"
+                  disabled={actionsLocked}
                 >
                   <option value="">Semua Gudang</option>
                   {filterWarehouses.map((wh) => (
@@ -741,6 +851,16 @@ export default function StockSaatIni() {
                     </option>
                   ))}
                 </select>
+              </label>
+            ) : (
+              <label
+                className="stock-filter-field stock-filter-field--warehouse"
+                data-testid="stock-warehouse-filter"
+              >
+                <span>Gudang</span>
+                <div className="stock-filter-ro-value" data-testid="stock-warehouse-placeholder" aria-disabled="true">
+                  —
+                </div>
               </label>
             )}
             <form className="stock-filter-search" onSubmit={doSearch}>
@@ -913,7 +1033,15 @@ export default function StockSaatIni() {
             </div>
           )}
 
-          <div className="prod-table-wrap master-table-wrap stock-table-wrap stock-table-desktop stock-table-compact">
+          {(refreshing || (searchPending && items.length > 0)) && (
+            <p className="stock-refreshing muted small" data-testid="stock-refreshing" role="status">
+              Menyegarkan…
+            </p>
+          )}
+
+          <div
+            className={`prod-table-wrap master-table-wrap stock-table-wrap stock-table-desktop stock-table-compact${actionsLocked && items.length > 0 ? " is-refreshing" : ""}`}
+          >
             <table className="prod-table master-items-table stock-dense-table" data-testid="stock-table">
               <thead>
                 <tr>
@@ -921,7 +1049,7 @@ export default function StockSaatIni() {
                   <th
                     className="col-fit num"
                     data-testid="stock-physical-header"
-                    data-physical-scope={warehouseActive ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
+                    data-physical-scope={warehouseActive ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : (modePending ? "PENDING" : "COMPANY")}
                     title="Saldo buku PCS"
                   >
                     Stock
@@ -935,7 +1063,7 @@ export default function StockSaatIni() {
                   <th className="col-fit" data-testid="stock-detail-header">Aksi</th>
                 </tr>
               </thead>
-              <tbody data-testid="stock-tbody" data-search-state={tableView}>
+              <tbody data-testid="stock-tbody" data-search-state={tableView} data-refreshing={refreshing ? "true" : "false"}>
                 {tableView === "loading" && (
                   <tr data-testid="stock-loading">
                     <td colSpan={tableColCount} className="muted small">Memuat…</td>
@@ -998,6 +1126,7 @@ export default function StockSaatIni() {
                         className="stock-btn-outline sm"
                         data-testid={`stock-detail-${it.master_item_id}`}
                         onClick={() => setDetailItem(it)}
+                        disabled={actionsLocked}
                       >
                         Lihat Detail
                       </button>
@@ -1009,7 +1138,11 @@ export default function StockSaatIni() {
             </table>
           </div>
 
-          <div className="stock-mobile-list" data-testid="stock-mobile-list" data-search-state={tableView}>
+          <div
+            className={`stock-mobile-list${actionsLocked && items.length > 0 ? " is-refreshing" : ""}`}
+            data-testid="stock-mobile-list"
+            data-search-state={tableView}
+          >
             {tableView === "loading" && (
               <div className="stock-mobile-card muted small" data-testid="stock-mobile-loading">Memuat…</div>
             )}
@@ -1072,6 +1205,7 @@ export default function StockSaatIni() {
                       className="stock-btn-outline sm"
                       data-testid={`stock-detail-mobile-${it.master_item_id}`}
                       onClick={() => setDetailItem(it)}
+                      disabled={actionsLocked}
                     >
                       Lihat Detail
                     </button>
@@ -1130,7 +1264,7 @@ export default function StockSaatIni() {
           catalogItems={items}
           initialSeed={openingSeed}
           onClose={() => { setOpeningOpen(false); setOpeningSeed(null); }}
-          onSaved={load}
+          onSaved={reloadAfterMutation}
         />
       )}
       {adjustItem && adjustWarehouses.length > 1 && (
@@ -1139,7 +1273,7 @@ export default function StockSaatIni() {
           branches={branches}
           warehouses={adjustWarehouses}
           onClose={() => setAdjustItem(null)}
-          onSaved={load}
+          onSaved={reloadAfterMutation}
         />
       )}
     </div>
