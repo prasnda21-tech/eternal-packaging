@@ -152,7 +152,7 @@ describe("Stock Saat Ini compatibility mode", () => {
       await Promise.resolve();
     });
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/Mode R2/i);
-    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik");
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik Gudang");
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("BRANCH");
     expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/Belum valid|belum direkonsiliasi|cabang/i);

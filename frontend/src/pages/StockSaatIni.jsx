@@ -31,39 +31,80 @@ import {
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
-/** Fase 1: warehouse condition columns — honest “Belum tersedia”, never 0. */
-const STOCK_CONDITION_UNAVAILABLE = {
+/** Fase 1: warehouse condition columns — null/BELUM_TERSEDIA → “Belum tersedia”, never 0. */
+const STOCK_CONDITION_FIELDS = {
   polos: {
     label: "Qty Polos Gudang",
-    note: "Belum tersedia — saldo gudang belum memisahkan barang polos vs sudah cetak.",
+    qtyKey: "qty_polos_gudang",
+    statusKey: "qty_polos_gudang_status",
+    noteKey: "qty_polos_gudang_note",
+    fallbackNote: "Belum tersedia — saldo gudang belum memisahkan barang polos vs sudah cetak.",
     testId: "stock-polos",
   },
   cetak: {
     label: "Qty Sudah Cetak",
-    note: "Belum tersedia — hasil cetak operator belum tercatat sebagai mutasi stok gudang.",
+    qtyKey: "qty_sudah_cetak_gudang",
+    statusKey: "qty_sudah_cetak_gudang_status",
+    noteKey: "qty_sudah_cetak_gudang_note",
+    fallbackNote: "Belum tersedia — hasil cetak operator belum tercatat sebagai mutasi stok gudang.",
     testId: "stock-cetak",
   },
   siapJual: {
     label: "Qty Siap Jual",
-    note: "Belum tersedia — belum ada bukti kunci/alokasi stok polos per gudang.",
+    qtyKey: "qty_siap_jual",
+    statusKey: "qty_siap_jual_status",
+    noteKey: "qty_siap_jual_note",
+    fallbackNote: "Belum tersedia — belum ada bukti kunci/alokasi stok polos per gudang.",
     testId: "stock-siap-jual",
   },
 };
 
-function conditionUnavailableCell(kind, masterItemId) {
-  const meta = STOCK_CONDITION_UNAVAILABLE[kind];
+/** Render from API qty/status so future supported quantities display without redesign. */
+function conditionFieldCell(kind, row) {
+  const meta = STOCK_CONDITION_FIELDS[kind];
+  const qty = row?.[meta.qtyKey];
+  const status = row?.[meta.statusKey] || (qty == null ? "BELUM_TERSEDIA" : "");
+  const note = row?.[meta.noteKey] || meta.fallbackNote;
+  const masterItemId = row?.master_item_id;
+  if (qty != null && status !== "BELUM_TERSEDIA") {
+    return (
+      <td
+        className="col-fit num mono"
+        data-testid={`${meta.testId}-${masterItemId}`}
+        data-condition-status={status || "READY"}
+      >
+        {fmtQty(qty)}
+      </td>
+    );
+  }
   return (
     <td
       className="col-fit num"
       data-testid={`${meta.testId}-${masterItemId}`}
-      data-condition-status="BELUM_TERSEDIA"
-      title={meta.note}
+      data-condition-status={status || "BELUM_TERSEDIA"}
+      title={note}
     >
-      <span className="stock-status-badge stock-status-badge--missing" title={meta.note}>
+      <span className="stock-status-badge stock-status-badge--missing" title={note}>
         Belum tersedia
       </span>
     </td>
   );
+}
+
+function conditionFieldNote(kind, row) {
+  const meta = STOCK_CONDITION_FIELDS[kind];
+  return row?.[meta.noteKey] || meta.fallbackNote;
+}
+
+function conditionFieldDisplay(kind, row) {
+  const meta = STOCK_CONDITION_FIELDS[kind];
+  const qty = row?.[meta.qtyKey];
+  const status = row?.[meta.statusKey] || (qty == null ? "BELUM_TERSEDIA" : "");
+  const note = conditionFieldNote(kind, row);
+  if (qty != null && status !== "BELUM_TERSEDIA") {
+    return { mode: "qty", qty, status: status || "READY", note };
+  }
+  return { mode: "unavailable", status: status || "BELUM_TERSEDIA", note };
 }
 
 function newKey() {
@@ -330,9 +371,9 @@ export default function StockSaatIni() {
       "Satuan Dasar",
       "Lokasi",
       physicalHeader,
-      STOCK_CONDITION_UNAVAILABLE.polos.label,
-      STOCK_CONDITION_UNAVAILABLE.cetak.label,
-      STOCK_CONDITION_UNAVAILABLE.siapJual.label,
+      STOCK_CONDITION_FIELDS.polos.label,
+      STOCK_CONDITION_FIELDS.cetak.label,
+      STOCK_CONDITION_FIELDS.siapJual.label,
       "Qty Pesanan",
       "Qty Belum Terkirim",
       "Qty Tersedia",
@@ -782,23 +823,23 @@ export default function StockSaatIni() {
                   <th
                     className="col-fit num"
                     data-testid="stock-polos-header"
-                    title={STOCK_CONDITION_UNAVAILABLE.polos.note}
+                    title={STOCK_CONDITION_FIELDS.polos.fallbackNote}
                   >
-                    {STOCK_CONDITION_UNAVAILABLE.polos.label}
+                    {STOCK_CONDITION_FIELDS.polos.label}
                   </th>
                   <th
                     className="col-fit num"
                     data-testid="stock-cetak-header"
-                    title={STOCK_CONDITION_UNAVAILABLE.cetak.note}
+                    title={STOCK_CONDITION_FIELDS.cetak.fallbackNote}
                   >
-                    {STOCK_CONDITION_UNAVAILABLE.cetak.label}
+                    {STOCK_CONDITION_FIELDS.cetak.label}
                   </th>
                   <th
                     className="col-fit num"
                     data-testid="stock-siap-jual-header"
-                    title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}
+                    title={STOCK_CONDITION_FIELDS.siapJual.fallbackNote}
                   >
-                    {STOCK_CONDITION_UNAVAILABLE.siapJual.label}
+                    {STOCK_CONDITION_FIELDS.siapJual.label}
                   </th>
                   <th className="col-fit num" title="Lingkup cabang — permintaan/komitmen, bukan stok gudang">
                     Qty Pesanan
@@ -905,9 +946,9 @@ export default function StockSaatIni() {
                     >
                       {renderPhysicalCell(it, primary, physicalText, book)}
                     </td>
-                    {conditionUnavailableCell("polos", it.master_item_id)}
-                    {conditionUnavailableCell("cetak", it.master_item_id)}
-                    {conditionUnavailableCell("siapJual", it.master_item_id)}
+                    {conditionFieldCell("polos", it)}
+                    {conditionFieldCell("cetak", it)}
+                    {conditionFieldCell("siapJual", it)}
                     <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
                     <td
                       className="col-fit num mono"
@@ -958,9 +999,9 @@ export default function StockSaatIni() {
                               <tr>
                                 <th>Gudang</th>
                                 <th className="num">Stock Fisik Gudang</th>
-                                <th className="num" title={STOCK_CONDITION_UNAVAILABLE.polos.note}>Qty Polos Gudang</th>
-                                <th className="num" title={STOCK_CONDITION_UNAVAILABLE.cetak.note}>Qty Sudah Cetak</th>
-                                <th className="num" title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}>Qty Siap Jual</th>
+                                <th className="num" title={STOCK_CONDITION_FIELDS.polos.fallbackNote}>Qty Polos Gudang</th>
+                                <th className="num" title={STOCK_CONDITION_FIELDS.cetak.fallbackNote}>Qty Sudah Cetak</th>
+                                <th className="num" title={STOCK_CONDITION_FIELDS.siapJual.fallbackNote}>Qty Siap Jual</th>
                                 <th className="num" title="Lingkup cabang">Qty Pesanan</th>
                                 <th className="num" title="Lingkup cabang">Qty Belum Terkirim</th>
                                 <th className="num" title="Lingkup cabang">Qty Tersedia</th>
@@ -989,13 +1030,13 @@ export default function StockSaatIni() {
                                         <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                       )}
                                     </td>
-                                    <td className="num" title={STOCK_CONDITION_UNAVAILABLE.polos.note}>
+                                    <td className="num" title={conditionFieldNote("polos", it)}>
                                       <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                     </td>
-                                    <td className="num" title={STOCK_CONDITION_UNAVAILABLE.cetak.note}>
+                                    <td className="num" title={conditionFieldNote("cetak", it)}>
                                       <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                     </td>
-                                    <td className="num" title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}>
+                                    <td className="num" title={conditionFieldNote("siapJual", it)}>
                                       <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                     </td>
                                     <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
@@ -1081,18 +1122,18 @@ export default function StockSaatIni() {
                     </div>
                   </div>
                   <div className="stock-mobile-metrics" data-status={statusKey}>
-                    <div>
-                      <span>Polos Gudang</span>
-                      <strong title={STOCK_CONDITION_UNAVAILABLE.polos.note}>Belum tersedia</strong>
-                    </div>
-                    <div>
-                      <span>Sudah Cetak</span>
-                      <strong title={STOCK_CONDITION_UNAVAILABLE.cetak.note}>Belum tersedia</strong>
-                    </div>
-                    <div>
-                      <span>Siap Jual</span>
-                      <strong title={STOCK_CONDITION_UNAVAILABLE.siapJual.note}>Belum tersedia</strong>
-                    </div>
+                    {["polos", "cetak", "siapJual"].map((kind) => {
+                      const disp = conditionFieldDisplay(kind, it);
+                      const label = kind === "polos" ? "Polos Gudang" : kind === "cetak" ? "Sudah Cetak" : "Siap Jual";
+                      return (
+                        <div key={kind}>
+                          <span>{label}</span>
+                          <strong title={disp.note}>
+                            {disp.mode === "qty" ? fmtQty(disp.qty) : "Belum tersedia"}
+                          </strong>
+                        </div>
+                      );
+                    })}
                     <div><span>Pesanan</span><strong>{fmtQty(it.qty_pesanan)}</strong></div>
                     <div><span>Belum Terkirim</span><strong>{formatBelumTerkirim(it)}</strong></div>
                     <div><span>Tersedia</span><strong>{formatTersedia(it)}</strong></div>

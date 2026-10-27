@@ -449,7 +449,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(api.physicalStockCatalog).toHaveBeenCalledWith(
       expect.objectContaining({ branch_id: "br-uat", warehouse_id: "wh-a" }),
     );
-    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik");
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik Gudang");
     expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toBe(
       "/persediaan/stock-opname?warehouse_id=wh-a",
     );
