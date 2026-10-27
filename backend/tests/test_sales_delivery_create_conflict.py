@@ -363,3 +363,163 @@ async def test_transient_duplicate_key_retries_same_identity(db, storage):
     assert created["shipment_index"] == 1
     assert created["sj_number"] == derive_sj_number(po["po_number"], 1)
     assert await db.sales_deliveries.count_documents({"po_id": po["id"]}) == 1
+
+
+@pytest.mark.anyio
+async def test_create_success_requires_orders_shipment_sync(db, storage):
+    po = await _po(db, qty=500)
+    created = await create_sales_delivery(
+        db,
+        {"po_id": po["id"], "delivery_date": "2026-10-24", "line_items": [{"line_idx": 0, "qty": 100}]},
+        _user(),
+    )
+    order = await db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert len(order.get("shipments") or []) == 1
+    assert order["shipments"][0]["id"] == created["id"]
+    assert order["shipments"][0]["sales_delivery_id"] == created["id"]
+    assert order["shipments"][0]["delivery_date"] == "2026-10-24"
+    assert order["shipments"][0]["number"] == created["sj_number"]
+
+
+@pytest.mark.anyio
+async def test_failed_po_update_does_not_report_success(db, storage):
+    po = await _po(db, qty=500)
+    wrapped = _CachedDb(db)
+
+    async def no_match(filt, update, **kwargs):
+        class _R:
+            matched_count = 0
+            modified_count = 0
+        return _R()
+
+    wrapped.orders.update_one = no_match
+
+    with pytest.raises(HTTPException) as exc:
+        await create_sales_delivery(
+            wrapped,
+            {"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 50}]},
+            _user(),
+        )
+    assert exc.value.status_code == 500
+    detail = str(exc.value.detail).lower()
+    assert "gagal menyinkronkan" in detail or "jangan anggap sukses" in detail
+    order = await db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert order.get("shipments") in (None, [])
+
+
+@pytest.mark.anyio
+async def test_idempotent_sync_when_shipment_already_present(db, storage):
+    from services.sales_deliveries import ensure_order_shipment_synced
+
+    po = await _po(db, qty=200)
+    entry = {
+        "id": "sd-pre",
+        "number": "SJ-PRE",
+        "shipment_index": 1,
+        "delivery_date": "2026-10-26",
+        "lines": [{"line_idx": 0, "qty": 20, "name": "Item"}],
+        "total_qty": 20,
+        "sales_delivery_id": "sd-pre",
+    }
+    await db.orders.update_one({"id": po["id"]}, {"$push": {"shipments": entry}})
+    # Second ensure must not raise / must not duplicate.
+    await ensure_order_shipment_synced(db, po["id"], entry, stamp={"delivery_note_number": "SJ-PRE"})
+    order = await db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert len(order.get("shipments") or []) == 1
+
+
+@pytest.mark.anyio
+async def test_retry_after_partial_shipment_sync_reuses_same_sj(db, storage):
+    """sales_deliveries insert OK + orders.shipments fail → HTTP 500 → retry must not double SJ."""
+    po = await _po(db, qty=500)
+    wrapped = _CachedDb(db)
+    payload = {
+        "po_id": po["id"],
+        "delivery_date": "2026-10-24",
+        "line_items": [{"line_idx": 0, "qty": 120}],
+    }
+
+    async def no_match(filt, update, **kwargs):
+        class _R:
+            matched_count = 0
+            modified_count = 0
+        return _R()
+
+    wrapped.orders.update_one = no_match
+    with pytest.raises(HTTPException) as exc:
+        await create_sales_delivery(wrapped, payload, _user())
+    assert exc.value.status_code == 500
+
+    orphan = await db.sales_deliveries.find({"po_id": po["id"]}, {"_id": 0}).to_list(10)
+    assert len(orphan) == 1
+    order = await db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert order.get("shipments") in (None, [])
+
+    # Real db retry: reuse fingerprint, repair shipment, no second document.
+    second = await create_sales_delivery(db, payload, _user())
+    assert second["id"] == orphan[0]["id"]
+    assert second["sj_number"] == orphan[0]["sj_number"]
+    assert await db.sales_deliveries.count_documents({"po_id": po["id"]}) == 1
+    order = await db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert len(order.get("shipments") or []) == 1
+    assert order["shipments"][0]["id"] == orphan[0]["id"]
+    assert order["shipments"][0]["delivery_date"] == "2026-10-24"
+
+
+@pytest.mark.anyio
+async def test_concurrent_retry_after_orphan_does_not_duplicate(db, storage):
+    """Two retries against an orphan SD: lock serializes; still one SJ + one shipment."""
+    import asyncio
+
+    # Full remaining qty so a second complete create cannot silently open another SJ
+    # (same-qty later partials remain allowed by reuse contract when remaining > 0).
+    po = await _po(db, qty=250)
+    sid = str(uuid.uuid4())
+    line = {
+        "line_idx": 0,
+        "line_id": f"{po['id']}_line_0",
+        "item_code": "SKU-1",
+        "name": "Item A",
+        "unit": "pcs",
+        "ordered_qty": 250,
+        "qty": 250,
+        "notes": "",
+    }
+    await db.sales_deliveries.insert_one(
+        {
+            "id": sid,
+            "delivery_id": sid,
+            "po_id": po["id"],
+            "po_number": po["po_number"],
+            "sj_number": derive_sj_number(po["po_number"], 1),
+            "shipment_index": 1,
+            "delivery_date": "2026-10-25",
+            "line_items": [line],
+            "total_qty": 250,
+            "status": "SELESAI",
+            "is_cancelled": False,
+            "created_at": "2026-10-25T01:00:00+00:00",
+            "created_by": "crm@example.com",
+            "created_by_name": "CRM",
+        }
+    )
+    payload = {"po_id": po["id"], "line_items": [{"line_idx": 0, "qty": 250}]}
+
+    async def once():
+        try:
+            doc = await create_sales_delivery(db, payload, _user())
+            return ("ok", doc)
+        except HTTPException as exc:
+            return ("err", exc.status_code, str(exc.detail))
+
+    results = await asyncio.gather(once(), once())
+    oks = [r for r in results if r[0] == "ok"]
+    errs = [r for r in results if r[0] == "err"]
+    assert len(oks) == 1
+    assert oks[0][1]["id"] == sid
+    assert len(errs) == 1
+    assert errs[0][1] == 400
+    assert await db.sales_deliveries.count_documents({"po_id": po["id"]}) == 1
+    order = await db.orders.find_one({"id": po["id"]}, {"_id": 0})
+    assert len(order.get("shipments") or []) == 1
+    assert order["shipments"][0]["id"] == sid

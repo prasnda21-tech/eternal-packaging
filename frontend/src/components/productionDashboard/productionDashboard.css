@@ -669,6 +669,43 @@
 .produksi-board-page .kb-card,
 .produksi-board-page .kb-body { min-width: 0; }
 .produksi-board-page .kb-body { overflow: auto; }
+
+.produksi-board-page .kb-card.is-drillable .kb-body {
+  cursor: pointer;
+}
+.produksi-board-page .kb-card.is-drillable .kb-body:focus-visible,
+.produksi-board-page .pd-drill-panel:focus-visible,
+.produksi-board-page .pd-delivery-kpi.is-drill:focus-visible {
+  outline: 2px solid #08784c;
+  outline-offset: 2px;
+}
+.produksi-board-page .kb-card.is-drillable:hover {
+  border-color: rgba(8, 120, 76, 0.35);
+}
+.produksi-board-page .pd-drill-icon {
+  display: inline-flex;
+  color: #08784c;
+  flex: 0 0 auto;
+}
+.produksi-board-page .kb-card-drill {
+  margin-left: 4px;
+}
+.produksi-board-page .pd-drill-panel,
+.produksi-board-page .pd-delivery-kpi.is-drill {
+  position: relative;
+  cursor: pointer;
+}
+.produksi-board-page .pd-drill-panel .pd-drill-icon,
+.produksi-board-page .pd-delivery-kpi.is-drill .pd-drill-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.produksi-board-page .pd-drill-locked {
+  font-size: 11px;
+  color: #8a6a2f;
+  white-space: nowrap;
+}
 .produksi-board-page .pd-switch { display: flex; flex-wrap: wrap; gap: 6px; }
 .produksi-board-page .pd-switch .kb-btn { min-height: 28px; padding: 4px 8px; }
 .produksi-board-page .pd-hbars { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -851,4 +888,41 @@
   .pd-deadline,
   .pd-approval,
   .pd-delivery-kpis { grid-template-columns: 1fr; }
+}
+
+.produksi-board-page .kb-card.is-drillable .kb-body {
+  cursor: pointer;
+}
+.produksi-board-page .kb-card.is-drillable .kb-body:focus-visible,
+.produksi-board-page .pd-drill-panel:focus-visible,
+.produksi-board-page .pd-delivery-kpi.is-drill:focus-visible {
+  outline: 2px solid #08784c;
+  outline-offset: 2px;
+}
+.produksi-board-page .kb-card.is-drillable:hover {
+  border-color: rgba(8, 120, 76, 0.35);
+}
+.produksi-board-page .pd-drill-icon {
+  display: inline-flex;
+  color: #08784c;
+  flex: 0 0 auto;
+}
+.produksi-board-page .kb-card-drill {
+  margin-left: 4px;
+}
+.produksi-board-page .pd-drill-panel,
+.produksi-board-page .pd-delivery-kpi.is-drill {
+  position: relative;
+  cursor: pointer;
+}
+.produksi-board-page .pd-drill-panel .pd-drill-icon,
+.produksi-board-page .pd-delivery-kpi.is-drill .pd-drill-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.produksi-board-page .pd-drill-locked {
+  font-size: 11px;
+  color: #8a6a2f;
+  white-space: nowrap;
 }

@@ -1,15 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { RefreshCw, RotateCcw, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { RefreshCw, RotateCcw, Search, X } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { legacyEstimateNotice } from "../lib/legacyEstimateNotice";
+import {
+  DEFAULT_PLAN_SORT,
+  buildDeliveryPlanDetailsSummary,
+  fetchAllDeliveryPlanRows,
+} from "../lib/deliveryPlanDetails";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
 import DeliveryPlanDateRangeField from "../components/deliveryPlan/DeliveryPlanDateRangeField";
 import { encodeHeaderFilters } from "../components/deliveryPlan/deliveryPlanTableLayout";
 import PoIdentityBadges from "../components/PoIdentityBadges";
 import "./DeliveryPlanPage.css";
+import "./DeliverySchedulePage.css";
 
 const EMPTY_FILTERS = {
   q: "",
@@ -17,7 +23,26 @@ const EMPTY_FILTERS = {
   status: "",
   date_from: "",
   date_to: "",
+  unit: "",
 };
+
+const STATUS_VALUES = new Set(["", "hari_ini", "terlambat", "terjadwal"]);
+
+function filtersFromSearchParams(params) {
+  const statusRaw = String(params.get("status") || "").trim().toLowerCase();
+  const status = STATUS_VALUES.has(statusRaw) ? statusRaw : "";
+  const dateFrom = String(params.get("date_from") || "").trim();
+  const dateTo = String(params.get("date_to") || "").trim();
+  const unit = String(params.get("unit") || "").trim();
+  const ymd = /^\d{4}-\d{2}-\d{2}$/;
+  return {
+    ...EMPTY_FILTERS,
+    status,
+    date_from: ymd.test(dateFrom) ? dateFrom : "",
+    date_to: ymd.test(dateTo) ? dateTo : "",
+    unit,
+  };
+}
 
 const STATUS_OPTIONS = [
   { value: "", label: "Semua status" },
@@ -69,18 +94,34 @@ function cellOrDash(value) {
 
 export default function DeliveryPlanPage() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const userId = user?.id || user?.email || "anon";
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [draft, setDraft] = useState(EMPTY_FILTERS);
+  const seedKey = searchParams.toString();
+  const seeded = useMemo(() => filtersFromSearchParams(searchParams), [seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [filters, setFilters] = useState(seeded);
+  const [draft, setDraft] = useState(seeded);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  const [sortBy, setSortBy] = useState("");
-  const [sortDir, setSortDir] = useState("asc");
+  const [sortBy, setSortBy] = useState(DEFAULT_PLAN_SORT.sortBy);
+  const [sortDir, setSortDir] = useState(DEFAULT_PLAN_SORT.sortDir);
   const [colFilters, setColFilters] = useState({});
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState({ total: 0, total_pages: 1, counts: {}, totals: null });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsBusy, setDetailsBusy] = useState(false);
+  const [detailsErr, setDetailsErr] = useState("");
+  const [detailsIncomplete, setDetailsIncomplete] = useState(false);
+  const [detailsSummary, setDetailsSummary] = useState(() => buildDeliveryPlanDetailsSummary([], {}));
+  const detailsReqRef = useRef(0);
+  const detailsAbortRef = useRef(null);
+
+  useEffect(() => {
+    setFilters(seeded);
+    setDraft(seeded);
+    setPage(1);
+  }, [seedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -95,10 +136,9 @@ export default function DeliveryPlanPage() {
       if (filters.status) params.status = filters.status;
       if (filters.date_from) params.date_from = filters.date_from;
       if (filters.date_to) params.date_to = filters.date_to;
-      if (sortBy) {
-        params.sort_by = sortBy;
-        params.sort_dir = sortDir || "asc";
-      }
+      if (filters.unit) params.unit = filters.unit;
+      params.sort_by = sortBy || DEFAULT_PLAN_SORT.sortBy;
+      params.sort_dir = sortDir || DEFAULT_PLAN_SORT.sortDir;
       const hf = encodeHeaderFilters(colFilters);
       if (hf.length) params.hf = hf;
       const data = await api.deliveryPlan(params);
@@ -134,10 +174,107 @@ export default function DeliveryPlanPage() {
     setDraft(EMPTY_FILTERS);
     setFilters(EMPTY_FILTERS);
     setColFilters({});
-    setSortBy("");
-    setSortDir("asc");
+    setSortBy(DEFAULT_PLAN_SORT.sortBy);
+    setSortDir(DEFAULT_PLAN_SORT.sortDir);
     setPage(1);
   }, []);
+
+  const closeDetails = useCallback(() => {
+    detailsReqRef.current += 1;
+    try {
+      detailsAbortRef.current?.abort?.();
+    } catch {
+      /* ignore */
+    }
+    detailsAbortRef.current = null;
+    setDetailsOpen(false);
+    setDetailsBusy(false);
+    setDetailsErr("");
+    setDetailsIncomplete(false);
+  }, []);
+
+  const openDetails = useCallback(async () => {
+    const reqId = detailsReqRef.current + 1;
+    detailsReqRef.current = reqId;
+    try {
+      detailsAbortRef.current?.abort?.();
+    } catch {
+      /* ignore */
+    }
+    const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+    detailsAbortRef.current = ac;
+    setDetailsOpen(true);
+    setDetailsBusy(true);
+    setDetailsErr("");
+    setDetailsIncomplete(false);
+    setDetailsSummary(buildDeliveryPlanDetailsSummary([], {
+      dateFrom: filters.date_from,
+      dateTo: filters.date_to,
+    }));
+    try {
+      const result = await fetchAllDeliveryPlanRows({
+        fetchPage: (params) => api.deliveryPlan(params),
+        filters,
+        colFilters,
+        sortBy: sortBy || DEFAULT_PLAN_SORT.sortBy,
+        sortDir: sortDir || DEFAULT_PLAN_SORT.sortDir,
+        signal: ac?.signal,
+      });
+      if (detailsReqRef.current !== reqId) return;
+      if (!result.complete) {
+        setDetailsIncomplete(true);
+        setDetailsErr("Data rincian tidak lengkap — total tidak ditampilkan sebagai final.");
+        setDetailsSummary(buildDeliveryPlanDetailsSummary([], {
+          dateFrom: filters.date_from,
+          dateTo: filters.date_to,
+        }));
+        return;
+      }
+      setDetailsSummary(buildDeliveryPlanDetailsSummary(result.rows, {
+        dateFrom: filters.date_from,
+        dateTo: filters.date_to,
+      }));
+    } catch (e) {
+      if (detailsReqRef.current !== reqId) return;
+      if (e?.name === "AbortError") return;
+      const det = e?.response?.data?.detail;
+      setDetailsErr(typeof det === "object" ? det.message : (det || e?.message || "Gagal memuat Rincian Pengiriman"));
+      setDetailsSummary(buildDeliveryPlanDetailsSummary([], {
+        dateFrom: filters.date_from,
+        dateTo: filters.date_to,
+      }));
+    } finally {
+      if (detailsReqRef.current === reqId) setDetailsBusy(false);
+    }
+  }, [filters, colFilters, sortBy, sortDir]);
+
+  useEffect(() => {
+    if (!detailsOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") closeDetails();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [detailsOpen, closeDetails]);
+
+  const detailsFilterKey = useMemo(
+    () => JSON.stringify({ filters, colFilters, sortBy, sortDir }),
+    [filters, colFilters, sortBy, sortDir],
+  );
+  const detailsFilterKeyWhenOpenRef = useRef(null);
+  useEffect(() => {
+    if (!detailsOpen) {
+      detailsFilterKeyWhenOpenRef.current = null;
+      return;
+    }
+    if (detailsFilterKeyWhenOpenRef.current == null) {
+      detailsFilterKeyWhenOpenRef.current = detailsFilterKey;
+      return;
+    }
+    if (detailsFilterKeyWhenOpenRef.current !== detailsFilterKey) {
+      closeDetails();
+    }
+  }, [detailsOpen, detailsFilterKey, closeDetails]);
 
   const totalPages = meta.total_pages || 1;
   const totals = meta.totals;
@@ -309,8 +446,24 @@ export default function DeliveryPlanPage() {
           <p className="subhead">
             Daftar PO dengan tanggal pengiriman valid, manual atau otomatis.
           </p>
+          {filters.unit ? (
+            <p className="muted small" data-testid="dp-unit-filter-note">
+              Filter satuan dari Qty Rencana Pengiriman: <strong>{filters.unit}</strong>
+              {" "}(hanya sisa qty &gt; 0, selaras kartu dashboard).
+            </p>
+          ) : null}
         </div>
         <div className="dp-header-actions">
+          <button
+            type="button"
+            className="ghost sm"
+            data-testid="dp-rincian-pengiriman"
+            onClick={openDetails}
+            disabled={busy || detailsBusy}
+            title="Rincian kuantitas pengiriman sesuai filter aktif"
+          >
+            Rincian Pengiriman
+          </button>
           <button
             type="button"
             className="ghost sm"
@@ -481,6 +634,110 @@ export default function DeliveryPlanPage() {
           </button>
         </div>
       </div>
+
+      {detailsOpen && (
+        <div
+          className="modal modal-viewport-safe-wrap"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dp-rincian-title"
+          data-testid="dp-rincian-modal"
+          onClick={(e) => e.target === e.currentTarget && closeDetails()}
+        >
+          <div className="modal-inner modal-viewport-safe ds-rincian-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3 id="dp-rincian-title">Rincian Pengiriman</h3>
+              <button type="button" className="icon-button" onClick={closeDetails} aria-label="Tutup" data-testid="dp-rincian-close">
+                <X size={16} />
+              </button>
+            </header>
+            <div className="ds-rincian-summary ds-rincian-summary--plan" data-testid="dp-rincian-summary">
+              <div>
+                <span className="muted">Periode</span>
+                <strong data-testid="dp-rincian-period">{detailsSummary.periodLabel}</strong>
+              </div>
+              <div>
+                <span className="muted">Total PO</span>
+                <strong data-testid="dp-rincian-po-count">{detailsBusy ? "…" : detailsSummary.poCount}</strong>
+              </div>
+              <div>
+                <span className="muted">Qty Pesanan</span>
+                <strong data-testid="dp-rincian-qty-pesanan">{detailsBusy ? "…" : detailsSummary.qtyPesananLabel}</strong>
+              </div>
+              <div>
+                <span className="muted">Qty Terkirim</span>
+                <strong data-testid="dp-rincian-qty-terkirim">{detailsBusy ? "…" : detailsSummary.qtyTerkirimLabel}</strong>
+              </div>
+              <div>
+                <span className="muted">Sisa Qty</span>
+                <strong data-testid="dp-rincian-sisa-qty">{detailsBusy ? "…" : detailsSummary.sisaQtyLabel}</strong>
+              </div>
+            </div>
+            <div className="ds-rincian-body" data-testid="dp-rincian-body">
+              {detailsBusy ? (
+                <p className="muted" data-testid="dp-rincian-loading">Memuat seluruh PO terfilter…</p>
+              ) : null}
+              {detailsErr ? (
+                <p className="error" data-testid="dp-rincian-error">{detailsErr}</p>
+              ) : null}
+              {!detailsBusy && !detailsErr && detailsSummary.empty ? (
+                <p className="muted" data-testid="dp-rincian-empty">
+                  Tidak ada PO pada filter aktif. Qty Pesanan / Terkirim / Sisa = 0.
+                </p>
+              ) : null}
+              {!detailsBusy && !detailsErr && !detailsIncomplete && !detailsSummary.empty ? (
+                detailsSummary.days.map((day) => (
+                  <section key={day.date || "none"} className="ds-rincian-day" data-testid={`dp-rincian-day-${day.date || "none"}`}>
+                    <header className="ds-rincian-day-head">
+                      <strong>{day.dateLabel}</strong>
+                      <span data-testid={`dp-rincian-day-total-${day.date || "none"}`}>{day.totalLabel}</span>
+                    </header>
+                    <div className="ds-rincian-table-wrap" data-testid="dp-rincian-table-wrap">
+                      <table className="ds-rincian-table ds-rincian-table--plan">
+                        <thead>
+                          <tr>
+                            <th>Tanggal Pengiriman</th>
+                            <th>Nomor PO</th>
+                            <th>Customer</th>
+                            <th>Zona</th>
+                            <th className="num">Qty Pesanan</th>
+                            <th className="num">Qty Terkirim</th>
+                            <th className="num">Sisa Qty</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {day.rows.map((r) => (
+                            <tr key={r.key} data-testid={`dp-rincian-row-${r.key}`}>
+                              <td>{r.date ? formatDate(r.date, { dateOnly: true }) : "—"}</td>
+                              <td>{r.poNumber}</td>
+                              <td>{r.customerName}</td>
+                              <td>{r.zone}</td>
+                              <td className="num">{r.qtyPesananLabel}</td>
+                              <td className="num">{r.qtyTerkirimLabel}</td>
+                              <td className="num">{r.sisaQtyLabel}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ))
+              ) : null}
+            </div>
+            <footer className="ds-rincian-foot" data-testid="dp-rincian-foot">
+              <span className="muted">Grand Total</span>
+              <strong data-testid="dp-rincian-grand-total">
+                {detailsBusy || detailsErr || detailsIncomplete
+                  ? "—"
+                  : `Pesanan ${detailsSummary.qtyPesananLabel} · Terkirim ${detailsSummary.qtyTerkirimLabel} · Sisa ${detailsSummary.sisaQtyLabel}`}
+              </strong>
+              <button type="button" className="ghost sm" onClick={closeDetails} data-testid="dp-rincian-tutup">
+                Tutup
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

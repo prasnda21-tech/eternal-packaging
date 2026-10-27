@@ -170,11 +170,14 @@ async def get_mutasi(
     end_date: str,
     q: Optional[str] = None,
     source_type: Optional[str] = None,
+    exclude_internal_transfer: bool = False,
 ) -> dict:
     """Build mutasi ledger for one cash/bank over [start_date, end_date].
 
     GET-safe: zero-write.
     Sort: date ASC, then created_at ASC, then line id ASC.
+    When exclude_internal_transfer is set, transfer journals (and reversals of
+    those transfers) are omitted from rows, totals, and count — not only the UI.
     """
     cb_id = str(cash_bank_id or "").strip()
     start = str(start_date or "").strip()
@@ -204,6 +207,12 @@ async def get_mutasi(
     journals = await db[JOURNAL_ENTRIES].find(journal_query, {"_id": 0}).to_list(100000)
     by_jid = {j["id"]: j for j in journals if j.get("id")}
     journal_ids = list(by_jid.keys())
+    transfer_ids = {
+        str(j.get("id") or "")
+        for j in journals
+        if str(j.get("source_type") or "") == SOURCE_TRANSFER and j.get("id")
+    }
+    drop_internal = bool(exclude_internal_transfer)
 
     items: List[dict] = []
     total_debit = Decimal("0.00")
@@ -236,6 +245,12 @@ async def get_mutasi(
                 continue
             st = str(j.get("source_type") or "")
             sid = str(j.get("source_id") or "")
+            if drop_internal:
+                if st == SOURCE_TRANSFER:
+                    continue
+                original = str(j.get("reversal_of") or "").strip()
+                if original and original in transfer_ids:
+                    continue
             cache_key = (st, sid)
             if cache_key not in voucher_cache:
                 voucher_cache[cache_key] = await _resolve_voucher_meta(db, st, sid)
@@ -282,7 +297,8 @@ async def get_mutasi(
 
     ending = opening + total_debit - total_credit
 
-    # Optional search filter on returned rows only — summary totals stay period-authoritative.
+    # Optional search filter on returned rows only — summary totals stay period-authoritative
+    # (already exclude_internal_transfer-aware when that flag is set).
     needle = str(q or "").strip().lower()
     visible = items
     if needle:
@@ -304,6 +320,7 @@ async def get_mutasi(
         "account_id": account_id,
         "start_date": start,
         "end_date": end,
+        "exclude_internal_transfer": drop_internal,
         "opening_balance": _money_float(opening),
         "total_debit": _money_float(total_debit),
         "total_credit": _money_float(total_credit),

@@ -2841,7 +2841,7 @@ def _prereq_reasons_for_loading(order: dict) -> list:
 
 
 def _prereq_reasons_for_terkirim(order: dict) -> list:
-    """Gate Surat Jalan → Terkirim (advance / mark_delivered). Loading is required for new delivery."""
+    """Read-model blockers for UI/status. Completion itself is confirm-delivered only."""
     from services.delivery_loading_gate import new_delivery_block_reason
     reasons = []
     if not _surat_jalan_created(order):
@@ -2850,6 +2850,27 @@ def _prereq_reasons_for_terkirim(order: dict) -> list:
     if blocked and blocked not in reasons:
         reasons.append(blocked)
     return reasons
+
+
+MSG_USE_CONFIRM_DELIVERED = (
+    "Konfirmasi pengiriman hanya melalui Konfirmasi Terkirim "
+    "(POST /orders/{order_id}/confirm-delivered) dengan Surat Jalan aktif, "
+    "Loading valid, minimal 2 foto bukti, nama penerima, dan tanda tangan yang sah."
+)
+CODE_USE_CONFIRM_DELIVERED = "USE_CONFIRM_DELIVERED"
+
+
+def _reject_legacy_terkirim_completion(*, via: str) -> None:
+    """Block legacy /advance and /delivered from setting Terkirim (BUG-01)."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": MSG_USE_CONFIRM_DELIVERED,
+            "code": CODE_USE_CONFIRM_DELIVERED,
+            "via": via,
+            "use": "POST /orders/{order_id}/confirm-delivered",
+        },
+    )
 
 
 def _stage_cetak_done(order: dict) -> bool:
@@ -3056,18 +3077,10 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
                 "from_stage": cur,
                 "to_stage": new_stage,
             })
-    # Loading → Terkirim gate (Task 14 bugfix): SJ valid + Loading checklist
-    # complete (items_loaded && seal_ok). Semua jalur ke Terkirim (advance +
-    # mark_delivered) pakai validator ini.
+    # Loading → Terkirim: /advance must not complete delivery (BUG-01).
+    # Official path is POST /orders/{id}/confirm-delivered (proof + stock + perm).
     if cur == 13:
-        reasons = _prereq_reasons_for_terkirim(order)
-        if reasons:
-            raise HTTPException(400, {
-                "message": "Tahap belum dapat dilanjutkan.",
-                "prereq_reasons": reasons,
-                "from_stage": cur,
-                "to_stage": new_stage,
-            })
+        _reject_legacy_terkirim_completion(via="advance")
     order["current_stage"] = new_stage
     # Task 12 bugfix: log Cetak completion by Operator (bukan Packing).
     # Actor Operator melakukan action Cetak selesai; Packing baru dicatat saat
@@ -3077,7 +3090,7 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
     elif new_stage == 12 and cur == 11:
         # Task 13 Surat Jalan bugfix: log Packing completion oleh actor Packing,
         # BUKAN membuat entry Surat Jalan otomatis. Actor SJ ditentukan saat
-        # user berwenang benar-benar membuat SJ via POST /surat-jalan.
+        # user berwenang membuat SJ via POST /sales-deliveries (kanonik).
         add_timeline(order, cur, user, note="Packing selesai — menuju Surat Jalan")
     elif new_stage == 13 and cur == 12:
         # Task 14 Loading bugfix: log Surat Jalan completion oleh actor SJ,
@@ -3094,28 +3107,10 @@ async def advance_stage(order_id: str, payload: StageAdvancePayload, user=Depend
         required_total = _packing_required_total(order)
         packed_qty = _qr_qty_packed(order)
         order["packing_status"] = "Sudah" if (required_total and packed_qty >= required_total) else "Berjalan"
-    if new_stage == 14:
-        required_total = _packing_required_total(order)
-        packed_qty = _qr_qty_packed(order)
-        if required_total and packed_qty < required_total:
-            raise HTTPException(400, {
-                "message": "PO belum terkirim penuh — qty packing belum lengkap.",
-                "prereq_reasons": [
-                    f"Qty packing ({packed_qty}) belum mencapai total PO ({required_total})."
-                ],
-                "from_stage": cur,
-                "to_stage": new_stage,
-            })
-        order["delivery_status"] = "Terkirim"
-        order["qty_delivered"] = required_total or packed_qty
-        if not order.get("delivered_at"):
-            order["delivered_at"] = now_iso()
-        if not order.get("delivered_by"):
-            order["delivered_by"] = user.get("email")
-            order["delivered_by_name"] = user.get("name")
     # Task 13 bugfix: JANGAN auto-generate delivery_note_number saat masuk
-    # stage 12. Surat Jalan hanya dibuat via POST /orders/{id}/surat-jalan
-    # oleh user dengan permission `delivery_note.manage`.
+    # stage 12. Dokumen SJ bisnis hanya dibuat via POST /sales-deliveries
+    # (BUG-04); legacy POST /orders/{id}/surat-jalan ditolak.
+    # Stage 14 / Terkirim is never set here — confirm-delivered only (BUG-01).
     await _persist_order(order)
     return {"order": order}
 
@@ -6194,14 +6189,39 @@ async def report_loading_discrepancy(order_id: str, payload: LoadingDiscrepancyP
 
 @api_router.delete("/orders/{order_id}/loading-confirm/{confirmation_id}")
 async def delete_loading_confirmation(order_id: str, confirmation_id: str, user=Depends(current_user)):
-    """Soft-cancel one Loading confirmation when eligible (not fully delivered, no delivered qty)."""
+    """Soft-cancel one Loading confirmation when eligible (not fully delivered, no delivered qty).
+
+    Stock integrity (BUG-03): reverse/no-op PSS loading stock *before* soft-cancel.
+    If finalized PSS PENGIRIMAN for this confirmation still exists and cannot be
+    reversed safely, fail closed — do not mark Loading cancelled.
+    """
     await _require_perm(user, "loading.delete")
+
+    existing = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "PO tidak ditemukan")
+    _ensure_not_cancelled(existing)
+    err = _qr_validate_cancel_loading_confirmation(existing, confirmation_id)
+    if err:
+        raise HTTPException(400, err)
+    from quantity_rules import find_loading_confirmation as _find_lc
+    target_conf = _find_lc(existing, confirmation_id, include_cancelled=False)
+    if not target_conf:
+        raise HTTPException(404, "Konfirmasi Loading tidak ditemukan")
+
+    from services.physical_stock_engine import reverse_loading_confirmation_stock
+    stock_reverse = await reverse_loading_confirmation_stock(
+        db, existing, target_conf, user=user,
+    )
+
+    record_holder = {}
 
     def _mutate(order):
         _ensure_not_cancelled(order)
-        err = _qr_validate_cancel_loading_confirmation(order, confirmation_id)
-        if err:
-            raise HTTPException(400, err)
+        # Re-validate under lock (delivery / sibling SJ may have changed).
+        err2 = _qr_validate_cancel_loading_confirmation(order, confirmation_id)
+        if err2:
+            raise HTTPException(400, err2)
         stamp = now_iso()
         try:
             record = _qr_cancel_loading_confirmation(
@@ -6211,6 +6231,7 @@ async def delete_loading_confirmation(order_id: str, confirmation_id: str, user=
             raise HTTPException(400, str(e))
         if not record:
             raise HTTPException(404, "Konfirmasi Loading tidak ditemukan")
+        record_holder["record"] = record
         add_timeline(
             order, 13, user,
             note=f"Hapus Loading ({record.get('surat_jalan_name') or record.get('surat_jalan_id')}): {record.get('id')}",
@@ -6219,7 +6240,11 @@ async def delete_loading_confirmation(order_id: str, confirmation_id: str, user=
 
     order = await _with_quantity_lock(order_id, _mutate)
     await _audit_po(order, "loading.delete", user, note=confirmation_id)
-    return {"order": _strip_sj_bytes(order), "cancelled_id": confirmation_id}
+    return {
+        "order": _strip_sj_bytes(order),
+        "cancelled_id": confirmation_id,
+        "stock_reverse": stock_reverse,
+    }
 
 
 @api_router.post("/orders/{order_id}/approve-sample")
@@ -6497,91 +6522,30 @@ def _shipment_line_payload(rows: list) -> list:
 
 @api_router.post("/orders/{order_id}/surat-jalan")
 async def create_surat_jalan(order_id: str, payload: SuratJalanPayload, user=Depends(current_user)):
-    """Buat Surat Jalan parsial per line. Permission `delivery_note.manage`.
+    """Legacy SJ create — disabled (BUG-04).
 
-    Tanpa `lines`: alokasi sisa packing (PO pertama) atau perbarui nomor/catatan
-    shipment terakhir (kompatibel test legacy).
+    Canonical business SJ documents are created only via ``POST /sales-deliveries``,
+    which writes ``sales_deliveries`` and syncs ``orders.shipments``. This endpoint
+    previously created orphan shipment-only rows and is no longer writable.
+
+    Historical shipments / files remain readable via GET order + surat-jalan file
+    routes. Permission ``delivery_note.manage`` is still required so unauthorized
+    callers receive 403 (not a silent redirect).
     """
     await _require_perm(user, "delivery_note.manage")
-    before_holder = {}
-
-    def mutate(order: dict):
-        if (order.get("current_stage") or 0) < 12:
-            raise HTTPException(400, "Belum bisa membuat Surat Jalan — tahap Packing belum selesai.")
-        before_holder["delivery_note_number"] = order.get("delivery_note_number")
-        before_holder["delivery_note_created_by"] = order.get("delivery_note_created_by")
-        from services.sales_deliveries import derive_base_sj_number
-        number = (
-            payload.delivery_note_number
-            or order.get("delivery_note_number")
-            or derive_base_sj_number(str(order.get("po_number") or ""))
-        )
-        existing_all = _qr_shipments_stored(order)
-        existing = [sh for sh in existing_all if _qr_shipment_is_active(sh)]
-        explicit_lines = _shipment_line_payload(payload.lines) if payload.lines else None
-        creating_new = bool(explicit_lines) or not existing
-        if creating_new:
-            updates = explicit_lines if explicit_lines else _qr_remaining_delivery_note_updates(order)
-            err = _qr_validate_shipment_lines(updates, order, source=_QR_SRC_MANUAL)
-            if err:
-                raise HTTPException(400, err)
-            stamp = now_iso()
-            try:
-                record = _qr_apply_shipment_record(
-                    order,
-                    number=number,
-                    lines=updates,
-                    source=_QR_SRC_MANUAL,
-                    actor=user,
-                    notes=payload.notes,
-                    shipment_id=str(uuid.uuid4()),
-                    created_at=stamp,
-                )
-            except ValueError as e:
-                raise HTTPException(400, str(e))
-            if not record.get("id"):
-                record["id"] = str(uuid.uuid4())
-                order["shipments"][-1]["id"] = record["id"]
-            _stamp_legacy_delivery_note(order, record, user)
-            add_timeline(order, 12, user, note=f"Surat Jalan dibuat: {number}")
-        else:
-            latest = existing[-1]
-            freeze_err = _qr_shipment_qty_frozen_reason(order, latest)
-            if freeze_err:
-                if str(latest.get("number") or "").strip() != str(number or "").strip() or payload.lines:
-                    raise HTTPException(400, freeze_err)
-                return
-            latest["number"] = number
-            if payload.notes:
-                latest["notes"] = payload.notes
-            latest["updated_by"] = user.get("email")
-            latest["updated_by_name"] = user.get("name")
-            latest["updated_at"] = now_iso()
-            order["delivery_note_number"] = number
-            order["delivery_note_created_by"] = user.get("email")
-            order["delivery_note_created_by_name"] = user.get("name")
-            order["delivery_note_created_at"] = order.get("delivery_note_created_at") or now_iso()
-            if payload.notes:
-                order["delivery_note_notes"] = payload.notes
-            add_timeline(order, 12, user, note=f"Surat Jalan dibuat: {number}")
-
-    order = await _with_quantity_lock(order_id, mutate)
-    await _audit_po(
-        order,
-        "delivery_note.create",
-        user,
-        before={
-            "delivery_note_number": before_holder.get("delivery_note_number"),
-            "delivery_note_created_by": before_holder.get("delivery_note_created_by"),
-        },
-        after={
-            "delivery_note_number": order.get("delivery_note_number"),
-            "delivery_note_created_by": order.get("delivery_note_created_by"),
-            "shipments": order.get("shipments"),
-        },
-        note=payload.notes or "",
-    )
-    return {"order": order}
+    # Touch args so linters/tests keep the payload contract; no mutation.
+    _ = (order_id, payload)
+    raise HTTPException(409, {
+        "message": (
+            "Pembuatan Surat Jalan melalui endpoint legacy tidak lagi diizinkan. "
+            "Gunakan Pengiriman Pesanan (POST /sales-deliveries) agar dokumen bisnis "
+            "dan shipment PO tetap sinkron."
+        ),
+        "code": "LEGACY_SJ_CREATE_DISABLED",
+        "canonical_endpoint": "POST /sales-deliveries",
+        "canonical_permission": "sales.delivery.create",
+        "order_id": order_id,
+    })
 
 
 @api_router.get("/orders/{order_id}/surat-jalan/accurate-preview")
@@ -6761,62 +6725,15 @@ async def mark_delivered(
     user=Depends(current_user),
     qty_delivered: Optional[int] = Query(None),
 ):
-    """Konfirmasi pengiriman (cumulative qty_delivered)."""
+    """Legacy delivery endpoint — rejected. Use confirm-delivered (BUG-01).
+
+    Permission is still checked so callers without ``delivery.update`` receive 403
+    (BUG-05) rather than a generic 409 redirect.
+    """
     await _require_perm(user, "delivery.update")
-
-    def mutate(order: dict):
-        packed = _qr_qty_packed(order)
-        required = _packing_required_total(order)
-        new_delivered = packed if qty_delivered is None else int(qty_delivered)
-        current = _qr_qty_delivered(order)
-        from services.delivery_loading_gate import (
-            new_delivery_block_reason,
-            po_is_fully_delivered,
-        )
-        # Already Terkirim: do not rewrite historical timestamps/actors/qty.
-        if po_is_fully_delivered(order) and new_delivered <= current:
-            return
-        reasons = []
-        if not _surat_jalan_created(order):
-            reasons.append("Surat Jalan belum dibuat.")
-        # Gate must see the requested qty so partial Loading can cap — not reject — a valid increment.
-        gate = new_delivery_block_reason(order, requested_qty=new_delivered)
-        if gate and gate not in reasons:
-            reasons.append(gate)
-        if reasons:
-            raise HTTPException(400, {
-                "message": "Belum bisa Terkirim — prerequisite belum lengkap.",
-                "prereq_reasons": reasons,
-            })
-        if user.get("role") == "driver":
-            blocked = _qr_confirm_delivery_block_reason(order)
-            if blocked:
-                raise HTTPException(400, blocked)
-        err = _qr_validate_delivery_qty(new_delivered, order)
-        if err:
-            raise HTTPException(400, err)
-        order["qty_delivered"] = new_delivered
-        if required and new_delivered >= required:
-            order["delivery_status"] = "Terkirim"
-            order["delivered_at"] = now_iso()
-            order["delivered_by"] = user.get("email")
-            order["delivered_by_name"] = user.get("name")
-            order["current_stage"] = 14
-            add_timeline(order, 14, user, note=f"Terkirim penuh: {new_delivered}/{required} pcs")
-        else:
-            order["delivery_status"] = "Sebagian Terkirim"
-            order["delivered_at"] = now_iso()
-            order["delivered_by"] = user.get("email")
-            order["delivered_by_name"] = user.get("name")
-            add_timeline(
-                order,
-                order.get("current_stage") or 13,
-                user,
-                note=f"Terkirim sebagian: {new_delivered}/{required} pcs",
-            )
-
-    order = await _with_quantity_lock(order_id, mutate)
-    return {"order": order}
+    _ = order_id
+    _ = qty_delivered
+    _reject_legacy_terkirim_completion(via="delivered")
 
 
 class ConfirmDeliveredPayload(BaseModel):
@@ -7903,11 +7820,23 @@ async def list_delivery_schedule(user=Depends(current_user)):
     ).sort("deadline", 1).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
+    from services.delivery_schedule import load_sales_deliveries_for_schedule
     holidays = await _holiday_dates(db)
     lead_days = dd_settings["lead_time_days"]
+    po_ids = [str(o.get("id") or "").strip() for o in docs if o.get("id")]
+    # Batched authoritative SJ docs — read-only reconcile, no N+1, no writes.
+    sd_by_po = await load_sales_deliveries_for_schedule(db, po_ids)
     rows = []
     for o in docs:
-        rows.extend(_delivery_schedule_rows(o, lead_time_days=lead_days, holidays=holidays))
+        oid = str(o.get("id") or "").strip()
+        rows.extend(
+            _delivery_schedule_rows(
+                o,
+                lead_time_days=lead_days,
+                holidays=holidays,
+                sales_deliveries=sd_by_po.get(oid, []),
+            )
+        )
     # Enrich optimization status (pure read; no writes).
     try:
         from services.independent_route.delivery_bridge import optimization_status_map
@@ -7935,6 +7864,7 @@ async def list_delivery_plan(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    unit: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_dir: Optional[str] = None,
     hf: Optional[list[str]] = Query(None),
@@ -7947,6 +7877,7 @@ async def list_delivery_plan(
     Reuses tanggal_pengiriman resolver. No writes. Buffer Stock / cancelled /
     fully delivered / missing date excluded. SJ not required.
     Filter/sort (incl. header hf) run before pagination; totals cover full set.
+    Optional unit matches Qty Rencana Pengiriman widget buckets (incl. campuran).
     """
     await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
     scope = sales_owner_match(user)
@@ -7962,6 +7893,7 @@ async def list_delivery_plan(
         "status": status,
         "date_from": date_from,
         "date_to": date_to,
+        "unit": unit,
     }
     rows = _build_delivery_plan_rows(
         docs,
@@ -9253,6 +9185,7 @@ async def status_po_dashboard(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    basis: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
     include_cancelled: bool = False,
@@ -9321,6 +9254,9 @@ async def status_po_dashboard(
     eligible_keys: List[tuple] = []
     status_options: set = set()
     docs_scanned = 0
+    basis_key = (basis or "").strip().lower() or None
+    if basis_key not in (None, "snapshot"):
+        basis_key = None
     cursor = db.orders.find(q, STATUS_PO_PROJECTION).sort([
         ("order_date", 1),
         ("po_number", 1),
@@ -9331,7 +9267,7 @@ async def status_po_dashboard(
         o = raw
         _apply_hold_snapshot(o)
         _attach_deadline_snapshot(o, lead_days, holidays=holidays)
-        if not filter_orders_for_view([o], view_key or None):
+        if not filter_orders_for_view([o], view_key or None, basis=basis_key):
             continue
         if not order_matches_search_date_filters(o, filters):
             continue
@@ -9360,6 +9296,7 @@ async def status_po_dashboard(
     rows = build_status_po_page_rows(page_orders, page_ids=page_ids)
     data = {
         "view": view_key or None,
+        "basis": basis_key,
         "rows": rows,
         "total": sliced["total_count"],
         "total_count": sliced["total_count"],
@@ -14059,7 +13996,7 @@ async def get_sales_receipt_pdf_endpoint(id: str, user=Depends(current_user)):
 # DELETE ENDPOINTS — SAFE DELETE WITH DEPENDENCY CHECKS
 # ==================================================
 
-async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
+async def _sales_delivery_delete_blocker(delivery: dict, *, session=None) -> Optional[str]:
     """Return a human-friendly reject reason, or None if the business SJ may be deleted.
 
     Surat Jalan is an operational production/delivery document. Faktur, Penerimaan
@@ -14068,7 +14005,11 @@ async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
     """
     po_id = delivery.get("po_id")
     raw_sj_number = delivery.get("sj_number")
-    order = await db.orders.find_one({"id": po_id}, {"_id": 0}) if po_id else None
+    find_kw = {"session": session} if session is not None else {}
+    order = (
+        await db.orders.find_one({"id": po_id}, {"_id": 0}, **find_kw)
+        if po_id else None
+    )
     if not order:
         return None
 
@@ -14139,7 +14080,13 @@ async def _sales_delivery_delete_blocker(delivery: dict) -> Optional[str]:
     return None
 
 
-async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> None:
+async def _remove_matching_business_sj_shipment(
+    po_id: str,
+    delivery: dict,
+    *,
+    session=None,
+    deleted_reason: str = "sales.delivery.delete",
+) -> None:
     """Remove the exact business SJ shipment row and its system-generated PDF only.
 
     Soft-deletes the generated PDF blob for audit. Does not erase packing,
@@ -14149,13 +14096,23 @@ async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> N
     """
     if not po_id:
         return
+    kw = {"session": session} if session is not None else {}
     delivery_id = delivery.get("id")
     if delivery_id:
-        await db.orders.update_one({"id": po_id}, {"$pull": {"shipments": {"sales_delivery_id": delivery_id}}})
-        await db.orders.update_one({"id": po_id}, {"$pull": {"shipments": {"id": delivery_id}}})
+        await db.orders.update_one(
+            {"id": po_id},
+            {"$pull": {"shipments": {"sales_delivery_id": delivery_id}}},
+            **kw,
+        )
+        await db.orders.update_one(
+            {"id": po_id},
+            {"$pull": {"shipments": {"id": delivery_id}}},
+            **kw,
+        )
         await db.orders.update_one(
             {"id": po_id},
             {"$pull": {"surat_jalan_files": {"id": delivery_id, "source": _SJ_SOURCE_GENERATED}}},
+            **kw,
         )
         await db.files.update_many(
             {
@@ -14165,11 +14122,17 @@ async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> N
                 "source": _SJ_SOURCE_GENERATED,
                 "is_deleted": {"$ne": True},
             },
-            {"$set": {"is_deleted": True, "deleted_at": now_iso(), "deleted_reason": "sales.delivery.delete"}},
+            {"$set": {
+                "is_deleted": True,
+                "deleted_at": now_iso(),
+                "deleted_reason": deleted_reason,
+            }},
+            **kw,
         )
     order = await db.orders.find_one(
         {"id": po_id},
         {"_id": 0, "shipments": 1, "surat_jalan_files": 1},
+        **kw,
     )
     if not order:
         return
@@ -14188,7 +14151,201 @@ async def _remove_matching_business_sj_shipment(po_id: str, delivery: dict) -> N
             "delivery_note_created_by": None,
             "delivery_note_created_by_name": None,
         }},
+        **kw,
     )
+
+
+async def _sales_delivery_bulk_hard_delete_blocker(delivery: dict) -> Optional[str]:
+    """Reject bulk hard-delete when single-delete would soft-cancel or fail closed.
+
+    Bulk only hard-deletes draft SJ with ``operational_only`` stock (same reverse
+    helper as single hard-delete). Soft-cancel / stock-bearing SJ must use
+    DELETE /sales-deliveries/{id}.
+    """
+    reason = await _sales_delivery_delete_blocker(delivery)
+    if reason:
+        return reason
+    if delivery.get("is_cancelled") or str(delivery.get("status") or "").strip().upper() in {
+        "DIBATALKAN", "CANCELLED", "DELETED",
+    }:
+        return "Surat Jalan sudah dibatalkan."
+    from services.physical_stock import (
+        PhysicalStockValidationError,
+        _r2_confirmation_ids_for_sales_delivery,
+        assess_sales_delivery_cancel_stock,
+    )
+    try:
+        r2_ids = await _r2_confirmation_ids_for_sales_delivery(db, delivery)
+    except Exception:
+        r2_ids = []
+    if r2_ids:
+        return (
+            "Surat Jalan memiliki konfirmasi/mutasi stok pengiriman — "
+            "batalkan satu per satu, bukan hapus massal."
+        )
+    try:
+        assessment = await assess_sales_delivery_cancel_stock(db, delivery)
+    except PhysicalStockValidationError as exc:
+        return str(exc)
+    mode = str(assessment.get("mode") or "")
+    if mode == "operational_only":
+        return None
+    return str(
+        assessment.get("reason")
+        or "Surat Jalan tidak dapat dihapus massal karena kondisi stok/dependensi."
+    )
+
+
+async def _apply_bulk_hard_deletes_in_session(session, deliveries: list) -> None:
+    """Delete draft SJ docs + sync shipments inside an open Mongo transaction."""
+    for delivery in deliveries:
+        fresh = await db.sales_deliveries.find_one(
+            {"id": delivery["id"]}, {"_id": 0}, session=session,
+        )
+        if not fresh:
+            raise HTTPException(409, {
+                "message": "Surat Jalan berubah selama penghapusan massal; tidak ada yang dihapus.",
+                "code": "BULK_DELETE_CONFLICT",
+                "id": delivery["id"],
+            })
+        race = await _sales_delivery_delete_blocker(fresh, session=session)
+        if race:
+            raise HTTPException(409, {
+                "message": race,
+                "code": "BULK_DELETE_CONFLICT",
+                "id": fresh.get("id"),
+                "sj_number": fresh.get("sj_number"),
+            })
+        result = await db.sales_deliveries.delete_one(
+            {
+                "id": delivery["id"],
+                "is_cancelled": {"$ne": True},
+            },
+            session=session,
+        )
+        if result.deleted_count != 1:
+            raise HTTPException(409, {
+                "message": "Surat Jalan berubah selama penghapusan massal; tidak ada yang dihapus.",
+                "code": "BULK_DELETE_CONFLICT",
+                "id": delivery["id"],
+            })
+        await _remove_matching_business_sj_shipment(
+            fresh.get("po_id") or delivery.get("po_id"),
+            fresh,
+            session=session,
+            deleted_reason="sales.delivery.bulk_delete",
+        )
+
+
+async def _bulk_hard_delete_sales_deliveries_atomic(
+    deliveries: list,
+    *,
+    actor_id: str,
+    user: dict,
+) -> dict:
+    """Fail-closed bulk hard-delete: txn preflight → reverse → atomic doc sync.
+
+    1. Require Mongo replica-set transactions *before* any stock reverse.
+    2. Reverse R2 confirmations per SJ (idempotent keys; no-op when none).
+    3. Delete docs + sync shipments in one transaction.
+
+    Never uses delete_many without shipment sync. Soft-cancel / stock-bearing
+    SJ are rejected earlier by ``_sales_delivery_bulk_hard_delete_blocker``.
+    """
+    from services.physical_stock import (
+        PhysicalStockAbortError,
+        PhysicalStockConflictError,
+        PhysicalStockUnavailableError,
+        PhysicalStockValidationError,
+        require_transaction_support,
+        reverse_r2_deliveries_for_sales_delivery,
+    )
+
+    # Point-10 / fail-closed: refuse before any stock mutation when txn unavailable.
+    try:
+        await require_transaction_support(client)
+    except PhysicalStockUnavailableError as exc:
+        raise HTTPException(503, {
+            "message": (
+                "Penghapusan massal Surat Jalan membutuhkan transaksi MongoDB "
+                "(replica set). Operasi ditolak agar data tidak inkonsisten."
+            ),
+            "code": "BULK_DELETE_TXN_UNAVAILABLE",
+            "detail": str(exc),
+        }) from exc
+
+    reversals = []
+    for delivery in deliveries:
+        try:
+            r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
+                db,
+                delivery,
+                actor_id=actor_id,
+                reason="Pembatalan Surat Jalan (bulk)",
+            )
+        except PhysicalStockAbortError as exc:
+            raise HTTPException(503, {
+                "message": "Pembatalan stok gagal; tidak ada Surat Jalan yang dihapus.",
+                "code": "BULK_DELETE_STOCK_REVERSE_FAILED",
+                "sj_number": delivery.get("sj_number"),
+                "id": delivery.get("id"),
+                "reversed_before_failure": list(reversals),
+            }) from exc
+        except PhysicalStockUnavailableError as exc:
+            raise HTTPException(503, {
+                "message": str(exc) or "Stok tidak tersedia untuk pembatalan massal.",
+                "code": "BULK_DELETE_STOCK_UNAVAILABLE",
+                "id": delivery.get("id"),
+                "reversed_before_failure": list(reversals),
+            }) from exc
+        except (PhysicalStockValidationError, PhysicalStockConflictError) as exc:
+            raise HTTPException(400, {
+                "message": str(exc),
+                "code": "BULK_DELETE_STOCK_REJECTED",
+                "id": delivery.get("id"),
+                "reversed_before_failure": list(reversals),
+            }) from exc
+        reversals.append({"id": delivery.get("id"), "r2_reversal": r2_reverse})
+
+    delete_ids = [d["id"] for d in deliveries]
+
+    try:
+        async with await client.start_session() as session:
+            async with session.start_transaction():
+                await _apply_bulk_hard_deletes_in_session(session, deliveries)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Preserve intentional conflict/validation HTTPExceptions wrapped by drivers.
+        cause = exc
+        while cause is not None:
+            if isinstance(cause, HTTPException):
+                raise cause
+            cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+        logging.getLogger(__name__).exception("sales-delivery bulk delete txn failed")
+        raise HTTPException(503, {
+            "message": (
+                "Penghapusan massal gagal di tengah transaksi; dokumen tidak dihapus. "
+                "Pembalikan stok bersifat idempotent — ulangi permintaan bila perlu."
+            ),
+            "code": "BULK_DELETE_TXN_FAILED",
+        }) from exc
+
+    await _write_audit(
+        action="sales.delivery.bulk_delete",
+        actor=user,
+        target_email=f"deliveries:{len(deliveries)}",
+        before={"ids": delete_ids},
+        after={"deleted_count": len(deliveries), "reversals": reversals},
+    )
+    return {
+        "deleted_count": len(deliveries),
+        "deleted": [
+            {"id": d["id"], "sj_number": d.get("sj_number", "")}
+            for d in deliveries
+        ],
+        "reversals": reversals,
+    }
 
 
 @api_router.delete("/sales-receipts/{id}")
@@ -14398,12 +14555,18 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
 
 @api_router.post("/sales-deliveries-bulk/delete")
 async def bulk_delete_sales_deliveries_endpoint(payload: BulkPayload, user=Depends(current_user)):
-    """Bulk delete sales deliveries — ALL OR NOTHING."""
+    """Bulk hard-delete draft Surat Jalan — validate-all, reverse stock, then atomic txn.
+
+    Soft-cancel / stock-bearing SJ are rejected from the batch (use single DELETE).
+    Never uses delete_many without matching shipment sync (BUG-02).
+    """
     await _require_any_perm(user, "sales.delivery.delete", "sales.delivery.create", "po.edit")
     if not payload.ids:
         raise HTTPException(400, "Pilih minimal 1 Pengiriman.")
     unique_ids = list(dict.fromkeys(payload.ids))
-    deliveries = await db.sales_deliveries.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    deliveries = await db.sales_deliveries.find(
+        {"id": {"$in": unique_ids}}, {"_id": 0},
+    ).to_list(len(unique_ids) or 1)
     by_id = {d["id"]: d for d in deliveries}
     blockers = []
     to_delete = []
@@ -14412,21 +14575,27 @@ async def bulk_delete_sales_deliveries_endpoint(payload: BulkPayload, user=Depen
         if not delivery:
             blockers.append({"id": did, "number": did, "reason": "Pengiriman tidak ditemukan."})
             continue
-        reason = await _sales_delivery_delete_blocker(delivery)
+        reason = await _sales_delivery_bulk_hard_delete_blocker(delivery)
         if reason:
-            blockers.append({"id": did, "number": delivery.get("sj_number", did), "reason": reason})
+            blockers.append({
+                "id": did,
+                "number": delivery.get("sj_number", did),
+                "reason": reason,
+            })
             continue
         to_delete.append(delivery)
     if blockers:
-        raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa pengiriman memiliki dependensi.", "blockers": blockers})
-    if to_delete:
-        delete_ids = [d["id"] for d in to_delete]
-        await db.sales_deliveries.delete_many({"id": {"$in": delete_ids}})
-        for d in to_delete:
-            await _remove_matching_business_sj_shipment(d.get("po_id"), d)
-    await _write_audit(action="sales.delivery.bulk_delete", actor=user, target_email=f"deliveries:{len(to_delete)}",
-                       before={"ids": payload.ids}, after={"deleted_count": len(to_delete)})
-    return {"deleted_count": len(to_delete), "deleted": [{"id": d["id"], "sj_number": d.get("sj_number", "")} for d in to_delete]}
+        raise HTTPException(400, {
+            "message": "Tidak dapat menghapus. Beberapa pengiriman memiliki dependensi.",
+            "blockers": blockers,
+            "code": "BULK_DELETE_BLOCKED",
+        })
+    if not to_delete:
+        return {"deleted_count": 0, "deleted": [], "reversals": []}
+    actor_id = str(user.get("id") or user.get("email") or "user")
+    return await _bulk_hard_delete_sales_deliveries_atomic(
+        to_delete, actor_id=actor_id, user=user,
+    )
 
 
 # ---------- PDF PO import ----------
@@ -17071,6 +17240,45 @@ register_production_dashboard_routes(
     attach_deadline=_attach_deadline_snapshot,
     get_deadline_settings=_get_delivery_deadline_settings,
     now_iso=now_iso,
+    Depends=Depends,
+)
+from services.dashboard_rincian_http import register_dashboard_rincian_routes
+from services.cash_bank_master import list_cash_banks as _list_cash_banks_for_rincian
+from services.cash_bank_mutasi import get_mutasi as _get_mutasi_for_rincian
+from services.profit_loss import get_profit_loss as _get_profit_loss_for_rincian
+from services.purchase_invoices import list_purchase_invoices as _list_purchase_invoices_for_rincian
+
+
+async def _build_kepala_board_for_rincian(db_conn, user, *, lead_days, holidays):
+    """Read-only Kepala board for Dashboard Rincian (same predicates as division tasks)."""
+    query = {"cancelled": {"$ne": True}}
+    raw = await db_conn.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
+    for o in raw:
+        _attach_deadline_snapshot(o, lead_days, holidays=holidays)
+        _apply_hold_snapshot(o)
+    tasks = _build_division_tasks(raw, "kepala_produksi", user, mine_only=False)
+    stock_rows, _, _ = await _load_stock_context()
+    _enrich_tasks_current_stock(tasks, stock_rows)
+    return _build_kepala_produksi_board(raw, tasks)
+
+
+register_dashboard_rincian_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    apply_hold=_apply_hold_snapshot,
+    attach_deadline=_attach_deadline_snapshot,
+    get_deadline_settings=_get_delivery_deadline_settings,
+    status_po_projection=STATUS_PO_PROJECTION,
+    sales_owner_match=sales_owner_match,
+    list_delivery_schedule=list_delivery_schedule,
+    query_sales_invoices=_query_sales_invoices,
+    list_purchase_invoices=_list_purchase_invoices_for_rincian,
+    get_mutasi=_get_mutasi_for_rincian,
+    list_cash_banks=_list_cash_banks_for_rincian,
+    get_profit_loss=_get_profit_loss_for_rincian,
+    build_kepala_board_for_user=_build_kepala_board_for_rincian,
     Depends=Depends,
 )
 register_production_wave2_routes(

@@ -25,8 +25,28 @@ export function writeDpLayout(userId, tableId, layout) {
   }
 }
 
-export function mergeDpLayout(definitions, saved) {
-  return normalizeReportColumns(definitions, saved || {});
+/**
+ * Merge saved layout with column definitions.
+ * When enforceColMinWidth=true (Jadwal Pengiriman), lift any persisted width
+ * below the column's minWidth so legacy narrow layouts normalize without
+ * requiring the user to click Reset Kolom. Order/hidden remain intact.
+ */
+export function mergeDpLayout(definitions, saved, opts = {}) {
+  const base = normalizeReportColumns(definitions, saved || {});
+  if (!opts.enforceColMinWidth) return base;
+  const catalog = (definitions || []).filter((c) => c && typeof c.key === "string" && c.key);
+  const widths = { ...base.widths };
+  let changed = false;
+  for (const col of catalog) {
+    const min = Number(col.minWidth);
+    if (!Number.isFinite(min) || min <= 0) continue;
+    const cur = Number(widths[col.key]);
+    if (!Number.isFinite(cur) || cur < min) {
+      widths[col.key] = min;
+      changed = true;
+    }
+  }
+  return changed ? { ...base, widths } : base;
 }
 
 export { moveReportColumn, normalizeReportColumns };

@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertCircle, BookOpen } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { NAV_KEYS } from "../lib/navAccess";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import { KbField, KbSearchField } from "../components/CashBankFormPrimitives";
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+function validYmd(value) {
+  const text = String(value || "").trim();
+  return YMD_RE.test(text) ? text : "";
+}
 
 const errText = (ex) => {
   const det = ex?.response?.data?.detail;
@@ -46,9 +52,10 @@ const GROUP_TOTAL_LABELS = {
 
 export default function LabaRugi() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { hasPerm } = useAuth();
-  const [startDate, setStartDate] = useState(monthStart);
-  const [endDate, setEndDate] = useState(todayIso);
+  const [startDate, setStartDate] = useState(() => validYmd(searchParams.get("start_date")) || monthStart());
+  const [endDate, setEndDate] = useState(() => validYmd(searchParams.get("end_date")) || todayIso());
   const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery } = useDebouncedLiveSearch();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);

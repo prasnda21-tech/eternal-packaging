@@ -2,16 +2,60 @@
    Reuses DeliveryPlanPage.css (.dp-page / .dp-header / .dp-filters).
    Only schedule-specific deltas: Filter control + Optimasi Rute in header actions. */
 
-/* Beat .content.content-workspace:has(.ship-status-page) > .ship-status-page padding */
+/* Beat .content.content-workspace:has(.ship-status-page) > .ship-status-page padding.
+   Keep page chrome fixed inside the overflow:hidden ship-status shell; only the table scrolls. */
 .content.content-workspace:has(.ship-status-page) > .ship-status-page.dp-page,
 .content:has(.ship-status-page) > .ship-status-page.dp-page {
   padding: 8px 12px 12px;
   box-sizing: border-box;
-  overflow-x: hidden;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .ship-status-page.dp-page .ship-status-chrome {
+  flex: 0 0 auto;
   overflow: visible;
+}
+
+/* Schedule table viewport: bounded height + both-axis scroll (Plan table unchanged). */
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #14532d;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.12);
+}
+
+.ship-status-page.dp-page .dp-pager {
+  flex: 0 0 auto;
 }
 
 /* Keep Plan flex tokens for search — do NOT cap max-width */
@@ -81,69 +125,254 @@
   height: 32px;
 }
 
-/* Narrow desktop: allow wrap like Plan .dp-filters (flex-wrap: wrap) */
-@media (max-width: 1280px) {
-  .ship-status-page.dp-page .dp-filters {
-    flex-wrap: wrap;
-  }
-}
-
 /* ---- Advanced table schedule integrations (scoped) ---- */
 .ship-status-page.dp-page .dp-adv-table tbody tr.is-selected {
   background: #ecfdf5;
 }
 
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell) {
-  overflow: visible;
-  text-overflow: unset;
+/* Eternal UX 9.0 — compact Schedule density (Plan Advanced Table unchanged).
+   Target ~38–42px rows so ~10–12 SJ fit at 1366×768 when content allows. */
+.ship-status-page.dp-page .dp-adv-table {
+  font-size: 12px;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv-table thead th {
+  height: 28px;
+  font-size: 10px;
+  padding: 0 4px 0 2px;
+}
+
+.ship-status-page.dp-page .dp-adv-table tbody td {
+  height: 40px;
+  max-height: 42px;
+  min-height: 38px;
+  padding: 2px 6px;
+  vertical-align: middle;
+  font-size: 12px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ship-status-page.dp-page .ds-aksi-cell {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-}
-
-.ship-status-page.dp-page .ds-sj-cell {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-  max-width: 100%;
-}
-
-/* Row density: match Plan Advanced Table cell height; keep ops controls unclipped */
-.ship-status-page.dp-page .dp-adv-table tbody td {
-  height: 31px;
-  max-height: 34px;
-  padding: 0 8px;
-  vertical-align: middle;
-}
-
+/* Override shared Plan PO-identity expansion — keep single-line density on Schedule */
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.dp-po-identity),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-date-cell),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.pill) {
-  height: auto;
-  max-height: none;
-  min-height: 31px;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  height: 40px;
+  max-height: 42px;
+  min-height: 38px;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.ship-status-page.dp-page .ds-aksi-cell {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  align-items: center;
+  max-width: 100%;
+}
+
+.ship-status-page.dp-page .ds-sj-cell {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ship-status-page.dp-page .ds-sj-cell .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Compact action / SJ buttons inside table only */
+.ship-status-page.dp-page .dp-adv-table .ghost.sm,
+.ship-status-page.dp-page .ds-aksi-cell .ghost.sm,
+.ship-status-page.dp-page .ds-sj-cell .ghost.sm,
+.ship-status-page.dp-page .ds-sj-cell button,
+.ship-status-page.dp-page .ds-aksi-cell a.ghost.sm {
+  min-height: 24px;
+  height: 24px;
+  max-height: 24px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  line-height: 1;
+  box-sizing: border-box;
+}
+
+/* Date + compact SLA secondary (tooltip also carries full text via title) */
+.ship-status-page.dp-page .ds-date-cell {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0;
+  line-height: 1.15;
+  min-width: 0;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.ship-status-page.dp-page .ds-date-cell .mono {
+  font-size: 12px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.ship-status-page.dp-page .ds-sla-note {
+  display: block;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.ship-status-page.dp-page .dp-po-identity {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.ship-status-page.dp-page .dp-po-identity .dp-link-po {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  overflow-wrap: normal;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ship-status-page.dp-page .dp-po-identity .urgent-badge,
+.ship-status-page.dp-page .dp-po-identity .buffer-stock-badge,
+.ship-status-page.dp-page .dp-po-identity .standard-badge,
+.ship-status-page.dp-page .dp-po-identity .pill {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font-size: 9.5px;
+  line-height: 1.15;
+  min-height: 0;
+}
+
+/* Reset Kolom in filter toolbar — peer of Reset filter */
+.ship-status-page.dp-page .dp-filters .ds-reset-cols-btn {
+  min-height: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Draft ≠ applied — clear signal that the table has not updated yet */
+.ship-status-page.dp-page .ds-filter-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.ship-status-page.dp-page .ds-filter-pending {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #7c2d12;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.ship-status-page.dp-page .dp-filters .dp-btn-primary.is-pending {
+  box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.25);
+}
+
+.ship-status-page.dp-page .ds-col-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: #14532d;
+  background: #ecfdf5;
+  border: 1px solid #86efac;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.ship-status-page.dp-page .ds-col-filter-bar .ghost.sm {
+  min-height: 28px;
+  height: 28px;
+}
+
+.ship-status-page.dp-page .dp-filters .dp-filter-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+/* Keep filter toolbar one row on wide desktops; compact wrap only ≤1280 */
+.ship-status-page.dp-page .dp-filters {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+@media (max-width: 1280px) {
+  .ship-status-page.dp-page .dp-filters {
+    flex-wrap: wrap;
+  }
+  .ship-status-page.dp-page .dp-filters .dp-filter-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* No duplicate Reset Kolom above the table when hosted in toolbar */
+.ship-status-page.dp-page .dp-adv-tools {
+  display: none;
 }
 
 .ship-status-page.dp-page .dp-adv-table .ship-bar {
-  max-height: 22px;
-  min-width: 72px;
+  height: 14px;
+  max-height: 14px;
+  min-width: 64px;
+  border-radius: 2px;
+}
+
+.ship-status-page.dp-page .dp-adv-table .ship-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .ship-status-page.dp-page .dp-adv-table .pill {
-  line-height: 1.2;
-  padding: 1px 7px;
-  font-size: 11px;
+  line-height: 1.15;
+  padding: 1px 5px;
+  font-size: 10px;
+  min-height: 0;
+}
+
+.ship-status-page.dp-page .dp-adv-table .ds-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ship-status-page.dp-page .dp-header-actions {
@@ -152,9 +381,10 @@
   justify-content: flex-end;
 }
 
-/* Rincian Pengiriman modal */
+/* Rincian Pengiriman modal — wider + internal H-scroll so SJ/PO/Qty never clip */
 .ds-rincian-modal {
-  width: min(920px, calc(100vw - 32px));
+  width: min(1120px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
   max-height: min(85vh, 720px);
   display: flex;
   flex-direction: column;
@@ -206,10 +436,19 @@
   font-size: 13px;
 }
 
+.ds-rincian-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .ds-rincian-table {
   width: 100%;
+  min-width: 880px;
   border-collapse: collapse;
   font-size: 12.5px;
+  table-layout: auto;
 }
 
 .ds-rincian-table th {
@@ -228,12 +467,20 @@
   padding: 6px 8px;
   border-bottom: 1px solid #eef2f7;
   vertical-align: middle;
+  white-space: nowrap;
+}
+
+.ds-rincian-table td:nth-child(4) {
+  white-space: normal;
+  min-width: 140px;
+  max-width: 240px;
 }
 
 .ds-rincian-table .num,
 .ds-rincian-table th.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ds-rincian-foot {

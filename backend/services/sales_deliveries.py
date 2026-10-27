@@ -422,6 +422,92 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
     return entry, None
 
 
+def _order_has_shipment_id(order: Optional[dict], delivery_id: str) -> bool:
+    want = str(delivery_id or "").strip()
+    if not want or not isinstance(order, dict):
+        return False
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        if str(sh.get("id") or "").strip() == want:
+            return True
+        if str(sh.get("sales_delivery_id") or "").strip() == want:
+            return True
+    return False
+
+
+async def ensure_order_shipment_synced(
+    db,
+    po_id: str,
+    shipment_entry: dict,
+    *,
+    stamp: Optional[dict] = None,
+) -> None:
+    """Ensure orders.shipments carries this sales_delivery before create reports success.
+
+    Read-after-write verification. Does not delete the sales_deliveries document on
+    failure (stock/audit side effects already possible). Raises instead of false success.
+    """
+    delivery_id = str((shipment_entry or {}).get("id") or "").strip()
+    oid = str(po_id or "").strip()
+    if not delivery_id or not oid:
+        raise HTTPException(500, "Gagal menyinkronkan Surat Jalan ke PO (identitas kosong).")
+
+    set_fields = dict(stamp or {})
+    result = await db.orders.update_one(
+        {
+            "id": oid,
+            "shipments.id": {"$ne": delivery_id},
+            "shipments.sales_delivery_id": {"$ne": delivery_id},
+        },
+        {
+            "$push": {"shipments": shipment_entry},
+            **({"$set": set_fields} if set_fields else {}),
+        },
+    )
+    if getattr(result, "matched_count", 0) or getattr(result, "modified_count", 0):
+        return
+
+    fresh = await db.orders.find_one(
+        {"id": oid},
+        {"_id": 0, "shipments.id": 1, "shipments.sales_delivery_id": 1},
+    )
+    if _order_has_shipment_id(fresh, delivery_id):
+        # Idempotent: already projected (concurrent push or prior attempt).
+        if set_fields:
+            await db.orders.update_one({"id": oid}, {"$set": set_fields})
+        return
+    if not fresh:
+        raise HTTPException(
+            500,
+            "Pengiriman Pesanan tersimpan, tetapi PO tidak ditemukan untuk sinkronisasi Surat Jalan. "
+            "Jangan anggap sukses — periksa PO lalu coba lagi.",
+        )
+    # Order exists but filter missed (unusual). Retry push guarded only by id presence check above.
+    result2 = await db.orders.update_one(
+        {
+            "id": oid,
+            "shipments.id": {"$ne": delivery_id},
+            "shipments.sales_delivery_id": {"$ne": delivery_id},
+        },
+        {
+            "$push": {"shipments": shipment_entry},
+            **({"$set": set_fields} if set_fields else {}),
+        },
+    )
+    fresh2 = await db.orders.find_one(
+        {"id": oid},
+        {"_id": 0, "shipments.id": 1, "shipments.sales_delivery_id": 1},
+    )
+    if _order_has_shipment_id(fresh2, delivery_id) or getattr(result2, "modified_count", 0):
+        return
+    raise HTTPException(
+        500,
+        "Pengiriman Pesanan tersimpan, tetapi gagal menyinkronkan ke daftar Surat Jalan PO. "
+        "Jangan anggap sukses — muat ulang / coba lagi agar Jadwal Pengiriman konsisten.",
+    )
+
+
 async def _reuse_existing_delivery_if_retry(db, order: dict, validated_lines: List[dict], user: dict) -> Optional[dict]:
     """If a matching shipment exists without a real generated PDF, complete that document.
 
@@ -442,12 +528,66 @@ async def _reuse_existing_delivery_if_retry(db, order: dict, validated_lines: Li
     for d in existing:
         if delivery_lines_fingerprint(d.get("line_items")) != want:
             continue
+        sid = str(d.get("id") or "").strip()
         gen = find_generated_sj_file(fresh_order, d.get("id"))
-        if generated_file_is_real(gen):
+        pdf_real = generated_file_is_real(gen)
+        missing_ship = bool(sid) and not _order_has_shipment_id(fresh_order, sid)
+        # Fully complete same-fingerprint document → not a retry target.
+        if pdf_real and not missing_ship:
             continue
-        entry, _err = await ensure_generated_sj_pdf(db, fresh_order, d, user)
-        if entry:
-            d["generated_sj_file_id"] = entry["id"]
+        # Incomplete prior attempt (sync and/or PDF): repair under existing reuse contract.
+        if missing_ship:
+            repair_entry = {
+                "id": sid,
+                "number": d.get("sj_number"),
+                "shipment_index": d.get("shipment_index"),
+                "delivery_date": d.get("delivery_date"),
+                "customer": d.get("customer") or d.get("customer_name"),
+                "outlet": d.get("outlet") or d.get("outlet_name"),
+                "sales": d.get("sales") or d.get("sales_name"),
+                "recipient": d.get("recipient") or d.get("recipient_name"),
+                "address": d.get("address") or d.get("shipping_address"),
+                "delivery_zone": d.get("delivery_zone") or d.get("shipping_zone"),
+                "expedition": d.get("expedition") or d.get("expedition_or_vehicle"),
+                "notes": d.get("notes") or d.get("delivery_note"),
+                "lines": [
+                    {
+                        "line_idx": ln.get("line_idx"),
+                        "line_id": ln.get("line_id"),
+                        "qty": ln.get("qty") if ln.get("qty") is not None else ln.get("quantity"),
+                        "name": ln.get("name"),
+                        "unit": ln.get("unit") or "pcs",
+                        "color": ln.get("color"),
+                        "production_process": ln.get("production_process"),
+                    }
+                    for ln in (d.get("line_items") or [])
+                    if isinstance(ln, dict)
+                ],
+                "total_qty": d.get("total_qty"),
+                "created_at": d.get("created_at"),
+                "created_by": d.get("created_by") or "",
+                "sales_delivery_id": sid,
+            }
+            if d.get("branch_id"):
+                repair_entry["branch_id"] = d.get("branch_id")
+            if d.get("delivery_location"):
+                repair_entry["delivery_location"] = d.get("delivery_location")
+            await ensure_order_shipment_synced(
+                db,
+                po_id,
+                repair_entry,
+                stamp={
+                    "delivery_note_number": d.get("sj_number"),
+                    "delivery_note_created_at": d.get("created_at") or now_iso(),
+                    "delivery_note_created_by": d.get("created_by") or "",
+                    "delivery_note_created_by_name": d.get("created_by_name") or "",
+                },
+            )
+            fresh_order = await db.orders.find_one({"id": po_id}, {"_id": 0}) or fresh_order
+        if not pdf_real:
+            entry, _err = await ensure_generated_sj_pdf(db, fresh_order, d, user)
+            if entry:
+                d["generated_sj_file_id"] = entry["id"]
         return d
     return None
 
@@ -1000,19 +1140,17 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 if sj_location:
                     shipment_entry["delivery_location"] = sj_location
 
-                await db.orders.update_one(
-                    {"id": summary["po_id"], "shipments.id": {"$ne": delivery_id}},
-                    {
-                        "$push": {
-                            "shipments": shipment_entry,
-                        },
-                        "$set": {
-                            "delivery_note_number": authoritative_sj,
-                            "delivery_note_created_at": now,
-                            "delivery_note_created_by": user.get("email") or "",
-                            "delivery_note_created_by_name": user.get("name") or user.get("email") or "",
-                        }
-                    }
+                # Must prove orders.shipments sync before reporting create success.
+                await ensure_order_shipment_synced(
+                    db,
+                    summary["po_id"],
+                    shipment_entry,
+                    stamp={
+                        "delivery_note_number": authoritative_sj,
+                        "delivery_note_created_at": now,
+                        "delivery_note_created_by": user.get("email") or "",
+                        "delivery_note_created_by_name": user.get("name") or user.get("email") or "",
+                    },
                 )
 
                 file_entry, pdf_err = await ensure_generated_sj_pdf(db, order, delivery_doc, user)

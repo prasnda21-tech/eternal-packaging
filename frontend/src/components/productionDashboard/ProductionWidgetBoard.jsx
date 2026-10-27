@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
+  ArrowUpRight,
   BarChart3,
   Calendar,
   Clock,
@@ -26,6 +27,11 @@ import {
   Workflow,
 } from "lucide-react";
 import { COLUMNS } from "../widgetBoard/widgetGrid";
+import {
+  canOpenDrill,
+  deliveryPlanDrillPath,
+  isInteractiveDrillEventTarget,
+} from "../../lib/dashboardDrillNav";
 import { productionWidgetAllowed, productionWidgetMeta } from "./productionWidgetCatalog";
 import { placeWidget, removeWidget } from "./productionWidgetLayout";
 import { productionUpdatedLabel } from "./productionFormat";
@@ -133,17 +139,46 @@ const CAPTION = {
   sim_composition: "Fixture visual, satu satuan pcs",
 };
 
-function canOpenDrill(drill, hasPerm) {
-  if (!drill?.path || typeof hasPerm !== "function") return false;
-  const anyOf = drill.any_of || [];
-  if (!anyOf.some((key) => hasPerm(key))) return false;
-  const also = drill.also_any_of || [];
-  if (also.length && !also.some((key) => hasPerm(key))) return false;
-  return true;
-}
-
 function formatCount(value) {
   return Number(value).toLocaleString("id-ID");
+}
+
+function DrillPanelLink({ drill, hasPerm, editing, label, children, testId, className = "" }) {
+  const navigate = useNavigate();
+  const path = !editing && canOpenDrill(drill, hasPerm) ? drill.path : null;
+  if (!path) {
+    return (
+      <div className={className} data-testid={testId}>
+        {children}
+        {drill?.path && !editing ? (
+          <p className="pd-drill-locked" data-testid={`${testId || "drill"}-locked`}>Akses daftar terbatas</p>
+        ) : null}
+      </div>
+    );
+  }
+  const go = () => navigate(path);
+  return (
+    <div
+      className={`pd-drill-panel ${className}`.trim()}
+      role="link"
+      tabIndex={0}
+      data-testid={testId}
+      aria-label={label || "Buka daftar terkait"}
+      onClick={(event) => {
+        if (isInteractiveDrillEventTarget(event.target)) return;
+        go();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          go();
+        }
+      }}
+    >
+      <span className="pd-drill-icon" aria-hidden="true"><ArrowUpRight size={14} /></span>
+      {children}
+    </div>
+  );
 }
 
 function Quiet({ status, onRetry, note, title }) {
@@ -365,7 +400,8 @@ function deliveryYTicks(ceiling) {
   return [top, Math.round(top * 0.5), 0];
 }
 
-function DeliveryQtyBody({ model, controls }) {
+function DeliveryQtyBody({ model, controls, editing, hasPerm }) {
+  const navigate = useNavigate();
   const series = model?.series || [];
   const units = series.map((row) => row.unit);
   const unitKey = units.join("|");
@@ -384,12 +420,20 @@ function DeliveryQtyBody({ model, controls }) {
   const ceiling = deliveryChartCeiling(max);
   const ticks = deliveryYTicks(ceiling);
   const label = chosen?.label || "";
+  const canOpenPlan = !editing && typeof hasPerm === "function" && (
+    hasPerm("delivery.schedule.view") || hasPerm("schedule.view") || hasPerm("nav.delivery_schedule")
+  );
+  const today = model?.today || "";
+  const openPlan = (opts) => {
+    if (!canOpenPlan) return;
+    navigate(deliveryPlanDrillPath({ ...opts, unit: chosen?.unit || "" }));
+  };
   if (!chosen) {
     return <Quiet status={model?.status === "complete" ? "empty" : (model?.status || "empty")} onRetry={controls.onRetry} note={model?.detail} />;
   }
   return (
     <div className="pd-delivery-qty" data-testid="produksi-delivery-qty-body">
-      <div className="pd-delivery-controls">
+      <div className="pd-delivery-controls" data-drill-ignore="true">
         <PeriodSwitch days={controls.days} onChange={controls.setDays} prefix="produksi-delivery-qty-days" />
         {units.length > 1 ? (
           <div className="pd-switch" role="group" aria-label="Satuan Qty Rencana Pengiriman">
@@ -408,7 +452,21 @@ function DeliveryQtyBody({ model, controls }) {
         ) : null}
       </div>
       <div className="pd-delivery-kpis">
-        <div className="pd-delivery-kpi is-today" data-testid="produksi-delivery-qty-today">
+        <div
+          className={`pd-delivery-kpi is-today${canOpenPlan ? " is-drill" : ""}`}
+          data-testid="produksi-delivery-qty-today"
+          role={canOpenPlan ? "link" : undefined}
+          tabIndex={canOpenPlan ? 0 : undefined}
+          onClick={() => openPlan({ status: "hari_ini", dateFrom: today, dateTo: today })}
+          onKeyDown={(event) => {
+            if (!canOpenPlan) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              openPlan({ status: "hari_ini", dateFrom: today, dateTo: today });
+            }
+          }}
+        >
+          {canOpenPlan ? <span className="pd-drill-icon" aria-hidden="true"><ArrowUpRight size={14} /></span> : null}
           <span>
             <Calendar size={14} aria-hidden="true" />
             Rencana Hari Ini
@@ -416,7 +474,21 @@ function DeliveryQtyBody({ model, controls }) {
           <strong>{formatCount(chosen.todayQty)} <em>{label}</em></strong>
           <p>{formatCount(chosen.todayPoCount)} PO aktif · {model.todayLabel || "hari ini"} WIB</p>
         </div>
-        <div className="pd-delivery-kpi is-late" data-testid="produksi-delivery-qty-overdue">
+        <div
+          className={`pd-delivery-kpi is-late${canOpenPlan ? " is-drill" : ""}`}
+          data-testid="produksi-delivery-qty-overdue"
+          role={canOpenPlan ? "link" : undefined}
+          tabIndex={canOpenPlan ? 0 : undefined}
+          onClick={() => openPlan({ status: "terlambat" })}
+          onKeyDown={(event) => {
+            if (!canOpenPlan) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              openPlan({ status: "terlambat" });
+            }
+          }}
+        >
+          {canOpenPlan ? <span className="pd-drill-icon" aria-hidden="true"><ArrowUpRight size={14} /></span> : null}
           <span>
             <Clock size={14} aria-hidden="true" />
             Lewat Rencana
@@ -449,6 +521,11 @@ function DeliveryQtyBody({ model, controls }) {
                   className={`pd-bar-col pd-delivery-bar${qty > 0 ? "" : " is-zero"}`}
                   data-testid="produksi-delivery-qty-bar-col"
                   aria-label={`${tipDate}. Rencana ${formatCount(qty)} ${label}. Jumlah PO ${formatCount(poCount)}.`}
+                  onClick={() => {
+                    const day = point.date || point.day;
+                    if (!canOpenPlan || !day) return;
+                    openPlan({ dateFrom: day, dateTo: day });
+                  }}
                 >
                   <span className="pd-output-slot">
                     <span className="pd-output-spacer" style={{ flexGrow: qty > 0 ? Math.max(ceiling - qty, 0) : 1 }} />
@@ -1056,11 +1133,13 @@ function BranchBody({ model, controls }) {
   );
 }
 
-function CardBody({ id, model, tone, onRetry, controls }) {
+function CardBody({ id, model, tone, onRetry, controls, editing, hasPerm }) {
   const status = model?.status || "loading";
   if (status === "loading" || status === "error" || status === "forbidden") return <Quiet status={status} onRetry={onRetry} />;
   if (id === "output_hari_ini") return <OutputToday model={model} />;
-  if (id === "delivery_qty") return <DeliveryQtyBody model={model} controls={controls} />;
+  if (id === "delivery_qty") {
+    return <DeliveryQtyBody model={model} controls={controls} editing={editing} hasPerm={hasPerm} />;
+  }
   if (id === "tren_output") return <TrendChart model={model} controls={controls} />;
   if (id === "distribusi_tahap") return <WorkflowBars model={model} controls={controls} />;
   if (id === "output_operator") return <OperatorOutput model={model} controls={controls} />;
@@ -1106,16 +1185,30 @@ function CardBody({ id, model, tone, onRetry, controls }) {
     return (
       <div className="pd-stack">
         <div className="pd-deadline">
-          <div className="pd-status is-critical">
+          <DrillPanelLink
+            className="pd-status is-critical"
+            drill={model.drill6h}
+            hasPerm={hasPerm}
+            editing={editing}
+            label="Buka daftar deadline ≤ 6 jam"
+            testId="produksi-drill-deadline-6h"
+          >
             <span>Kritis</span>
             <strong>{formatCount(model.within6h)}</strong>
             <em>≤ 6 jam</em>
-          </div>
-          <div className="pd-status is-soon">
+          </DrillPanelLink>
+          <DrillPanelLink
+            className="pd-status is-soon"
+            drill={model.drill24h}
+            hasPerm={hasPerm}
+            editing={editing}
+            label="Buka daftar deadline ≤ 24 jam"
+            testId="produksi-drill-deadline-24h"
+          >
             <span>Mendekati</span>
             <strong>{formatCount(model.within24h)}</strong>
             <em>≤ 24 jam</em>
-          </div>
+          </DrillPanelLink>
         </div>
         <p className="pd-note">≤ 24 jam sudah mencakup ≤ 6 jam. Dua angka ini bukan total unik.</p>
       </div>
@@ -1124,16 +1217,30 @@ function CardBody({ id, model, tone, onRetry, controls }) {
   if (id === "approval") {
     return (
       <div className="pd-approval">
-        <div className="pd-panel is-design">
+        <DrillPanelLink
+          className="pd-panel is-design"
+          drill={model.drillDesign}
+          hasPerm={hasPerm}
+          editing={editing}
+          label="Buka daftar menunggu approval design"
+          testId="produksi-drill-approval-design"
+        >
           <span>Design</span>
           <strong>{formatCount(model.design)}</strong>
           <p>Menunggu desain</p>
-        </div>
-        <div className="pd-panel is-payment">
+        </DrillPanelLink>
+        <DrillPanelLink
+          className="pd-panel is-payment"
+          drill={model.drillPayment}
+          hasPerm={hasPerm}
+          editing={editing}
+          label="Buka daftar menunggu approval payment"
+          testId="produksi-drill-approval-payment"
+        >
           <span>Payment</span>
           <strong>{formatCount(model.payment)}</strong>
           <p>Menunggu pembayaran</p>
-        </div>
+        </DrillPanelLink>
       </div>
     );
   }
@@ -1194,7 +1301,17 @@ export function WidgetGlyph({ id }) {
   );
 }
 
+const CARD_DRILL_IDS = new Set([
+  "po_aktif",
+  "perlu_produksi",
+  "sisa_qty",
+  "prioritas",
+  "po_urgent",
+  "po_hold",
+]);
+
 export default function ProductionWidgetBoard({ widgets, models, editing, hasPerm, onLayout, onRetry, controls = {} }) {
+  const navigate = useNavigate();
   const gridRef = useRef(null);
   const dragRef = useRef(null);
   const [hint, setHint] = useState("");
@@ -1262,6 +1379,18 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
         const allowed = simulated || productionWidgetAllowed(widget.widget_id, hasPerm);
         const model = allowed ? (models[widget.widget_id] || { status: "loading" }) : { status: "forbidden" };
         const title = widget.settings?.title || meta?.title || TITLE[widget.widget_id] || widget.widget_id;
+        const cardDrillPath = (
+          !editing
+          && CARD_DRILL_IDS.has(widget.widget_id)
+          && (model.status === "complete" || model.status === "zero" || model.status === "empty")
+          && canOpenDrill(model.drill, hasPerm)
+        ) ? model.drill.path : null;
+        const cardDrillLocked = (
+          !editing
+          && CARD_DRILL_IDS.has(widget.widget_id)
+          && model.drill?.path
+          && !canOpenDrill(model.drill, hasPerm)
+        );
         return (
           <article
             key={widget.widget_id}
@@ -1273,9 +1402,12 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
               menuFor === widget.widget_id ? "is-menu" : "",
               widget.widget_id === "delivery_qty" ? "is-delivery-qty" : "",
               widget.widget_id === "delivery_qty" && widget.h < 6 ? "is-delivery-tight" : "",
+              cardDrillPath ? "is-drillable" : "",
+              cardDrillLocked ? "is-drill-locked" : "",
             ].filter(Boolean).join(" ")}
             data-testid={`produksi-widget-${widget.widget_id}`}
             data-status={model.status}
+            data-drill={cardDrillPath ? "ready" : (cardDrillLocked ? "locked" : undefined)}
             style={{
               left: `calc((100% - ${GAP * (COLUMNS - 1)}px) * ${widget.x / COLUMNS} + ${widget.x * GAP}px)`,
               width: `calc((100% - ${GAP * (COLUMNS - 1)}px) * ${widget.w / COLUMNS} + ${(widget.w - 1) * GAP}px)`,
@@ -1300,8 +1432,14 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
                 <h2 title={title}>{title}</h2>
                 <p>{CAPTION[widget.widget_id] || ""}</p>
               </div>
-              {model.status === "complete" || model.status === "zero" ? (
+              {cardDrillPath ? (
+                <span className="pd-drill-icon kb-card-drill" aria-hidden="true"><ArrowUpRight size={14} /></span>
+              ) : null}
+              {!editing && (model.status === "complete" || model.status === "zero" || model.status === "empty") ? (
                 <Drill drill={model.drill} hasPerm={hasPerm} label="Rincian" />
+              ) : null}
+              {cardDrillLocked ? (
+                <span className="pd-drill-locked" data-testid={`produksi-drill-locked-${widget.widget_id}`}>Akses terbatas</span>
               ) : null}
               <div className="kb-card-tools">
                 <button
@@ -1345,13 +1483,38 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
                 ) : null}
               </div>
             </header>
-            <div className="kb-body">
+            <div
+              className="kb-body"
+              role={cardDrillPath ? "link" : undefined}
+              tabIndex={cardDrillPath ? 0 : undefined}
+              aria-label={cardDrillPath ? `Buka daftar ${title}` : undefined}
+              data-testid={cardDrillPath ? `produksi-drill-${widget.widget_id}` : undefined}
+              onClick={(event) => {
+                if (!cardDrillPath || isInteractiveDrillEventTarget(event.target)) return;
+                navigate(cardDrillPath);
+              }}
+              onKeyDown={(event) => {
+                if (!cardDrillPath) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  navigate(cardDrillPath);
+                }
+              }}
+            >
               {infoFor === widget.widget_id ? (
                 <div className="kb-info" data-testid={`produksi-info-panel-${widget.widget_id}`}>
                   <p>{meta?.summary}</p>
                 </div>
               ) : null}
-              <CardBody id={widget.widget_id} model={model} tone={TONE[widget.widget_id]} onRetry={onRetry} controls={controls} />
+              <CardBody
+                id={widget.widget_id}
+                model={model}
+                tone={TONE[widget.widget_id]}
+                onRetry={onRetry}
+                controls={controls}
+                editing={editing}
+                hasPerm={hasPerm}
+              />
             </div>
             {editing ? (
               <button

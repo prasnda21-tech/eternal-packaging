@@ -16,7 +16,7 @@ from quantity_rules import is_fully_delivered, is_process_only_service_line
 from services.delivery_history import terkirim_qty_summary
 from services.product_unit_conversion import normalize_uom
 from services.delivery_schedule import schedule_status_code, schedule_status_label
-from services.paint_table_query import apply_filters, parse_header_filters, parse_sort, sort_rows
+from services.paint_table_query import apply_filters, parse_header_filters, parse_sort
 from services.tanggal_pengiriman import DEFAULT_LEAD_TIME_DAYS, resolve_tanggal_pengiriman
 from workflow_gates import design_ok, payment_ok
 
@@ -63,6 +63,7 @@ PLAN_PROJECTION = {
     "quantity": 1,
     "line_items.name": 1,
     "line_items.quantity": 1,
+    "line_items.unit": 1,
     "line_items.production_process": 1,
     "line_items.physical_fulfillment": 1,
     "line_items.item_type": 1,
@@ -130,6 +131,7 @@ def plan_row(
         "qty_total": qty["total_po_qty"],
         "qty_delivered": qty["qty_delivered"],
         "qty_remaining": qty["qty_remaining"],
+        "qty_unit": plan_qty_unit(order),
         "delivery_schedule_status": status,
         "delivery_schedule_status_label": schedule_status_label(status),
         "design_ready": design_ok(order),
@@ -174,7 +176,54 @@ def _match_filters(row: dict, filters: dict) -> bool:
         return False
     if date_to and (not d or d > date_to):
         return False
+    # Qty Rencana Pengiriman drill: same unit bucket as the production widget.
+    unit = (f.get("unit") or "").strip()
+    if unit:
+        row_unit = str(row.get("qty_unit") or "").strip()
+        if row_unit != unit:
+            return False
+        try:
+            remaining = int(row.get("qty_remaining") or 0)
+        except (TypeError, ValueError):
+            remaining = 0
+        if remaining <= 0:
+            return False
     return True
+
+
+def _plan_primary_sort_key(value: Any) -> Tuple[int, Any]:
+    """Match paint_table_query numeric/text primary ranking (without reversing ties)."""
+    if value is None or value == "":
+        return (1, "")
+    if isinstance(value, bool):
+        return (1, str(value).lower())
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return (1, str(value).lower())
+    return (0, num)
+
+
+def sort_plan_rows(
+    rows: List[dict],
+    *,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    tie_break: str = "id",
+) -> List[dict]:
+    """Sort plan rows; primary follows direction, tie-break always ASC (stable).
+
+    paint_table_query.sort_rows reverses the whole key on DESC, which also flips
+    ties. Delivery Plan keeps equal tanggal_pengiriman ordered by id ASC.
+    """
+    field, direction = parse_sort(sort_by, sort_dir, PLAN_SORT_FIELDS, "tanggal_pengiriman")
+    if not (sort_by or "").strip():
+        field, direction = "tanggal_pengiriman", -1
+    reverse = direction < 0
+    # Stable: tie-break first, then primary (equal dates keep id ASC under DESC).
+    ordered = sorted(rows, key=lambda r: str(r.get(tie_break) or ""))
+    ordered.sort(key=lambda r: _plan_primary_sort_key(r.get(field)), reverse=reverse)
+    return ordered
 
 
 def build_plan_rows(
@@ -196,11 +245,7 @@ def build_plan_rows(
             rows.append(row)
     header_filters = parse_header_filters(hf, PLAN_FILTER_FIELDS)
     rows = apply_filters(rows, header_filters)
-    field, direction = parse_sort(sort_by, sort_dir, PLAN_SORT_FIELDS, "tanggal_pengiriman")
-    # Default chronological ASC when caller omits sort_by (existing UX).
-    if not (sort_by or "").strip():
-        field, direction = "tanggal_pengiriman", 1
-    return sort_rows(rows, sort_by=field, sort_dir=direction, tie_break="id")
+    return sort_plan_rows(rows, sort_by=sort_by, sort_dir=sort_dir, tie_break="id")
 
 
 def _aggregate_totals(rows: List[dict]) -> Dict[str, Any]:

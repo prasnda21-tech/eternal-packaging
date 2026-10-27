@@ -71,6 +71,7 @@ CODE_LOCK_CONFLICT = "FINANCIAL_ITEM_LOCK_CONFLICT"
 CODE_ALREADY_CONSUMED = "FINANCIAL_INVENTORY_ALREADY_CONSUMED"
 CODE_WAITING = "WAITING_EARLIER_ISSUE"
 CODE_NOT_PENGIRIMAN = "NOT_PENGIRIMAN"
+CODE_LOADING_REVERSED = "LOADING_REVERSED"
 CODE_VOID = "MOVEMENT_VOID"
 CODE_SERVICE = "NON_INVENTORY_ITEM"
 CODE_PRE_EFFECTIVE = "LEGACY_BEFORE_EFFECTIVE_DATE"
@@ -105,7 +106,22 @@ CHRONOLOGY_BLOCK_CODES = frozenset({
 PERMANENT_EXCLUSION_CODES = frozenset({
     CODE_SERVICE,
     CODE_PRE_EFFECTIVE,
+    CODE_LOADING_REVERSED,
 })
+
+MSG_LOADING_CANCEL_ISSUE_POSTED = (
+    "Pembatalan Loading ditolak: jurnal inventory issue / HPP untuk mutasi "
+    "pengiriman Loading ini sudah diposting dan masih aktif. "
+    "Diperlukan penanganan Finance sebelum Loading dapat dibatalkan."
+)
+CODE_LOADING_CANCEL_ISSUE_POSTED = "LOADING_CANCEL_INVENTORY_ISSUE_POSTED"
+CODE_LOADING_CANCEL_POSTING_IN_PROGRESS = (
+    "LOADING_CANCEL_INVENTORY_ISSUE_POSTING_IN_PROGRESS"
+)
+MSG_LOADING_CANCEL_POSTING_IN_PROGRESS = (
+    "Pembatalan Loading ditolak: posting inventory issue / HPP sedang "
+    "berjalan untuk mutasi Loading ini. Coba lagi setelah proses Finance selesai."
+)
 
 
 class InventoryIssueError(Exception):
@@ -361,6 +377,61 @@ async def load_pengiriman_movements(db) -> List[dict]:
 async def find_inventory_issue_source_journal(db, movement_id: str) -> Optional[dict]:
     from services.journal_core import find_primary_journal_for_source
     return await find_primary_journal_for_source(db, SOURCE_TYPE, str(movement_id))
+
+
+def loading_pengiriman_reversal_event_id(original_movement_id: str) -> str:
+    """Stable PSS event id for Loading cancel reverse of one PENGIRIMAN."""
+    return f"loading-reversal:{str(original_movement_id or '').strip()}"
+
+
+async def find_loading_pengiriman_reversal(db, movement_id: str) -> Optional[dict]:
+    """Return REVERSAL_PENGIRIMAN doc for a Loading PENGIRIMAN, if present."""
+    mid = str(movement_id or "").strip()
+    if not mid:
+        return None
+    rid = loading_pengiriman_reversal_event_id(mid)
+    doc = await db[STOCK_MOVEMENTS].find_one(
+        {"$or": [{"_id": rid}, {"id": rid}, {"event_key": rid}]},
+        {"_id": 0},
+    )
+    if doc and not doc.get("id"):
+        doc["id"] = rid
+    return doc
+
+
+async def load_loading_reversed_pengiriman_ids(db, movement_ids: List[str]) -> set:
+    """Batch: which PENGIRIMAN ids already have a Loading REVERSAL_PENGIRIMAN."""
+    ids = [str(m or "").strip() for m in (movement_ids or []) if str(m or "").strip()]
+    if not ids:
+        return set()
+    rev_ids = [loading_pengiriman_reversal_event_id(mid) for mid in ids]
+    rows = await db[STOCK_MOVEMENTS].find(
+        {"$or": [
+            {"id": {"$in": rev_ids}},
+            {"event_key": {"$in": rev_ids}},
+            {"_id": {"$in": rev_ids}},
+        ]},
+        {"_id": 0, "id": 1, "event_key": 1, "change_metadata.reversal_of_movement_id": 1},
+    ).to_list(len(rev_ids) + 10)
+    out = set()
+    prefix = "loading-reversal:"
+    for row in rows or []:
+        meta = row.get("change_metadata") if isinstance(row.get("change_metadata"), dict) else {}
+        oid = str(meta.get("reversal_of_movement_id") or "").strip()
+        if oid:
+            out.add(oid)
+            continue
+        for key in (row.get("id"), row.get("event_key")):
+            text = str(key or "").strip()
+            if text.startswith(prefix):
+                out.add(text[len(prefix):])
+    return out
+
+
+async def find_active_inventory_issue_journal(db, movement_id: str) -> Optional[dict]:
+    """Posted, non-reversed inventory_issue primary for this movement (if any)."""
+    from services.journal_core import find_active_posted_primary_for_source
+    return await find_active_posted_primary_for_source(db, SOURCE_TYPE, str(movement_id))
 
 
 async def load_live_issue_journals_by_movement(db) -> Dict[str, dict]:
@@ -995,6 +1066,10 @@ def _blocker(code: Optional[str], message: Optional[str] = None) -> Tuple[Option
         CODE_LOCK_CONFLICT: "Item persediaan sedang dikunci oleh proses accounting lain.",
         CODE_WAITING: "Menunggu pengeluaran finansial sebelumnya untuk item yang sama.",
         CODE_NOT_PENGIRIMAN: "Hanya mutasi PENGIRIMAN yang menjadi sumber HPP.",
+        CODE_LOADING_REVERSED: (
+            "Mutasi PENGIRIMAN Loading ini sudah dibatalkan (REVERSAL_PENGIRIMAN). "
+            "Tidak dapat diposting sebagai HPP / inventory issue."
+        ),
         CODE_VOID: "Mutasi sudah di-void / dibatalkan.",
         CODE_SERVICE: "Item jasa tidak dikapitalisasi ke HPP.",
         CODE_PRE_EFFECTIVE: "Tanggal jurnal sebelum Tanggal Mulai Accounting Persediaan.",
@@ -1059,6 +1134,7 @@ def classify_movement_row(
     raw_method: Optional[str],
     frozen_method: Optional[str],
     live_journal: Optional[dict],
+    loading_reversed: bool = False,
 ) -> Dict[str, Any]:
     mid = movement_id_of(movement)
     refs = movement_reference_fields(movement)
@@ -1098,6 +1174,13 @@ def classify_movement_row(
         base["status"] = STATUS_EXCLUDED
         base["blocker_code"] = code
         base["blocker_message"] = msg
+        return base
+    if loading_reversed:
+        code, msg = _blocker(CODE_LOADING_REVERSED)
+        base["status"] = STATUS_EXCLUDED
+        base["blocker_code"] = code
+        base["blocker_message"] = msg
+        base["can_post"] = False
         return base
 
     if parse_movement_instant(movement.get("date")) is None:
@@ -1265,6 +1348,9 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
     live_journals = await load_live_issue_journals_by_movement(db)
     acquisitions, acquisition_coverage = await load_live_acquisition_coverage(db)
     live_issue_bases = await load_live_issue_bases(db)
+    reversed_pengiriman_ids = await load_loading_reversed_pengiriman_ids(
+        db, [movement_id_of(m) for m in movements]
+    )
     from services.inventory_financial_locks import COLLECTION as LOCKS
     locks = {
         str(row.get("financial_inventory_item_key") or ""): row
@@ -1274,7 +1360,8 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
 
     evaluated: List[dict] = []
     for movement in movements:
-        live = live_journals.get(movement_id_of(movement))
+        mid = movement_id_of(movement)
+        live = live_journals.get(mid)
         master = masters.get(str(movement.get("master_item_id") or "").strip())
         row = classify_movement_row(
             movement,
@@ -1283,6 +1370,7 @@ async def evaluate_inventory_issues(db, *, movement_ids: Optional[List[str]] = N
             raw_method=raw_method,
             frozen_method=frozen_method,
             live_journal=live,
+            loading_reversed=mid in reversed_pengiriman_ids,
         )
         row["_sort"] = movement_sort_key(movement)
         row["_movement"] = movement

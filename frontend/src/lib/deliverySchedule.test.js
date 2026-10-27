@@ -4,15 +4,18 @@ import {
   EMPTY_DELIVERY_SORT,
   DELIVERY_SORT_KEYS,
   buildDeliveryDetailsSummary,
+  countActiveColumnFilters,
   countActiveDeliveryFilters,
   cycleDeliverySort,
   dateKey,
+  deliveryScheduleFiltersEqual,
   formatScheduleQty,
   matchesDeliveryScheduleFilters,
   normalizeDeliveryScheduleFilters,
   normalizeDeliveryScheduleStatus,
   orderIdsForSelectedScheduleKeys,
   rescheduleConfirmLabel,
+  scheduleRowDeliveryDateKey,
   scheduleRowQtyParts,
   scheduleRowSelectionKey,
   sortDeliveryRows,
@@ -69,6 +72,69 @@ describe("delivery schedule filters", () => {
       { ...row, effective_delivery_date: "2026-10-16" },
       { dateFrom: "2026-10-12", dateTo: "2026-10-15" },
     )).toBe(false);
+  });
+
+  test("date filter uses sj_delivery_date || effective_delivery_date (display parity)", () => {
+    const mismatch = {
+      ...row,
+      effective_delivery_date: "2026-10-20",
+      sj_delivery_date: "2026-10-26",
+    };
+    expect(scheduleRowDeliveryDateKey(mismatch)).toBe("2026-10-26");
+    expect(matchesDeliveryScheduleFilters(mismatch, {
+      dateFrom: "2026-10-24",
+      dateTo: "2026-10-27",
+    })).toBe(true);
+    expect(matchesDeliveryScheduleFilters(mismatch, {
+      dateFrom: "2026-10-20",
+      dateTo: "2026-10-20",
+    })).toBe(false);
+  });
+
+  test("Oct 24–27 inclusive keeps all endpoint SJ dates", () => {
+    const range = { dateFrom: "2026-10-24", dateTo: "2026-10-27" };
+    for (const day of ["24", "25", "26", "27"]) {
+      const r = {
+        ...row,
+        shipment_id: `sh-${day}`,
+        sj_delivery_date: `2026-10-${day}`,
+        effective_delivery_date: `2026-10-${day}`,
+      };
+      expect(matchesDeliveryScheduleFilters(r, range)).toBe(true);
+    }
+    expect(matchesDeliveryScheduleFilters(
+      { ...row, sj_delivery_date: "2026-10-23", effective_delivery_date: "2026-10-23" },
+      range,
+    )).toBe(false);
+    expect(matchesDeliveryScheduleFilters(
+      { ...row, sj_delivery_date: "2026-10-28", effective_delivery_date: "2026-10-28" },
+      range,
+    )).toBe(false);
+  });
+
+  test("draft/applied equality and column filter counts stay separate", () => {
+    const applied = normalizeDeliveryScheduleFilters({
+      ...EMPTY_DELIVERY_FILTERS,
+      dateFrom: "2026-10-26",
+      dateTo: "2026-10-26",
+    });
+    const draft = normalizeDeliveryScheduleFilters({
+      ...EMPTY_DELIVERY_FILTERS,
+      dateFrom: "2026-10-24",
+      dateTo: "2026-10-27",
+    });
+    expect(deliveryScheduleFiltersEqual(applied, applied)).toBe(true);
+    expect(deliveryScheduleFiltersEqual(draft, applied)).toBe(false);
+    expect(countActiveDeliveryFilters(applied)).toBe(1);
+    expect(countActiveColumnFilters({
+      customer_name: { op: "contains", value: "Alpha" },
+      status: { op: "eq", value: "terjadwal" },
+    })).toBe(2);
+    expect(countActiveColumnFilters({ customer_name: { op: "contains", value: "  " } })).toBe(0);
+    // Toolbar count does not include column filters.
+    expect(countActiveDeliveryFilters(applied) + countActiveColumnFilters({
+      customer_name: { op: "contains", value: "Alpha" },
+    })).toBe(2);
   });
 
   test("driver terkirim and dapat dikirim filters", () => {
@@ -373,7 +439,7 @@ describe("Rincian Pengiriman qty aggregation", () => {
     const inRange = rows.filter((r) => matchesDeliveryScheduleFilters(r, { dateFrom: "2026-10-12", dateTo: "2026-10-15" }));
     const summary = buildDeliveryDetailsSummary(inRange, { dateFrom: "2026-10-12", dateTo: "2026-10-15" });
     expect(summary.sjCount).toBe(2);
-    expect(summary.days.map((d) => d.date)).toEqual(["2026-10-12", "2026-10-15"]);
+    expect(summary.days.map((d) => d.date)).toEqual(["2026-10-15", "2026-10-12"]);
     expect(summary.grandTotals[0].qty).toBe(350);
     expect(summary.days.find((d) => d.date === "2026-10-16")).toBeFalsy();
   });

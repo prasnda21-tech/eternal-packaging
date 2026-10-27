@@ -10,12 +10,14 @@ import {
   EMPTY_DELIVERY_FILTERS,
   EMPTY_DELIVERY_SORT,
   buildDeliveryDetailsSummary,
+  countActiveColumnFilters,
   countActiveDeliveryFilters,
-  dateKey,
+  deliveryScheduleFiltersEqual,
   matchesDeliveryScheduleFilters,
   normalizeDeliveryScheduleFilters,
   normalizeDeliveryScheduleStatus,
   orderIdsForSelectedScheduleKeys,
+  scheduleRowDeliveryDateKey,
   scheduleRowSelectionKey,
   scheduleVisibleSelectionKeys,
 } from "../lib/deliverySchedule";
@@ -32,6 +34,7 @@ import {
 } from "../lib/rowSelection";
 import {
   capturePoOpenFromList,
+  clearListUiState,
   poNavStateFromList,
   readListUiState,
   storageUserKey,
@@ -42,6 +45,7 @@ import OutletLocationModal from "../components/OutletLocationModal";
 import PoIdentityBadges from "../components/PoIdentityBadges";
 import DeliveryPlanDateRangeField from "../components/deliveryPlan/DeliveryPlanDateRangeField";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
+import { formatDdMmmYyyy, formatRangeLabel } from "../components/deliveryPlan/deliveryPlanDateRange";
 import {
   clientFilterRows,
   clientSortRows,
@@ -128,19 +132,27 @@ export default function DeliverySchedulePage() {
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
   const userKey = storageUserKey(user);
   const userId = user?.id || user?.email || "anon";
+  const DEFAULT_SCHEDULE_SORT = { key: "effective_delivery_date", direction: "desc" };
   const saved = readListUiState(userKey, "delivery-schedule", {
     filters: EMPTY_DELIVERY_FILTERS,
     sort: EMPTY_DELIVERY_SORT,
   });
   const initialFilters = normalizeDeliveryScheduleFilters(saved.filters || {});
+  const savedSortKey = String(saved.sort?.key || "").trim();
+  const savedSortDir = String(saved.sort?.direction || "").trim();
+  // Empty legacy sort = no preference → newest SJ date first.
+  const initialSortBy = savedSortKey || DEFAULT_SCHEDULE_SORT.key;
+  const initialSortDir = savedSortKey
+    ? (savedSortDir === "asc" || savedSortDir === "desc" ? savedSortDir : "asc")
+    : DEFAULT_SCHEDULE_SORT.direction;
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   // Applied filters drive visible rows + session persistence. Draft is toolbar/modal edits until Terapkan.
   const [filters, setFilters] = useState(initialFilters);
   const [draftFilters, setDraftFilters] = useState(initialFilters);
-  const [sortBy, setSortBy] = useState(saved.sort?.key || "");
-  const [sortDir, setSortDir] = useState(saved.sort?.direction || "asc");
+  const [sortBy, setSortBy] = useState(initialSortBy);
+  const [sortDir, setSortDir] = useState(initialSortDir);
   const [colFilters, setColFilters] = useState({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -152,6 +164,7 @@ export default function DeliverySchedulePage() {
   const selectedRef = useRef(selected);
   const pageVisibleIdsRef = useRef([]);
   const headerCheckRef = useRef({ checked: false, indeterminate: false });
+  const resetColumnsRef = useRef(null);
   selectedRef.current = selected;
 
   const load = useCallback(async () => {
@@ -234,7 +247,8 @@ export default function DeliverySchedulePage() {
   );
 
   const tableRows = useMemo(() => toolbarFiltered.map((r) => {
-    const eff = dateKey(r.sj_delivery_date || r.effective_delivery_date);
+    // Same key as matchesDeliveryScheduleFilters / Tanggal Pengiriman column.
+    const eff = scheduleRowDeliveryDateKey(r);
     const pctDelivered = Number(r.percent_delivered_display ?? r.percent_delivered) || 0;
     const pctReady = Number(r.percent_ready_to_ship_display ?? r.percent_ready_to_ship) || 0;
     return {
@@ -257,10 +271,11 @@ export default function DeliverySchedulePage() {
     [tableRows, colFilters],
   );
 
-  const sortedRows = useMemo(
-    () => clientSortRows(columnFiltered, sortBy, sortDir, "order_number"),
-    [columnFiltered, sortBy, sortDir],
-  );
+  const sortedRows = useMemo(() => {
+    const by = sortBy || "effective_delivery_date";
+    const dir = sortBy ? (sortDir || "asc") : "desc";
+    return clientSortRows(columnFiltered, by, dir, "order_number");
+  }, [columnFiltered, sortBy, sortDir]);
 
   const totalFiltered = sortedRows.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
@@ -276,6 +291,23 @@ export default function DeliverySchedulePage() {
   }, [sortedRows, safePage, pageSize]);
 
   const activeFilterCount = useMemo(() => countActiveDeliveryFilters(filters), [filters]);
+  const activeColumnFilterCount = useMemo(() => countActiveColumnFilters(colFilters), [colFilters]);
+  const draftPending = useMemo(
+    () => !deliveryScheduleFiltersEqual(draftFilters, filters),
+    [draftFilters, filters],
+  );
+  const draftDateLabel = useMemo(() => {
+    const from = draftFilters.dateFrom;
+    const to = draftFilters.dateTo;
+    if (from && to && from === to) return formatDdMmmYyyy(from);
+    return formatRangeLabel(from, to);
+  }, [draftFilters.dateFrom, draftFilters.dateTo]);
+  const appliedDateLabel = useMemo(() => {
+    const from = filters.dateFrom;
+    const to = filters.dateTo;
+    if (from && to && from === to) return formatDdMmmYyyy(from);
+    return formatRangeLabel(from, to);
+  }, [filters.dateFrom, filters.dateTo]);
   // Eligible selection universe = full filtered SJ set (survives pagination). Select-all = current page only.
   // Keys are shipment_id (SJ), not order.id — multi-SJ on one PO stay independent.
   const eligibleIds = useMemo(() => scheduleVisibleSelectionKeys(sortedRows), [sortedRows]);
@@ -336,11 +368,25 @@ export default function DeliverySchedulePage() {
     setPage(1);
     setFilterOpen(false);
   };
+  const clearColumnFilters = () => {
+    setColFilters({});
+    setPage(1);
+  };
   const resetFilters = () => {
     const empty = { ...EMPTY_DELIVERY_FILTERS };
+    const newestFirst = { key: "effective_delivery_date", direction: "desc" };
     setDraftFilters(empty);
     setFilters(empty);
+    setColFilters({});
+    setSortBy(newestFirst.key);
+    setSortDir(newestFirst.direction);
     setPage(1);
+    // Drop persisted toolbar/advanced bag so reload cannot restore stale filters.
+    clearListUiState(userKey, "delivery-schedule");
+    writeListUiState(userKey, "delivery-schedule", {
+      filters: empty,
+      sort: newestFirst,
+    });
     const params = new URLSearchParams(location.search || "");
     if (params.has("status")) {
       params.delete("status");
@@ -407,23 +453,29 @@ export default function DeliverySchedulePage() {
         key: "effective_delivery_date",
         label: "Tanggal Pengiriman",
         type: "date",
-        minWidth: 120,
-        render: (v, r) => (
-          <span className="mono">
-            {formatDate(v, { dateOnly: true })}
-            {r.sj_delivery_date && r.po_sla_date && r.sj_delivery_date !== r.po_sla_date ? (
-              <span className="muted small" data-testid={`ds-sla-${r.order_number}`}>
-                {" "}SLA PO {formatDate(r.po_sla_date, { dateOnly: true })}
-              </span>
-            ) : null}
-          </span>
-        ),
+        minWidth: 148,
+        render: (v, r) => {
+          const dateLabel = formatDate(v, { dateOnly: true });
+          const slaVisible = !!(r.sj_delivery_date && r.po_sla_date && r.sj_delivery_date !== r.po_sla_date);
+          const slaLabel = slaVisible ? `SLA PO ${formatDate(r.po_sla_date, { dateOnly: true })}` : "";
+          const dateTitle = slaVisible ? `${dateLabel} · ${slaLabel}` : (dateLabel || "");
+          return (
+            <span className="ds-date-cell" title={dateTitle}>
+              <span className="mono">{dateLabel}</span>
+              {slaVisible ? (
+                <span className="ds-sla-note muted" data-testid={`ds-sla-${r.order_number}`}>
+                  {slaLabel}
+                </span>
+              ) : null}
+            </span>
+          );
+        },
       },
       {
         key: "order_number",
         label: "No PO",
         type: "text",
-        minWidth: 160,
+        minWidth: 220,
         render: (v, r) => (
           <span className="dp-po-identity">
             {r.id ? (
@@ -432,6 +484,7 @@ export default function DeliverySchedulePage() {
                 to={desktopDeliveryPoHref(r.id, r.shipment_id)}
                 state={listNavState}
                 onClick={() => onOpenPo(r.id)}
+                title={v || ""}
                 data-testid={r.shipment_id ? `ds-po-link-${r.order_number}-${r.shipment_id}` : `ds-po-link-${r.order_number}`}
               >
                 {v || "—"}
@@ -449,6 +502,9 @@ export default function DeliverySchedulePage() {
         label: "Customer",
         type: "text",
         minWidth: 140,
+        render: (v) => (
+          <span className="ds-ellipsis" title={v || ""}>{v || "—"}</span>
+        ),
       },
       {
         key: "status",
@@ -666,14 +722,59 @@ export default function DeliverySchedulePage() {
             <span>Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
           </button>
           <div className="dp-filter-actions">
-            <button type="submit" className="dp-btn-primary" data-testid="ds-filter-apply" title="Terapkan filter">
+            <button
+              type="submit"
+              className={"dp-btn-primary" + (draftPending ? " is-pending" : "")}
+              data-testid="ds-filter-apply"
+              title={draftPending ? "Terapkan draft filter ke tabel" : "Terapkan filter"}
+            >
               Terapkan
             </button>
-            <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset" title="Reset filter">
+            <button type="button" className="ghost sm" onClick={resetFilters} data-testid="ds-filter-reset" title="Reset semua filter bisnis (bukan layout kolom)">
               <RotateCcw size={12} aria-hidden /> Reset
+            </button>
+            <button
+              type="button"
+              className="ghost sm ds-reset-cols-btn"
+              onClick={() => resetColumnsRef.current?.()}
+              data-testid="dp-reset-cols-delivery-schedule"
+              title="Reset layout kolom tabel (bukan filter bisnis)"
+            >
+              <RotateCcw size={12} aria-hidden /> Reset Kolom
             </button>
           </div>
         </form>
+        {(draftPending || activeColumnFilterCount > 0) && (
+          <div className="ds-filter-state" data-testid="ds-filter-state">
+            {draftPending ? (
+              <div className="ds-filter-pending" data-testid="ds-filter-pending" role="status">
+                <strong>Belum diterapkan.</strong>
+                {" "}
+                Draft tanggal: <span data-testid="ds-draft-date-label">{draftDateLabel}</span>
+                {" · "}
+                Tabel memakai: <span data-testid="ds-applied-date-label">{appliedDateLabel}</span>
+                {" · "}
+                Klik Terapkan untuk memperbarui hasil.
+              </div>
+            ) : null}
+            {activeColumnFilterCount > 0 ? (
+              <div className="ds-col-filter-bar" data-testid="ds-col-filter-bar">
+                <span data-testid="ds-col-filter-count">
+                  Filter kolom aktif ({activeColumnFilterCount}) — data dipersempit oleh filter header kolom.
+                </span>
+                <button
+                  type="button"
+                  className="ghost sm"
+                  onClick={clearColumnFilters}
+                  data-testid="ds-col-filter-clear"
+                  title="Hapus semua filter kolom"
+                >
+                  Hapus filter kolom
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
         {canOptimize && selected.size > 0 && (
           <div className="bulk-bar" data-testid="ds-bulk-bar">
             <span data-testid="ds-selected-count"><b>{selected.size}</b> SJ dipilih</span>
@@ -710,6 +811,9 @@ export default function DeliverySchedulePage() {
           }}
           emptyLabel="Tidak ada jadwal pengiriman."
           testId="delivery-schedule-table"
+          hideTools
+          resetLayoutRef={resetColumnsRef}
+          enforceColMinWidth
           rowClassName={(r) => {
             const key = scheduleRowSelectionKey(r);
             return canOptimize && key && selected.has(key) ? "is-selected" : "";
@@ -891,30 +995,32 @@ export default function DeliverySchedulePage() {
                       <strong>{day.dateLabel}</strong>
                       <span data-testid={`ds-rincian-day-total-${day.date || "none"}`}>{day.totalLabel}</span>
                     </header>
-                    <table className="ds-rincian-table">
-                      <thead>
-                        <tr>
-                          <th>Tanggal Pengiriman</th>
-                          <th>Nomor SJ</th>
-                          <th>Nomor PO</th>
-                          <th>Customer</th>
-                          <th className="num">Qty Pengiriman</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {day.rows.map((r) => (
-                          <tr key={r.key} data-testid={`ds-rincian-row-${r.key}`}>
-                            <td>{r.date ? formatDate(r.date, { dateOnly: true }) : "—"}</td>
-                            <td>{r.sjNumber}</td>
-                            <td>{r.orderNumber}</td>
-                            <td>{r.customerName}</td>
-                            <td className="num">{r.qtyLabel}</td>
-                            <td>{r.status}</td>
+                    <div className="ds-rincian-table-wrap" data-testid="ds-rincian-table-wrap">
+                      <table className="ds-rincian-table">
+                        <thead>
+                          <tr>
+                            <th>Tanggal Pengiriman</th>
+                            <th>Nomor SJ</th>
+                            <th>Nomor PO</th>
+                            <th>Customer</th>
+                            <th className="num">Qty Pengiriman</th>
+                            <th>Status</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {day.rows.map((r) => (
+                            <tr key={r.key} data-testid={`ds-rincian-row-${r.key}`}>
+                              <td>{r.date ? formatDate(r.date, { dateOnly: true }) : "—"}</td>
+                              <td>{r.sjNumber}</td>
+                              <td>{r.orderNumber}</td>
+                              <td>{r.customerName}</td>
+                              <td className="num">{r.qtyLabel}</td>
+                              <td>{r.status}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </section>
                 ))
               )}

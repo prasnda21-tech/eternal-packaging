@@ -726,3 +726,12 @@
   .kb-identity h1 { font-size: 22px; }
   .kb-metric { font-size: 20px; }
 }
+
+.keuangan-board-page .kb-card.is-drillable .kb-body { cursor: pointer; }
+.keuangan-board-page .kb-card.is-drillable:hover { border-color: rgba(8, 120, 76, 0.35); }
+.keuangan-board-page .kb-card.is-drillable .kb-body:focus-visible {
+  outline: 2px solid #08784c;
+  outline-offset: 2px;
+}
+.keuangan-board-page .kb-card-drill { margin-left: 4px; color: #08784c; }
+.keuangan-board-page .pd-drill-locked { font-size: 11px; color: #8a6a2f; white-space: nowrap; }

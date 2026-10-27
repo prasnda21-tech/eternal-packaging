@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowLeftRight,
+  ArrowUpRight,
   GripVertical,
   Landmark,
   MoreHorizontal,
@@ -13,9 +15,53 @@ import {
   Users,
 } from "lucide-react";
 import { formatMoney } from "../../lib/financialDashboard";
+import {
+  fakturPembelianDrillPath,
+  fakturPenjualanDrillPath,
+  isInteractiveDrillEventTarget,
+  labaRugiDrillPath,
+  mutasiKasDrillPath,
+} from "../../lib/dashboardDrillNav";
 import SalesInvoiceDateField from "../SalesInvoiceDateField";
 import { financeWidgetAllowed, financeWidgetMeta } from "./financeWidgetCatalog";
 import { COLUMNS, ROW_HEIGHT, gridHeight, placeWidget, removeWidget } from "./financeWidgetLayout";
+
+function financeDrillPath(id, range = {}, hasPerm) {
+  const start = range.start || "";
+  const end = range.end || "";
+  if (id === "cash") {
+    if (!(hasPerm("cash_bank.view") || hasPerm("nav.cash_bank.mutasi") || hasPerm("nav.cash_bank"))) return null;
+    return mutasiKasDrillPath({ start, end, excludeInternal: true });
+  }
+  if (id === "expense" || id === "profit") {
+    if (!(hasPerm("profit_loss.view") || hasPerm("nav.ledger.profit_loss"))) return null;
+    return labaRugiDrillPath({ start, end, widget: id === "expense" ? "expense" : "profit" });
+  }
+  if (id === "purchases") {
+    if (!(hasPerm("purchase_invoices.view") || hasPerm("purchase_invoices.create"))) return null;
+    return fakturPembelianDrillPath({ dateFrom: start, dateTo: end });
+  }
+  // Period omzet only — per-seller exact drill needs API sales filter (not supported).
+  if (id === "sales" || id === "trend") {
+    if (!(
+      hasPerm("sales.invoice.view")
+      || hasPerm("sales_order.view")
+      || hasPerm("po.view")
+      || hasPerm("nav.sales.sales_invoice")
+    )) return null;
+    return fakturPenjualanDrillPath({
+      dateFrom: start,
+      dateTo: end,
+      widget: id === "trend" ? "trend" : "sales",
+      dashboard: "keuangan",
+    });
+  }
+  if (id === "recon") {
+    if (!(hasPerm("cash_bank.reconcile") || hasPerm("cash_bank.view") || hasPerm("nav.cash_bank.reconciliation"))) return null;
+    return "/kas-bank/rekonsiliasi";
+  }
+  return null;
+}
 
 const GAP = 12;
 const STATE_LABEL = {
@@ -402,7 +448,18 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
   return <Quiet id={id} status={status} />;
 }
 
-export default function FinanceWidgetBoard({ widgets, models, editing, hasPerm, globalPreset, onLayout, onSettings, onRetry }) {
+export default function FinanceWidgetBoard({
+  widgets,
+  models,
+  editing,
+  hasPerm,
+  globalPreset,
+  periodForWidget,
+  onLayout,
+  onSettings,
+  onRetry,
+}) {
+  const navigate = useNavigate();
   const gridRef = useRef(null);
   const dragRef = useRef(null);
   const [hint, setHint] = useState("");
@@ -482,12 +539,21 @@ export default function FinanceWidgetBoard({ widgets, models, editing, hasPerm, 
           setMenuFor("");
           if (period_mode === "custom") setSettingsFor(widget.widget_id);
         };
+        const range = typeof periodForWidget === "function" ? (periodForWidget(widget) || {}) : {};
+        const drillPath = (!editing && !QUIET.has(model.status))
+          ? financeDrillPath(widget.widget_id, range, hasPerm)
+          : null;
+        const drillLocked = !editing
+          && ["cash", "expense", "profit", "purchases", "sales", "trend", "recon"].includes(widget.widget_id)
+          && !drillPath
+          && !QUIET.has(model.status);
         return (
           <article
             key={widget.widget_id}
-            className={`kb-card${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}`}
+            className={`kb-card${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}${drillPath ? " is-drillable" : ""}`}
             data-testid={`finance-widget-${widget.widget_id}`}
             data-status={model.status}
+            data-drill={drillPath ? "ready" : (drillLocked ? "locked" : undefined)}
             style={{
               left: `calc((100% - ${GAP * (COLUMNS - 1)}px) * ${widget.x / COLUMNS} + ${widget.x * GAP}px)`,
               width: `calc((100% - ${GAP * (COLUMNS - 1)}px) * ${widget.w / COLUMNS} + ${(widget.w - 1) * GAP}px)`,
@@ -512,6 +578,8 @@ export default function FinanceWidgetBoard({ widgets, models, editing, hasPerm, 
                 <h2 title={title}>{title}</h2>
                 <p>{CAPTION[widget.widget_id] || ""}</p>
               </div>
+              {drillPath ? <span className="pd-drill-icon kb-card-drill" aria-hidden="true"><ArrowUpRight size={14} /></span> : null}
+              {drillLocked ? <span className="pd-drill-locked" data-testid={`finance-drill-locked-${widget.widget_id}`}>Akses terbatas</span> : null}
               {canExpand ? (
                 <button type="button" className="kb-link" onClick={() => setExpanded((current) => ({ ...current, [widget.widget_id]: !current[widget.widget_id] }))}>
                   {expanded[widget.widget_id] ? "Ringkas" : "Lihat Semua"}
@@ -576,7 +644,24 @@ export default function FinanceWidgetBoard({ widgets, models, editing, hasPerm, 
                 ) : null}
               </div>
             </header>
-            <div className="kb-body">
+            <div
+              className="kb-body"
+              role={drillPath ? "link" : undefined}
+              tabIndex={drillPath ? 0 : undefined}
+              aria-label={drillPath ? `Buka rincian ${title}` : undefined}
+              data-testid={drillPath ? `finance-drill-${widget.widget_id}` : undefined}
+              onClick={(event) => {
+                if (!drillPath || isInteractiveDrillEventTarget(event.target)) return;
+                navigate(drillPath);
+              }}
+              onKeyDown={(event) => {
+                if (!drillPath) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  navigate(drillPath);
+                }
+              }}
+            >
               {infoFor === widget.widget_id ? (
                 <div className="kb-info" data-testid={`finance-info-panel-${widget.widget_id}`}>
                   <p>{meta?.summary}</p>
