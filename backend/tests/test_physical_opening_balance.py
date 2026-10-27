@@ -61,6 +61,10 @@ async def db():
     await ensure_indexes(database)
     server.db = database
     set_fail_after_balance(False)
+    # HTTP opening/adjustment routes require R2 authority (or warehouse standalone).
+    from services.r2_go_live import set_r2_authority_active
+
+    await set_r2_authority_active(database, active=True)
     try:
         yield database
     finally:

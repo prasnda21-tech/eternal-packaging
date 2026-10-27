@@ -1102,6 +1102,7 @@ async def require_r2_delivery_stock_ready(
 
 
 def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> dict:
+    """Legacy sync builder — qty assumed already in stock base (PCS). Prefer async builder."""
     receipt_id = str(receipt.get("id") or "")
     line_id = str(line.get("line_id") or "")
     qty = line.get("received_qty")
@@ -1130,6 +1131,107 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
             "line_id": line_id,
             "purchase_order_id": str(receipt.get("purchase_order_id") or ""),
             "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
+            "base_uom": "PCS",
+            "base_qty": qty,
+            "transaction_qty": qty,
+            "transaction_uom": "PCS",
+            "conversion_factor": 1,
+        },
+    }
+
+
+async def build_purchase_receipt_movement_request(
+    db, receipt: dict, line: dict, *, actor_id: str,
+) -> dict:
+    """Build GR→R2 movement with one-shot UOM snapshot (base_qty PCS).
+
+    - If line already carries base_qty + base_uom (document converted once), post that.
+    - Else if transaction_uom / unit is an alternate UOM, convert once via master setting.
+    - Else treat received_qty as PCS (existing behavior — no silent re-conversion).
+    Never converts twice.
+    """
+    from services.product_unit_conversion import (
+        BASE_UOM_PCS,
+        UnitConversionError,
+        canonicalize_to_base,
+        get_product_unit_setting,
+        normalize_uom,
+    )
+
+    receipt_id = str(receipt.get("id") or "")
+    line_id = str(line.get("line_id") or "")
+    mid = str(line.get("master_item_id") or "")
+    created_at = now_iso()
+    setting = await get_product_unit_setting(db, mid) if mid else None
+    master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0}) if mid else None
+
+    try:
+        if line.get("base_qty") is not None and normalize_uom(line.get("base_uom") or BASE_UOM_PCS):
+            # Document already snapshotted — ledger uses base only.
+            snap = canonicalize_to_base(
+                transaction_qty=line.get("base_qty"),
+                transaction_uom=normalize_uom(line.get("base_uom") or BASE_UOM_PCS),
+                setting=setting,
+                master=master,
+                already_base=True,
+            )
+            # Preserve original transaction snapshot when present on the line.
+            if line.get("transaction_qty") is not None and line.get("transaction_uom"):
+                snap = {
+                    **snap,
+                    "transaction_qty": line.get("transaction_qty"),
+                    "transaction_uom": normalize_uom(line.get("transaction_uom")),
+                    "conversion_factor": line.get("conversion_factor")
+                    if line.get("conversion_factor") is not None
+                    else snap["conversion_factor"],
+                    "base_qty": snap["base_qty"],
+                    "base_uom": snap["base_uom"],
+                }
+        else:
+            tx_uom = normalize_uom(
+                line.get("transaction_uom") or line.get("unit") or BASE_UOM_PCS
+            )
+            tx_qty = line.get("received_qty")
+            already_base = tx_uom == normalize_uom(
+                (setting or {}).get("base_uom") or BASE_UOM_PCS
+            )
+            snap = canonicalize_to_base(
+                transaction_qty=tx_qty,
+                transaction_uom=tx_uom,
+                setting=setting,
+                master=master,
+                already_base=already_base,
+            )
+    except UnitConversionError as exc:
+        raise PhysicalStockValidationError(str(exc)) from exc
+
+    qty = int(snap["base_qty"])
+    if qty <= 0:
+        raise PhysicalStockValidationError("Qty diterima (PCS) harus bilangan bulat > 0")
+
+    return {
+        "master_item_id": mid,
+        "branch_id": str(receipt.get("branch_id") or ""),
+        "warehouse_id": str(receipt.get("warehouse_id") or ""),
+        "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+        "qty_delta": qty,
+        "reference_type": "purchase_goods_receipt",
+        "reference_id": f"{receipt_id}:{line_id}",
+        "reason": "Penerimaan pembelian",
+        "actor_id": actor_id,
+        "occurred_at": created_at,
+        "created_at": created_at,
+        "idempotency_key": f"purchase-receipt:{receipt_id}:{line_id}",
+        "metadata": {
+            "receipt_id": receipt_id,
+            "line_id": line_id,
+            "purchase_order_id": str(receipt.get("purchase_order_id") or ""),
+            "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
+            "transaction_qty": snap["transaction_qty"],
+            "transaction_uom": snap["transaction_uom"],
+            "conversion_factor": snap["conversion_factor"],
+            "base_qty": snap["base_qty"],
+            "base_uom": snap["base_uom"],
         },
     }
 
@@ -1137,18 +1239,17 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
 async def receipt_line_posts_physical_stock(db, line: dict) -> bool:
     """True when a GR line should mutate warehouse physical stock / HPP layers.
 
-    Explicit SERVICE (process Add On) never posts physical qty. Legacy masters
-    with missing/blank item_type still post (inventory default). Document lines
-    may still exist on the GR either way.
+    Explicit SERVICE and NON_INVENTORY never post physical qty. Legacy masters
+    with missing/blank item_type still post (inventory default — no silent
+    reclassify). Document lines may still exist on the GR either way.
     """
-    from services.inventory_accounting import ITEM_TYPE_SERVICE
+    from services.inventory_accounting import is_physical_stock_item_type
 
     mid = str((line or {}).get("master_item_id") or "").strip()
     if not mid:
         return False
     master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0, "item_type": 1})
-    raw = str((master or {}).get("item_type") or "").strip().upper()
-    return raw != ITEM_TYPE_SERVICE
+    return is_physical_stock_item_type((master or {}).get("item_type"))
 
 
 async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: str) -> List[dict]:
@@ -1162,7 +1263,9 @@ async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: 
             continue
         movements.append(await _apply_movement_in_session(
             db,
-            _purchase_receipt_request(receipt, line, actor_id=actor_id),
+            await build_purchase_receipt_movement_request(
+                db, receipt, line, actor_id=actor_id,
+            ),
             session,
         ))
     return movements
@@ -3200,15 +3303,40 @@ def aggregate_operational_orders(
     excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
     totals: Dict[str, Dict[str, Any]] = {}
 
-    def add(master_id: str, ordered: float, completed: float, *, unproven: bool = False) -> None:
+    def add(
+        master_id: str,
+        ordered: float,
+        completed: float,
+        *,
+        unproven: bool = False,
+        print_completed: Optional[float] = None,
+        has_print_line: bool = False,
+        operator_evidence: bool = False,
+    ) -> None:
         if not master_id or master_id in excluded:
             return
         slot = totals.setdefault(
             master_id,
-            {"ordered_qty": 0.0, "completed_qty": 0.0, "completion_unproven": False},
+            {
+                "ordered_qty": 0.0,
+                "completed_qty": 0.0,
+                "completion_unproven": False,
+                "has_print_line": False,
+                "operator_evidence_present": False,
+            },
         )
         slot["ordered_qty"] = _qty_num(slot["ordered_qty"]) + _qty_num(ordered)
         slot["completed_qty"] = _qty_num(slot["completed_qty"]) + _qty_num(completed)
+        if has_print_line:
+            slot["has_print_line"] = True
+        if operator_evidence:
+            slot["operator_evidence_present"] = True
+        # Only materialize print_completed_qty when caller records a determination
+        # (verified 0 or positive). Absence of the key ⇒ no operator baseline yet.
+        if print_completed is not None:
+            slot["print_completed_qty"] = (
+                _qty_num(slot.get("print_completed_qty", 0.0)) + _qty_num(print_completed)
+            )
         if unproven:
             slot["completion_unproven"] = True
 
@@ -3292,9 +3420,13 @@ def aggregate_operational_orders(
             ordered = _qty_num(line.get("quantity"))
             if not is_print_line(line):
                 ready = operational_ready_qty_for_line(order, idx)
+                # Non-print siap kirim is NOT Qty Tercetak (Excel SSI).
+                # Do not invent print_completed_qty here — non-print-only SO
+                # resolves Qty Tercetak as verified 0 via ordered_qty baseline.
                 add(mid, ordered, ready, unproven=False)
                 continue
 
+            ops_evidence = idx in completed_by_idx
             parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
             children = children_by_parent.get(idx) or []
             if children:
@@ -3308,18 +3440,57 @@ def aggregate_operational_orders(
                 )
                 if group.status == STATUS_FULLY_COMPLETED and not process_gate_unproven:
                     # Physical siap = parent qty only (not sum of SERVICE process).
-                    add(mid, ordered, group.physical_ready_qty, unproven=False)
+                    add(
+                        mid, ordered, group.physical_ready_qty,
+                        unproven=False,
+                        print_completed=group.physical_ready_qty,
+                        has_print_line=True,
+                        operator_evidence=True,
+                    )
                 elif group.status == STATUS_FULLY_COMPLETED and process_gate_unproven:
                     # Linked group looks done but PO has orphan/ambiguous process.
-                    add(mid, ordered, group.physical_ready_qty, unproven=True)
+                    add(
+                        mid, ordered, group.physical_ready_qty,
+                        unproven=True,
+                        print_completed=group.physical_ready_qty,
+                        has_print_line=True,
+                        operator_evidence=True,
+                    )
                 else:
-                    # Fail-closed partial / incomplete — no READY via min().
-                    add(mid, ordered, 0.0, unproven=False)
+                    # Fail-closed partial / incomplete — inspected, proven not ready.
+                    add(
+                        mid, ordered, 0.0,
+                        unproven=False,
+                        print_completed=0.0,
+                        has_print_line=True,
+                        operator_evidence=True,
+                    )
             elif process_gate_unproven:
                 # Unlinked/orphan/ambiguous process work on this PO — fail-closed.
-                add(mid, ordered, parent_completed, unproven=True)
+                add(
+                    mid, ordered, parent_completed,
+                    unproven=True,
+                    print_completed=parent_completed if ops_evidence else None,
+                    has_print_line=True,
+                    operator_evidence=ops_evidence,
+                )
+            elif ops_evidence:
+                add(
+                    mid, ordered, parent_completed,
+                    unproven=False,
+                    print_completed=parent_completed,
+                    has_print_line=True,
+                    operator_evidence=True,
+                )
             else:
-                add(mid, ordered, parent_completed, unproven=False)
+                # Print SO without operator confirmation — not a verified zero.
+                add(
+                    mid, ordered, 0.0,
+                    unproven=False,
+                    print_completed=None,
+                    has_print_line=True,
+                    operator_evidence=False,
+                )
     return totals
 
 
@@ -3606,20 +3777,34 @@ async def list_physical_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
-    from services.inventory_accounting import ITEM_TYPE_SERVICE
+    from services.inventory_accounting import (
+        ITEM_TYPE_SERVICE,
+        is_stock_saat_ini_inventory_catalog_item,
+        stock_saat_ini_condition_unavailable_fields,
+    )
 
     type_rows = await db[MASTER_ITEMS_COLLECTION].find(
         {}, {"_id": 0, "id": 1, "item_type": 1},
     ).to_list(5000)
+    # SERVICE masters stay available for delivery/process remap — not catalog rows.
     service_master_ids = {
         str(row.get("id") or "").strip()
         for row in type_rows
         if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
         and str(row.get("id") or "").strip()
     }
+    type_by_id = {
+        str(row.get("id") or "").strip(): row.get("item_type")
+        for row in type_rows
+        if str(row.get("id") or "").strip()
+    }
+    # Stock Saat Ini catalog: explicit INVENTORY only (exclude SERVICE,
+    # NON_INVENTORY, null/unknown). Does not mutate master_items.
     masters = [
         row for row in masters
-        if str(row.get("id") or "").strip() not in service_master_ids
+        if is_stock_saat_ini_inventory_catalog_item(
+            type_by_id.get(str(row.get("id") or "").strip(), row.get("item_type"))
+        )
     ]
     safe_page, safe_limit = _catalog_page(page, limit)
     selected_warehouse_id = str(warehouse_id or "").strip()
@@ -3707,15 +3892,61 @@ async def list_physical_stock_catalog(
     balances: Dict[str, List[dict]] = {}
     for doc in balance_docs:
         balances.setdefault(doc.get("master_item_id"), []).append(doc)
+
+    # Owner Excel SSI components (Saldo Awal / Pembelian / delivered) from R2 ledger.
+    # Read-only aggregation — no dual stock mutation.
+    from services.stock_saat_ini_excel import (
+        aggregate_ledger_components,
+        aggregate_proven_print_delivered_qty,
+        apply_excel_fields_to_catalog_row,
+        compute_excel_columns,
+        resolve_qty_tercetak,
+    )
+
+    ledger_components: Dict[str, Dict[str, float]] = {}
+    if master_ids and operational_id and catalog_mode == "r2":
+        ledger_query: Dict[str, Any] = {
+            "master_item_id": {"$in": master_ids},
+            "branch_id": operational_id,
+            "movement_type": {
+                "$in": [
+                    MOVEMENT_OPENING_BALANCE,
+                    MOVEMENT_PURCHASE_RECEIPT,
+                    MOVEMENT_SALES_DELIVERY,
+                    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+                    MOVEMENT_MANUAL_ADJUSTMENT,
+                    MOVEMENT_REVERSAL,
+                ]
+            },
+        }
+        selected_wh = str(warehouse_id or "").strip()
+        if selected_wh:
+            ledger_query["warehouse_id"] = selected_wh
+        ledger_docs = await db[LEDGER_COLLECTION].find(ledger_query, {"_id": 0}).to_list(50000)
+        ledger_components = aggregate_ledger_components(
+            ledger_docs,
+            master_item_ids=master_ids,
+            branch_id=operational_id,
+            warehouse_id=selected_wh or None,
+        )
+
+    # Proven printed SJ qty only (never estimate from total so_delivered).
+    print_delivered, print_delivery_prov = aggregate_proven_print_delivered_qty(
+        orders, owners, process_master_ids=service_master_ids,
+    )
+
     rows = []
     for master in masters:
         docs = balances.get(master.get("id"), [])
         physical = sum(_qty_num(doc.get("physical_qty")) for doc in docs)
         updated = [doc.get("updated_at") for doc in docs if doc.get("updated_at")]
+        # Catalog-only masters stay without a progress slot so Qty Tercetak
+        # resolves UNVERIFIED (never a silent verified 0).
         demand = progress.get(master.get("id")) or {
             "ordered_qty": 0.0,
-            "completed_qty": 0.0,
             "completion_unproven": False,
+            "has_print_line": False,
+            "operator_evidence_present": False,
         }
         mid = master.get("id")
         # Compatibility parity: delivered from proven shipments / qty_delivered only
@@ -3723,7 +3954,7 @@ async def list_physical_stock_catalog(
         effective_delivered = _qty_num(delivered.get(mid, 0))
         completion_unproven = bool(demand.get("completion_unproven"))
         delivery_unproven = str(delivery_provenance.get(str(mid) or mid, "") or "") == "unproven"
-        completed_for_buckets = demand["completed_qty"]
+        completed_for_buckets = _qty_num(demand.get("completed_qty", 0.0))
         buckets = operational_availability(
             physical_qty=physical,
             ordered_qty=demand["ordered_qty"],
@@ -3832,10 +4063,12 @@ async def list_physical_stock_catalog(
             "qty_pesanan": buckets["qty_pesanan"],
             "qty_belum_terkirim": buckets["qty_belum_terkirim"],
             # Informational book math only — not definitive until baseline reconciled
-            # and Belum Terkirim is verified.
+            # and Belum Terkirim is verified. Legacy field retained for API clients.
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
             "qty_tersedia_note": tersedia_note,
+            # Placeholder condition fields — overwritten by Owner Excel formula below.
+            **stock_saat_ini_condition_unavailable_fields(),
             "delivery_provenance": delivery_provenance.get(str(mid) or mid),
             # Provisional from balance stamps; replaced by the same final movement
             # used for updated_by_name during page enrich (never master_items.updated_by).
@@ -3858,6 +4091,50 @@ async def list_physical_stock_catalog(
             "demand_scope": "BRANCH",
             "availability_scope": "BRANCH",
         }
+        # Owner Excel SSI (PCS): Saldo Awal, Pembelian, Stock, Stock Dapat Dijual,
+        # Qty Tercetak / Polos / Tercetak Belum Kirim / Cetak Sudah Dikirim.
+        # Uses existing order + delivery + ledger events — no second mutation path.
+        comp = ledger_components.get(str(mid) or mid) or {}
+        balance_present_any = any(
+            bool(wb.get("balance_present")) for wb in warehouse_balances
+        )
+        tercetak_slot = resolve_qty_tercetak(demand)
+        mid_key = str(mid) or mid
+        print_prov = str(print_delivery_prov.get(mid_key, "") or "")
+        delivery_prov = str(delivery_provenance.get(mid_key, "") or "")
+        # Print delivery is proven only from confirmed print-line SJ attribution.
+        # Ambiguous total delivery or print attribution → null (not estimate).
+        print_unproven = print_prov == "unproven" or delivery_prov == "unproven"
+        print_proven = (
+            print_prov == "confirmed_print_shipment" and not print_unproven
+        )
+        cetak_proven_qty = print_delivered.get(mid_key, 0.0) if print_proven else None
+        # Verified zero: no unproven flag and no confirmed print shipments.
+        if not print_unproven and not print_proven:
+            print_proven = True
+            cetak_proven_qty = 0.0
+        excel = compute_excel_columns(
+            saldo_awal=comp.get("saldo_awal", 0),
+            pembelian=comp.get("pembelian", 0),
+            adjustment_net=comp.get("adjustment_net", 0),
+            delivered_total=effective_delivered,
+            po_ordered=demand["ordered_qty"],
+            so_delivered=effective_delivered,
+            qty_tercetak=tercetak_slot["qty"],
+            qty_tercetak_status=tercetak_slot["status"],
+            qty_tercetak_reason=tercetak_slot.get("reason"),
+            cetak_delivered_proven=cetak_proven_qty,
+            print_delivery_proven=print_proven and not print_unproven,
+            stock_book=buckets["physical_qty"] if balance_present_any else None,
+        )
+        apply_excel_fields_to_catalog_row(
+            row,
+            excel,
+            balance_present=balance_present_any or bool(comp),
+        )
+        row["print_delivery_provenance"] = print_prov or (
+            "verified_zero" if print_proven else ""
+        )
         if selected_warehouse:
             row["warehouse_id"] = str(selected_warehouse.get("id") or "")
             row["warehouse_code"] = selected_warehouse.get("code") or ""

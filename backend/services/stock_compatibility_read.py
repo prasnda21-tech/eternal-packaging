@@ -16,7 +16,11 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from services.inventory_accounting import ITEM_TYPE_SERVICE
+from services.inventory_accounting import (
+    ITEM_TYPE_SERVICE,
+    is_stock_saat_ini_inventory_catalog_item,
+    stock_saat_ini_condition_unavailable_fields,
+)
 from services.physical_stock import (
     MASTER_ITEMS_COLLECTION,
     _catalog_page,
@@ -556,6 +560,7 @@ def compatibility_row(
             "qty_pesanan": qty_pesanan,
             "qty_belum_terkirim": None,
             "qty_tersedia": buckets["physical_qty"] - qty_pesanan,
+            **stock_saat_ini_condition_unavailable_fields(),
             "updated_at": updated_at,
             # Legacy company stamp is not a posted warehouse movement identity.
             "updated_by_name": LAST_STOCK_ACTOR_UNKNOWN if updated_at else None,
@@ -579,6 +584,7 @@ def compatibility_row(
         "qty_pesanan": buckets["qty_pesanan"],
         "qty_belum_terkirim": buckets["qty_belum_terkirim"],
         "qty_tersedia": buckets["qty_tersedia"],
+        **stock_saat_ini_condition_unavailable_fields(),
         "updated_at": updated_at,
         "updated_by_name": LAST_STOCK_ACTOR_UNKNOWN if updated_at else None,
         "belum_terkirim_status": BELUM_STATUS_READY,
@@ -607,8 +613,7 @@ async def list_compatibility_stock_catalog(
     masters = await db[MASTER_ITEMS_COLLECTION].find(item_query, {"_id": 0}).sort(
         [("item_name", 1), ("id", 1)]
     ).to_list(1000)
-    # Process / jasa Add On (item_type=SERVICE) is work qty, not physical stock.
-    # No parent_line_id exists in schema — SERVICE type is the explicit signal.
+    # Catalog: explicit INVENTORY only. SERVICE kept for process remap only.
     type_rows = await db[MASTER_ITEMS_COLLECTION].find(
         {}, {"_id": 0, "id": 1, "item_type": 1},
     ).to_list(5000)
@@ -618,9 +623,16 @@ async def list_compatibility_stock_catalog(
         if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE
         and str(row.get("id") or "").strip()
     }
+    type_by_id = {
+        str(row.get("id") or "").strip(): row.get("item_type")
+        for row in type_rows
+        if str(row.get("id") or "").strip()
+    }
     masters = [
         row for row in masters
-        if str(row.get("id") or "").strip() not in service_master_ids
+        if is_stock_saat_ini_inventory_catalog_item(
+            type_by_id.get(str(row.get("id") or "").strip(), row.get("item_type"))
+        )
     ]
     safe_page, safe_limit = _catalog_page(page, limit)
     if not masters:

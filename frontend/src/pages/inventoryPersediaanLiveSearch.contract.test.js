@@ -47,8 +47,10 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini shows operational availability buckets", () => {
-    expect(stock).toMatch(/Qty Tersedia = Stock Fisik [-\u2212] Qty Pesanan [-\u2212] Qty Belum Terkirim/);
+  test("Stock Saat Ini shows Owner Excel SSI compact list + detail drawer", () => {
+    const detail = fs.readFileSync(path.join(__dirname, "StockSaatIniDetailDrawer.jsx"), "utf8");
+    const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
+    expect(stock).toMatch(/Stock Dapat Dijual = Stock [-\u2212] \(PO aktif [-\u2212] qty dikirim\)/);
     expect(stock).toMatch(/Nilai negatif = kebutuhan stok/);
     expect(stock).toMatch(/tidak memblokir operasional/);
     expect(stock).toMatch(/Persediaan barang per cabang dan gudang/);
@@ -57,8 +59,9 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Lihat penjelasan lengkap/);
     expect(stock).not.toMatch(/stock-filter-focus/);
     expect(stock).not.toMatch(/Filter \(fokus\)/);
-    expect(stock).toMatch(/stock-expand-panel/);
-    expect(stock).toMatch(/Detail per gudang/);
+    expect(stock).toMatch(/stock-table-compact/);
+    expect(stock).toMatch(/Lihat Detail/);
+    expect(stock).toMatch(/StockSaatIniDetailDrawer/);
     expect(stock).toMatch(/stock-mobile-list/);
     expect(stock).toMatch(/data-testid="stock-filters"/);
     expect(stock).toMatch(/data-testid="stock-search"/);
@@ -66,19 +69,36 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stockPhysicalPrimaryDisplay/);
     expect(stock).toMatch(/data-balance-present/);
     expect(stock).toMatch(/api\.physicalStockCatalog\(/);
-    expect(stock).toMatch(/Nama Barang/);
     expect(stock).toMatch(/Satuan Dasar/);
-    expect(stock).toMatch(/data-testid="stock-unit-header"/);
-    expect(stock).toMatch(/stock-updated-by/);
-    expect(stock).toMatch(/Tidak tercatat/);
+    expect(stock).not.toMatch(/data-testid="stock-unit-header"/);
+    expect(stock).not.toMatch(/stock-expand-m-/);
     expect(stock).toMatch(/stock-status-badge/);
     expect(stock).toMatch(/data-baseline-label/);
-    expect(stock).toMatch(/Stock Fisik/);
-    expect(stock).toMatch(/Stock Fisik \(perusahaan\)/);
-    expect(stock).toMatch(/data-testid="stock-physical-header"/);
-    expect(stock).toMatch(/Qty Pesanan/);
-    expect(stock).toMatch(/Qty Belum Terkirim/);
-    expect(stock).toMatch(/qty_tersedia/);
+    expect(stock).toMatch(/EXCEL_SSI_COLUMNS/);
+    expect(stock).toMatch(/label: "Saldo Awal"/);
+    expect(stock).toMatch(/label: "Pembelian"/);
+    expect(stock).toMatch(/label: "Stock"/);
+    expect(stock).toMatch(/label: "Stock Dapat Dijual"/);
+    expect(stock).toMatch(/label: "Qty Tercetak"/);
+    expect(stock).toMatch(/label: "Qty Polos"/);
+    expect(stock).toMatch(/label: "Barang Tercetak Belum Kirim"/);
+    expect(stock).toMatch(/label: "Barang Cetak Sudah Dikirim"/);
+    expect(stock).toMatch(/stock-physical-header/);
+    expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
+    expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
+    expect(stock).toMatch(/stock-detail-header/);
+    expect(stock).toMatch(/BELUM_TERSEDIA/);
+    expect(stock).toMatch(/Belum terverifikasi/);
+    expect(stock).toMatch(/Belum saldo/);
+    expect(stock).not.toMatch(/Belum tersedia/);
+    expect(detail).toMatch(/Belum terverifikasi/);
+    expect(detail).toMatch(/ssi-history-filter-\$\{f\.id\}/);
+    expect(detail).toMatch(/id: "FISIK"/);
+    expect(detail).toMatch(/id: "SO"/);
+    expect(detail).toMatch(/id: "CETAK"/);
+    expect(detail).toMatch(/api\.ssiItemActivity/);
+    expect(apiSrc).toMatch(/ssiItemActivity/);
+    expect(apiSrc).toMatch(/ssi-activity/);
     expect(stock).not.toMatch(/stock-filter-branch/);
     expect(stock).not.toMatch(/stock-filter-warehouse/);
     expect(stock).not.toMatch(/Belum Dicetak/);
@@ -86,8 +106,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).not.toMatch(/<th[^>]*>Stock Saat Ini<\/th>/);
     expect(stock).not.toMatch(/<th[^>]*>Cabang<\/th>/);
     expect(stock).not.toMatch(/Qty Saat Ini \+ Pembelian Barang/);
-    expect(stock).not.toMatch(/Pembelian Barang/);
-    expect(stock).not.toMatch(/Qty PO/);
+    expect(stock).not.toMatch(/Qty Tersedia = Stock Fisik/);
     expect(stock).not.toMatch(/Qty Cetak Operator/);
     expect(stock).not.toMatch(/GUDANG_UTAMA/);
     expect(stock).not.toMatch(/YGY \/ MAIN/);
@@ -117,11 +136,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-inline-input/);
     expect(stock).toMatch(/adjustWarehouses\.length > 1/);
     expect(stock).toMatch(/await onSaved\(\)/);
-    expect(stock).toMatch(/qty_pesanan/);
-    expect(stock).toMatch(/qty_belum_terkirim/);
-    expect(stock).toMatch(/qty_tersedia/);
-    expect(stock).not.toMatch(/qty_pesanan:/);
-    expect(stock).not.toMatch(/qty_belum_terkirim:/);
+    expect(stock).toMatch(/stock_dapat_dijual/);
+    expect(stock).toMatch(/qty_tercetak/);
+    expect(stock).toMatch(/qty_polos/);
+    expect(stock).toMatch(/tercetak_belum_kirim/);
+    expect(stock).toMatch(/cetak_sudah_dikirim/);
+    expect(stock).toMatch(/NO_OPERATOR_EVIDENCE/);
+    expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 
   test("Stock Saat Ini clears rows while query pending", () => {

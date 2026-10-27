@@ -5,8 +5,10 @@ import {
   ArrowLeft,
   CheckCircle2,
   Lock,
+  Plus,
   RefreshCw,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import api from "../lib/api";
@@ -58,10 +60,13 @@ export default function ProductDetail() {
   const [loadingProduct, setLoadingProduct] = useState(true);
   const [productError, setProductError] = useState("");
 
-  // Unit conversion form state
+  // Unit conversion form state (PR-B multi-UOM)
   const [txUom, setTxUom] = useState("");
-  const [baseUom, setBaseUom] = useState("");
+  const [baseUom, setBaseUom] = useState("PCS");
   const [convFactor, setConvFactor] = useState("1");
+  const [alternateUoms, setAlternateUoms] = useState([]); // [{uom, factor_to_base}]
+  const [previewQty, setPreviewQty] = useState("1");
+  const [previewUom, setPreviewUom] = useState("");
   const [savingSetting, setSavingSetting] = useState(false);
   const [settingSuccess, setSettingSuccess] = useState("");
   const [settingError, setSettingError] = useState("");
@@ -159,9 +164,26 @@ export default function ProductDetail() {
       setProductData(data);
       const us = data.unit_setting || {};
       const ss = data.stock_summary || {};
-      setTxUom(us.transaction_uom || ss.transaction_uom || data.item?.unit || "PCS");
-      setBaseUom(us.base_uom || ss.base_uom || data.item?.unit || "PCS");
-      setConvFactor(String(us.conversion_factor ?? ss.conversion_factor ?? 1));
+      const nextBase = String(us.base_uom || ss.base_uom || data.item?.unit || "PCS").toUpperCase();
+      const nextTx = String(us.transaction_uom || ss.transaction_uom || data.item?.unit || "PCS").toUpperCase();
+      const nextFactor = String(us.conversion_factor ?? ss.conversion_factor ?? 1);
+      setTxUom(nextTx);
+      setBaseUom(nextBase);
+      setConvFactor(nextFactor);
+      let alts = Array.isArray(us.alternate_uoms)
+        ? us.alternate_uoms
+            .filter((row) => row && String(row.uom || "").trim())
+            .map((row) => ({
+              uom: String(row.uom || "").trim().toUpperCase(),
+              factor_to_base: String(row.factor_to_base ?? row.conversion_factor ?? ""),
+            }))
+        : [];
+      if (!alts.length && nextTx && nextTx !== nextBase) {
+        alts = [{ uom: nextTx, factor_to_base: nextFactor }];
+      }
+      setAlternateUoms(alts);
+      setPreviewUom(alts[0]?.uom || nextTx || nextBase);
+      setPreviewQty("1");
     } catch (ex) {
       const det = ex.response?.data?.detail;
       setProductError(typeof det === "object" ? det.message : (det || "Gagal memuat detail produk"));
@@ -245,27 +267,90 @@ export default function ProductDetail() {
     return () => { cancelled = true; };
   }, [id, openingBranchId, openingWarehouseId, openingSuccess]);
 
-  // Save unit conversion setting
+  const isInventoryItem = String(productData?.item?.item_type || "").toUpperCase() === "INVENTORY"
+    || !String(productData?.item?.item_type || "").trim();
+
+  const validateAlternateRows = (rows, base) => {
+    const seen = new Set();
+    const cleaned = [];
+    for (const row of rows) {
+      const uom = String(row.uom || "").trim().toUpperCase();
+      if (!uom) continue;
+      if (uom === base) {
+        return { error: `Satuan ${base} tidak boleh diulang sebagai alternatif` };
+      }
+      if (seen.has(uom)) {
+        return { error: `Satuan duplikat: ${uom}` };
+      }
+      const factorNum = parseFloat(String(row.factor_to_base ?? "").replace(",", "."));
+      if (isNaN(factorNum) || factorNum <= 0) {
+        return { error: "Faktor konversi harus berupa angka lebih besar dari 0" };
+      }
+      seen.add(uom);
+      cleaned.push({ uom, factor_to_base: factorNum });
+    }
+    return { cleaned };
+  };
+
+  const conversionPreviewPcs = () => {
+    const base = (baseUom || "PCS").trim().toUpperCase();
+    const uom = String(previewUom || base).trim().toUpperCase();
+    const qty = parseFloat(String(previewQty || "").replace(",", "."));
+    if (isNaN(qty) || qty <= 0) return { ok: false, text: "Qty preview tidak valid" };
+    let factor = 1;
+    if (uom !== base) {
+      const hit = alternateUoms.find((r) => String(r.uom || "").trim().toUpperCase() === uom);
+      if (!hit) return { ok: false, text: `Satuan '${uom}' tidak terdaftar` };
+      factor = parseFloat(String(hit.factor_to_base ?? "").replace(",", "."));
+      if (isNaN(factor) || factor <= 0) {
+        return { ok: false, text: "Faktor konversi harus berupa angka lebih besar dari 0" };
+      }
+    }
+    const pcs = qty * factor;
+    if (!Number.isInteger(pcs) && Math.abs(pcs - Math.round(pcs)) > 1e-9) {
+      return { ok: false, text: `Hasil ${pcs} bukan bilangan bulat ${base}` };
+    }
+    return { ok: true, text: `${qty} ${uom} = ${pcs} ${base}`, factor, pcs };
+  };
+
+  // Save unit conversion setting (legacy pair + alternate_uoms)
   const handleSaveConversion = async (e) => {
     e.preventDefault();
     setSavingSetting(true);
     setSettingSuccess("");
     setSettingError("");
 
-    const factorNum = parseFloat(convFactor.replace(",", "."));
-    if (isNaN(factorNum) || factorNum <= 0) {
-      setSettingError("Faktor konversi harus berupa angka lebih besar dari 0");
+    const base = (isInventoryItem ? "PCS" : (baseUom || "PCS")).trim().toUpperCase();
+    let rowsForSave = alternateUoms;
+    if (
+      (!rowsForSave.length || !String(rowsForSave[0]?.uom || "").trim())
+      && txUom.trim().toUpperCase()
+      && txUom.trim().toUpperCase() !== base
+    ) {
+      rowsForSave = [{ uom: txUom, factor_to_base: convFactor }, ...rowsForSave.slice(1)];
+    }
+    const { cleaned, error } = validateAlternateRows(rowsForSave, base);
+    if (error) {
+      setSettingError(error);
       setSavingSetting(false);
       return;
     }
 
+    // Keep legacy primary fields in sync with first alternate (or base).
+    const primary = cleaned[0];
+    const legacyTx = primary ? primary.uom : base;
+    const legacyFactor = primary ? primary.factor_to_base : 1;
+
     try {
       await api.saveUnitConversion(id, {
-        transaction_uom: txUom.trim().toUpperCase(),
-        base_uom: baseUom.trim().toUpperCase(),
-        conversion_factor: factorNum,
+        transaction_uom: legacyTx,
+        base_uom: base,
+        conversion_factor: legacyFactor,
+        alternate_uoms: cleaned,
       });
       setSettingSuccess("Pengaturan konversi satuan berhasil disimpan");
+      setTxUom(legacyTx);
+      setConvFactor(String(legacyFactor));
       await loadProduct();
     } catch (ex) {
       const det = ex.response?.data?.detail;
@@ -273,6 +358,18 @@ export default function ProductDetail() {
     } finally {
       setSavingSetting(false);
     }
+  };
+
+  const addAlternateRow = () => {
+    setAlternateUoms((rows) => [...rows, { uom: "", factor_to_base: "" }]);
+  };
+
+  const removeAlternateRow = (idx) => {
+    setAlternateUoms((rows) => rows.filter((_, i) => i !== idx));
+  };
+
+  const updateAlternateRow = (idx, field, value) => {
+    setAlternateUoms((rows) => rows.map((row, i) => (i === idx ? { ...row, [field]: value } : row)));
   };
 
   const handleSaveOpeningBalance = async (e) => {
@@ -629,11 +726,12 @@ export default function ProductDetail() {
             </table>
           </div>
 
-          {/* SETTING KONVERSI SATUAN */}
+          {/* SATUAN & KONVERSI (PR-B multi-UOM) */}
           <div className="product-tab-card" data-testid="unit-conversion-card">
-            <h3 className="card-section-title">Setting Konversi Satuan</h3>
+            <h3 className="card-section-title">Satuan &amp; Konversi</h3>
             <p style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
-              Menentukan relasi antara Satuan Transaksi / Jual dengan Satuan Dasar persediaan untuk produk ini.
+              Satuan dasar stok adalah PCS. Satuan alternatif (PACK, CRT, BOX, …) dikonversi ke PCS
+              saat transaksi. Perubahan faktor hanya berlaku untuk transaksi baru.
             </p>
 
             {settingSuccess && (
@@ -650,57 +748,206 @@ export default function ProductDetail() {
             <form onSubmit={handleSaveConversion}>
               <div className="unit-setting-grid">
                 <div className="form-field">
-                  <label htmlFor="tx-uom-input">Satuan Transaksi / Jual</label>
+                  <label htmlFor="base-uom-input">Satuan Dasar</label>
+                  <input
+                    id="base-uom-input"
+                    type="text"
+                    value={isInventoryItem ? "PCS" : baseUom}
+                    onChange={(e) => {
+                      if (!isInventoryItem) setBaseUom(e.target.value);
+                    }}
+                    placeholder="PCS"
+                    readOnly={isInventoryItem}
+                    disabled={!canEditConversion || savingSetting || isStockInitialized || isInventoryItem}
+                    data-testid="input-base-uom"
+                  />
+                  {(isInventoryItem || isStockInitialized) && (
+                    <span style={{ fontSize: 11, color: "#64748b", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                      <Lock size={12} />{" "}
+                      {isInventoryItem
+                        ? "PCS — satuan stok kanonis (read-only)"
+                        : "Terkunci: Saldo awal stok fisik sudah ditetapkan"}
+                    </span>
+                  )}
+                </div>
+
+                {/* Legacy single-pair fields kept for primary alternate / contract tests */}
+                <div className="form-field">
+                  <label htmlFor="tx-uom-input">Satuan Utama Transaksi</label>
                   <input
                     id="tx-uom-input"
                     type="text"
                     value={txUom}
-                    onChange={(e) => setTxUom(e.target.value)}
-                    placeholder="Contoh: PACK / BOX"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setTxUom(v);
+                      setAlternateUoms((rows) => {
+                        if (!rows.length) {
+                          return [{ uom: v, factor_to_base: convFactor }];
+                        }
+                        const next = [...rows];
+                        next[0] = { ...next[0], uom: v };
+                        return next;
+                      });
+                    }}
+                    placeholder="Contoh: PACK / CRT"
                     disabled={!canEditConversion || savingSetting}
                     data-testid="input-tx-uom"
                   />
                 </div>
 
                 <div className="form-field">
-                  <label htmlFor="base-uom-input">Satuan Dasar</label>
-                  <input
-                    id="base-uom-input"
-                    type="text"
-                    value={baseUom}
-                    onChange={(e) => setBaseUom(e.target.value)}
-                    placeholder="Contoh: PCS"
-                    disabled={!canEditConversion || savingSetting || isStockInitialized}
-                    data-testid="input-base-uom"
-                  />
-                  {isStockInitialized && (
-                    <span style={{ fontSize: 11, color: "#64748b", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 4 }}>
-                      <Lock size={12} /> Terkunci: Saldo awal stok fisik sudah ditetapkan
-                    </span>
-                  )}
-                </div>
-
-                <div className="form-field">
-                  <label htmlFor="factor-input">Faktor Konversi</label>
+                  <label htmlFor="factor-input">Setara PCS (satuan utama)</label>
                   <input
                     id="factor-input"
                     type="text"
                     value={convFactor}
-                    onChange={(e) => setConvFactor(e.target.value)}
-                    placeholder="Contoh: 250"
-                    disabled={!canEditConversion || savingSetting || txUom.trim().toUpperCase() === baseUom.trim().toUpperCase()}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setConvFactor(v);
+                      setAlternateUoms((rows) => {
+                        if (!rows.length) {
+                          return txUom.trim()
+                            ? [{ uom: txUom, factor_to_base: v }]
+                            : rows;
+                        }
+                        const next = [...rows];
+                        next[0] = { ...next[0], factor_to_base: v };
+                        return next;
+                      });
+                    }}
+                    placeholder="Contoh: 50"
+                    disabled={
+                      !canEditConversion
+                      || savingSetting
+                      || txUom.trim().toUpperCase() === baseUom.trim().toUpperCase()
+                    }
                     data-testid="input-conversion-factor"
                   />
                 </div>
               </div>
 
-              {/* Live Conversion Preview */}
+              <div className="uom-alternate-block" data-testid="alternate-uoms-block">
+                <div className="uom-alternate-head">
+                  <span className="uom-alternate-title">Satuan Alternatif</span>
+                  {canEditConversion && (
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={addAlternateRow}
+                      disabled={savingSetting}
+                      data-testid="btn-add-alternate-uom"
+                    >
+                      <Plus size={14} />
+                      Tambah Satuan
+                    </button>
+                  )}
+                </div>
+                <table className="prod-table uom-alternate-table" data-testid="alternate-uoms-table">
+                  <thead>
+                    <tr>
+                      <th>Satuan</th>
+                      <th>Setara PCS</th>
+                      {canEditConversion && <th aria-label="Aksi" />}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alternateUoms.length === 0 && (
+                      <tr>
+                        <td colSpan={canEditConversion ? 3 : 2} style={{ color: "#64748b" }}>
+                          Belum ada satuan alternatif. Transaksi memakai PCS.
+                        </td>
+                      </tr>
+                    )}
+                    {alternateUoms.map((row, idx) => (
+                      <tr key={`alt-uom-${idx}`}>
+                        <td>
+                          <input
+                            type="text"
+                            value={row.uom}
+                            onChange={(e) => {
+                              updateAlternateRow(idx, "uom", e.target.value);
+                              if (idx === 0) setTxUom(e.target.value);
+                            }}
+                            placeholder="PACK / CRT / BOX"
+                            disabled={!canEditConversion || savingSetting}
+                            data-testid={`input-alt-uom-${idx}`}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            value={row.factor_to_base}
+                            onChange={(e) => {
+                              updateAlternateRow(idx, "factor_to_base", e.target.value);
+                              if (idx === 0) setConvFactor(e.target.value);
+                            }}
+                            placeholder="500"
+                            disabled={!canEditConversion || savingSetting}
+                            data-testid={`input-alt-factor-${idx}`}
+                          />
+                        </td>
+                        {canEditConversion && (
+                          <td>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => removeAlternateRow(idx)}
+                              disabled={savingSetting}
+                              aria-label={`Hapus satuan ${row.uom || idx + 1}`}
+                              data-testid={`btn-remove-alt-uom-${idx}`}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
               <div className="conversion-preview-box" data-testid="conversion-preview">
+                <div className="conversion-preview-inputs">
+                  <label htmlFor="preview-qty-input">Preview</label>
+                  <input
+                    id="preview-qty-input"
+                    type="text"
+                    value={previewQty}
+                    onChange={(e) => setPreviewQty(e.target.value)}
+                    data-testid="input-preview-qty"
+                  />
+                  <select
+                    value={previewUom || (baseUom || "PCS")}
+                    onChange={(e) => setPreviewUom(e.target.value)}
+                    data-testid="select-preview-uom"
+                    aria-label="Satuan preview"
+                  >
+                    <option value={(isInventoryItem ? "PCS" : baseUom) || "PCS"}>
+                      {(isInventoryItem ? "PCS" : baseUom) || "PCS"}
+                    </option>
+                    {alternateUoms
+                      .map((r) => String(r.uom || "").trim().toUpperCase())
+                      .filter(Boolean)
+                      .filter((u, i, arr) => arr.indexOf(u) === i)
+                      .map((u) => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                  </select>
+                </div>
                 <span>Konversi Terdefinisi:</span>
-                <strong>
-                  1 {txUom.trim().toUpperCase() || "UNIT"} ={" "}
-                  {txUom.trim().toUpperCase() === baseUom.trim().toUpperCase() ? "1" : convFactor}{" "}
-                  {baseUom.trim().toUpperCase() || "PCS"}
+                <strong data-testid="conversion-preview-result">
+                  {(() => {
+                    const p = conversionPreviewPcs();
+                    if (p.ok) return p.text;
+                    // Fallback display for empty / same-UOM primary pair
+                    const base = (isInventoryItem ? "PCS" : baseUom).trim().toUpperCase() || "PCS";
+                    const tx = txUom.trim().toUpperCase() || "UNIT";
+                    if (txUom.trim().toUpperCase() === baseUom.trim().toUpperCase()) {
+                      return `1 ${tx} = 1 ${base}`;
+                    }
+                    return p.text || `1 ${tx} = ${convFactor} ${base}`;
+                  })()}
                 </strong>
               </div>
 

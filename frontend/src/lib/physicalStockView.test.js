@@ -190,7 +190,7 @@ describe("physical stock view helpers", () => {
         balance_present: false,
       }],
     }, { warehouseId: "wh-b" });
-    expect(absent).toEqual({ present: false, qty: null, text: "Belum tersedia" });
+    expect(absent).toEqual({ present: false, qty: null, text: "Belum saldo" });
 
     const zeroBook = bookPhysicalDisplay({
       physical_qty: 0,
@@ -213,7 +213,7 @@ describe("physical stock view helpers", () => {
     expect(book20).toEqual({ present: true, qty: 20, text: null });
   });
 
-  test("stockPhysicalPrimaryDisplay is a single status — never Belum tersedia + Belum lengkap", () => {
+  test("stockPhysicalPrimaryDisplay is a single status — never Belum saldo + Belum lengkap", () => {
     const partial = {
       physical_qty: 200,
       baseline_status: "unreconciled",
@@ -239,11 +239,12 @@ describe("physical stock view helpers", () => {
     }, { branchAggregate: true });
     expect(allMissing.text).toBe("Belum lengkap");
     expect(allMissing.flag).toBeNull();
-    expect(`${allMissing.text || ""}${allMissing.flag || ""}`).not.toMatch(/tersedia.*lengkap|lengkap.*tersedia/i);
+    expect(`${allMissing.text || ""}${allMissing.flag || ""}`).not.toMatch(/saldo.*lengkap|lengkap.*saldo/i);
 
     const selectedMissing = stockPhysicalPrimaryDisplay(partial, { warehouseId: "wh-a" });
-    expect(selectedMissing.text).toBe("Belum tersedia");
+    expect(selectedMissing.text).toBe("Belum saldo");
     expect(selectedMissing.flag).toBeNull();
+    expect(selectedMissing.text).not.toMatch(/terverifikasi/i);
 
     const valid = stockPhysicalPrimaryDisplay({
       physical_qty: 1500,

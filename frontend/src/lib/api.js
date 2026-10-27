@@ -310,6 +310,7 @@ export const api = {
     client.get(`/physical-stock/status-summary`, { params }).then((r) => r.data),
   physicalStock: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-stock`, { params }).then((r) => r.data),
   physicalMutations: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-mutations`, { params }).then((r) => r.data),
+  ssiItemActivity: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/ssi-activity`, { params }).then((r) => r.data),
   physicalOpeningBalance: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, { params }).then((r) => r.data),
   createPhysicalOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/physical-opening-balance`, payload).then((r) => r.data),
   physicalOpeningImportTemplate: (params = {}) =>

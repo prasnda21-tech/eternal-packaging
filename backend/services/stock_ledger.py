@@ -176,21 +176,44 @@ async def record_stock_movement(
             if existing_by_id:
                 return existing_by_id
 
-        # Fetch unit setting snapshot
-        setting = await get_product_unit_setting(db, mid)
-        base_uom = (setting or {}).get("base_uom") or master.get("unit") or "PCS"
-        
-        tx_uom = str(transaction_uom or (setting or {}).get("transaction_uom") or base_uom).strip().upper()
-        
-        if tx_uom == base_uom.upper():
-            factor = 1.0
-        else:
-            factor = safe_float((setting or {}).get("conversion_factor"), 1.0)
-            if factor <= 0:
-                factor = 1.0
+        # Fetch unit setting snapshot (PR-B: alternate_uoms via canonical helper)
+        from services.product_unit_conversion import (
+            UnitConversionError,
+            canonicalize_to_base,
+            normalize_uom,
+        )
 
-        tx_qty = safe_float(transaction_qty)
-        base_qty = safe_float(tx_qty * factor)
+        setting = await get_product_unit_setting(db, mid)
+        base_uom = normalize_uom((setting or {}).get("base_uom") or master.get("unit") or "PCS")
+        tx_uom = normalize_uom(transaction_uom or (setting or {}).get("transaction_uom") or base_uom)
+        try:
+            snap = canonicalize_to_base(
+                transaction_qty=transaction_qty,
+                transaction_uom=tx_uom,
+                setting=setting,
+                master=master,
+                require_integer_base=False,
+            )
+            factor = safe_float(snap["conversion_factor"], 1.0)
+            tx_qty = safe_float(snap["transaction_qty"])
+            base_qty = safe_float(snap["base_qty"])
+            base_uom = snap["base_uom"]
+            tx_uom = snap["transaction_uom"]
+        except UnitConversionError:
+            # Legacy soft fallback: same-UOM only (never invent unknown UOM factor)
+            if tx_uom == base_uom:
+                factor = 1.0
+                tx_qty = safe_float(transaction_qty)
+                base_qty = tx_qty
+            else:
+                factor = safe_float((setting or {}).get("conversion_factor"), 0.0)
+                if factor <= 0:
+                    raise HTTPException(
+                        400,
+                        f"Satuan '{tx_uom}' tidak valid untuk konversi stok master ini",
+                    )
+                tx_qty = safe_float(transaction_qty)
+                base_qty = safe_float(tx_qty * factor)
 
         # Determine CETAK vs NON CETAK
         is_p = None

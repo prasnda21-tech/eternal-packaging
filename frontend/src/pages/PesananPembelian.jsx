@@ -31,6 +31,12 @@ import {
 import { fmtQty } from "../components/qtyUi";
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
+import TransactionUomSelect from "../components/TransactionUomSelect";
+import {
+  buildTransactionUomOptions,
+  defaultTransactionUom,
+  normalizeUom,
+} from "../lib/transactionUomOptions";
 import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseCancelModal from "./PurchaseCancelModal";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
@@ -45,11 +51,36 @@ function emptyPoLine() {
     accurate_item_id: "",
     item_name: "",
     item_code: "",
-    unit: "pcs",
+    unit: "PCS",
+    uom_options: [{ uom: "PCS", factor_to_base: 1, label: "PCS (dasar)" }],
     ordered_qty: "",
     unit_price: "",
     remaining_hint: null,
   };
+}
+
+async function uomFieldsForMaster(it) {
+  const fallbackUnit = normalizeUom(it?.unit || "PCS");
+  const mid = it?.id || it?.master_item_id || "";
+  if (!mid) {
+    return {
+      unit: fallbackUnit,
+      uom_options: buildTransactionUomOptions(null, { unit: fallbackUnit }),
+    };
+  }
+  try {
+    const detail = await api.masterItemDetail(mid);
+    const options = buildTransactionUomOptions(detail?.unit_setting, detail?.item || it);
+    return {
+      unit: defaultTransactionUom(options, fallbackUnit),
+      uom_options: options,
+    };
+  } catch {
+    return {
+      unit: fallbackUnit,
+      uom_options: buildTransactionUomOptions(null, { unit: fallbackUnit }),
+    };
+  }
 }
 
 export default function PesananPembelian() {
@@ -192,25 +223,28 @@ export default function PesananPembelian() {
   const addLine = () => setLines((p) => [...p, emptyPoLine()]);
   const removeLine = (i) => setLines((p) => (p.length <= 1 ? p : p.filter((_, idx) => idx !== i)));
 
-  const pickItem = (i, it) => {
+  const pickItem = async (i, it) => {
     if (!it) {
       return setLine(i, {
         master_item_id: "",
         accurate_item_id: "",
         item_name: "",
         item_code: "",
-        unit: "pcs",
+        unit: "PCS",
+        uom_options: [{ uom: "PCS", factor_to_base: 1, label: "PCS (dasar)" }],
         request_line_id: "",
         remaining_hint: null,
       });
     }
     const mid = it.id || it.master_item_id || "";
+    const uom = await uomFieldsForMaster(it);
     setLine(i, {
       master_item_id: mid,
       accurate_item_id: it.accurate_item_id || "",
       item_name: it.item_name || "",
       item_code: it.item_code || "",
-      unit: it.unit || "pcs",
+      unit: uom.unit,
+      uom_options: uom.uom_options,
       // swapping item clears PR fulfillment link
       request_line_id: "",
       remaining_hint: null,
@@ -237,7 +271,7 @@ export default function PesananPembelian() {
           accurate_item_id: l.accurate_item_id,
           item_code: l.item_code,
           item_name: l.item_name,
-          unit: l.unit,
+          unit: normalizeUom(l.unit),
           ordered_qty: l.ordered_qty,
           unit_price: l.unit_price,
         }));
@@ -708,7 +742,14 @@ export default function PesananPembelian() {
                         )}
                       </td>
                       <td className="mono">{l.item_code || "—"}</td>
-                      <td className="unit-cell"><input value={l.unit} readOnly tabIndex={-1} /></td>
+                      <td className="unit-cell">
+                        <TransactionUomSelect
+                          value={l.unit}
+                          options={l.uom_options}
+                          testId={`po-line-unit-${i}`}
+                          onChange={(unit) => setLine(i, { unit })}
+                        />
+                      </td>
                       <td className="qty-cell">
                         <input
                           type="number"

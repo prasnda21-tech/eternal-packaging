@@ -70,7 +70,14 @@ async def db():
 
 
 async def _location(db, *, qty=1000, code="MAIN", branch_code="YGY"):
-    item = {"id": f"item-{uuid.uuid4().hex[:8]}", "item_code": "BOX", "item_name": "Dus", "unit": "PCS"}
+    item = {
+        "id": f"item-{uuid.uuid4().hex[:8]}",
+        "item_code": "BOX",
+        "item_name": "Dus",
+        "unit": "PCS",
+        # Stock Saat Ini catalog is INVENTORY-only; fixture must be explicit.
+        "item_type": "INVENTORY",
+    }
     branch = {"id": f"br-{uuid.uuid4().hex[:8]}", "code": branch_code, "name": "Yogyakarta", "active": True}
     warehouse = {
         "id": f"wh-{uuid.uuid4().hex[:8]}",

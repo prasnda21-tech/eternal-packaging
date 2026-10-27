@@ -16,6 +16,12 @@ jest.mock("../lib/api", () => ({
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
     physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
+    ssiItemActivity: jest.fn().mockResolvedValue({
+      items: [],
+      counts: { fisik: 0, so: 0, cetak: 0 },
+      history_incomplete: true,
+      coverage: { limitation: "Riwayat uji — hanya event berbukti." },
+    }),
   },
 }));
 
@@ -33,12 +39,32 @@ async function flush() {
   });
 }
 
-describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
+describe("Stock Saat Ini UX — compact list + detail drawer", () => {
   beforeEach(() => {
     api.physicalStockStatusSummary.mockResolvedValue({
       counts: {},
       operational_actions: [],
       read_only: true,
+    });
+    api.ssiItemActivity.mockResolvedValue({
+      items: [
+        {
+          lane: "FISIK",
+          activity: "Purchase Receipt",
+          activity_code: "PURCHASE_RECEIPT",
+          qty_pcs: 10,
+          metric_affected: "stock",
+          source_label: "PB-1",
+          source_path: "/pembelian/penerimaan/pb-1",
+          actor_name: "UAT",
+          occurred_at: "2026-10-20T10:00:00+00:00",
+          affects_physical_stock: true,
+          before_after_supported: false,
+        },
+      ],
+      counts: { fisik: 1, so: 0, cetak: 0 },
+      history_incomplete: false,
+      coverage: {},
     });
   });
 
@@ -59,7 +85,7 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     jest.clearAllMocks();
   });
 
-  test("standalone mode chip + warehouse expand is collapsed by default", async () => {
+  test("compact headers + detail drawer show warehouse breakdown and history", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "warehouse_standalone",
       stock_read_mode_label: "Mode warehouse standalone — stok fisik per cabang/gudang (tanpa Replica Set).",
@@ -84,6 +110,9 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
         qty_belum_terkirim: 0,
         qty_tersedia: 120,
         qty_tersedia_valid: true,
+        stock_dapat_dijual: 120,
+        qty_polos: 80,
+        qty_polos_status: "READY",
         warehouse_balances: [
           { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: 80, balance_present: true },
           { warehouse_id: "wh-b", warehouse_code: "B", physical_qty: 40, balance_present: true },
@@ -95,23 +124,34 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     expect(container.querySelector('[data-testid="stock-mode-chip"]')?.textContent).toMatch(/Gudang/i);
     expect(container.querySelector('[data-testid="stock-legend-toggle"]')?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelector('[data-testid="stock-context-info"]')?.hidden).toBe(true);
-    expect(container.querySelector('[data-testid="stock-legend-bar"]')?.querySelector(".stock-legend-items")).toBeNull();
-    expect(container.querySelector('[data-testid="stock-status-summary-detail-toggle"]')?.getAttribute("aria-expanded")).toBe("false");
-    expect(container.querySelector('[data-testid="stock-mutasi-nav-m-dual"]')?.getAttribute("href")).toMatch(/tab=mutasi/);
-    expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/standalone|gudang/i);
+    expect(container.querySelector('[data-testid="stock-status-summary-toggle"]')?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="stock-unit-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-cetak-dikirim-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toMatch(/^Stock$/);
+    expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent).toMatch(/Stock Dapat Dijual/i);
+    expect(container.querySelector('[data-testid="stock-polos-header"]')?.textContent).toMatch(/Qty Polos/i);
+    expect(container.querySelector('[data-testid="stock-detail-header"]')?.textContent).toMatch(/Aksi/i);
     expect(container.querySelector('[data-testid="stock-item-m-dual"] .stock-item-primary')?.textContent)
       .toMatch(/Pouch Matte/i);
     expect(container.querySelector('[data-testid="stock-code-m-dual"]')?.textContent).toBe("UAT-606-004");
-    expect(container.querySelector('[data-testid="stock-unit-header"]')?.textContent).toMatch(/Satuan Dasar/i);
-    expect(container.querySelector('[data-testid="stock-unit-m-dual"]')?.textContent).toBe("PCS");
-    expect(container.querySelector('[data-testid="stock-item-m-dual"]')?.textContent).not.toMatch(/Satuan Dasar PCS/i);
-    expect(container.querySelector('[data-testid="stock-warehouse-breakdown-m-dual"]')).toBeNull();
-    const expand = container.querySelector('[data-testid="stock-expand-m-dual"]');
-    expect(expand).toBeTruthy();
-    await act(async () => { expand.click(); });
-    expect(container.querySelector('[data-testid="stock-warehouse-breakdown-m-dual"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="stock-wh-bal-m-dual-MAIN"]')?.textContent).toMatch(/80/);
-    expect(container.querySelector('[data-testid="stock-wh-bal-m-dual-B"]')?.textContent).toMatch(/40/);
+    expect(container.querySelector('[data-testid="stock-expand-m-dual"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-mutasi-nav-m-dual"]')).toBeNull();
+    const detailBtn = container.querySelector('[data-testid="stock-detail-m-dual"]');
+    expect(detailBtn?.textContent).toMatch(/Lihat Detail/i);
+    await act(async () => { detailBtn.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ssi-detail-title"]')?.textContent).toMatch(/Pouch Matte/i);
+    expect(container.querySelector('[data-testid="ssi-detail-wh-wh-a"]')?.textContent).toMatch(/80/);
+    expect(container.querySelector('[data-testid="ssi-detail-wh-wh-b"]')?.textContent).toMatch(/40/);
+    expect(container.querySelector('[data-testid="ssi-detail-mutasi-link"]')?.getAttribute("href")).toMatch(/tab=mutasi/);
+    expect(api.ssiItemActivity).toHaveBeenCalledWith("m-dual", expect.objectContaining({ lane: "SEMUA" }));
+    expect(container.querySelector('[data-testid="ssi-history-row-0"]')?.textContent).toMatch(/Purchase Receipt/i);
+    await act(async () => {
+      container.querySelector('[data-testid="ssi-history-filter-SO"]').click();
+    });
+    await flush();
+    expect(api.ssiItemActivity).toHaveBeenCalledWith("m-dual", expect.objectContaining({ lane: "SO" }));
   });
 
   test("aggregate keeps warehouse deficit visible without claiming zero for missing balance", async () => {
@@ -139,6 +179,9 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
           qty_belum_terkirim: 0,
           qty_tersedia: 75,
           qty_tersedia_valid: true,
+          stock_dapat_dijual: 75,
+          qty_polos: 75,
+          qty_polos_status: "READY",
           updated_at: "2026-10-17T01:09:00+00:00",
           updated_by_name: "Rafi Operator",
           warehouse_balances: [
@@ -158,6 +201,11 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
           qty_tersedia_valid: false,
           baseline_status: "unreconciled",
           baseline_label: "Saldo awal belum direkonsiliasi",
+          qty_tercetak: null,
+          qty_tercetak_status: "UNVERIFIED",
+          qty_tercetak_reason: "NO_OPERATOR_EVIDENCE",
+          qty_polos: null,
+          qty_polos_status: "UNVERIFIED",
           updated_at: "2026-10-17T01:10:00+00:00",
           updated_by_name: null,
           warehouse_balances: [
@@ -169,39 +217,41 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     });
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
-    // Single primary status — never Belum tersedia + Belum lengkap together.
     expect(container.querySelector('[data-testid="stock-aggregate-hint-m-neg"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-flag-m-neg"]')?.textContent).toMatch(/Defisit/i);
     expect(container.querySelector('[data-testid="stock-physical-m-neg"]')?.textContent)
       .not.toMatch(/Saldo awal belum direkonsiliasi|Ada gudang belum saldo|Belum lengkap/i);
-    expect(container.querySelector('[data-testid="stock-available-invalid-m-miss"]')?.textContent)
-      .toMatch(/Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent)
+      .toMatch(/Stock Dapat Dijual/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.getAttribute("data-baseline-label"))
       .toMatch(/belum direkonsiliasi|Belum valid/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
       .toMatch(/Belum lengkap/);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
-      .not.toMatch(/Belum tersedia/i);
+      .not.toMatch(/Belum tersedia|Belum terverifikasi/i);
+    expect(container.querySelector('[data-testid="stock-polos-m-miss"]')?.textContent)
+      .toMatch(/Belum terverifikasi/i);
     expect(container.querySelector('[data-testid="stock-flag-m-miss"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-legend-bar"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="stock-updated-by-m-neg"]')?.textContent)
-      .toMatch(/oleh Rafi Operator/);
-    expect(container.querySelector('[data-testid="stock-updated-by-m-miss"]')?.textContent)
-      .toMatch(/oleh Tidak tercatat/);
     await act(async () => {
-      container.querySelector('[data-testid="stock-expand-m-neg"]').click();
+      container.querySelector('[data-testid="stock-detail-m-neg"]').click();
     });
-    const negCell = container.querySelector('[data-testid="stock-wh-bal-m-neg-MAIN"]');
-    expect(negCell?.getAttribute("data-negative")).toBe("true");
-    expect(negCell?.textContent).toMatch(/-?25|−25/);
-    expect(negCell?.textContent).toMatch(/Defisit|negatif/i);
+    await flush();
+    const negWh = container.querySelector('[data-testid="ssi-detail-wh-wh-a"]');
+    expect(negWh?.textContent).toMatch(/-?25|−25/);
+    expect(negWh?.querySelector(".stock-book-negative")).toBeTruthy();
     await act(async () => {
-      container.querySelector('[data-testid="stock-expand-m-miss"]').click();
+      container.querySelector('[data-testid="ssi-detail-close"]').click();
     });
-    const miss = container.querySelector('[data-testid="stock-wh-bal-m-miss-MAIN"]');
-    expect(miss?.getAttribute("data-balance-present")).toBe("false");
-    expect(miss?.textContent).toMatch(/Belum tersedia/i);
-    expect(miss?.textContent).not.toMatch(/\b0\b/);
+    await act(async () => {
+      container.querySelector('[data-testid="stock-detail-m-miss"]').click();
+    });
+    await flush();
+    const missWh = container.querySelector('[data-testid="ssi-detail-wh-wh-a"]');
+    expect(missWh?.textContent).toMatch(/Belum saldo/i);
+    expect(missWh?.textContent).not.toMatch(/\b0\b/);
+    expect(container.querySelector('[data-testid="ssi-detail-qty_tercetak"]')?.textContent)
+      .toMatch(/Belum terverifikasi/i);
   });
 
   test("compatibility mode keeps blocked actions and contextual engine notes", async () => {
@@ -235,6 +285,7 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     expect(container.querySelector('[data-testid="stock-context-info"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-read-mode"]')?.textContent).toMatch(/kompatibilitas|perusahaan/i);
     expect(container.querySelector('[data-testid="saldo-awal-button"]')?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="stock-detail-m1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-expand-m1"]')).toBeNull();
   });
 });

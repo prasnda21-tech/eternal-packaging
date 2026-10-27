@@ -76,6 +76,8 @@ async def _seed(db, *, physical=1000, ordered=300):
         "item_code": "CETAK-SKU",
         "item_name": "Cetak SKU",
         "unit": "PCS",
+        # Stock Saat Ini catalog is INVENTORY-only; fixture must be explicit.
+        "item_type": "INVENTORY",
         "is_active": True,
     }
     branch = {
