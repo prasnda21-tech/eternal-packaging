@@ -191,7 +191,10 @@ async def test_r2_catalog_and_summary_follow_inventory_filter(db):
     assert [r["item_code"] for r in catalog["items"]] == ["INV-R2"]
     row = catalog["items"][0]
     assert row["physical_qty"] == 10
-    assert row["qty_siap_jual"] is None
+    # Owner Excel SSI: condition columns are computed (Stock Dapat Dijual etc.), not null.
+    assert row["stock"] == 10
+    assert row["stock_dapat_dijual"] == row["qty_siap_jual"]
+    assert row["qty_siap_jual_status"] == "READY"
     assert row["baseline_status"] == "reconciled"
 
     # Missing balance stays non-zero-forced: second INVENTORY without opening.
@@ -228,4 +231,8 @@ async def test_standalone_catalog_inventory_filter(db):
     assert catalog["stock_read_mode"] == MODE_WAREHOUSE_STANDALONE
     assert catalog["warehouse_stock_standalone"] is True
     assert [r["item_code"] for r in catalog["items"]] == ["INV-SA"]
-    assert catalog["items"][0]["qty_polos_gudang"] is None
+    # Standalone path still inventory-only; Excel columns attach when balance present.
+    assert catalog["items"][0]["physical_qty"] == 7
+    assert catalog["items"][0]["ssi_formula_version"] == "ssi_excel_v1"
+    assert catalog["items"][0]["qty_polos_gudang"] == 7
+    assert catalog["items"][0]["stock_dapat_dijual"] == 7

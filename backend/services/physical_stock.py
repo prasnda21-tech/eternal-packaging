@@ -3824,6 +3824,43 @@ async def list_physical_stock_catalog(
     balances: Dict[str, List[dict]] = {}
     for doc in balance_docs:
         balances.setdefault(doc.get("master_item_id"), []).append(doc)
+
+    # Owner Excel SSI components (Saldo Awal / Pembelian / delivered) from R2 ledger.
+    # Read-only aggregation — no dual stock mutation.
+    from services.stock_saat_ini_excel import (
+        aggregate_ledger_components,
+        apply_excel_fields_to_catalog_row,
+        compute_excel_columns,
+        parent_qty_tercetak_from_progress,
+    )
+
+    ledger_components: Dict[str, Dict[str, float]] = {}
+    if master_ids and operational_id and catalog_mode == "r2":
+        ledger_query: Dict[str, Any] = {
+            "master_item_id": {"$in": master_ids},
+            "branch_id": operational_id,
+            "movement_type": {
+                "$in": [
+                    MOVEMENT_OPENING_BALANCE,
+                    MOVEMENT_PURCHASE_RECEIPT,
+                    MOVEMENT_SALES_DELIVERY,
+                    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+                    MOVEMENT_MANUAL_ADJUSTMENT,
+                    MOVEMENT_REVERSAL,
+                ]
+            },
+        }
+        selected_wh = str(warehouse_id or "").strip()
+        if selected_wh:
+            ledger_query["warehouse_id"] = selected_wh
+        ledger_docs = await db[LEDGER_COLLECTION].find(ledger_query, {"_id": 0}).to_list(50000)
+        ledger_components = aggregate_ledger_components(
+            ledger_docs,
+            master_item_ids=master_ids,
+            branch_id=operational_id,
+            warehouse_id=selected_wh or None,
+        )
+
     rows = []
     for master in masters:
         docs = balances.get(master.get("id"), [])
@@ -3953,7 +3990,7 @@ async def list_physical_stock_catalog(
             "qty_tersedia": buckets["qty_tersedia"],
             "qty_tersedia_valid": qty_tersedia_valid,
             "qty_tersedia_note": tersedia_note,
-            # Honest warehouse-condition fields — null, never fabricated 0.
+            # Placeholder condition fields — overwritten by Owner Excel formula below.
             **stock_saat_ini_condition_unavailable_fields(),
             "delivery_provenance": delivery_provenance.get(str(mid) or mid),
             # Provisional from balance stamps; replaced by the same final movement
@@ -3977,6 +4014,56 @@ async def list_physical_stock_catalog(
             "demand_scope": "BRANCH",
             "availability_scope": "BRANCH",
         }
+        # Owner Excel SSI (PCS): Saldo Awal, Pembelian, Stock, Stock Dapat Dijual,
+        # Qty Tercetak / Polos / Tercetak Belum Kirim / Cetak Sudah Dikirim.
+        # Uses existing order + delivery + ledger events — no second mutation path.
+        comp = ledger_components.get(str(mid) or mid) or {}
+        balance_present_any = any(
+            bool(wb.get("balance_present")) for wb in warehouse_balances
+        )
+        qty_tercetak = parent_qty_tercetak_from_progress(demand)
+        # so_delivered from proven delivery map (same proof as Belum Terkirim).
+        # Cap printed-shipped by qty_tercetak when print/polos split is unavailable.
+        excel = compute_excel_columns(
+            saldo_awal=comp.get("saldo_awal", 0),
+            pembelian=comp.get("pembelian", 0),
+            adjustment_net=comp.get("adjustment_net", 0),
+            delivered_total=effective_delivered,
+            po_ordered=demand["ordered_qty"],
+            so_delivered=effective_delivered,
+            qty_tercetak=qty_tercetak,
+            stock_book=buckets["physical_qty"] if balance_present_any else None,
+        )
+        apply_excel_fields_to_catalog_row(
+            row,
+            excel,
+            balance_present=balance_present_any or bool(comp),
+        )
+        if completion_unproven:
+            row["qty_tercetak"] = 0
+            row["qty_sudah_cetak_gudang"] = 0
+            row["qty_sudah_cetak_gudang_status"] = "BELUM_TERSEDIA"
+            row["qty_sudah_cetak_gudang_reason"] = "COMPLETION_UNPROVEN"
+            row["qty_sudah_cetak_gudang_note"] = (
+                "Qty Tercetak belum terverifikasi — proses multiwarna/Add On ambigu."
+            )
+            # Recompute polos / belum kirim with fail-closed tercetak=0
+            excel_safe = compute_excel_columns(
+                saldo_awal=comp.get("saldo_awal", 0),
+                pembelian=comp.get("pembelian", 0),
+                adjustment_net=comp.get("adjustment_net", 0),
+                delivered_total=effective_delivered,
+                po_ordered=demand["ordered_qty"],
+                so_delivered=effective_delivered,
+                qty_tercetak=0,
+                stock_book=buckets["physical_qty"] if balance_present_any else None,
+            )
+            row["qty_polos"] = excel_safe["qty_polos"]
+            row["qty_polos_gudang"] = excel_safe["qty_polos"]
+            row["tercetak_belum_kirim"] = excel_safe["tercetak_belum_kirim"]
+            row["cetak_sudah_dikirim"] = excel_safe["cetak_sudah_dikirim"]
+            row["stock_dapat_dijual"] = excel_safe["stock_dapat_dijual"]
+            row["qty_siap_jual"] = excel_safe["stock_dapat_dijual"]
         if selected_warehouse:
             row["warehouse_id"] = str(selected_warehouse.get("id") or "")
             row["warehouse_code"] = selected_warehouse.get("code") or ""
