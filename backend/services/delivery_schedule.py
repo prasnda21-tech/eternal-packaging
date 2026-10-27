@@ -75,10 +75,20 @@ SCHEDULE_PROJECTION = {
     "shipments.delivery_date": 1,
     "shipments.created_at": 1,
     "shipments.lines": 1,
+    "shipments.total_qty": 1,
     "shipments.delivery_location": 1,
     "shipments.delivered_at": 1,
     "shipments.delivery_status": 1,
     "shipments.qty_delivered": 1,
+    # Inactive flags must be projected — omission made cancelled/superseded look active.
+    "shipments.status": 1,
+    "shipments.sj_status": 1,
+    "shipments.cancelled": 1,
+    "shipments.is_cancelled": 1,
+    "shipments.deleted": 1,
+    "shipments.is_deleted": 1,
+    "shipments.superseded": 1,
+    "shipments.superseded_by_shipment_id": 1,
     "loading_checklist.driver_name": 1,
     "loading_checklist.driver_user_id": 1,
     "loading_checklist.items_loaded": 1,
@@ -510,29 +520,230 @@ def schedule_row(
     }
 
 
+# Authoritative sales_deliveries fields for schedule read-path reconcile (batched).
+SCHEDULE_SALES_DELIVERY_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "po_id": 1,
+    "sj_number": 1,
+    "delivery_date": 1,
+    "shipment_index": 1,
+    "line_items": 1,
+    "total_qty": 1,
+    "delivery_location": 1,
+    "is_cancelled": 1,
+    "cancelled": 1,
+    "status": 1,
+    "superseded": 1,
+    "superseded_by_shipment_id": 1,
+    "deleted": 1,
+    "is_deleted": 1,
+    "delivered_at": 1,
+    "delivery_status": 1,
+    "qty_delivered": 1,
+}
+
+_INACTIVE_SD_STATUSES = frozenset({
+    "cancelled", "dibatalkan", "deleted", "superseded",
+})
+
+
+def sales_delivery_is_active_for_schedule(sd: Optional[dict]) -> bool:
+    """Authoritative cancel/supersede for sales_deliveries documents.
+
+    Conservative: any cancel/supersede/deleted marker excludes the SJ.
+    """
+    if not isinstance(sd, dict):
+        return False
+    if sd.get("is_cancelled") or sd.get("cancelled") or sd.get("deleted") or sd.get("is_deleted"):
+        return False
+    if sd.get("superseded") or str(sd.get("superseded_by_shipment_id") or "").strip():
+        return False
+    st = str(sd.get("status") or "").strip().lower()
+    if st in _INACTIVE_SD_STATUSES:
+        return False
+    return True
+
+
+def shipment_projection_from_sales_delivery(sd: dict) -> dict:
+    """In-memory shipment-shaped adapter from authoritative sales_deliveries.
+
+    Never persisted. Used only so schedule_row / loading helpers keep working.
+    """
+    sid = str(sd.get("id") or "").strip()
+    number = str(sd.get("sj_number") or "").strip()
+    lines_out: List[dict] = []
+    raw_lines = sd.get("line_items")
+    if isinstance(raw_lines, list):
+        for ln in raw_lines:
+            if not isinstance(ln, dict):
+                continue
+            qty_raw = ln.get("qty") if ln.get("qty") is not None else ln.get("quantity")
+            item = {
+                "line_idx": ln.get("line_idx"),
+                "line_id": ln.get("line_id"),
+                "qty": qty_raw,
+                "name": ln.get("name"),
+                "unit": ln.get("unit") or ln.get("satuan") or "pcs",
+                "color": ln.get("color"),
+                "production_process": ln.get("production_process"),
+            }
+            lines_out.append(item)
+    out = {
+        "id": sid,
+        "sales_delivery_id": sid,
+        "number": number,
+        "sj_number": number,
+        "delivery_date": sd.get("delivery_date"),
+        "shipment_index": sd.get("shipment_index"),
+        "lines": lines_out,
+        "total_qty": sd.get("total_qty"),
+        "delivery_location": sd.get("delivery_location"),
+        "delivered_at": sd.get("delivered_at"),
+        "delivery_status": sd.get("delivery_status"),
+        "qty_delivered": sd.get("qty_delivered"),
+        "is_cancelled": bool(sd.get("is_cancelled") or sd.get("cancelled")),
+        "cancelled": bool(sd.get("cancelled") or sd.get("is_cancelled")),
+        "status": sd.get("status"),
+        "superseded": sd.get("superseded"),
+        "superseded_by_shipment_id": sd.get("superseded_by_shipment_id"),
+        "from_sales_delivery_reconcile": True,
+    }
+    return out
+
+
+def merge_schedule_shipment(embedded: Optional[dict], sd: dict) -> dict:
+    """Prefer authoritative SD identity/date/qty; keep embedding operational fields."""
+    base = shipment_projection_from_sales_delivery(sd)
+    if not isinstance(embedded, dict):
+        return base
+    # Start from embedding so loading/delivery_status/driver-linked fields survive.
+    out = dict(embedded)
+    out["id"] = base["id"] or _shipment_sj_id(embedded) or ""
+    out["sales_delivery_id"] = out["id"]
+    if base.get("number"):
+        out["number"] = base["number"]
+        out["sj_number"] = base["number"]
+    # Authoritative delivery date from sales_deliveries.
+    if base.get("delivery_date"):
+        out["delivery_date"] = base["delivery_date"]
+    if base.get("shipment_index") is not None and out.get("shipment_index") is None:
+        out["shipment_index"] = base["shipment_index"]
+    if (not isinstance(out.get("lines"), list) or not out["lines"]) and base.get("lines"):
+        out["lines"] = base["lines"]
+    if out.get("total_qty") is None and base.get("total_qty") is not None:
+        out["total_qty"] = base["total_qty"]
+    if out.get("delivery_location") is None and base.get("delivery_location") is not None:
+        out["delivery_location"] = base["delivery_location"]
+    # Conservative cancel from authoritative SD.
+    if not sales_delivery_is_active_for_schedule(sd):
+        out["is_cancelled"] = True
+        out["cancelled"] = True
+        out["status"] = "cancelled"
+        out["sj_status"] = "cancelled"
+    out["from_sales_delivery_reconcile"] = True
+    return out
+
+
+def reconcile_schedule_shipments(
+    order: dict,
+    sales_deliveries: Optional[List[dict]] = None,
+) -> List[dict]:
+    """Build one in-memory shipment list for schedule rows.
+
+    - sales_deliveries is authoritative for identity, number, date, cancel.
+    - orders.shipments remains compatibility projection (progress/loading).
+    - Legacy active embeddings without a sales_delivery stay included.
+    - No PO-level fallback; no persistence.
+    """
+    from quantity_rules import shipment_is_active
+
+    sd_list = [d for d in (sales_deliveries or []) if isinstance(d, dict)]
+    embedded_raw = order.get("shipments") if isinstance(order.get("shipments"), list) else []
+    by_id: Dict[str, dict] = {}
+    for sh in embedded_raw:
+        if not isinstance(sh, dict):
+            continue
+        sid = _shipment_sj_id(sh)
+        if sid and sid not in by_id:
+            by_id[sid] = sh
+
+    out: List[dict] = []
+    seen: set = set()
+
+    for sd in sd_list:
+        if not sales_delivery_is_active_for_schedule(sd):
+            continue
+        sid = str(sd.get("id") or "").strip()
+        number = str(sd.get("sj_number") or "").strip()
+        if not sid or not number:
+            continue
+        if not parse_date_key(sd.get("delivery_date")):
+            continue
+        merged = merge_schedule_shipment(by_id.get(sid), sd)
+        if not shipment_is_active(merged):
+            continue
+        if not shipment_delivery_date(merged):
+            continue
+        out.append(merged)
+        seen.add(sid)
+
+    # Legacy embeddings with no matching sales_delivery document.
+    for sh in dated_schedule_shipments(order):
+        sid = _shipment_sj_id(sh)
+        if not sid or sid in seen:
+            continue
+        if not _shipment_sj_number(sh):
+            continue
+        # If an authoritative SD exists for this id, it already decided eligibility.
+        if any(str(d.get("id") or "").strip() == sid for d in sd_list):
+            continue
+        out.append(sh)
+        seen.add(sid)
+
+    out.sort(
+        key=lambda sh: (
+            shipment_delivery_date(sh) or "",
+            _shipment_index(sh),
+            str(sh.get("created_at") or ""),
+        ),
+    )
+    return out
+
+
 def schedule_rows(
     order: dict,
     today: Optional[str] = None,
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     holidays: Optional[list] = None,
+    sales_deliveries: Optional[List[dict]] = None,
 ) -> List[dict]:
     """One Jadwal Pengiriman row per dated canonical Surat Jalan.
 
-    Eligible shipment: delivery_date AND canonical SJ id AND canonical SJ number.
-    Same-date shipments stay separate; shipment_index is the existing sequence
-    tie-break (Pengiriman Kirim #), never SJ-suffix parsing.
+    When sales_deliveries is provided (or empty list), reconcile against the
+    authoritative collection. When omitted (None), keep embedding-only behavior
+    for unit tests that do not supply SD docs.
+
+    Eligible: delivery_date AND canonical SJ id AND canonical SJ number.
     No valid canonical SJ → no rows (never a PO-level fallback).
     """
-    dated = [
-        sh for sh in dated_schedule_shipments(order)
-        if _shipment_sj_id(sh) and _shipment_sj_number(sh)
-    ]
+    if sales_deliveries is not None:
+        dated = reconcile_schedule_shipments(order, sales_deliveries)
+    else:
+        dated = [
+            sh for sh in dated_schedule_shipments(order)
+            if _shipment_sj_id(sh) and _shipment_sj_number(sh)
+        ]
+        dated = sorted(
+            dated,
+            key=lambda sh: (
+                shipment_delivery_date(sh) or "",
+                _shipment_index(sh),
+                str(sh.get("created_at") or ""),
+            ),
+        )
     if not dated:
         return []
-    dated = sorted(
-        dated,
-        key=lambda sh: (shipment_delivery_date(sh) or "", _shipment_index(sh), str(sh.get("created_at") or "")),
-    )
     return [
         schedule_row(
             order,
@@ -543,6 +754,27 @@ def schedule_rows(
         )
         for sh in dated
     ]
+
+
+async def load_sales_deliveries_for_schedule(db, po_ids: List[str]) -> Dict[str, List[dict]]:
+    """One batched read of sales_deliveries for schedule reconcile. No N+1."""
+    ids = [str(x).strip() for x in (po_ids or []) if str(x).strip()]
+    if not ids:
+        return {}
+    rows = await db.sales_deliveries.find(
+        {"po_id": {"$in": ids}},
+        SCHEDULE_SALES_DELIVERY_PROJECTION,
+    ).to_list(None)
+    out: Dict[str, List[dict]] = {pid: [] for pid in ids}
+    for doc in rows:
+        if not isinstance(doc, dict):
+            continue
+        pid = str(doc.get("po_id") or "").strip()
+        if pid in out:
+            out[pid].append(doc)
+        elif pid:
+            out.setdefault(pid, []).append(doc)
+    return out
 
 
 def matches_schedule_filters(row: dict, filters: Optional[dict]) -> bool:
