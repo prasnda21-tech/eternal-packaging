@@ -145,19 +145,22 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 
-  test("Stock Saat Ini clears rows while query pending", () => {
+  test("Stock Saat Ini keeps in-scope rows while soft-refreshing search", () => {
+    // P0-A: ordinary search/page refetch must not wipe rows; actions lock instead.
     expect(stock).toMatch(/useDebouncedLiveSearch/);
     expect(stock).toMatch(/loadSeq/);
-    expect(stock).toMatch(/liveSearchTableView/);
+    expect(stock).toMatch(/stockCatalogTableView/);
     expect(stock).toMatch(/searchPending/);
+    expect(stock).toMatch(/refreshing/);
+    expect(stock).toMatch(/actionsLocked/);
+    expect(stock).toMatch(/stock-refreshing/);
     expect(stock).toMatch(/stock-loading/);
-    expect(stock).toMatch(/if \(!searchPending\) return/);
-    expect(stock).toMatch(/items: \[\]/);
     expect(stock).toMatch(/Cari kode, nama, atau Accurate ID/);
     expect(stock).toMatch(/data-testid="stock-search"/);
     expect(stock).not.toMatch(/>Cari</);
     expect(stock).not.toMatch(/api\.currentStock\(/);
     expect(stock).not.toMatch(/currentStockUpdate/);
+    expect(stock).not.toMatch(/if \(!searchPending\) return/);
     expect(currentStockPy).toMatch(/aid = str\(item\.get\("accurate_item_id"/);
     expect(masterItemsPy).toMatch(/"accurate_item_id": \{"\$regex"/);
   });
