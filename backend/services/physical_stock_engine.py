@@ -54,6 +54,7 @@ from services.product_unit_conversion import (
 from services.stock_ledger import (
     MOVEMENT_PENERIMAAN,
     MOVEMENT_REVERSAL_PENERIMAAN,
+    MOVEMENT_REVERSAL_PENGIRIMAN,
     MOVEMENT_STATUS_CETAK,
     MOVEMENT_PENGIRIMAN,
     MOVEMENT_KOREKSI,
@@ -281,6 +282,10 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
         if not order:
             return False
         for conf in order.get("loading_confirmations") or []:
+            if not isinstance(conf, dict):
+                continue
+            if conf.get("cancelled") is True or conf.get("deleted") is True:
+                continue
             if action_id and str(conf.get("action_id") or "").strip() == action_id:
                 return True
         return False
@@ -317,6 +322,22 @@ async def is_source_committed(db, pending_event: Dict[str, Any]) -> bool:
     elif ref_type == "purchase_order":
         po = await db.purchase_orders.find_one({"id": order_id}, {"_id": 1})
         return po is not None
+
+    elif ref_type == "loading_confirmation_reversal":
+        # Crash recovery: finalize reverse when the original PENGIRIMAN still exists.
+        meta = pending_event.get("change_metadata") if isinstance(pending_event.get("change_metadata"), dict) else {}
+        original_id = str(
+            meta.get("reversal_of_movement_id")
+            or pending_event.get("source_event_id")
+            or ""
+        ).strip()
+        if not original_id:
+            return False
+        original = await db.stock_movements.find_one(
+            {"$or": [{"_id": original_id}, {"id": original_id}, {"event_key": original_id}]},
+            {"_id": 1},
+        )
+        return original is not None
 
     return False
 
@@ -475,6 +496,15 @@ async def claim_durable_stock_event(
             delta_printed = -abs(base_qty)
         else:
             delta_unprinted = -abs(base_qty)
+            delta_printed = 0.0
+    elif m_type == MOVEMENT_REVERSAL_PENGIRIMAN:
+        # Inverse of PENGIRIMAN: restore the same printed/unprinted bucket.
+        delta_total = abs(base_qty)
+        if is_p:
+            delta_unprinted = 0.0
+            delta_printed = abs(base_qty)
+        else:
+            delta_unprinted = abs(base_qty)
             delta_printed = 0.0
     elif m_type == MOVEMENT_KOREKSI:
         delta_total = base_qty
@@ -2102,6 +2132,237 @@ async def finalize_loading_stock(
         )
         movements.append(mov)
     return movements
+
+
+def loading_confirmation_stock_event_ids(
+    order: Dict[str, Any],
+    conf: Dict[str, Any],
+) -> List[str]:
+    """Stable PSS event identities for one Loading confirmation (claim + legacy paths)."""
+    if not isinstance(order, dict) or not isinstance(conf, dict):
+        return []
+    order_id = str(order.get("id") or "").strip()
+    if not order_id:
+        return []
+    rec_id = str(conf.get("id") or "").strip()
+    action_id = str(conf.get("action_id") or "").strip()
+    ids: List[str] = []
+    seen = set()
+    line_indexes = set()
+    for line in conf.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        try:
+            line_indexes.add(int(line.get("line_idx", 0)))
+        except (TypeError, ValueError):
+            line_indexes.add(0)
+    if not line_indexes:
+        line_indexes.add(0)
+    for idx in sorted(line_indexes):
+        candidates = []
+        if action_id:
+            candidates.append(f"loading:{order_id}:{action_id}:{idx}")
+        if rec_id:
+            candidates.append(f"stock_out:loading:{order_id}:{rec_id}:{idx}")
+        if action_id and action_id != rec_id:
+            candidates.append(f"stock_out:loading:{order_id}:{action_id}:{idx}")
+        for ev in candidates:
+            if ev not in seen:
+                seen.add(ev)
+                ids.append(ev)
+    return ids
+
+
+async def find_loading_confirmation_stock_movements(
+    db,
+    order: Dict[str, Any],
+    conf: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Return finalized PSS stock_movements attributed to this Loading confirmation."""
+    found: List[Dict[str, Any]] = []
+    seen = set()
+    for ev in loading_confirmation_stock_event_ids(order, conf):
+        mov = await db.stock_movements.find_one(
+            {"$or": [{"_id": ev}, {"id": ev}, {"event_key": ev}]},
+            {"_id": 0},
+        )
+        if not mov:
+            continue
+        key = str(mov.get("id") or mov.get("event_key") or ev)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(mov)
+    return found
+
+
+def _loading_pengiriman_is_print(movement: Dict[str, Any]) -> bool:
+    """Infer original PENGIRIMAN bucket from recorded deltas (prefer deltas over flags)."""
+    d_pri = safe_float(movement.get("delta_printed"))
+    d_unp = safe_float(movement.get("delta_unprinted"))
+    if d_pri < 0 and d_unp >= 0:
+        return True
+    if d_unp < 0 and d_pri >= 0:
+        return False
+    if movement.get("is_print") is not None:
+        return bool(movement.get("is_print"))
+    proc = str(movement.get("production_process") or "").strip().lower()
+    if proc:
+        return proc != "non_print"
+    return True
+
+
+def loading_reversal_event_id(original_movement_id: str) -> str:
+    oid = str(original_movement_id or "").strip()
+    return f"loading-reversal:{oid}"
+
+
+async def reverse_loading_confirmation_stock(
+    db,
+    order: Dict[str, Any],
+    conf: Dict[str, Any],
+    *,
+    user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Reverse committed PSS PENGIRIMAN for one Loading confirmation (idempotent).
+
+    - No PSS loading movements (R2 / standalone / other triggers) → no-op.
+    - Each original movement gets at most one ``REVERSAL_PENGIRIMAN`` via stable
+      event id ``loading-reversal:{original_id}`` (durable claim/finalize).
+    - Bucket-correct: restores printed or unprinted to match the original out.
+    - Fail-closed on durable-engine errors — caller must not soft-cancel Loading.
+    """
+    movements = await find_loading_confirmation_stock_movements(db, order, conf)
+    if not movements:
+        return {
+            "reversed": False,
+            "replayed": True,
+            "reversals": [],
+            "movements": [],
+            "reason": "no_pss_loading_stock_movements",
+        }
+
+    # Finance safety: hold inventory_issue posting claims and reject cancel when
+    # an active posted inventory_issue exists for any Loading PENGIRIMAN.
+    from services.inventory_issue_posting import (
+        fence_loading_cancel_against_inventory_issues,
+        release_loading_cancel_inventory_issue_fence,
+        touch_loading_cancel_inventory_issue_fence,
+    )
+    issue_fence = await fence_loading_cancel_against_inventory_issues(db, movements)
+
+    conf_id = str(conf.get("id") or "").strip()
+    po_num = str(order.get("po_number") or order.get("id") or "").strip()
+    results = []
+    any_new = False
+
+    try:
+        for original in movements:
+            # Keep posting claims fresh while reversing (claim TTL fencing).
+            if issue_fence:
+                await touch_loading_cancel_inventory_issue_fence(db, issue_fence)
+            m_type = str(original.get("movement_type") or "").strip().upper()
+            if m_type not in (MOVEMENT_PENGIRIMAN, "STOK_KELUAR"):
+                continue
+            original_id = str(original.get("id") or original.get("event_key") or "").strip()
+            mid = str(original.get("master_item_id") or "").strip()
+            if not original_id or not mid:
+                raise HTTPException(503, {
+                    "message": (
+                        "Pembatalan Loading gagal: mutasi stok Loading tidak lengkap "
+                        "(id/master item). Status Loading tidak diubah."
+                    ),
+                    "code": "LOADING_DELETE_STOCK_REVERSE_FAILED",
+                    "confirmation_id": conf_id,
+                })
+
+            qty = abs(safe_float(
+                original.get("base_qty",
+                             original.get("transaction_qty",
+                                          original.get("delta", 0))),
+            ))
+            if qty <= 0:
+                continue
+
+            is_p = _loading_pengiriman_is_print(original)
+            reversal_id = loading_reversal_event_id(original_id)
+
+            existing = await db.stock_movements.find_one(
+                {"$or": [{"_id": reversal_id}, {"id": reversal_id}, {"event_key": reversal_id}]},
+                {"_id": 0},
+            )
+            if existing:
+                results.append({
+                    "original_id": original_id,
+                    "reversal_id": reversal_id,
+                    "replayed": True,
+                    "movement": existing,
+                })
+                continue
+
+            try:
+                mov = await execute_durable_stock_event(
+                    db,
+                    event_id=reversal_id,
+                    master_item_id=mid,
+                    movement_type=MOVEMENT_REVERSAL_PENGIRIMAN,
+                    transaction_qty=qty,
+                    transaction_uom=original.get("base_uom") or original.get("transaction_uom"),
+                    source_entity=str(original.get("destination") or "LOADING_PENGIRIMAN"),
+                    destination_entity=str(
+                        original.get("source") or ("SUDAH_DICETAK" if is_p else "BELUM_DICETAK")
+                    ),
+                    reference_number=po_num,
+                    reference_type="loading_confirmation_reversal",
+                    reference_id=conf_id or order.get("id"),
+                    description=(
+                        f"Pembatalan Loading — pengembalian stok "
+                        f"({conf.get('surat_jalan_name') or conf.get('sj_number') or conf_id})"
+                    ),
+                    order_id=order.get("id"),
+                    line_idx=original.get("line_idx"),
+                    line_id=original.get("line_id"),
+                    action_id=str(conf.get("action_id") or "").strip() or None,
+                    is_print=is_p,
+                    production_process=original.get("production_process"),
+                    change_metadata={
+                        "reversal_of_movement_id": original_id,
+                        "loading_confirmation_id": conf_id,
+                        "original_event_key": original.get("event_key") or original_id,
+                    },
+                    user=user,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(503, {
+                    "message": (
+                        "Pembatalan Loading gagal mengembalikan stok fisik. "
+                        "Status Loading tidak diubah."
+                    ),
+                    "code": "LOADING_DELETE_STOCK_REVERSE_FAILED",
+                    "confirmation_id": conf_id,
+                    "original_id": original_id,
+                    "detail": str(exc),
+                }) from exc
+
+            any_new = True
+            results.append({
+                "original_id": original_id,
+                "reversal_id": str(mov.get("id") or reversal_id),
+                "replayed": False,
+                "movement": mov,
+            })
+    finally:
+        await release_loading_cancel_inventory_issue_fence(db, issue_fence)
+
+    return {
+        "reversed": bool(results),
+        "replayed": bool(results) and not any_new,
+        "reversals": results,
+        "movements": [r.get("movement") for r in results],
+        "confirmation_id": conf_id,
+    }
 
 
 async def should_claim_packing_stock(

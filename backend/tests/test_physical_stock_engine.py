@@ -280,6 +280,7 @@ class MockCollection:
                         if k not in d or not isinstance(d[k], list):
                             d[k] = []
                         d[k].append(copy.deepcopy(v))
+                return type("UpdateResult", (), {"matched_count": 1, "modified_count": 1})()
         if upsert:
             new_doc = copy.deepcopy(query)
             if "$set" in update:
@@ -301,7 +302,9 @@ class MockCollection:
             return type("UpdateResult", (), {"matched_count": 0, "modified_count": 0, "upserted_id": new_doc["_id"]})()
         return type("UpdateResult", (), {"matched_count": 0, "modified_count": 0})()
 
-    async def find_one_and_update(self, query, update, return_document=ReturnDocument.BEFORE):
+    async def find_one_and_update(
+        self, query, update, return_document=ReturnDocument.BEFORE, upsert=False,
+    ):
         for i, d in enumerate(self._docs):
             if doc_matches(d, query):
                 before = copy.deepcopy(d)
@@ -319,7 +322,36 @@ class MockCollection:
                         if k not in d or not isinstance(d[k], list):
                             d[k] = []
                         d[k].append(copy.deepcopy(v))
+                if "$setOnInsert" in update:
+                    pass  # only on insert
                 return before if return_document == ReturnDocument.BEFORE else copy.deepcopy(d)
+        if not upsert:
+            return None
+        # Simulate unique key: plain equality fields already present → no upsert
+        # (mirrors DuplicateKeyError → acquire_posting_claim returns None).
+        plain = {
+            k: v for k, v in (query or {}).items()
+            if not str(k).startswith("$") and not isinstance(v, dict)
+        }
+        if plain:
+            for d in self._docs:
+                if all(d.get(k) == v for k, v in plain.items()):
+                    return None
+        new_doc = {}
+        for k, v in plain.items():
+            new_doc[k] = copy.deepcopy(v)
+        if "$setOnInsert" in update:
+            for k, v in update["$setOnInsert"].items():
+                if k not in new_doc:
+                    new_doc[k] = copy.deepcopy(v)
+        if "$set" in update:
+            for k, v in update["$set"].items():
+                set_field_val(new_doc, k, v)
+        if "_id" not in new_doc:
+            new_doc["_id"] = new_doc.get("id") or new_doc.get("movement_id") or str(uuid.uuid4())
+        self._docs.append(new_doc)
+        if return_document == ReturnDocument.AFTER:
+            return copy.deepcopy(new_doc)
         return None
 
     async def delete_one(self, query):

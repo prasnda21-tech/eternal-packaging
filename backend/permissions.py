@@ -1125,7 +1125,9 @@ STAGE_PERMISSION = {
     9: "operator.update",        # Konfirmasi Sample -> Cetak
     10: "operator.update",       # Cetak -> Packing
     11: "packing.update",        # Packing -> Surat Jalan
-    14: "delivery.update",       # Surat Jalan / Driver -> Terkirim
+    # Loading (13) → Terkirim (14) is not completed via /advance; confirm-delivered
+    # is authoritative. This key still gates any attempt to advance from 13.
+    13: "delivery.update",
 }
 
 
