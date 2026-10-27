@@ -1102,6 +1102,7 @@ async def require_r2_delivery_stock_ready(
 
 
 def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> dict:
+    """Legacy sync builder — qty assumed already in stock base (PCS). Prefer async builder."""
     receipt_id = str(receipt.get("id") or "")
     line_id = str(line.get("line_id") or "")
     qty = line.get("received_qty")
@@ -1130,6 +1131,107 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
             "line_id": line_id,
             "purchase_order_id": str(receipt.get("purchase_order_id") or ""),
             "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
+            "base_uom": "PCS",
+            "base_qty": qty,
+            "transaction_qty": qty,
+            "transaction_uom": "PCS",
+            "conversion_factor": 1,
+        },
+    }
+
+
+async def build_purchase_receipt_movement_request(
+    db, receipt: dict, line: dict, *, actor_id: str,
+) -> dict:
+    """Build GR→R2 movement with one-shot UOM snapshot (base_qty PCS).
+
+    - If line already carries base_qty + base_uom (document converted once), post that.
+    - Else if transaction_uom / unit is an alternate UOM, convert once via master setting.
+    - Else treat received_qty as PCS (existing behavior — no silent re-conversion).
+    Never converts twice.
+    """
+    from services.product_unit_conversion import (
+        BASE_UOM_PCS,
+        UnitConversionError,
+        canonicalize_to_base,
+        get_product_unit_setting,
+        normalize_uom,
+    )
+
+    receipt_id = str(receipt.get("id") or "")
+    line_id = str(line.get("line_id") or "")
+    mid = str(line.get("master_item_id") or "")
+    created_at = now_iso()
+    setting = await get_product_unit_setting(db, mid) if mid else None
+    master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0}) if mid else None
+
+    try:
+        if line.get("base_qty") is not None and normalize_uom(line.get("base_uom") or BASE_UOM_PCS):
+            # Document already snapshotted — ledger uses base only.
+            snap = canonicalize_to_base(
+                transaction_qty=line.get("base_qty"),
+                transaction_uom=normalize_uom(line.get("base_uom") or BASE_UOM_PCS),
+                setting=setting,
+                master=master,
+                already_base=True,
+            )
+            # Preserve original transaction snapshot when present on the line.
+            if line.get("transaction_qty") is not None and line.get("transaction_uom"):
+                snap = {
+                    **snap,
+                    "transaction_qty": line.get("transaction_qty"),
+                    "transaction_uom": normalize_uom(line.get("transaction_uom")),
+                    "conversion_factor": line.get("conversion_factor")
+                    if line.get("conversion_factor") is not None
+                    else snap["conversion_factor"],
+                    "base_qty": snap["base_qty"],
+                    "base_uom": snap["base_uom"],
+                }
+        else:
+            tx_uom = normalize_uom(
+                line.get("transaction_uom") or line.get("unit") or BASE_UOM_PCS
+            )
+            tx_qty = line.get("received_qty")
+            already_base = tx_uom == normalize_uom(
+                (setting or {}).get("base_uom") or BASE_UOM_PCS
+            )
+            snap = canonicalize_to_base(
+                transaction_qty=tx_qty,
+                transaction_uom=tx_uom,
+                setting=setting,
+                master=master,
+                already_base=already_base,
+            )
+    except UnitConversionError as exc:
+        raise PhysicalStockValidationError(str(exc)) from exc
+
+    qty = int(snap["base_qty"])
+    if qty <= 0:
+        raise PhysicalStockValidationError("Qty diterima (PCS) harus bilangan bulat > 0")
+
+    return {
+        "master_item_id": mid,
+        "branch_id": str(receipt.get("branch_id") or ""),
+        "warehouse_id": str(receipt.get("warehouse_id") or ""),
+        "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+        "qty_delta": qty,
+        "reference_type": "purchase_goods_receipt",
+        "reference_id": f"{receipt_id}:{line_id}",
+        "reason": "Penerimaan pembelian",
+        "actor_id": actor_id,
+        "occurred_at": created_at,
+        "created_at": created_at,
+        "idempotency_key": f"purchase-receipt:{receipt_id}:{line_id}",
+        "metadata": {
+            "receipt_id": receipt_id,
+            "line_id": line_id,
+            "purchase_order_id": str(receipt.get("purchase_order_id") or ""),
+            "purchase_order_line_id": str(line.get("purchase_order_line_id") or ""),
+            "transaction_qty": snap["transaction_qty"],
+            "transaction_uom": snap["transaction_uom"],
+            "conversion_factor": snap["conversion_factor"],
+            "base_qty": snap["base_qty"],
+            "base_uom": snap["base_uom"],
         },
     }
 
@@ -1137,18 +1239,17 @@ def _purchase_receipt_request(receipt: dict, line: dict, *, actor_id: str) -> di
 async def receipt_line_posts_physical_stock(db, line: dict) -> bool:
     """True when a GR line should mutate warehouse physical stock / HPP layers.
 
-    Explicit SERVICE (process Add On) never posts physical qty. Legacy masters
-    with missing/blank item_type still post (inventory default). Document lines
-    may still exist on the GR either way.
+    Explicit SERVICE and NON_INVENTORY never post physical qty. Legacy masters
+    with missing/blank item_type still post (inventory default — no silent
+    reclassify). Document lines may still exist on the GR either way.
     """
-    from services.inventory_accounting import ITEM_TYPE_SERVICE
+    from services.inventory_accounting import is_physical_stock_item_type
 
     mid = str((line or {}).get("master_item_id") or "").strip()
     if not mid:
         return False
     master = await db[MASTER_ITEMS_COLLECTION].find_one({"id": mid}, {"_id": 0, "item_type": 1})
-    raw = str((master or {}).get("item_type") or "").strip().upper()
-    return raw != ITEM_TYPE_SERVICE
+    return is_physical_stock_item_type((master or {}).get("item_type"))
 
 
 async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: str) -> List[dict]:
@@ -1162,7 +1263,9 @@ async def apply_purchase_receipt_lines(db, session, receipt: dict, *, actor_id: 
             continue
         movements.append(await _apply_movement_in_session(
             db,
-            _purchase_receipt_request(receipt, line, actor_id=actor_id),
+            await build_purchase_receipt_movement_request(
+                db, receipt, line, actor_id=actor_id,
+            ),
             session,
         ))
     return movements

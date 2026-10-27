@@ -11,7 +11,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
-from services.product_unit_conversion import normalize_uom
+from services.product_unit_conversion import (
+    BASE_UOM_PCS,
+    UnitConversionError,
+    canonicalize_to_base,
+    factor_map_from_setting,
+    normalize_uom,
+)
 from services.purchase_common import is_cancelled, money_round, qty_round
 
 COST_BASIS_UOM = "BASE_UOM"
@@ -177,12 +183,25 @@ def financial_inventory_item_key(line: Optional[dict]) -> str:
 
 
 def classify_inventory_item_type(item_type: Any) -> Tuple[bool, Optional[str]]:
+    """True only for explicit INVENTORY (financial acquisition / HPP)."""
     raw = str(item_type or "").strip().upper()
     if raw == ITEM_TYPE_INVENTORY:
         return True, None
-    if raw == ITEM_TYPE_SERVICE:
+    if raw in (ITEM_TYPE_SERVICE, ITEM_TYPE_NON_INVENTORY):
         return False, REASON_NON_INVENTORY_ITEM
     return False, REASON_UNKNOWN_ITEM_TYPE
+
+
+def is_physical_stock_item_type(item_type: Any) -> bool:
+    """Whether item_type may create physical stock movements.
+
+    Explicit SERVICE / NON_INVENTORY never post. Blank/unknown keep legacy
+    inventory-default posting (do not silent-reclassify masters).
+    """
+    raw = str(item_type or "").strip().upper()
+    if raw in (ITEM_TYPE_SERVICE, ITEM_TYPE_NON_INVENTORY):
+        return False
+    return True
 
 
 def financial_uom_snapshot(
@@ -233,25 +252,49 @@ def resolve_conversion_from_setting(
     setting: Optional[dict],
     transaction_uom: Any,
 ) -> Tuple[Any, str, str, Optional[str]]:
-    """Return (factor, tx_uom, base_uom, error_code)."""
+    """Return (factor, tx_uom, base_uom, error_code).
+
+    Uses alternate_uoms when present; falls back to legacy single-pair fields.
+    Factor always from master setting — never invent a client-only factor.
+    """
     base = normalize_uom(
         (setting or {}).get("base_uom")
         or (master or {}).get("unit")
         or transaction_uom
-        or "PCS"
-    )
+        or BASE_UOM_PCS
+    ) or BASE_UOM_PCS
     tx_uom = normalize_uom(transaction_uom or (setting or {}).get("transaction_uom") or base)
-    if tx_uom == base:
-        return 1, tx_uom, base, None
-    raw_factor = (setting or {}).get("conversion_factor")
-    try:
-        factor = Decimal(str(raw_factor if raw_factor is not None else ""))
-    except (InvalidOperation, ValueError, TypeError):
+    mapping = factor_map_from_setting(setting, base_uom=base)
+    if tx_uom not in mapping:
+        # Unknown UOM for this master
         return None, tx_uom, base, REASON_INVALID_UNIT_CONVERSION
+    factor = mapping[tx_uom]
     if factor <= 0:
         return None, tx_uom, base, REASON_INVALID_UNIT_CONVERSION
     factor_out: Any = int(factor) if factor == factor.to_integral_value() else float(factor)
     return factor_out, tx_uom, base, None
+
+
+def stock_uom_snapshot(
+    *,
+    transaction_qty: Any,
+    transaction_uom: Any,
+    master: Optional[dict] = None,
+    setting: Optional[dict] = None,
+    already_base: bool = False,
+) -> Dict[str, Any]:
+    """Canonical PCS snapshot for stock document boundaries (no cost fields)."""
+    try:
+        return canonicalize_to_base(
+            transaction_qty=transaction_qty,
+            transaction_uom=transaction_uom,
+            setting=setting,
+            master=master,
+            require_integer_base=True,
+            already_base=already_base,
+        )
+    except UnitConversionError as exc:
+        raise InvalidUnitConversionError(REASON_INVALID_UNIT_CONVERSION) from exc
 
 
 def annotate_acquisition_event(

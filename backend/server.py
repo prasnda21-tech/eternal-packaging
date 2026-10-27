@@ -14776,10 +14776,17 @@ async def master_items_sync(user=Depends(require_perm("master_items.sync"))):
     return result
 
 
+class AlternateUomPayload(BaseModel):
+    uom: str
+    factor_to_base: Optional[float] = None
+    conversion_factor: Optional[float] = None  # legacy alias accepted by service
+
+
 class UnitConversionPayload(BaseModel):
     transaction_uom: Optional[str] = None
     base_uom: Optional[str] = None
     conversion_factor: Optional[float] = None
+    alternate_uoms: Optional[List[AlternateUomPayload]] = None
 
 
 @api_router.get("/master-items/{item_id}/detail")
@@ -14835,6 +14842,7 @@ async def master_item_detail_get(
             "transaction_uom": tx_uom,
             "base_uom": base_uom,
             "conversion_factor": factor,
+            "alternate_uoms": [],
         },
         "stock_summary": stock_summary,
         "stock_state": stock_state,
