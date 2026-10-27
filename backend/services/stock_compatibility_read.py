@@ -592,6 +592,7 @@ async def list_compatibility_stock_catalog(
     q: Optional[str] = None,
     page: int = 1,
     limit: int = 50,
+    include_status_totals: bool = False,
 ) -> dict:
     """Read-only pre-cutover Stock Saat Ini from legacy-compatible sources."""
     item_query: Dict[str, Any] = {}
@@ -715,7 +716,7 @@ async def list_compatibility_stock_catalog(
     total = len(rows)
     start = (safe_page - 1) * safe_limit
     page_count = (total + safe_limit - 1) // safe_limit if total else 0
-    return {
+    payload = {
         "items": rows[start:start + safe_limit],
         "total": total,
         "page": safe_page,
@@ -748,3 +749,9 @@ async def list_compatibility_stock_catalog(
         "physical_qty_warehouse_valid": False,
         "qty_tersedia_valid": False,
     }
+    if include_status_totals:
+        from services.physical_stock import _status_totals_from_catalog_rows
+
+        payload["status_totals"] = _status_totals_from_catalog_rows(rows)
+        payload["status_totals_complete"] = True
+    return payload
