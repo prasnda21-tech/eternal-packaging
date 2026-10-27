@@ -272,6 +272,32 @@ def test_branch_isolation_ygy_smg():
     assert smg["M1"]["saldo_awal"] == 200
 
 
+def test_unverified_notes_are_reason_specific():
+    base = {
+        "master_item_id": "m1",
+        "item_code": "X",
+        "physical_qty": 1000,
+        "balance_present": True,
+    }
+    excel = compute_excel_columns(
+        saldo_awal=1000,
+        delivered_total=0,
+        po_ordered=0,
+        so_delivered=0,
+        qty_tercetak=None,
+        qty_tercetak_status=STATUS_UNVERIFIED,
+        cetak_delivered_proven=None,
+        print_delivery_proven=False,
+        stock_book=1000,
+    )
+    apply_excel_fields_to_catalog_row(base, excel, balance_present=True)
+    assert base["qty_polos_gudang"] is None
+    assert "Belum terverifikasi" in (base.get("qty_polos_gudang_note") or "")
+    assert base["qty_sudah_cetak_gudang"] is None
+    note = base.get("qty_sudah_cetak_gudang_note") or ""
+    assert "Belum terverifikasi" in note or "multiwarna" in note.lower()
+
+
 def test_apply_excel_maps_unverified_to_belum_tersedia():
     base = {"master_item_id": "M1", "physical_qty": 6000}
     excel = compute_excel_columns(

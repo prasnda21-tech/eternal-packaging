@@ -70,23 +70,28 @@ const EXCEL_SSI_COLUMNS = [
     key: "qty_polos",
     label: "Qty Polos",
     testId: "stock-polos",
-    note: "Stock − Tercetak Belum Kirim (PCS)",
+    note: "Stock − Barang Tercetak Belum Kirim (PCS); Belum terverifikasi bila bukti cetak/kirim/WIP/rusak tidak cukup",
     statusKey: "qty_polos_status",
     legacyStatusKey: "qty_polos_gudang_status",
+    reasonKey: "qty_polos_reason",
+    legacyReasonKey: "qty_polos_gudang_reason",
+    noteKey: "qty_polos_gudang_note",
   },
   {
     key: "tercetak_belum_kirim",
-    label: "Tercetak Belum Kirim",
+    label: "Barang Tercetak Belum Kirim",
     testId: "stock-tercetak-belum",
-    note: "Qty Tercetak − Cetak Sudah Dikirim",
+    note: "Qty Tercetak − Barang Cetak Sudah Dikirim (PCS)",
     statusKey: "tercetak_belum_kirim_status",
+    reasonKey: "tercetak_belum_kirim_reason",
   },
   {
     key: "cetak_sudah_dikirim",
-    label: "Cetak Sudah Dikirim",
+    label: "Barang Cetak Sudah Dikirim",
     testId: "stock-cetak-dikirim",
     note: "Konfirmasi SJ barang cetak terbukti (PCS) — tanpa estimasi",
     statusKey: "cetak_sudah_dikirim_status",
+    reasonKey: "cetak_sudah_dikirim_reason",
   },
 ];
 
@@ -118,6 +123,29 @@ const STOCK_CONDITION_FIELDS = {
   },
 };
 
+const EXCEL_UNVERIFIED_REASON_LABEL = {
+  PRINT_DELIVERY_UNPROVEN: "Pengiriman cetak belum terbukti dari SJ print",
+  COMPLETION_UNPROVEN: "Konfirmasi selesai cetak induk belum terverifikasi (multiwarna/Add On)",
+  DEPENDENT_UNKNOWN: "Nilai bergantung kolom yang belum terverifikasi",
+};
+
+function excelCellTitle(col, row, status) {
+  const reasonCode = String(
+    (col.reasonKey && row?.[col.reasonKey])
+    || (col.legacyReasonKey && row?.[col.legacyReasonKey])
+    || "",
+  ).trim();
+  const note = String(
+    (col.noteKey && row?.[col.noteKey])
+    || "",
+  ).trim();
+  const reasonLabel = EXCEL_UNVERIFIED_REASON_LABEL[reasonCode] || reasonCode;
+  if (status === "BELUM_TERSEDIA" || status === "UNVERIFIED") {
+    return [note || "Belum terverifikasi", reasonLabel, col.note].filter(Boolean).join(" — ");
+  }
+  return col.note;
+}
+
 function excelQtyCell(col, row, key) {
   const masterItemId = row?.master_item_id;
   const qty = row?.[col.key];
@@ -126,6 +154,7 @@ function excelQtyCell(col, row, key) {
     || (col.legacyStatusKey && row?.[col.legacyStatusKey])
     || "",
   ).toUpperCase();
+  const title = excelCellTitle(col, row, status);
   if (qty == null || status === "BELUM_TERSEDIA" || status === "UNVERIFIED") {
     return (
       <td
@@ -133,9 +162,14 @@ function excelQtyCell(col, row, key) {
         className="col-fit num"
         data-testid={`${col.testId}-${masterItemId}`}
         data-condition-status="BELUM_TERSEDIA"
-        title={col.note}
+        data-unverified-reason={String(
+          (col.reasonKey && row?.[col.reasonKey])
+          || (col.legacyReasonKey && row?.[col.legacyReasonKey])
+          || "",
+        ) || undefined}
+        title={title}
       >
-        <span className="stock-status-badge stock-status-badge--missing" title={col.note}>
+        <span className="stock-status-badge stock-status-badge--missing" title={title}>
           Belum tersedia
         </span>
       </td>
@@ -148,7 +182,7 @@ function excelQtyCell(col, row, key) {
       className={`col-fit num mono${neg ? " stock-book-negative" : ""}`}
       data-testid={`${col.testId}-${masterItemId}`}
       data-condition-status={status || "READY"}
-      title={col.note}
+      title={title}
     >
       {fmtQty(qty)}
     </td>
@@ -1314,8 +1348,10 @@ function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved
           <span aria-hidden="true"> — </span>
           <span>{item.item_name || "—"}</span>
         </p>
-        <p className="stock-adjust-hint">
-          Target ini adalah stok fisik gudang yang dipilih, bukan jumlah seluruh gudang.
+        <p className="stock-adjust-hint" data-testid="stock-adjust-hint">
+          Penyesuaian saldo buku saat ini (MANUAL_ADJUSTMENT, PCS) — delta beraudit,
+          boleh diulang. Bukan menimpa Saldo Awal / OPENING_BALANCE historis.
+          Target = stok fisik gudang yang dipilih, bukan agregat seluruh gudang.
         </p>
         {error && (
           <div className="signal-strip" role="alert">
@@ -1897,6 +1933,10 @@ function SaldoAwalModal({
                   <span className="saldo-awal-field-error" data-testid="saldo-awal-error-warehouse">{fieldErrors.warehouseId}</span>
                 )}
               </label>
+              <p className="muted small" data-testid="saldo-awal-delta-hint">
+                Saldo Awal = OPENING_BALANCE sekali per item/cabang/gudang (PCS).
+                Koreksi berikutnya memakai Penyesuaian (delta MANUAL_ADJUSTMENT), bukan menimpa ledger historis.
+              </p>
               {established ? (
                 <div className="saldo-awal-established" data-testid="saldo-awal-established">
                   <strong>SALDO AWAL SUDAH DITETAPKAN</strong>

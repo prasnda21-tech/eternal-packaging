@@ -283,18 +283,37 @@ def apply_excel_fields_to_catalog_row(
     out["ssi_sources"] = excel.get("sources") or {}
     out["ssi_excel_ready"] = bool(balance_present)
 
+    def _unverified_note(reason: Optional[str], fallback: str) -> str:
+        code = str(reason or "").strip().upper()
+        mapping = {
+            REASON_PRINT_DELIVERY_UNPROVEN: (
+                "Belum terverifikasi: pengiriman cetak belum terbukti dari SJ print "
+                "(jangan pakai estimasi min(so_delivered, qty_tercetak))."
+            ),
+            REASON_COMPLETION_UNPROVEN: (
+                "Belum terverifikasi: konfirmasi selesai cetak induk ambigu "
+                "(multiwarna/Add On/proses belum terikat)."
+            ),
+            REASON_DEPENDENT_UNKNOWN: (
+                "Belum terverifikasi: bergantung kolom Qty Tercetak / Cetak Sudah Dikirim "
+                "yang belum pasti; WIP/rusak tidak dihitung dari data fiktif."
+            ),
+        }
+        return mapping.get(code, fallback)
+
     def _map_condition(qty, status, reason, note_ready: str, note_unverified: str):
         st = status or (STATUS_UNVERIFIED if qty is None else STATUS_READY)
         if st == STATUS_UNVERIFIED or qty is None:
-            return None, "BELUM_TERSEDIA", reason or REASON_DEPENDENT_UNKNOWN, note_unverified
+            code = reason or REASON_DEPENDENT_UNKNOWN
+            return None, "BELUM_TERSEDIA", code, _unverified_note(code, note_unverified)
         return qty, "READY", None, note_ready
 
     polos_q, polos_st, polos_rs, polos_note = _map_condition(
         excel["qty_polos"],
         excel.get("qty_polos_status"),
         excel.get("qty_polos_reason"),
-        "Qty Polos = Stock − Tercetak Belum Kirim (PCS)",
-        "Qty Polos belum terverifikasi — bukti cetak/kirim ambigu.",
+        "Qty Polos = Stock − Barang Tercetak Belum Kirim (PCS); tanpa WIP/rusak terpisah",
+        "Qty Polos belum terverifikasi — bukti cetak/kirim/WIP/rusak tidak cukup.",
     )
     out["qty_polos_gudang"] = polos_q
     out["qty_polos_gudang_status"] = (

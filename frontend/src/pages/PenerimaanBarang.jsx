@@ -41,6 +41,12 @@ function accountingLabel(status) {
 import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
+import TransactionUomSelect from "../components/TransactionUomSelect";
+import {
+  buildTransactionUomOptions,
+  defaultTransactionUom,
+  normalizeUom,
+} from "../lib/transactionUomOptions";
 import PurchasingFlowNav from "./PurchasingFlowNav";
 import PurchaseActivityHistory from "./PurchaseActivityHistory";
 import PurchaseDocuments from "./PurchaseDocuments";
@@ -54,10 +60,35 @@ function emptyLine() {
     accurate_item_id: "",
     item_name: "",
     item_code: "",
-    unit: "pcs",
+    unit: "PCS",
+    uom_options: [{ uom: "PCS", factor_to_base: 1, label: "PCS (dasar)" }],
     received_qty: "",
     notes: "",
   };
+}
+
+async function uomFieldsForMaster(it) {
+  const fallbackUnit = normalizeUom(it?.unit || "PCS");
+  const mid = it?.id || it?.master_item_id || "";
+  if (!mid) {
+    return {
+      unit: fallbackUnit,
+      uom_options: buildTransactionUomOptions(null, { unit: fallbackUnit }),
+    };
+  }
+  try {
+    const detail = await api.masterItemDetail(mid);
+    const options = buildTransactionUomOptions(detail?.unit_setting, detail?.item || it);
+    return {
+      unit: defaultTransactionUom(options, fallbackUnit),
+      uom_options: options,
+    };
+  } catch {
+    return {
+      unit: fallbackUnit,
+      uom_options: buildTransactionUomOptions(null, { unit: fallbackUnit }),
+    };
+  }
 }
 
 export default function PenerimaanBarang() {
@@ -524,16 +555,25 @@ export default function PenerimaanBarang() {
   const removeLine = (key) => setLines((p) => (p.length <= 1 ? p : p.filter((l) => l.key !== key)));
   const setLine = (key, patch) => setLines((p) => p.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
-  const pickItem = (key, it) => {
+  const pickItem = async (key, it) => {
     if (!it) {
-      return setLine(key, { master_item_id: "", accurate_item_id: "", item_name: "", item_code: "", unit: "pcs" });
+      return setLine(key, {
+        master_item_id: "",
+        accurate_item_id: "",
+        item_name: "",
+        item_code: "",
+        unit: "PCS",
+        uom_options: [{ uom: "PCS", factor_to_base: 1, label: "PCS (dasar)" }],
+      });
     }
+    const uom = await uomFieldsForMaster(it);
     setLine(key, {
       master_item_id: it.id || it.master_item_id || "",
       accurate_item_id: it.accurate_item_id || "",
       item_name: it.item_name || "",
       item_code: it.item_code || "",
-      unit: it.unit || "pcs",
+      unit: uom.unit,
+      uom_options: uom.uom_options,
     });
   };
 
@@ -570,7 +610,8 @@ export default function PenerimaanBarang() {
           accurate_item_id: l.accurate_item_id,
           item_name: l.item_name,
           item_code: l.item_code,
-          unit: l.unit,
+          unit: normalizeUom(l.unit),
+          transaction_uom: normalizeUom(l.unit),
           received_qty: l.received_qty,
           notes: l.notes,
         })),
@@ -1057,7 +1098,12 @@ export default function PenerimaanBarang() {
                       </td>
                       <td className="mono">{l.item_code || "—"}</td>
                       <td className="unit-cell">
-                        <input value={l.unit} readOnly tabIndex={-1} data-testid={`penerimaan-line-unit-${i}`} />
+                        <TransactionUomSelect
+                          value={l.unit}
+                          options={l.uom_options}
+                          testId={`penerimaan-line-unit-${i}`}
+                          onChange={(unit) => setLine(l.key, { unit })}
+                        />
                       </td>
                       <td className="qty-cell">
                         <input
