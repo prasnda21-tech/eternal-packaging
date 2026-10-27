@@ -350,6 +350,24 @@ export default function StockSaatIni() {
   /** Skip one catalog reload when syncing branchId from catalog effective_branch_id. */
   const skipBranchPinReload = useRef(false);
   const itemsRef = useRef([]);
+  /** Restore list scroll when leaving inline detail (no extra catalog fetch). */
+  const listScrollYRef = useRef(0);
+
+  const openDetail = useCallback((item) => {
+    if (!item?.master_item_id) return;
+    listScrollYRef.current = window.scrollY || window.pageYOffset || 0;
+    setDetailItem(item);
+  }, []);
+
+  const closeDetail = useCallback(() => {
+    setDetailItem(null);
+    const y = listScrollYRef.current || 0;
+    requestAnimationFrame(() => {
+      if (typeof window.scrollTo === "function") {
+        try { window.scrollTo(0, y); } catch { /* jsdom */ }
+      }
+    });
+  }, []);
 
   useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
 
@@ -627,8 +645,8 @@ export default function StockSaatIni() {
 
   const physicalHeader = "Stock";
   // Owner Excel: Produk + 8 qty columns + unit/lokasi/update (+ expand).
-  // Compact Owner list: Produk | Stock | Stock Dapat Dijual | Qty Polos | Lihat Detail
-  const tableColCount = 5;
+  // Compact Owner list: Produk | Stock | Stock Dapat Dijual | Qty Polos (row opens detail)
+  const tableColCount = 4;
 
   const download = () => {
     const header = [
@@ -761,7 +779,11 @@ export default function StockSaatIni() {
             type="button"
             className="stock-physical-btn"
             data-testid={`stock-adjust-${it.master_item_id}`}
-            onClick={() => beginAdjust(it, { balancePresent: Boolean(book.present) })}
+            data-row-interactive="true"
+            onClick={(e) => {
+              e.stopPropagation();
+              beginAdjust(it, { balancePresent: Boolean(book.present) });
+            }}
           >
             {chip}
           </button>
@@ -1113,6 +1135,45 @@ export default function StockSaatIni() {
             </div>
           )}
 
+          {detailItem ? (
+        <StockSaatIniDetailDrawer
+          item={detailItem}
+          physicalPrimary={stockPhysicalPrimaryDisplay(detailItem, {
+            warehouseId: selectedFilterWarehouse?.id || "",
+            branchAggregate: showBranchAggregate,
+          })}
+          branches={branches}
+          branchId={branchId}
+          warehouseId={warehouseId}
+          scopeLabel={[
+            branchLabel,
+            selectedFilterWarehouse
+              ? (selectedFilterWarehouse.code || selectedFilterWarehouse.name)
+              : "Semua Gudang",
+          ].filter(Boolean).join(" · ")}
+          canAdjust={canAdjust}
+          canOpening={canOpening}
+          adjustBlockedReason={data?.adjust_blocked_reason}
+          onClose={closeDetail}
+          onOpenOpening={(row) => {
+            closeDetail();
+            const wh = singleWarehouse
+              || (warehouseId ? adjustWarehouses.find((w) => w.id === warehouseId) : null)
+              || null;
+            setOpeningSeed({
+              itemId: row.master_item_id,
+              branchId: wh?.branch_id || effectiveBranchId || branchId || "",
+              warehouseId: wh?.id || warehouseId || "",
+            });
+            setOpeningOpen(true);
+          }}
+          onOpenAdjust={(row) => {
+            closeDetail();
+            beginAdjust(row, { balancePresent: true });
+          }}
+        />
+      ) : (
+        <>
           {(refreshing || (searchPending && items.length > 0)) && (
             <p className="stock-refreshing muted small" data-testid="stock-refreshing" role="status">
               Menyegarkan…
@@ -1140,7 +1201,6 @@ export default function StockSaatIni() {
                   <th className="col-fit num" data-testid="stock-polos-header" title="Stock − Tercetak Belum Kirim (PCS)">
                     Qty Polos
                   </th>
-                  <th className="col-fit" data-testid="stock-detail-header">Aksi</th>
                 </tr>
               </thead>
               <tbody data-testid="stock-tbody" data-search-state={tableView} data-refreshing={refreshing ? "true" : "false"}>
@@ -1169,11 +1229,33 @@ export default function StockSaatIni() {
                   const polosCol = EXCEL_SSI_COLUMNS.find((c) => c.key === "qty_polos");
                   const dapatDisp = resolveDapatDijualDisplay(it, primary);
                   const dapatNeg = Number(dapatDisp.qty) < 0;
+                  const rowClass = [
+                    "stock-row-clickable",
+                    (rowNegative || dapatNeg) ? "stock-row-has-deficit" : "",
+                    actionsLocked ? "is-locked" : "",
+                  ].filter(Boolean).join(" ");
                   return (
                   <tr
                     key={it.master_item_id}
                     data-testid={`stock-row-${it.master_item_id}`}
-                    className={rowNegative || dapatNeg ? "stock-row-has-deficit" : undefined}
+                    className={rowClass}
+                    role="button"
+                    tabIndex={actionsLocked ? -1 : 0}
+                    aria-disabled={actionsLocked ? "true" : undefined}
+                    aria-label={`Buka detail ${it.item_name || it.item_code || it.master_item_id}`}
+                    onClick={(e) => {
+                      if (actionsLocked) return;
+                      if (e.target.closest("button, a, input, select, textarea, label, [data-row-interactive='true']")) return;
+                      openDetail(it);
+                    }}
+                    onKeyDown={(e) => {
+                      if (actionsLocked) return;
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        openDetail(it);
+                      }
+                    }}
                   >
                     <td className="col-text" data-testid={`stock-item-${it.master_item_id}`}>
                       <div className="stock-item-primary">{it.item_name || "—"}</div>
@@ -1195,17 +1277,6 @@ export default function StockSaatIni() {
                     </td>
                     {excelQtyCell(dapatCol, it, "stock_dapat_dijual", primary)}
                     {excelQtyCell(polosCol, it, "qty_polos", primary)}
-                    <td className="col-fit">
-                      <button
-                        type="button"
-                        className="stock-btn-outline sm"
-                        data-testid={`stock-detail-${it.master_item_id}`}
-                        onClick={() => setDetailItem(it)}
-                        disabled={actionsLocked}
-                      >
-                        Lihat Detail
-                      </button>
-                    </td>
                   </tr>
                   );
                 })}
@@ -1241,8 +1312,25 @@ export default function StockSaatIni() {
               return (
                 <article
                   key={`m-${it.master_item_id}`}
-                  className={`stock-mobile-card${primary.negative || dapatNeg ? " is-deficit" : ""}`}
+                  className={`stock-mobile-card stock-mobile-card--clickable${primary.negative || dapatNeg ? " is-deficit" : ""}${actionsLocked ? " is-locked" : ""}`}
                   data-testid={`stock-mobile-card-${it.master_item_id}`}
+                  role="button"
+                  tabIndex={actionsLocked ? -1 : 0}
+                  aria-disabled={actionsLocked ? "true" : undefined}
+                  aria-label={`Buka detail ${it.item_name || it.item_code || it.master_item_id}`}
+                  onClick={(e) => {
+                    if (actionsLocked) return;
+                    if (e.target.closest("button, a, input, select, textarea, label, [data-row-interactive='true']")) return;
+                    openDetail(it);
+                  }}
+                  onKeyDown={(e) => {
+                    if (actionsLocked) return;
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openDetail(it);
+                    }
+                  }}
                 >
                   <div className="stock-mobile-card-head">
                     <div>
@@ -1294,61 +1382,19 @@ export default function StockSaatIni() {
                       </strong>
                     </div>
                   </div>
-                  <div className="stock-mobile-footer">
-                    <button
-                      type="button"
-                      className="stock-btn-outline sm"
-                      data-testid={`stock-detail-mobile-${it.master_item_id}`}
-                      onClick={() => setDetailItem(it)}
-                      disabled={actionsLocked}
-                    >
-                      Lihat Detail
-                    </button>
-                  </div>
                 </article>
               );
             })}
           </div>
 
-      {pageCount > 1 && (
-        <div className="master-pager stock-pager" data-testid="stock-pager">
-          <button className="stock-btn-outline sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
-          <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} baris</span>
-          <button className="stock-btn-outline sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
-        </div>
-      )}
-
-      {detailItem && (
-        <StockSaatIniDetailDrawer
-          item={detailItem}
-          physicalPrimary={stockPhysicalPrimaryDisplay(detailItem, {
-            warehouseId: selectedFilterWarehouse?.id || "",
-            branchAggregate: showBranchAggregate,
-          })}
-          branches={branches}
-          branchId={branchId}
-          warehouseId={warehouseId}
-          canAdjust={canAdjust}
-          canOpening={canOpening}
-          adjustBlockedReason={data?.adjust_blocked_reason}
-          onClose={() => setDetailItem(null)}
-          onOpenOpening={(row) => {
-            setDetailItem(null);
-            const wh = singleWarehouse
-              || (warehouseId ? adjustWarehouses.find((w) => w.id === warehouseId) : null)
-              || null;
-            setOpeningSeed({
-              itemId: row.master_item_id,
-              branchId: wh?.branch_id || effectiveBranchId || branchId || "",
-              warehouseId: wh?.id || warehouseId || "",
-            });
-            setOpeningOpen(true);
-          }}
-          onOpenAdjust={(row) => {
-            setDetailItem(null);
-            beginAdjust(row, { balancePresent: true });
-          }}
-        />
+          {pageCount > 1 && (
+            <div className="master-pager stock-pager" data-testid="stock-pager">
+              <button className="stock-btn-outline sm" disabled={page <= 1 || tableBusy} onClick={() => setPage((p) => p - 1)}>Sebelumnya</button>
+              <span className="muted small">Halaman {data?.page || page} dari {pageCount} · {data?.total || 0} baris</span>
+              <button className="stock-btn-outline sm" disabled={page >= pageCount || tableBusy} onClick={() => setPage((p) => p + 1)}>Berikutnya</button>
+            </div>
+          )}
+        </>
       )}
 
       {openingOpen && (
@@ -1396,7 +1442,13 @@ function InlinePhysicalEditor({ item, saving, onCancel, onSave }) {
   };
 
   return (
-    <span data-testid={`stock-inline-${item.master_item_id}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+    <span
+      data-testid={`stock-inline-${item.master_item_id}`}
+      data-row-interactive="true"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+    >
       <input
         ref={inputRef}
         value={draft}

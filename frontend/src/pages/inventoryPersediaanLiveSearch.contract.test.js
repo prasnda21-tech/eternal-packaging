@@ -48,7 +48,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(hook).toMatch(/LIVE_SEARCH_DEBOUNCE_MS = 300/);
   });
 
-  test("Stock Saat Ini shows Owner Excel SSI compact list + detail drawer", () => {
+  test("Stock Saat Ini shows Owner Excel SSI compact list + inline detail", () => {
     const detail = fs.readFileSync(path.join(__dirname, "StockSaatIniDetailDrawer.jsx"), "utf8");
     const apiSrc = fs.readFileSync(path.join(__dirname, "../lib/api.js"), "utf8");
     expect(stock).toMatch(/Stock Dapat Dijual = Stock [-\u2212] \(PO aktif [-\u2212] qty dikirim\)/);
@@ -61,7 +61,11 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).not.toMatch(/stock-filter-focus/);
     expect(stock).not.toMatch(/Filter \(fokus\)/);
     expect(stock).toMatch(/stock-table-compact/);
-    expect(stock).toMatch(/Lihat Detail/);
+    expect(stock).toMatch(/stock-row-clickable/);
+    expect(stock).toMatch(/openDetail/);
+    expect(stock).toMatch(/Kembali ke Daftar|closeDetail/);
+    expect(stock).not.toMatch(/Lihat Detail/);
+    expect(stock).not.toMatch(/stock-detail-header/);
     expect(stock).toMatch(/StockSaatIniDetailDrawer/);
     expect(stock).toMatch(/stock-mobile-list/);
     expect(stock).toMatch(/data-testid="stock-filters"/);
@@ -87,12 +91,13 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-physical-header/);
     expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
     expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
-    expect(stock).toMatch(/stock-detail-header/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
     expect(stock).toMatch(/Belum terverifikasi/);
     expect(stock).toMatch(/Belum saldo/);
     expect(stock).not.toMatch(/Belum tersedia/);
     expect(detail).toMatch(/Belum terverifikasi/);
+    expect(detail).toMatch(/ssi-item-detail|inline-document/);
+    expect(detail).toMatch(/Kembali ke Daftar/);
     expect(detail).toMatch(/ssi-history-filter-\$\{f\.id\}/);
     expect(detail).toMatch(/id: "FISIK"/);
     expect(detail).toMatch(/id: "SO"/);

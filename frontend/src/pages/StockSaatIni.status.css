@@ -1,6 +1,7 @@
-/* SSI-only status badges (P0-B1). Scoped to Stock Saat Ini pages — not global App.css. */
+/* SSI-only styles (P0-B1 status + row detail). Not global App.css. */
+
 .stock-page--mockup .stock-status-badge--indicative,
-.ssi-detail-overlay .stock-status-badge--indicative {
+.ssi-item-detail .stock-status-badge--indicative {
   display: inline-flex;
   align-items: center;
   min-height: 20px;
@@ -12,11 +13,245 @@
   font: 600 10.5px/1.2 "IBM Plex Sans", sans-serif;
 }
 
-.stock-page--mockup .stock-indicative-cell,
-.ssi-detail-overlay .stock-indicative-cell {
+.stock-page--mockup .stock-status-badge--unverified,
+.ssi-item-detail .stock-status-badge--unverified {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f4f1ea;
+  border: 1px solid #d9d0c0;
+  color: #6b5a3e;
+  font: 600 11.5px/1.2 "IBM Plex Sans", sans-serif;
+}
+
+.stock-page--mockup .stock-indicative-cell {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* Clickable catalog rows */
+.stock-page--mockup tr.stock-row-clickable {
+  cursor: pointer;
+}
+.stock-page--mockup tr.stock-row-clickable:hover td {
+  background: #f3f7f4;
+}
+.stock-page--mockup tr.stock-row-clickable:focus {
+  outline: none;
+}
+.stock-page--mockup tr.stock-row-clickable:focus-visible td {
+  box-shadow: inset 0 0 0 2px #2f6f4e;
+}
+.stock-page--mockup tr.stock-row-clickable.is-locked {
+  cursor: default;
+}
+.stock-page--mockup tr.stock-row-clickable.is-locked:hover td {
+  background: inherit;
+}
+
+.stock-page--mockup .stock-mobile-card--clickable {
+  cursor: pointer;
+}
+.stock-page--mockup .stock-mobile-card--clickable:focus {
+  outline: none;
+}
+.stock-page--mockup .stock-mobile-card--clickable:focus-visible {
+  box-shadow: 0 0 0 2px #2f6f4e;
+}
+.stock-page--mockup .stock-mobile-card--clickable.is-locked {
+  cursor: default;
+}
+
+/* Inline document detail (replaces side drawer) */
+.ssi-item-detail {
+  width: 100%;
+  max-width: none;
+  margin: 0 0 24px;
+  padding: 0 0 8px;
+  background: transparent;
+}
+.ssi-item-detail-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.ssi-back-to-list {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ssi-item-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ssi-item-detail-head h2 {
+  margin: 0 0 4px;
+  font: 700 22px/1.25 "IBM Plex Sans", sans-serif;
+  color: #102a1f;
+}
+.ssi-item-detail-head p {
+  margin: 0 0 16px;
+}
+.ssi-item-detail-section {
+  margin: 0 0 22px;
+}
+.ssi-item-detail-section h3 {
+  margin: 0 0 8px;
+  font: 700 14px/1.3 "IBM Plex Sans", sans-serif;
+  color: #1f3b2e;
+}
+.ssi-doc-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #d7e0d9;
+  background: #fff;
+}
+.ssi-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+.ssi-doc-table th,
+.ssi-doc-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e4ebe5;
+  text-align: left;
+  vertical-align: top;
+  font: 13px/1.4 "IBM Plex Sans", sans-serif;
+  color: #1e2934;
+}
+.ssi-doc-table thead th {
+  background: #f2f6f3;
+  font-weight: 600;
+  color: #3d5548;
+  white-space: nowrap;
+}
+.ssi-doc-table tbody th[scope="row"] {
+  width: 28%;
+  font-weight: 600;
+  color: #3d5548;
+  background: #fafcfb;
+}
+.ssi-doc-table th.num,
+.ssi-doc-table td.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ssi-doc-table td.is-negative .stock-book-negative,
+.ssi-doc-qty.is-neg .stock-book-negative {
+  color: #b42318;
+}
+.ssi-doc-qty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ssi-doc-table--wh {
+  min-width: 360px;
+}
+.ssi-detail-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.ssi-history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ssi-history-filters button {
+  border: 1px solid #c9d5cc;
+  background: #fff;
+  color: #31493c;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: 600 12px/1.2 "IBM Plex Sans", sans-serif;
+  cursor: pointer;
+}
+.ssi-history-filters button.is-active {
+  background: #e7f1ea;
+  border-color: #9cbcab;
+  color: #1f3b2e;
+}
+.ssi-history-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ssi-history-item {
+  border: 1px solid #e0e8e2;
+  background: #fff;
+  padding: 10px 12px;
+}
+.ssi-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.ssi-lane-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font: 600 11px/1.2 "IBM Plex Sans", sans-serif;
+  background: #eef2f0;
+  color: #3d5548;
+}
+.ssi-history-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 2px 10px;
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 720px) {
+  .ssi-doc-table,
+  .ssi-doc-table--wh {
+    min-width: 0;
+  }
+  .ssi-doc-table thead {
+    display: none;
+  }
+  .ssi-doc-table tbody,
+  .ssi-doc-table tr,
+  .ssi-doc-table th,
+  .ssi-doc-table td {
+    display: block;
+    width: 100%;
+  }
+  .ssi-doc-table tr {
+    border-bottom: 1px solid #e4ebe5;
+    padding: 8px 10px;
+  }
+  .ssi-doc-table tbody th[scope="row"] {
+    width: auto;
+    background: transparent;
+    padding-bottom: 2px;
+  }
+  .ssi-doc-table td.num {
+    text-align: left;
+  }
+  .ssi-history-grid {
+    grid-template-columns: 90px 1fr;
+  }
 }

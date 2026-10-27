@@ -171,14 +171,72 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     expect(polos?.textContent).toMatch(/Indikatif/i);
 
     await act(async () => {
-      container.querySelector('[data-testid="stock-detail-m-ok"]').click();
+      container.querySelector('[data-testid="stock-row-m-ok"]').click();
     });
     await flush();
+    expect(container.querySelector('[data-testid="ssi-detail-drawer"]')?.getAttribute("data-ssi-detail-mode"))
+      .toBe("inline-document");
     expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)
       .toMatch(/22/);
     expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)
       .not.toMatch(/PCS · terverifikasi/);
     expect(container.querySelector('[data-testid="ssi-detail-qty_polos"]')?.textContent)
       .toMatch(/Indikatif/i);
+    await act(async () => {
+      container.querySelector('[data-testid="ssi-detail-close"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
+  });
+
+  test("Enter key on row opens detail; adjust control does not", async () => {
+    api.physicalStockCatalog.mockResolvedValue({
+      stock_read_mode: "warehouse_standalone",
+      can_adjust_physical_stock: true,
+      can_switch_branches: true,
+      effective_branch_id: BRANCH.id,
+      effective_branch_code: "YGY",
+      master_item_count: 1,
+      warehouse_count: 1,
+      total: 1,
+      page: 1,
+      page_count: 1,
+      items: [{
+        master_item_id: "m-key",
+        item_code: "KEY1",
+        item_name: "Keyboard Row",
+        physical_qty: 5,
+        baseline_status: "reconciled",
+        stock_dapat_dijual: 5,
+        qty_siap_jual_status: "READY",
+        qty_polos: 5,
+        qty_polos_status: "READY",
+        warehouse_balances: [{
+          warehouse_id: "wh-a",
+          warehouse_code: "MAIN",
+          physical_qty: 5,
+          balance_present: true,
+          baseline_status: "reconciled",
+        }],
+      }],
+    });
+    await act(async () => { root.render(<StockSaatIni />); });
+    await flush();
+    const row = container.querySelector('[data-testid="stock-row-m-key"]');
+    await act(async () => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="ssi-detail-title"]')?.textContent).toMatch(/Keyboard Row/);
+    await act(async () => {
+      container.querySelector('[data-testid="ssi-detail-close"]').click();
+    });
+    await flush();
+    const adjust = container.querySelector('[data-testid="stock-adjust-m-key"]');
+    if (adjust) {
+      await act(async () => { adjust.click(); });
+      await flush();
+      expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeNull();
+    }
   });
 });
