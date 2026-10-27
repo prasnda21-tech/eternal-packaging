@@ -35,37 +35,33 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
   });
 
   test("ProductDetail has dense business UI header and KPI summary cards", () => {
-    // Navigation & Header
     expect(productDetailSrc).toMatch(/Kembali ke Barang\/Jasa/);
     expect(productDetailSrc).toMatch(/product-header-card/);
-
-    // KPI Cards
     expect(productDetailSrc).toMatch(/Stok Fisik Saat Ini/);
     expect(productDetailSrc).toMatch(/api\.physicalStock\(/);
     expect(productDetailSrc).not.toMatch(/Stok Cup Belum Dicetak/);
     expect(productDetailSrc).toMatch(/Satuan Dasar/);
     expect(productDetailSrc).toMatch(/Konversi Terdefinisi/);
-
-    // Tabs
     expect(productDetailSrc).toMatch(/tab-btn-umum/);
     expect(productDetailSrc).toMatch(/tab-btn-stok/);
     expect(productDetailSrc).toMatch(/tab-btn-mutasi/);
     expect(productDetailSrc).toMatch(/Informasi Produk/);
-    expect(productDetailSrc).toMatch(/Setting Konversi Satuan/);
+    expect(productDetailSrc).toMatch(/Satuan &amp; Konversi/);
   });
 
-  test("ProductDetail Unit Conversion form enforces business rules", () => {
-    // Form fields
+  test("ProductDetail Unit Conversion form enforces multi-UOM business rules", () => {
     expect(productDetailSrc).toMatch(/input-base-uom/);
     expect(productDetailSrc).toMatch(/input-tx-uom/);
     expect(productDetailSrc).toMatch(/input-conversion-factor/);
     expect(productDetailSrc).toMatch(/btn-save-conversion/);
-
-    // Factor validation: must be > 0
+    expect(productDetailSrc).toMatch(/alternate-uoms-table/);
+    expect(productDetailSrc).toMatch(/btn-add-alternate-uom/);
+    expect(productDetailSrc).toMatch(/alternate_uoms/);
     expect(productDetailSrc).toMatch(/Faktor konversi harus berupa angka lebih besar dari 0/);
-
-    // Same UOM safety: if tx == base, factor is 1
+    expect(productDetailSrc).toMatch(/Satuan duplikat/);
     expect(productDetailSrc).toMatch(/txUom\.trim\(\)\.toUpperCase\(\) === baseUom\.trim\(\)\.toUpperCase\(\)/);
+    expect(productDetailSrc).toMatch(/input-preview-qty/);
+    expect(productDetailSrc).toMatch(/conversion-preview-result/);
   });
 
   test("ProductDetail Mutation Table implements dense ledger and click mechanics", () => {
@@ -83,11 +79,8 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
     expect(productDetailSrc).toMatch(/Saldo/);
     expect(productDetailSrc).not.toMatch(/GUDANG_UTAMA/);
     expect(productDetailSrc).not.toMatch(/initOpeningBalance/);
-
     expect(productDetailSrc).toMatch(/onClick=\{\(\) => setSelectedMutation\(m\)\}/);
     expect(productDetailSrc).toMatch(/e\.stopPropagation\(\)/);
-
-    // Slide-in Detail Mutasi Drawer
     expect(productDetailSrc).toMatch(/mutation-drawer/);
     expect(productDetailSrc).toMatch(/Detail Mutasi Stok/);
   });
@@ -100,6 +93,7 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
     expect(productDetailCss).toMatch(/\.mutation-table/);
     expect(productDetailCss).toMatch(/\.mutation-drawer/);
     expect(productDetailCss).toMatch(/\.mutation-drawer-overlay/);
+    expect(productDetailCss).toMatch(/\.uom-alternate-table/);
   });
 
   test("ProductDetail enforces Physical Stock Authority & Opening Balance card contracts", () => {
@@ -113,8 +107,7 @@ describe("Product Detail & Stock Ledger Frontend Contracts", () => {
     expect(productDetailSrc).not.toMatch(/initOpeningBalance/);
     expect(productDetailSrc).not.toMatch(/input-opening-unprinted/);
     expect(productDetailSrc).not.toMatch(/input-opening-printed/);
-
-    expect(productDetailSrc).toMatch(/disabled=\{!canEditConversion \|\| savingSetting \|\| isStockInitialized\}/);
+    expect(productDetailSrc).toMatch(/disabled=\{!canEditConversion \|\| savingSetting \|\| isStockInitialized \|\| isInventoryItem\}/);
     expect(productDetailSrc).toMatch(/Terkunci: Saldo awal stok fisik sudah ditetapkan/);
     expect(productDetailSrc).toMatch(/canEditOpeningBalance = hasPerm\("current_stock\.update"\) \|\| hasPerm\("permissions\.manage"\)/);
     expect(productDetailSrc).not.toMatch(/>Koreksi Stock Fisik</);
