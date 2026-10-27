@@ -233,6 +233,6 @@ async def test_standalone_catalog_inventory_filter(db):
     assert [r["item_code"] for r in catalog["items"]] == ["INV-SA"]
     # Standalone path still inventory-only; Excel columns attach when balance present.
     assert catalog["items"][0]["physical_qty"] == 7
-    assert catalog["items"][0]["ssi_formula_version"] == "ssi_excel_v1"
+    assert str(catalog["items"][0]["ssi_formula_version"] or "").startswith("ssi_excel_v1")
     assert catalog["items"][0]["qty_polos_gudang"] == 7
     assert catalog["items"][0]["stock_dapat_dijual"] == 7

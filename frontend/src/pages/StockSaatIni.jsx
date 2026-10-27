@@ -63,25 +63,30 @@ const EXCEL_SSI_COLUMNS = [
     label: "Qty Tercetak",
     testId: "stock-cetak",
     note: "Konfirmasi selesai operator pada parent SO (bukan jumlah warna)",
-    statusKey: "qty_sudah_cetak_gudang_status",
+    statusKey: "qty_tercetak_status",
+    legacyStatusKey: "qty_sudah_cetak_gudang_status",
   },
   {
     key: "qty_polos",
     label: "Qty Polos",
     testId: "stock-polos",
     note: "Stock − Tercetak Belum Kirim (PCS)",
+    statusKey: "qty_polos_status",
+    legacyStatusKey: "qty_polos_gudang_status",
   },
   {
     key: "tercetak_belum_kirim",
     label: "Tercetak Belum Kirim",
     testId: "stock-tercetak-belum",
     note: "Qty Tercetak − Cetak Sudah Dikirim",
+    statusKey: "tercetak_belum_kirim_status",
   },
   {
     key: "cetak_sudah_dikirim",
     label: "Cetak Sudah Dikirim",
     testId: "stock-cetak-dikirim",
-    note: "Konfirmasi SJ barang cetak (PCS)",
+    note: "Konfirmasi SJ barang cetak terbukti (PCS) — tanpa estimasi",
+    statusKey: "cetak_sudah_dikirim_status",
   },
 ];
 
@@ -116,8 +121,12 @@ const STOCK_CONDITION_FIELDS = {
 function excelQtyCell(col, row, key) {
   const masterItemId = row?.master_item_id;
   const qty = row?.[col.key];
-  const status = col.statusKey ? row?.[col.statusKey] : "";
-  if (qty == null || status === "BELUM_TERSEDIA") {
+  const status = String(
+    (col.statusKey && row?.[col.statusKey])
+    || (col.legacyStatusKey && row?.[col.legacyStatusKey])
+    || "",
+  ).toUpperCase();
+  if (qty == null || status === "BELUM_TERSEDIA" || status === "UNVERIFIED") {
     return (
       <td
         key={key || col.key}
@@ -1116,12 +1125,18 @@ export default function StockSaatIni() {
                   <div className="stock-mobile-metrics" data-status={statusKey}>
                     {EXCEL_SSI_COLUMNS.filter((c) => !c.usePhysicalDisplay).map((col) => {
                       const qty = it?.[col.key];
-                      const status = col.statusKey ? it?.[col.statusKey] : "";
+                      const status = String(
+                        (col.statusKey && it?.[col.statusKey])
+                        || (col.legacyStatusKey && it?.[col.legacyStatusKey])
+                        || "",
+                      ).toUpperCase();
                       return (
                         <div key={col.key}>
                           <span>{col.label}</span>
                           <strong title={col.note} data-testid={`${col.testId}-mobile-${it.master_item_id}`}>
-                            {qty == null || status === "BELUM_TERSEDIA" ? "Belum tersedia" : fmtQty(qty)}
+                            {qty == null || status === "BELUM_TERSEDIA" || status === "UNVERIFIED"
+                              ? "Belum tersedia"
+                              : fmtQty(qty)}
                           </strong>
                         </div>
                       );

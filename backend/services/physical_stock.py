@@ -3829,9 +3829,10 @@ async def list_physical_stock_catalog(
     # Read-only aggregation — no dual stock mutation.
     from services.stock_saat_ini_excel import (
         aggregate_ledger_components,
+        aggregate_proven_print_delivered_qty,
         apply_excel_fields_to_catalog_row,
         compute_excel_columns,
-        parent_qty_tercetak_from_progress,
+        resolve_qty_tercetak,
     )
 
     ledger_components: Dict[str, Dict[str, float]] = {}
@@ -3860,6 +3861,11 @@ async def list_physical_stock_catalog(
             branch_id=operational_id,
             warehouse_id=selected_wh or None,
         )
+
+    # Proven printed SJ qty only (never estimate from total so_delivered).
+    print_delivered, print_delivery_prov = aggregate_proven_print_delivered_qty(
+        orders, owners, process_master_ids=service_master_ids,
+    )
 
     rows = []
     for master in masters:
@@ -4021,9 +4027,21 @@ async def list_physical_stock_catalog(
         balance_present_any = any(
             bool(wb.get("balance_present")) for wb in warehouse_balances
         )
-        qty_tercetak = parent_qty_tercetak_from_progress(demand)
-        # so_delivered from proven delivery map (same proof as Belum Terkirim).
-        # Cap printed-shipped by qty_tercetak when print/polos split is unavailable.
+        tercetak_slot = resolve_qty_tercetak(demand)
+        mid_key = str(mid) or mid
+        print_prov = str(print_delivery_prov.get(mid_key, "") or "")
+        delivery_prov = str(delivery_provenance.get(mid_key, "") or "")
+        # Print delivery is proven only from confirmed print-line SJ attribution.
+        # Ambiguous total delivery or print attribution → null (not estimate).
+        print_unproven = print_prov == "unproven" or delivery_prov == "unproven"
+        print_proven = (
+            print_prov == "confirmed_print_shipment" and not print_unproven
+        )
+        cetak_proven_qty = print_delivered.get(mid_key, 0.0) if print_proven else None
+        # Verified zero: no unproven flag and no confirmed print shipments.
+        if not print_unproven and not print_proven:
+            print_proven = True
+            cetak_proven_qty = 0.0
         excel = compute_excel_columns(
             saldo_awal=comp.get("saldo_awal", 0),
             pembelian=comp.get("pembelian", 0),
@@ -4031,7 +4049,10 @@ async def list_physical_stock_catalog(
             delivered_total=effective_delivered,
             po_ordered=demand["ordered_qty"],
             so_delivered=effective_delivered,
-            qty_tercetak=qty_tercetak,
+            qty_tercetak=tercetak_slot["qty"],
+            qty_tercetak_status=tercetak_slot["status"],
+            cetak_delivered_proven=cetak_proven_qty,
+            print_delivery_proven=print_proven and not print_unproven,
             stock_book=buckets["physical_qty"] if balance_present_any else None,
         )
         apply_excel_fields_to_catalog_row(
@@ -4039,31 +4060,9 @@ async def list_physical_stock_catalog(
             excel,
             balance_present=balance_present_any or bool(comp),
         )
-        if completion_unproven:
-            row["qty_tercetak"] = 0
-            row["qty_sudah_cetak_gudang"] = 0
-            row["qty_sudah_cetak_gudang_status"] = "BELUM_TERSEDIA"
-            row["qty_sudah_cetak_gudang_reason"] = "COMPLETION_UNPROVEN"
-            row["qty_sudah_cetak_gudang_note"] = (
-                "Qty Tercetak belum terverifikasi — proses multiwarna/Add On ambigu."
-            )
-            # Recompute polos / belum kirim with fail-closed tercetak=0
-            excel_safe = compute_excel_columns(
-                saldo_awal=comp.get("saldo_awal", 0),
-                pembelian=comp.get("pembelian", 0),
-                adjustment_net=comp.get("adjustment_net", 0),
-                delivered_total=effective_delivered,
-                po_ordered=demand["ordered_qty"],
-                so_delivered=effective_delivered,
-                qty_tercetak=0,
-                stock_book=buckets["physical_qty"] if balance_present_any else None,
-            )
-            row["qty_polos"] = excel_safe["qty_polos"]
-            row["qty_polos_gudang"] = excel_safe["qty_polos"]
-            row["tercetak_belum_kirim"] = excel_safe["tercetak_belum_kirim"]
-            row["cetak_sudah_dikirim"] = excel_safe["cetak_sudah_dikirim"]
-            row["stock_dapat_dijual"] = excel_safe["stock_dapat_dijual"]
-            row["qty_siap_jual"] = excel_safe["stock_dapat_dijual"]
+        row["print_delivery_provenance"] = print_prov or (
+            "verified_zero" if print_proven else ""
+        )
         if selected_warehouse:
             row["warehouse_id"] = str(selected_warehouse.get("id") or "")
             row["warehouse_code"] = selected_warehouse.get("code") or ""
