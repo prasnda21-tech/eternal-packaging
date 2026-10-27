@@ -31,62 +31,117 @@ import {
 
 const INLINE_ADJUST_REASON = "Koreksi manual dari Stock Saat Ini";
 
-/** Fase 1: warehouse condition columns — null/BELUM_TERSEDIA → “Belum tersedia”, never 0. */
+/** Owner Excel SSI columns (PCS). Source: stock_saat_ini_excel read model. */
+const EXCEL_SSI_COLUMNS = [
+  {
+    key: "saldo_awal",
+    label: "Saldo Awal",
+    testId: "stock-saldo-awal",
+    note: "OPENING_BALANCE (PCS) — editable via Saldo Awal / adjustment beraudit",
+  },
+  {
+    key: "pembelian",
+    label: "Pembelian",
+    testId: "stock-pembelian",
+    note: "Penerimaan pembelian / PURCHASE_RECEIPT (PCS)",
+  },
+  {
+    key: "stock",
+    label: "Stock",
+    testId: "stock-excel-stock",
+    note: "Saldo buku PCS (penerimaan, adjustment, pengiriman, reversal sah)",
+    usePhysicalDisplay: true,
+  },
+  {
+    key: "stock_dapat_dijual",
+    label: "Stock Dapat Dijual",
+    testId: "stock-siap-jual",
+    note: "Stock − (PO aktif − qty sudah dikirim); boleh negatif",
+  },
+  {
+    key: "qty_tercetak",
+    label: "Qty Tercetak",
+    testId: "stock-cetak",
+    note: "Konfirmasi selesai operator pada parent SO (bukan jumlah warna)",
+    statusKey: "qty_sudah_cetak_gudang_status",
+  },
+  {
+    key: "qty_polos",
+    label: "Qty Polos",
+    testId: "stock-polos",
+    note: "Stock − Tercetak Belum Kirim (PCS)",
+  },
+  {
+    key: "tercetak_belum_kirim",
+    label: "Tercetak Belum Kirim",
+    testId: "stock-tercetak-belum",
+    note: "Qty Tercetak − Cetak Sudah Dikirim",
+  },
+  {
+    key: "cetak_sudah_dikirim",
+    label: "Cetak Sudah Dikirim",
+    testId: "stock-cetak-dikirim",
+    note: "Konfirmasi SJ barang cetak (PCS)",
+  },
+];
+
+/** @deprecated alias — FE tests / expand panel still reference condition helpers */
 const STOCK_CONDITION_FIELDS = {
   polos: {
-    label: "Qty Polos Gudang",
-    qtyKey: "qty_polos_gudang",
+    label: "Qty Polos",
+    qtyKey: "qty_polos",
     statusKey: "qty_polos_gudang_status",
     noteKey: "qty_polos_gudang_note",
-    fallbackNote: "Belum tersedia — saldo gudang belum memisahkan barang polos vs sudah cetak.",
+    fallbackNote: "Qty Polos = Stock − Tercetak Belum Kirim (PCS)",
     testId: "stock-polos",
   },
   cetak: {
-    label: "Qty Sudah Cetak",
-    qtyKey: "qty_sudah_cetak_gudang",
+    label: "Qty Tercetak",
+    qtyKey: "qty_tercetak",
     statusKey: "qty_sudah_cetak_gudang_status",
     noteKey: "qty_sudah_cetak_gudang_note",
-    fallbackNote: "Belum tersedia — hasil cetak operator belum tercatat sebagai mutasi stok gudang.",
+    fallbackNote: "Qty Tercetak dari konfirmasi operator (parent SO)",
     testId: "stock-cetak",
   },
   siapJual: {
-    label: "Qty Siap Jual",
-    qtyKey: "qty_siap_jual",
+    label: "Stock Dapat Dijual",
+    qtyKey: "stock_dapat_dijual",
     statusKey: "qty_siap_jual_status",
     noteKey: "qty_siap_jual_note",
-    fallbackNote: "Belum tersedia — belum ada bukti kunci/alokasi stok polos per gudang.",
+    fallbackNote: "Stock − (PO aktif − qty sudah dikirim); boleh negatif",
     testId: "stock-siap-jual",
   },
 };
 
-/** Render from API qty/status so future supported quantities display without redesign. */
-function conditionFieldCell(kind, row) {
-  const meta = STOCK_CONDITION_FIELDS[kind];
-  const qty = row?.[meta.qtyKey];
-  const status = row?.[meta.statusKey] || (qty == null ? "BELUM_TERSEDIA" : "");
-  const note = row?.[meta.noteKey] || meta.fallbackNote;
+function excelQtyCell(col, row, key) {
   const masterItemId = row?.master_item_id;
-  if (qty != null && status !== "BELUM_TERSEDIA") {
+  const qty = row?.[col.key];
+  const status = col.statusKey ? row?.[col.statusKey] : "";
+  if (qty == null || status === "BELUM_TERSEDIA") {
     return (
       <td
-        className="col-fit num mono"
-        data-testid={`${meta.testId}-${masterItemId}`}
-        data-condition-status={status || "READY"}
+        key={key || col.key}
+        className="col-fit num"
+        data-testid={`${col.testId}-${masterItemId}`}
+        data-condition-status="BELUM_TERSEDIA"
+        title={col.note}
       >
-        {fmtQty(qty)}
+        <span className="stock-status-badge stock-status-badge--missing" title={col.note}>
+          Belum tersedia
+        </span>
       </td>
     );
   }
+  const neg = Number(qty) < 0;
   return (
     <td
-      className="col-fit num"
-      data-testid={`${meta.testId}-${masterItemId}`}
-      data-condition-status={status || "BELUM_TERSEDIA"}
-      title={note}
+      key={key || col.key}
+      className={`col-fit num mono${neg ? " stock-book-negative" : ""}`}
+      data-testid={`${col.testId}-${masterItemId}`}
+      data-condition-status={status || "READY"}
+      title={col.note}
     >
-      <span className="stock-status-badge stock-status-badge--missing" title={note}>
-        Belum tersedia
-      </span>
+      {fmtQty(qty)}
     </td>
   );
 }
@@ -98,11 +153,15 @@ function conditionFieldNote(kind, row) {
 
 function conditionFieldDisplay(kind, row) {
   const meta = STOCK_CONDITION_FIELDS[kind];
-  const qty = row?.[meta.qtyKey];
-  const status = row?.[meta.statusKey] || (qty == null ? "BELUM_TERSEDIA" : "");
+  const value = {
+    polos: row?.qty_polos ?? row?.qty_polos_gudang,
+    cetak: row?.qty_tercetak ?? row?.qty_sudah_cetak_gudang,
+    siapJual: row?.stock_dapat_dijual ?? row?.qty_siap_jual,
+  }[kind];
+  const status = row?.[meta.statusKey] || (value == null ? "BELUM_TERSEDIA" : "");
   const note = conditionFieldNote(kind, row);
-  if (qty != null && status !== "BELUM_TERSEDIA") {
-    return { mode: "qty", qty, status: status || "READY", note };
+  if (value != null && status !== "BELUM_TERSEDIA") {
+    return { mode: "qty", qty: value, status: status || "READY", note };
   }
   return { mode: "unavailable", status: status || "BELUM_TERSEDIA", note };
 }
@@ -355,11 +414,9 @@ export default function StockSaatIni() {
         || "Mode kompatibilitas — stok fisik legacy perusahaan (bukan per gudang).");
   const showBranchAggregate = Boolean(warehouseActive && !selectedFilterWarehouse);
 
-  const physicalHeader = warehouseActive
-    ? "Stock Fisik Gudang"
-    : "Stock Fisik (perusahaan)";
-  // Pesanan / Belum / Tersedia kept in-table (smallest safe UI) — not Siap Jual.
-  const tableColCount = showBranchAggregate ? 12 : 11;
+  const physicalHeader = "Stock";
+  // Owner Excel: Produk + 8 qty columns + unit/lokasi/update (+ expand).
+  const tableColCount = showBranchAggregate ? 13 : 12;
 
   const toggleRowExpand = (masterItemId) => {
     setExpandedRows((prev) => ({ ...prev, [masterItemId]: !prev[masterItemId] }));
@@ -367,39 +424,34 @@ export default function StockSaatIni() {
   const download = () => {
     const header = [
       "Kode",
-      "Nama Barang",
+      "Produk",
       "Satuan Dasar",
       "Lokasi",
-      physicalHeader,
-      STOCK_CONDITION_FIELDS.polos.label,
-      STOCK_CONDITION_FIELDS.cetak.label,
-      STOCK_CONDITION_FIELDS.siapJual.label,
-      "Qty Pesanan",
-      "Qty Belum Terkirim",
-      "Qty Tersedia",
+      ...EXCEL_SSI_COLUMNS.map((c) => c.label),
       "Baseline",
       "Terakhir Update",
     ];
     const lines = [header.join(",")];
-    // Null condition fields export as empty string — never coerce to 0.
-    const conditionCsvEmpty = "";
+    const excelCsvValue = (row, key) => {
+      const v = row?.[key];
+      return v == null ? "" : v;
+    };
     items.forEach((row) => {
       const location = selectedFilterWarehouse
         ? warehouseLocationLabel(selectedFilterWarehouse, branches)
         : (data?.effective_branch_code || "Cabang");
       const book = bookPhysicalDisplay(row, { warehouseId: selectedFilterWarehouse?.id || "" });
+      const excelVals = EXCEL_SSI_COLUMNS.map((c) => (
+        c.usePhysicalDisplay
+          ? (book.present ? book.qty : excelCsvValue(row, c.key))
+          : excelCsvValue(row, c.key)
+      ));
       const cells = [
         row.item_code,
         row.item_name,
         row.base_unit,
         location,
-        book.present ? book.qty : "",
-        row.qty_polos_gudang == null ? conditionCsvEmpty : row.qty_polos_gudang,
-        row.qty_sudah_cetak_gudang == null ? conditionCsvEmpty : row.qty_sudah_cetak_gudang,
-        row.qty_siap_jual == null ? conditionCsvEmpty : row.qty_siap_jual,
-        row.qty_pesanan,
-        row.qty_belum_terkirim,
-        row.qty_tersedia_valid === false ? "" : row.qty_tersedia,
+        ...excelVals,
         row.baseline_status || "",
         [
           row.updated_at || "",
@@ -423,10 +475,11 @@ export default function StockSaatIni() {
             row.item_name,
             row.base_unit,
             whLabel,
-            qty,
-            conditionCsvEmpty,
-            conditionCsvEmpty,
-            conditionCsvEmpty,
+            "", // saldo awal — branch demand scope
+            "", // pembelian
+            qty, // stock per gudang
+            "",
+            "",
             "",
             "",
             "",
@@ -690,7 +743,7 @@ export default function StockSaatIni() {
           {advancedOpen && (
             <div className="stock-advanced-panel" data-testid="stock-advanced-panel">
               <p className="muted small">
-                Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim.
+                Stock Dapat Dijual = Stock − (PO aktif − qty dikirim).
                 Nilai negatif = kebutuhan stok (tidak memblokir operasional).
               </p>
             </div>
@@ -778,9 +831,10 @@ export default function StockSaatIni() {
                 <p><span className="stock-legend-invalid">Belum valid</span> Qty tersedia tidak dapat dihitung karena data tidak lengkap.</p>
               </div>
               <p className="muted small" data-testid="stock-read-mode">{modeFullLabel}</p>
-              <p className="muted small">
-                Qty Tersedia = Stock Fisik − Qty Pesanan − Qty Belum Terkirim.
-                Nilai negatif = kebutuhan stok (tidak memblokir operasional).
+              <p className="muted small" data-testid="stock-excel-formula-note">
+                Rumus Excel Owner (PCS): Stock Dapat Dijual = Stock − (PO aktif − qty dikirim);
+                Qty Polos = Stock − Tercetak Belum Kirim; Tercetak Belum Kirim = Qty Tercetak − Cetak Sudah Dikirim.
+                Nilai negatif = defisit (tidak memblokir SO).
               </p>
               {!warehouseActive && (
                 <p className="muted small" data-testid="stock-compat-branch-note">
@@ -796,7 +850,7 @@ export default function StockSaatIni() {
               )}
               {warehouseActive && (
                 <p className="muted small" data-testid="stock-book-vs-count-note">
-                  Qty Pesanan / Belum Terkirim lingkup cabang. Saldo belum ada = Belum tersedia; belum direkonsiliasi = Belum valid — bukan klaim nol siap jual. Agregat cabang tidak menyembunyikan defisit gudang atau saldo belum valid.
+                  Kolom Excel lingkup cabang (PO / tercetak / kirim). Saldo gudang belum ada = Belum tersedia pada Stock; agregat cabang tidak menyembunyikan defisit gudang.
                 </p>
               )}
             </div>
@@ -807,49 +861,26 @@ export default function StockSaatIni() {
               <thead>
                 <tr>
                   {showBranchAggregate && <th className="col-expand" aria-label="Rincian gudang" />}
-                  <th className="col-text">Nama Barang</th>
+                  <th className="col-text">Produk</th>
                   <th className="col-fit" data-testid="stock-unit-header">Satuan Dasar</th>
                   <th className="col-fit" data-testid="stock-location-header">Lokasi</th>
-                  <th
-                    className="col-fit num"
-                    data-testid="stock-physical-header"
-                    data-physical-scope={warehouseActive ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY"}
-                    title={warehouseActive
-                      ? (selectedFilterWarehouse ? "Stock fisik gudang terpilih" : "Stock fisik cabang (agregat gudang)")
-                      : "Legacy perusahaan — bukan saldo per gudang"}
-                  >
-                    {physicalHeader}
-                  </th>
-                  <th
-                    className="col-fit num"
-                    data-testid="stock-polos-header"
-                    title={STOCK_CONDITION_FIELDS.polos.fallbackNote}
-                  >
-                    {STOCK_CONDITION_FIELDS.polos.label}
-                  </th>
-                  <th
-                    className="col-fit num"
-                    data-testid="stock-cetak-header"
-                    title={STOCK_CONDITION_FIELDS.cetak.fallbackNote}
-                  >
-                    {STOCK_CONDITION_FIELDS.cetak.label}
-                  </th>
-                  <th
-                    className="col-fit num"
-                    data-testid="stock-siap-jual-header"
-                    title={STOCK_CONDITION_FIELDS.siapJual.fallbackNote}
-                  >
-                    {STOCK_CONDITION_FIELDS.siapJual.label}
-                  </th>
-                  <th className="col-fit num" title="Lingkup cabang — permintaan/komitmen, bukan stok gudang">
-                    Qty Pesanan
-                  </th>
-                  <th className="col-fit num" title="Lingkup cabang — permintaan/komitmen, bukan stok gudang">
-                    Qty Belum Terkirim
-                  </th>
-                  <th className="col-fit num" title="Rumus legacy komitmen pesanan — bukan Qty Siap Jual gudang">
-                    Qty Tersedia
-                  </th>
+                  {EXCEL_SSI_COLUMNS.map((col) => (
+                    <th
+                      key={col.key}
+                      className="col-fit num"
+                      data-testid={
+                        col.usePhysicalDisplay ? "stock-physical-header" : `${col.testId}-header`
+                      }
+                      data-physical-scope={
+                        col.usePhysicalDisplay
+                          ? (warehouseActive ? (selectedFilterWarehouse ? "WAREHOUSE" : "BRANCH") : "COMPANY")
+                          : undefined
+                      }
+                      title={col.note}
+                    >
+                      {col.label}
+                    </th>
+                  ))}
                   <th className="col-fit">Terakhir Update</th>
                 </tr>
               </thead>
@@ -934,47 +965,26 @@ export default function StockSaatIni() {
                         ? warehouseLocationLabel(selectedFilterWarehouse, branches)
                         : (data?.effective_branch_code || "Cabang")}
                     </td>
-                    <td
-                      className={`col-fit num mono${rowNegative ? " stock-book-negative" : ""}`}
-                      data-testid={`stock-physical-${it.master_item_id}`}
-                      data-negative={rowNegative ? "true" : "false"}
-                      data-balance-present={primary.present ? "true" : "false"}
-                      data-baseline-status={it.baseline_status || ""}
-                      data-baseline-label={it.baseline_label || ""}
-                      data-physical-status={primary.text || (compactFlag || "qty")}
-                      title={physicalHints.length ? physicalHints.join(" · ") : undefined}
-                    >
-                      {renderPhysicalCell(it, primary, physicalText, book)}
-                    </td>
-                    {conditionFieldCell("polos", it)}
-                    {conditionFieldCell("cetak", it)}
-                    {conditionFieldCell("siapJual", it)}
-                    <td className="col-fit num mono" data-testid={`stock-order-${it.master_item_id}`}>{fmtQty(it.qty_pesanan)}</td>
-                    <td
-                      className="col-fit num mono"
-                      data-testid={`stock-undelivered-${it.master_item_id}`}
-                      data-belum-status={it.belum_terkirim_status || "READY"}
-                    >
-                      {formatBelumTerkirim(it)}
-                    </td>
-                    <td
-                      className="col-fit num mono"
-                      data-testid={`stock-available-${it.master_item_id}`}
-                      data-tersedia-valid={it.qty_tersedia_valid === false ? "false" : "true"}
-                      title={
-                        it.qty_tersedia_valid === false
-                          ? (it.qty_tersedia_note || "Qty Tersedia belum valid — saldo fisik belum direkonsiliasi")
-                          : selectedFilterWarehouse
-                            ? (it.qty_tersedia_note || "Permintaan cabang vs saldo buku gudang — bukan alokasi per gudang")
-                            : (Number(it.qty_tersedia) < 0 ? "Kebutuhan stok (informasi) — tidak memblokir pesanan" : undefined)
+                    {EXCEL_SSI_COLUMNS.map((col) => {
+                      if (col.usePhysicalDisplay) {
+                        return (
+                          <td
+                            key={col.key}
+                            className={`col-fit num mono${rowNegative ? " stock-book-negative" : ""}`}
+                            data-testid={`stock-physical-${it.master_item_id}`}
+                            data-negative={rowNegative ? "true" : "false"}
+                            data-balance-present={primary.present ? "true" : "false"}
+                            data-baseline-status={it.baseline_status || ""}
+                            data-baseline-label={it.baseline_label || ""}
+                            data-physical-status={primary.text || (compactFlag || "qty")}
+                            title={physicalHints.length ? physicalHints.join(" · ") : col.note}
+                          >
+                            {renderPhysicalCell(it, primary, physicalText, book)}
+                          </td>
+                        );
                       }
-                    >
-                      {it.qty_tersedia_valid === false ? (
-                        <span className="muted" data-testid={`stock-available-invalid-${it.master_item_id}`}>
-                          Belum valid
-                        </span>
-                      ) : fmtQty(it.qty_tersedia)}
-                    </td>
+                      return excelQtyCell(col, it, col.key);
+                    })}
                     <td
                       className="col-fit small stock-last-update"
                       data-testid={`stock-updated-${it.master_item_id}`}
@@ -998,13 +1008,7 @@ export default function StockSaatIni() {
                             <thead>
                               <tr>
                                 <th>Gudang</th>
-                                <th className="num">Stock Fisik Gudang</th>
-                                <th className="num" title={STOCK_CONDITION_FIELDS.polos.fallbackNote}>Qty Polos Gudang</th>
-                                <th className="num" title={STOCK_CONDITION_FIELDS.cetak.fallbackNote}>Qty Sudah Cetak</th>
-                                <th className="num" title={STOCK_CONDITION_FIELDS.siapJual.fallbackNote}>Qty Siap Jual</th>
-                                <th className="num" title="Lingkup cabang">Qty Pesanan</th>
-                                <th className="num" title="Lingkup cabang">Qty Belum Terkirim</th>
-                                <th className="num" title="Lingkup cabang">Qty Tersedia</th>
+                                <th className="num">Stock</th>
                                 <th>Status</th>
                                 <th>Terakhir Update</th>
                               </tr>
@@ -1030,18 +1034,6 @@ export default function StockSaatIni() {
                                         <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
                                       )}
                                     </td>
-                                    <td className="num" title={conditionFieldNote("polos", it)}>
-                                      <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
-                                    </td>
-                                    <td className="num" title={conditionFieldNote("cetak", it)}>
-                                      <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
-                                    </td>
-                                    <td className="num" title={conditionFieldNote("siapJual", it)}>
-                                      <span className="stock-status-badge stock-status-badge--missing">Belum tersedia</span>
-                                    </td>
-                                    <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
-                                    <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
-                                    <td className="num muted" title="Lingkup cabang — bukan alokasi per gudang">—</td>
                                     <td>
                                       <span className={`stock-status-badge stock-status-badge--${st.tone}`}>{st.text}</span>
                                     </td>
@@ -1122,21 +1114,18 @@ export default function StockSaatIni() {
                     </div>
                   </div>
                   <div className="stock-mobile-metrics" data-status={statusKey}>
-                    {["polos", "cetak", "siapJual"].map((kind) => {
-                      const disp = conditionFieldDisplay(kind, it);
-                      const label = kind === "polos" ? "Polos Gudang" : kind === "cetak" ? "Sudah Cetak" : "Siap Jual";
+                    {EXCEL_SSI_COLUMNS.filter((c) => !c.usePhysicalDisplay).map((col) => {
+                      const qty = it?.[col.key];
+                      const status = col.statusKey ? it?.[col.statusKey] : "";
                       return (
-                        <div key={kind}>
-                          <span>{label}</span>
-                          <strong title={disp.note}>
-                            {disp.mode === "qty" ? fmtQty(disp.qty) : "Belum tersedia"}
+                        <div key={col.key}>
+                          <span>{col.label}</span>
+                          <strong title={col.note} data-testid={`${col.testId}-mobile-${it.master_item_id}`}>
+                            {qty == null || status === "BELUM_TERSEDIA" ? "Belum tersedia" : fmtQty(qty)}
                           </strong>
                         </div>
                       );
                     })}
-                    <div><span>Pesanan</span><strong>{fmtQty(it.qty_pesanan)}</strong></div>
-                    <div><span>Belum Terkirim</span><strong>{formatBelumTerkirim(it)}</strong></div>
-                    <div><span>Tersedia</span><strong>{formatTersedia(it)}</strong></div>
                     <div><span>Satuan</span><strong>{it.base_unit || "—"}</strong></div>
                   </div>
                   <div className="stock-mobile-footer stock-last-update">

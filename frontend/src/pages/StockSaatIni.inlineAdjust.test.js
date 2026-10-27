@@ -251,8 +251,8 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(input.value).toBe("1050");
     expect(view.container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
     expect(view.container.textContent).not.toMatch(/Koreksi Stock Fisik/);
-    expect(view.container.querySelector('[data-testid="stock-order-item-1"] input')).toBeNull();
-    expect(view.container.querySelector('[data-testid="stock-undelivered-item-1"] input')).toBeNull();
+    expect(view.container.querySelector('[data-testid="stock-saldo-awal-item-1"] input')).toBeNull();
+    expect(view.container.querySelector('[data-testid="stock-pembelian-item-1"] input')).toBeNull();
     view.cleanup();
   });
 
@@ -449,7 +449,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(api.physicalStockCatalog).toHaveBeenCalledWith(
       expect.objectContaining({ branch_id: "br-uat", warehouse_id: "wh-a" }),
     );
-    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock Fisik Gudang");
+    expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock");
     expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toBe(
       "/persediaan/stock-opname?warehouse_id=wh-a",
     );
@@ -515,7 +515,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(physical?.textContent).toMatch(/Belum tersedia/i);
     expect(physical?.textContent).not.toMatch(/^0|[^0-9]0[^0-9]/);
     expect(physical?.textContent).not.toMatch(/belum direkonsiliasi/i);
-    expect(container.querySelector('[data-testid="stock-available-invalid-item-1"]')?.textContent).toMatch(/Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent).toMatch(/Stock Dapat Dijual/i);
     expect(physical?.getAttribute("data-baseline-label")).toMatch(/belum direkonsiliasi/i);
     act(() => root.unmount());
     container.remove();

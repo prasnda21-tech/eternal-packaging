@@ -174,8 +174,8 @@ describe("Stock Saat Ini UX — expandable warehouse + semantics", () => {
     expect(container.querySelector('[data-testid="stock-flag-m-neg"]')?.textContent).toMatch(/Defisit/i);
     expect(container.querySelector('[data-testid="stock-physical-m-neg"]')?.textContent)
       .not.toMatch(/Saldo awal belum direkonsiliasi|Ada gudang belum saldo|Belum lengkap/i);
-    expect(container.querySelector('[data-testid="stock-available-invalid-m-miss"]')?.textContent)
-      .toMatch(/Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent)
+      .toMatch(/Stock Dapat Dijual/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.getAttribute("data-baseline-label"))
       .toMatch(/belum direkonsiliasi|Belum valid/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
