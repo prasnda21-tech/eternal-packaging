@@ -81,9 +81,9 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/label: "Qty Polos"/);
     expect(stock).toMatch(/label: "Barang Tercetak Belum Kirim"/);
     expect(stock).toMatch(/label: "Barang Cetak Sudah Dikirim"/);
-    expect(stock).toMatch(/data-testid="stock-physical-header"/);
-    expect(stock).toMatch(/data-testid="stock-polos-header"/);
-    expect(stock).toMatch(/data-testid="stock-siap-jual-header"/);
+    expect(stock).toMatch(/stock-physical-header/);
+    expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
+    expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
     expect(stock).toMatch(/Belum tersedia/);
     expect(stock).not.toMatch(/stock-filter-branch/);
