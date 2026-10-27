@@ -133,11 +133,17 @@ def resolve_cetak_sudah_dikirim(
 
 
 def resolve_qty_tercetak(progress_row: Optional[dict]) -> Dict[str, Any]:
-    """Qty Tercetak from aggregate_operational_orders (parent, not warna sum)."""
+    """Qty Tercetak from print-line operator completion only (parent, not warna).
+
+    Uses ``print_completed_qty`` when present so non_print siap-kirim never
+    inflates Qty Tercetak. Falls back to completed_qty for older callers.
+    """
     if not isinstance(progress_row, dict):
         return _known(0.0)
     if progress_row.get("completion_unproven"):
         return _unknown(REASON_COMPLETION_UNPROVEN)
+    if "print_completed_qty" in progress_row:
+        return _known(max(qty_num(progress_row.get("print_completed_qty")), 0.0))
     return _known(max(qty_num(progress_row.get("completed_qty")), 0.0))
 
 

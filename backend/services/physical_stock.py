@@ -3303,15 +3303,31 @@ def aggregate_operational_orders(
     excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
     totals: Dict[str, Dict[str, Any]] = {}
 
-    def add(master_id: str, ordered: float, completed: float, *, unproven: bool = False) -> None:
+    def add(
+        master_id: str,
+        ordered: float,
+        completed: float,
+        *,
+        unproven: bool = False,
+        print_completed: Optional[float] = None,
+    ) -> None:
         if not master_id or master_id in excluded:
             return
         slot = totals.setdefault(
             master_id,
-            {"ordered_qty": 0.0, "completed_qty": 0.0, "completion_unproven": False},
+            {
+                "ordered_qty": 0.0,
+                "completed_qty": 0.0,
+                "print_completed_qty": 0.0,
+                "completion_unproven": False,
+            },
         )
         slot["ordered_qty"] = _qty_num(slot["ordered_qty"]) + _qty_num(ordered)
         slot["completed_qty"] = _qty_num(slot["completed_qty"]) + _qty_num(completed)
+        if print_completed is not None:
+            slot["print_completed_qty"] = (
+                _qty_num(slot["print_completed_qty"]) + _qty_num(print_completed)
+            )
         if unproven:
             slot["completion_unproven"] = True
 
@@ -3395,7 +3411,8 @@ def aggregate_operational_orders(
             ordered = _qty_num(line.get("quantity"))
             if not is_print_line(line):
                 ready = operational_ready_qty_for_line(order, idx)
-                add(mid, ordered, ready, unproven=False)
+                # Non-print siap kirim is NOT Qty Tercetak (Excel SSI).
+                add(mid, ordered, ready, unproven=False, print_completed=0.0)
                 continue
 
             parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
@@ -3411,18 +3428,30 @@ def aggregate_operational_orders(
                 )
                 if group.status == STATUS_FULLY_COMPLETED and not process_gate_unproven:
                     # Physical siap = parent qty only (not sum of SERVICE process).
-                    add(mid, ordered, group.physical_ready_qty, unproven=False)
+                    add(
+                        mid, ordered, group.physical_ready_qty,
+                        unproven=False, print_completed=group.physical_ready_qty,
+                    )
                 elif group.status == STATUS_FULLY_COMPLETED and process_gate_unproven:
                     # Linked group looks done but PO has orphan/ambiguous process.
-                    add(mid, ordered, group.physical_ready_qty, unproven=True)
+                    add(
+                        mid, ordered, group.physical_ready_qty,
+                        unproven=True, print_completed=group.physical_ready_qty,
+                    )
                 else:
                     # Fail-closed partial / incomplete — no READY via min().
-                    add(mid, ordered, 0.0, unproven=False)
+                    add(mid, ordered, 0.0, unproven=False, print_completed=0.0)
             elif process_gate_unproven:
                 # Unlinked/orphan/ambiguous process work on this PO — fail-closed.
-                add(mid, ordered, parent_completed, unproven=True)
+                add(
+                    mid, ordered, parent_completed,
+                    unproven=True, print_completed=parent_completed,
+                )
             else:
-                add(mid, ordered, parent_completed, unproven=False)
+                add(
+                    mid, ordered, parent_completed,
+                    unproven=False, print_completed=parent_completed,
+                )
     return totals
 
 

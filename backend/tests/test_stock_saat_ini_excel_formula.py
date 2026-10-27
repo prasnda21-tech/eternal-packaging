@@ -112,6 +112,22 @@ def test_partial_shipment_and_so_cancel_commitment():
     assert cancelled["stock_dapat_dijual"] == 5_000
 
 
+def test_qty_tercetak_uses_print_completed_not_non_print_ready():
+    """Non-print siap-kirim must not inflate Qty Tercetak (Owner Excel)."""
+    resolved = resolve_qty_tercetak(
+        {
+            "completed_qty": 18_000,  # includes non_print ready
+            "print_completed_qty": 8_000,
+            "completion_unproven": False,
+        }
+    )
+    assert resolved["qty"] == 8_000
+    # Older callers without print_completed_qty keep completed_qty fallback.
+    assert resolve_qty_tercetak(
+        {"completed_qty": 8_000, "completion_unproven": False}
+    )["qty"] == 8_000
+
+
 def test_completion_unproven_is_null_not_zero():
     resolved = resolve_qty_tercetak(
         {"completed_qty": 24_000, "completion_unproven": True}
