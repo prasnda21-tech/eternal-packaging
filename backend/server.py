@@ -7903,11 +7903,23 @@ async def list_delivery_schedule(user=Depends(current_user)):
     ).sort("deadline", 1).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
+    from services.delivery_schedule import load_sales_deliveries_for_schedule
     holidays = await _holiday_dates(db)
     lead_days = dd_settings["lead_time_days"]
+    po_ids = [str(o.get("id") or "").strip() for o in docs if o.get("id")]
+    # Batched authoritative SJ docs — read-only reconcile, no N+1, no writes.
+    sd_by_po = await load_sales_deliveries_for_schedule(db, po_ids)
     rows = []
     for o in docs:
-        rows.extend(_delivery_schedule_rows(o, lead_time_days=lead_days, holidays=holidays))
+        oid = str(o.get("id") or "").strip()
+        rows.extend(
+            _delivery_schedule_rows(
+                o,
+                lead_time_days=lead_days,
+                holidays=holidays,
+                sales_deliveries=sd_by_po.get(oid, []),
+            )
+        )
     # Enrich optimization status (pure read; no writes).
     try:
         from services.independent_route.delivery_bridge import optimization_status_map
