@@ -3310,6 +3310,8 @@ def aggregate_operational_orders(
         *,
         unproven: bool = False,
         print_completed: Optional[float] = None,
+        has_print_line: bool = False,
+        operator_evidence: bool = False,
     ) -> None:
         if not master_id or master_id in excluded:
             return
@@ -3318,15 +3320,22 @@ def aggregate_operational_orders(
             {
                 "ordered_qty": 0.0,
                 "completed_qty": 0.0,
-                "print_completed_qty": 0.0,
                 "completion_unproven": False,
+                "has_print_line": False,
+                "operator_evidence_present": False,
             },
         )
         slot["ordered_qty"] = _qty_num(slot["ordered_qty"]) + _qty_num(ordered)
         slot["completed_qty"] = _qty_num(slot["completed_qty"]) + _qty_num(completed)
+        if has_print_line:
+            slot["has_print_line"] = True
+        if operator_evidence:
+            slot["operator_evidence_present"] = True
+        # Only materialize print_completed_qty when caller records a determination
+        # (verified 0 or positive). Absence of the key ⇒ no operator baseline yet.
         if print_completed is not None:
             slot["print_completed_qty"] = (
-                _qty_num(slot["print_completed_qty"]) + _qty_num(print_completed)
+                _qty_num(slot.get("print_completed_qty", 0.0)) + _qty_num(print_completed)
             )
         if unproven:
             slot["completion_unproven"] = True
@@ -3412,9 +3421,12 @@ def aggregate_operational_orders(
             if not is_print_line(line):
                 ready = operational_ready_qty_for_line(order, idx)
                 # Non-print siap kirim is NOT Qty Tercetak (Excel SSI).
-                add(mid, ordered, ready, unproven=False, print_completed=0.0)
+                # Do not invent print_completed_qty here — non-print-only SO
+                # resolves Qty Tercetak as verified 0 via ordered_qty baseline.
+                add(mid, ordered, ready, unproven=False)
                 continue
 
+            ops_evidence = idx in completed_by_idx
             parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
             children = children_by_parent.get(idx) or []
             if children:
@@ -3430,27 +3442,54 @@ def aggregate_operational_orders(
                     # Physical siap = parent qty only (not sum of SERVICE process).
                     add(
                         mid, ordered, group.physical_ready_qty,
-                        unproven=False, print_completed=group.physical_ready_qty,
+                        unproven=False,
+                        print_completed=group.physical_ready_qty,
+                        has_print_line=True,
+                        operator_evidence=True,
                     )
                 elif group.status == STATUS_FULLY_COMPLETED and process_gate_unproven:
                     # Linked group looks done but PO has orphan/ambiguous process.
                     add(
                         mid, ordered, group.physical_ready_qty,
-                        unproven=True, print_completed=group.physical_ready_qty,
+                        unproven=True,
+                        print_completed=group.physical_ready_qty,
+                        has_print_line=True,
+                        operator_evidence=True,
                     )
                 else:
-                    # Fail-closed partial / incomplete — no READY via min().
-                    add(mid, ordered, 0.0, unproven=False, print_completed=0.0)
+                    # Fail-closed partial / incomplete — inspected, proven not ready.
+                    add(
+                        mid, ordered, 0.0,
+                        unproven=False,
+                        print_completed=0.0,
+                        has_print_line=True,
+                        operator_evidence=True,
+                    )
             elif process_gate_unproven:
                 # Unlinked/orphan/ambiguous process work on this PO — fail-closed.
                 add(
                     mid, ordered, parent_completed,
-                    unproven=True, print_completed=parent_completed,
+                    unproven=True,
+                    print_completed=parent_completed if ops_evidence else None,
+                    has_print_line=True,
+                    operator_evidence=ops_evidence,
                 )
-            else:
+            elif ops_evidence:
                 add(
                     mid, ordered, parent_completed,
-                    unproven=False, print_completed=parent_completed,
+                    unproven=False,
+                    print_completed=parent_completed,
+                    has_print_line=True,
+                    operator_evidence=True,
+                )
+            else:
+                # Print SO without operator confirmation — not a verified zero.
+                add(
+                    mid, ordered, 0.0,
+                    unproven=False,
+                    print_completed=None,
+                    has_print_line=True,
+                    operator_evidence=False,
                 )
     return totals
 
@@ -3901,10 +3940,13 @@ async def list_physical_stock_catalog(
         docs = balances.get(master.get("id"), [])
         physical = sum(_qty_num(doc.get("physical_qty")) for doc in docs)
         updated = [doc.get("updated_at") for doc in docs if doc.get("updated_at")]
+        # Catalog-only masters stay without a progress slot so Qty Tercetak
+        # resolves UNVERIFIED (never a silent verified 0).
         demand = progress.get(master.get("id")) or {
             "ordered_qty": 0.0,
-            "completed_qty": 0.0,
             "completion_unproven": False,
+            "has_print_line": False,
+            "operator_evidence_present": False,
         }
         mid = master.get("id")
         # Compatibility parity: delivered from proven shipments / qty_delivered only
@@ -3912,7 +3954,7 @@ async def list_physical_stock_catalog(
         effective_delivered = _qty_num(delivered.get(mid, 0))
         completion_unproven = bool(demand.get("completion_unproven"))
         delivery_unproven = str(delivery_provenance.get(str(mid) or mid, "") or "") == "unproven"
-        completed_for_buckets = demand["completed_qty"]
+        completed_for_buckets = _qty_num(demand.get("completed_qty", 0.0))
         buckets = operational_availability(
             physical_qty=physical,
             ordered_qty=demand["ordered_qty"],
@@ -4080,6 +4122,7 @@ async def list_physical_stock_catalog(
             so_delivered=effective_delivered,
             qty_tercetak=tercetak_slot["qty"],
             qty_tercetak_status=tercetak_slot["status"],
+            qty_tercetak_reason=tercetak_slot.get("reason"),
             cetak_delivered_proven=cetak_proven_qty,
             print_delivery_proven=print_proven and not print_unproven,
             stock_book=buckets["physical_qty"] if balance_present_any else None,

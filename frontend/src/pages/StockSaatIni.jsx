@@ -126,6 +126,7 @@ const STOCK_CONDITION_FIELDS = {
 const EXCEL_UNVERIFIED_REASON_LABEL = {
   PRINT_DELIVERY_UNPROVEN: "Pengiriman cetak belum terbukti dari SJ print",
   COMPLETION_UNPROVEN: "Konfirmasi selesai cetak induk belum terverifikasi (multiwarna/Add On)",
+  NO_OPERATOR_EVIDENCE: "Belum ada konfirmasi cetak selesai operator yang valid",
   DEPENDENT_UNKNOWN: "Nilai bergantung kolom yang belum terverifikasi",
 };
 

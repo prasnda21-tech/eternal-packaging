@@ -128,6 +128,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/qty_polos/);
     expect(stock).toMatch(/tercetak_belum_kirim/);
     expect(stock).toMatch(/cetak_sudah_dikirim/);
+    expect(stock).toMatch(/NO_OPERATOR_EVIDENCE/);
     expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 

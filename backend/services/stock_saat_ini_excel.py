@@ -25,11 +25,15 @@ Formulas (Owner Excel — unchanged business meaning):
   tercetak_belum_kirim = qty_tercetak − cetak_sudah_dikirim
   qty_polos = stock − tercetak_belum_kirim
 
-Safety (PR #664 fix):
+Safety (PR #664 + #667 verification rule):
   - Never estimate cetak_sudah_dikirim via min(so_delivered, qty_tercetak).
-  - Without proven print-delivery attribution → null / UNVERIFIED.
-  - completion_unproven → qty_tercetak null (not silent 0); dependents null.
+  - Without proven print-delivery attribution → null / UNVERIFIED on that column.
+  - completion_unproven / missing operator evidence → qty_tercetak null (not silent 0).
+  - No SO + no operator must NOT hide proven Saldo Awal / Pembelian / Stock.
+  - SO alone or operator alone is enough to activate metrics that have evidence;
+    both are not required together.
   - Verified zero remains 0 when evidence proves empty.
+  - Ambiguous delivery → only affected print/polos columns UNVERIFIED.
   - Cancelled SO / reversed ledger excluded by callers / aggregators.
 """
 from __future__ import annotations
@@ -37,7 +41,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-FORMULA_VERSION = "ssi_excel_v1_1"
+FORMULA_VERSION = "ssi_excel_v1_2"
 
 STATUS_READY = "READY"
 STATUS_UNVERIFIED = "UNVERIFIED"
@@ -45,6 +49,7 @@ STATUS_UNVERIFIED = "UNVERIFIED"
 REASON_PRINT_DELIVERY_UNPROVEN = "PRINT_DELIVERY_UNPROVEN"
 REASON_COMPLETION_UNPROVEN = "COMPLETION_UNPROVEN"
 REASON_DEPENDENT_UNKNOWN = "DEPENDENT_UNKNOWN"
+REASON_NO_OPERATOR_EVIDENCE = "NO_OPERATOR_EVIDENCE"
 
 SOURCE_SALDO_AWAL = "physical_stock_ledger.OPENING_BALANCE"
 SOURCE_PEMBELIAN = "physical_stock_ledger.PURCHASE_RECEIPT"
@@ -136,15 +141,42 @@ def resolve_qty_tercetak(progress_row: Optional[dict]) -> Dict[str, Any]:
     """Qty Tercetak from print-line operator completion only (parent, not warna).
 
     Uses ``print_completed_qty`` when present so non_print siap-kirim never
-    inflates Qty Tercetak. Falls back to completed_qty for older callers.
+    inflates Qty Tercetak. Falls back to completed_qty only when operator
+    evidence is explicitly present.
+
+    Rules:
+    - Catalog-only (no SO / no operator) → UNVERIFIED, never fake 0.
+    - Print SO without operator confirmation → UNVERIFIED (history may be incomplete).
+    - Non-print-only SO → verified 0 (nothing to print).
+    - Operator evidence with 0 → verified 0.
     """
     if not isinstance(progress_row, dict):
-        return _known(0.0)
+        return _unknown(REASON_NO_OPERATOR_EVIDENCE)
     if progress_row.get("completion_unproven"):
         return _unknown(REASON_COMPLETION_UNPROVEN)
+
+    has_print_line = bool(progress_row.get("has_print_line"))
+    operator_evidence = bool(progress_row.get("operator_evidence_present"))
+
+    if operator_evidence:
+        if "print_completed_qty" in progress_row:
+            return _known(max(qty_num(progress_row.get("print_completed_qty")), 0.0))
+        return _known(max(qty_num(progress_row.get("completed_qty")), 0.0))
+
+    if has_print_line:
+        # Print demand exists but no usable operator confirmation yet.
+        return _unknown(REASON_NO_OPERATOR_EVIDENCE)
+
     if "print_completed_qty" in progress_row:
+        # Non-print aggregator path recorded an explicit print qty (usually 0).
         return _known(max(qty_num(progress_row.get("print_completed_qty")), 0.0))
-    return _known(max(qty_num(progress_row.get("completed_qty")), 0.0))
+
+    if qty_num(progress_row.get("ordered_qty")) > 0:
+        # Valid SO baseline with no print lines → Qty Tercetak proven empty.
+        return _known(0.0)
+
+    # Catalog-only / no SO baseline / no operator evidence.
+    return _unknown(REASON_NO_OPERATOR_EVIDENCE)
 
 
 # Backward-compatible name used by older tests/callers.
@@ -162,15 +194,22 @@ def compute_excel_columns(
     delivered_total: Any = 0,
     po_ordered: Any = 0,
     so_delivered: Any = None,
-    qty_tercetak: Any = 0,
+    qty_tercetak: Any = None,
     qty_tercetak_status: Optional[str] = None,
+    qty_tercetak_reason: Optional[str] = None,
     cetak_delivered_proven: Any = None,
     print_delivery_proven: bool = False,
     # Deprecated alias — treated as proven only when explicitly provided.
     cetak_delivered_explicit: Any = None,
     stock_book: Any = None,
 ) -> Dict[str, Any]:
-    """Pure Excel SSI row math. Unknown print/completion → null dependents."""
+    """Pure Excel SSI row math with column-level verification.
+
+    Saldo Awal / Pembelian / Stock / Stock Dapat Dijual stay numeric whenever
+    book components are known. Activity columns (Tercetak / Cetak / Polos /
+    Belum Kirim) are READY only with sufficient evidence; otherwise null on
+    the affected column only — never blank the whole row.
+    """
     sa = qty_num(saldo_awal)
     pb = qty_num(pembelian)
     adj = qty_num(adjustment_net)
@@ -185,16 +224,19 @@ def compute_excel_columns(
         delivered_total=delivered,
         stock_book=stock_book,
     )
+    # Outstanding SO may be zero (no SO / all cancelled) — still a valid baseline.
     open_commitment = po - so_del
     stock_dapat_dijual = _as_pcs(stock - open_commitment)
 
-    # Qty Tercetak: None means unverified (not verified zero).
+    # Qty Tercetak: None / UNVERIFIED = no usable operator evidence (not verified 0).
     tercetak_unverified = (
         qty_tercetak is None
         or str(qty_tercetak_status or "").upper() == STATUS_UNVERIFIED
     )
     if tercetak_unverified:
-        tercetak_slot = _unknown(REASON_COMPLETION_UNPROVEN)
+        tercetak_slot = _unknown(
+            str(qty_tercetak_reason or "").strip() or REASON_NO_OPERATOR_EVIDENCE
+        )
     else:
         tercetak_slot = _known(max(qty_num(qty_tercetak), 0.0))
 
@@ -211,6 +253,8 @@ def compute_excel_columns(
         print_delivery_proven=proven_flag,
     )
 
+    # Polos / Belum Kirim need both tercetak and cetak READY. If only delivery is
+    # ambiguous, tercetak can stay numeric while dependents are UNVERIFIED.
     if tercetak_slot["qty"] is None or cetak_slot["qty"] is None:
         belum_slot = _unknown(REASON_DEPENDENT_UNKNOWN)
         polos_slot = _unknown(REASON_DEPENDENT_UNKNOWN)
@@ -293,6 +337,10 @@ def apply_excel_fields_to_catalog_row(
             REASON_COMPLETION_UNPROVEN: (
                 "Belum terverifikasi: konfirmasi selesai cetak induk ambigu "
                 "(multiwarna/Add On/proses belum terikat)."
+            ),
+            REASON_NO_OPERATOR_EVIDENCE: (
+                "Belum terverifikasi: belum ada konfirmasi cetak selesai operator "
+                "yang valid (bukan nol palsu)."
             ),
             REASON_DEPENDENT_UNKNOWN: (
                 "Belum terverifikasi: bergantung kolom Qty Tercetak / Cetak Sudah Dikirim "
