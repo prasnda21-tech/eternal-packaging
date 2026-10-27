@@ -3815,6 +3815,12 @@ async def list_physical_stock_catalog(
         ),
         None,
     ) if selected_warehouse_id else None
+    catalog_total = len(masters)
+    page_count = (catalog_total + safe_limit - 1) // safe_limit if catalog_total else 0
+    start = (safe_page - 1) * safe_limit
+    # Page-scope heavy per-item work (units/balances/ledger/row build). Sorting and
+    # INVENTORY filter already applied above so total/page_count stay correct.
+    page_masters = masters[start:start + safe_limit]
     if not masters:
         # Keep mode metadata identical to a non-empty catalog so the FE does not
         # collapse warehouse chrome to compatibility when search/SERVICE yields 0.
@@ -3831,7 +3837,21 @@ async def list_physical_stock_catalog(
             standalone_on=standalone_on,
             selected_warehouse=selected_warehouse,
         )
-    units = await _catalog_units(db, masters)
+    if not page_masters:
+        return _warehouse_engine_catalog_envelope(
+            items=[],
+            total=catalog_total,
+            page=safe_page,
+            limit=safe_limit,
+            page_count=page_count,
+            master_item_count=catalog_total,
+            warehouse_count=len(warehouses),
+            catalog_mode=catalog_mode,
+            r2_on=r2_on,
+            standalone_on=standalone_on,
+            selected_warehouse=selected_warehouse,
+        )
+    units = await _catalog_units(db, page_masters)
     owners = await _unique_accurate_owners(db)
     from services.mode_b_legacy_demand import (
         get_mode_b_legacy_demand_settings,
@@ -3857,17 +3877,19 @@ async def list_physical_stock_catalog(
     orders = _orders_for_branch(
         orders, operational_id, legacy_settings=legacy_settings,
     )
+    # Full branch order aggregate remains required: page-row demand can depend on
+    # SERVICE process Add On lines linked on the same order (exclude from qty only).
     progress = aggregate_operational_orders(
         orders, owners, exclude_master_ids=service_master_ids,
     )
-    master_ids = [master["id"] for master in masters if master.get("id")]
+    page_master_ids = [master["id"] for master in page_masters if master.get("id")]
     # Qty Belum Terkirim delivery proof = Compatibility live rules (confirmed
     # shipment / qty_delivered fallback). Do NOT also add SALES_DELIVERY ledger
     # here — ledger is Stock Fisik authority only (avoids double-count once Mode B
     # confirmations also stamp order.shipments). R2 ledger path remains for R2.
     if catalog_mode == "r2":
         delivered = await _r2_confirmed_delivery_qty(
-            db, master_ids, branch_id=operational_id,
+            db, page_master_ids, branch_id=operational_id,
         )
         delivery_provenance: Dict[str, str] = {
             mid: "r2_ledger" for mid in delivered
@@ -3881,20 +3903,20 @@ async def list_physical_stock_catalog(
         )
     warehouse_ids = [row.get("id") for row in warehouses if row.get("id")]
     balance_docs = []
-    if warehouse_ids and master_ids:
+    if warehouse_ids and page_master_ids:
         balance_docs = await db[BALANCE_COLLECTION].find(
             {
-                "master_item_id": {"$in": master_ids},
+                "master_item_id": {"$in": page_master_ids},
                 "warehouse_id": {"$in": warehouse_ids},
             },
             {"_id": 0},
-        ).to_list(max(len(master_ids) * len(warehouse_ids), 1))
+        ).to_list(max(len(page_master_ids) * len(warehouse_ids), 1))
     balances: Dict[str, List[dict]] = {}
     for doc in balance_docs:
         balances.setdefault(doc.get("master_item_id"), []).append(doc)
 
     # Owner Excel SSI components (Saldo Awal / Pembelian / delivered) from R2 ledger.
-    # Read-only aggregation — no dual stock mutation.
+    # Read-only aggregation — no dual stock mutation. Scoped to the page only.
     from services.stock_saat_ini_excel import (
         aggregate_ledger_components,
         aggregate_proven_print_delivered_qty,
@@ -3904,9 +3926,9 @@ async def list_physical_stock_catalog(
     )
 
     ledger_components: Dict[str, Dict[str, float]] = {}
-    if master_ids and operational_id and catalog_mode == "r2":
+    if page_master_ids and operational_id and catalog_mode == "r2":
         ledger_query: Dict[str, Any] = {
-            "master_item_id": {"$in": master_ids},
+            "master_item_id": {"$in": page_master_ids},
             "branch_id": operational_id,
             "movement_type": {
                 "$in": [
@@ -3925,7 +3947,7 @@ async def list_physical_stock_catalog(
         ledger_docs = await db[LEDGER_COLLECTION].find(ledger_query, {"_id": 0}).to_list(50000)
         ledger_components = aggregate_ledger_components(
             ledger_docs,
-            master_item_ids=master_ids,
+            master_item_ids=page_master_ids,
             branch_id=operational_id,
             warehouse_id=selected_wh or None,
         )
@@ -3936,7 +3958,7 @@ async def list_physical_stock_catalog(
     )
 
     rows = []
-    for master in masters:
+    for master in page_masters:
         docs = balances.get(master.get("id"), [])
         physical = sum(_qty_num(doc.get("physical_qty")) for doc in docs)
         updated = [doc.get("updated_at") for doc in docs if doc.get("updated_at")]
@@ -4168,19 +4190,15 @@ async def list_physical_stock_catalog(
                     f"{existing_note} {recon_note}".strip()
                 )
         rows.append(row)
-    total = len(rows)
-    start = (safe_page - 1) * safe_limit
-    page_count = (total + safe_limit - 1) // safe_limit if total else 0
-    page_items = rows[start:start + safe_limit]
-    # Batch enrich only the current page — avoid N+1 on the full catalog.
-    await _attach_last_stock_actors(db, page_items)
+    # rows already equals the requested page (built only for page_masters).
+    await _attach_last_stock_actors(db, rows)
     return _warehouse_engine_catalog_envelope(
-        items=page_items,
-        total=total,
+        items=rows,
+        total=catalog_total,
         page=safe_page,
         limit=safe_limit,
         page_count=page_count,
-        master_item_count=len(masters),
+        master_item_count=catalog_total,
         warehouse_count=len(warehouses),
         catalog_mode=catalog_mode,
         r2_on=r2_on,
