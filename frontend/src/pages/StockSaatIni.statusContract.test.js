@@ -189,6 +189,19 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector('[data-testid="stock-row-m-ok"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeTruthy();
+    await act(async () => {
+      container.querySelector('[data-testid="ssi-detail-backdrop"]')
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
   });
 
   test("Enter key on row opens detail; adjust control does not", async () => {

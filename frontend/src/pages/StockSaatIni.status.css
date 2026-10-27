@@ -71,7 +71,8 @@
 .ssi-detail-modal-root {
   position: fixed;
   inset: 0;
-  z-index: 55;
+  /* Above app sidebar rail (z-index 56) and topbar; below nothing critical in SSI. */
+  z-index: 90;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -81,7 +82,7 @@
 /* Nested Saldo Awal / Koreksi must stack above the SSI detail modal (App.css defaults are lower). */
 body:has(.ssi-detail-modal-root) .stock-adjust-overlay,
 body:has(.ssi-detail-modal-root) .saldo-awal-overlay {
-  z-index: 70;
+  z-index: 110;
 }
 .ssi-detail-modal-backdrop {
   position: absolute;

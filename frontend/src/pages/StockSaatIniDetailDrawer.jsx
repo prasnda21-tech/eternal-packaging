@@ -311,9 +311,16 @@ export default function StockSaatIniDetailDrawer({
         className="ssi-detail-modal-backdrop"
         aria-label="Tutup detail"
         data-testid="ssi-detail-backdrop"
-        onClick={() => {
+        onMouseDown={(e) => {
+          // Close on mousedown so the same click cannot fall through to the table row.
+          e.preventDefault();
+          e.stopPropagation();
           if (nestedDialogOpen()) return;
           onClose?.();
+        }}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
         }}
       />
       <div
