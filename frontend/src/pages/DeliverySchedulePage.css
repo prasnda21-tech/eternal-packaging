@@ -2,16 +2,60 @@
    Reuses DeliveryPlanPage.css (.dp-page / .dp-header / .dp-filters).
    Only schedule-specific deltas: Filter control + Optimasi Rute in header actions. */
 
-/* Beat .content.content-workspace:has(.ship-status-page) > .ship-status-page padding */
+/* Beat .content.content-workspace:has(.ship-status-page) > .ship-status-page padding.
+   Keep page chrome fixed inside the overflow:hidden ship-status shell; only the table scrolls. */
 .content.content-workspace:has(.ship-status-page) > .ship-status-page.dp-page,
 .content:has(.ship-status-page) > .ship-status-page.dp-page {
   padding: 8px 12px 12px;
   box-sizing: border-box;
-  overflow-x: hidden;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .ship-status-page.dp-page .ship-status-chrome {
+  flex: 0 0 auto;
   overflow: visible;
+}
+
+/* Schedule table viewport: bounded height + both-axis scroll (Plan table unchanged). */
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #14532d;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.12);
+}
+
+.ship-status-page.dp-page .dp-pager {
+  flex: 0 0 auto;
 }
 
 /* Keep Plan flex tokens for search — do NOT cap max-width */
@@ -86,76 +130,146 @@
   background: #ecfdf5;
 }
 
+/* Eternal UX 9.0 — compact Schedule density (Plan Advanced Table unchanged).
+   Target ~38–42px rows so ~10–12 SJ fit at 1366×768 when content allows. */
+.ship-status-page.dp-page .dp-adv-table {
+  font-size: 12px;
+}
+
+.ship-status-page.dp-page [data-testid="delivery-schedule-table-wrap"] .dp-adv-table thead th {
+  height: 28px;
+  font-size: 10px;
+  padding: 0 4px 0 2px;
+}
+
+.ship-status-page.dp-page .dp-adv-table tbody td {
+  height: 40px;
+  max-height: 42px;
+  min-height: 38px;
+  padding: 2px 6px;
+  vertical-align: middle;
+  font-size: 12px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Override shared Plan PO-identity expansion — keep single-line density on Schedule */
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.dp-po-identity),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-date-cell),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
 .ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell) {
-  overflow: visible;
-  text-overflow: unset;
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell),
+.ship-status-page.dp-page .dp-adv-table tbody td:has(.pill) {
+  height: 40px;
+  max-height: 42px;
+  min-height: 38px;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .ship-status-page.dp-page .ds-aksi-cell {
   display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  gap: 3px;
   align-items: center;
+  max-width: 100%;
 }
 
 .ship-status-page.dp-page .ds-sj-cell {
   display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  gap: 3px;
   align-items: center;
   max-width: 100%;
+  min-width: 0;
 }
 
-/* Row density: match Plan Advanced Table cell height; keep ops controls unclipped */
-.ship-status-page.dp-page .dp-adv-table tbody td {
-  height: 31px;
-  max-height: 34px;
-  padding: 0 8px;
-  vertical-align: middle;
+.ship-status-page.dp-page .ds-sj-cell .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ship-bar),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-aksi-cell),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-sj-cell),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.pill),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.dp-po-identity),
-.ship-status-page.dp-page .dp-adv-table tbody td:has(.ds-date-cell) {
-  height: auto;
-  max-height: none;
-  min-height: 31px;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  overflow: visible;
-  text-overflow: unset;
-  white-space: normal;
+/* Compact action / SJ buttons inside table only */
+.ship-status-page.dp-page .dp-adv-table .ghost.sm,
+.ship-status-page.dp-page .ds-aksi-cell .ghost.sm,
+.ship-status-page.dp-page .ds-sj-cell .ghost.sm,
+.ship-status-page.dp-page .ds-sj-cell button,
+.ship-status-page.dp-page .ds-aksi-cell a.ghost.sm {
+  min-height: 24px;
+  height: 24px;
+  max-height: 24px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  line-height: 1;
+  box-sizing: border-box;
 }
 
-/* Date + optional SLA PO note stacked — avoids inline "SLA PO …" clipping */
+/* Date + compact SLA secondary (tooltip also carries full text via title) */
 .ship-status-page.dp-page .ds-date-cell {
   display: inline-flex;
   flex-direction: column;
+  justify-content: center;
   align-items: flex-start;
-  gap: 1px;
-  line-height: 1.2;
+  gap: 0;
+  line-height: 1.15;
   min-width: 0;
   max-width: 100%;
+  vertical-align: middle;
+}
+
+.ship-status-page.dp-page .ds-date-cell .mono {
+  font-size: 12px;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .ship-status-page.dp-page .ds-sla-note {
   display: block;
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 500;
+  line-height: 1.1;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.ship-status-page.dp-page .dp-po-identity {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: middle;
 }
 
 .ship-status-page.dp-page .dp-po-identity .dp-link-po {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  overflow-wrap: normal;
+  min-width: 0;
   max-width: 100%;
+}
+
+.ship-status-page.dp-page .dp-po-identity .urgent-badge,
+.ship-status-page.dp-page .dp-po-identity .buffer-stock-badge,
+.ship-status-page.dp-page .dp-po-identity .standard-badge,
+.ship-status-page.dp-page .dp-po-identity .pill {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font-size: 9.5px;
+  line-height: 1.15;
+  min-height: 0;
 }
 
 /* Reset Kolom in filter toolbar — peer of Reset filter */
@@ -233,14 +347,32 @@
 }
 
 .ship-status-page.dp-page .dp-adv-table .ship-bar {
-  max-height: 22px;
-  min-width: 72px;
+  height: 14px;
+  max-height: 14px;
+  min-width: 64px;
+  border-radius: 2px;
+}
+
+.ship-status-page.dp-page .dp-adv-table .ship-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .ship-status-page.dp-page .dp-adv-table .pill {
-  line-height: 1.2;
-  padding: 1px 7px;
-  font-size: 11px;
+  line-height: 1.15;
+  padding: 1px 5px;
+  font-size: 10px;
+  min-height: 0;
+}
+
+.ship-status-page.dp-page .dp-adv-table .ds-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ship-status-page.dp-page .dp-header-actions {

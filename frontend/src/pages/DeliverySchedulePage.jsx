@@ -132,19 +132,27 @@ export default function DeliverySchedulePage() {
   const canOptimize = canOptimizeFromDeliverySchedule(hasPerm);
   const userKey = storageUserKey(user);
   const userId = user?.id || user?.email || "anon";
+  const DEFAULT_SCHEDULE_SORT = { key: "effective_delivery_date", direction: "desc" };
   const saved = readListUiState(userKey, "delivery-schedule", {
     filters: EMPTY_DELIVERY_FILTERS,
     sort: EMPTY_DELIVERY_SORT,
   });
   const initialFilters = normalizeDeliveryScheduleFilters(saved.filters || {});
+  const savedSortKey = String(saved.sort?.key || "").trim();
+  const savedSortDir = String(saved.sort?.direction || "").trim();
+  // Empty legacy sort = no preference → newest SJ date first.
+  const initialSortBy = savedSortKey || DEFAULT_SCHEDULE_SORT.key;
+  const initialSortDir = savedSortKey
+    ? (savedSortDir === "asc" || savedSortDir === "desc" ? savedSortDir : "asc")
+    : DEFAULT_SCHEDULE_SORT.direction;
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   // Applied filters drive visible rows + session persistence. Draft is toolbar/modal edits until Terapkan.
   const [filters, setFilters] = useState(initialFilters);
   const [draftFilters, setDraftFilters] = useState(initialFilters);
-  const [sortBy, setSortBy] = useState(saved.sort?.key || "");
-  const [sortDir, setSortDir] = useState(saved.sort?.direction || "asc");
+  const [sortBy, setSortBy] = useState(initialSortBy);
+  const [sortDir, setSortDir] = useState(initialSortDir);
   const [colFilters, setColFilters] = useState({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -263,10 +271,11 @@ export default function DeliverySchedulePage() {
     [tableRows, colFilters],
   );
 
-  const sortedRows = useMemo(
-    () => clientSortRows(columnFiltered, sortBy, sortDir, "order_number"),
-    [columnFiltered, sortBy, sortDir],
-  );
+  const sortedRows = useMemo(() => {
+    const by = sortBy || "effective_delivery_date";
+    const dir = sortBy ? (sortDir || "asc") : "desc";
+    return clientSortRows(columnFiltered, by, dir, "order_number");
+  }, [columnFiltered, sortBy, sortDir]);
 
   const totalFiltered = sortedRows.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize) || 1);
@@ -365,15 +374,18 @@ export default function DeliverySchedulePage() {
   };
   const resetFilters = () => {
     const empty = { ...EMPTY_DELIVERY_FILTERS };
+    const newestFirst = { key: "effective_delivery_date", direction: "desc" };
     setDraftFilters(empty);
     setFilters(empty);
     setColFilters({});
+    setSortBy(newestFirst.key);
+    setSortDir(newestFirst.direction);
     setPage(1);
     // Drop persisted toolbar/advanced bag so reload cannot restore stale filters.
     clearListUiState(userKey, "delivery-schedule");
     writeListUiState(userKey, "delivery-schedule", {
       filters: empty,
-      sort: sortBy ? { key: sortBy, direction: sortDir || "asc" } : { ...EMPTY_DELIVERY_SORT },
+      sort: newestFirst,
     });
     const params = new URLSearchParams(location.search || "");
     if (params.has("status")) {
@@ -442,16 +454,22 @@ export default function DeliverySchedulePage() {
         label: "Tanggal Pengiriman",
         type: "date",
         minWidth: 148,
-        render: (v, r) => (
-          <span className="ds-date-cell">
-            <span className="mono">{formatDate(v, { dateOnly: true })}</span>
-            {r.sj_delivery_date && r.po_sla_date && r.sj_delivery_date !== r.po_sla_date ? (
-              <span className="ds-sla-note muted" data-testid={`ds-sla-${r.order_number}`}>
-                SLA PO {formatDate(r.po_sla_date, { dateOnly: true })}
-              </span>
-            ) : null}
-          </span>
-        ),
+        render: (v, r) => {
+          const dateLabel = formatDate(v, { dateOnly: true });
+          const slaVisible = !!(r.sj_delivery_date && r.po_sla_date && r.sj_delivery_date !== r.po_sla_date);
+          const slaLabel = slaVisible ? `SLA PO ${formatDate(r.po_sla_date, { dateOnly: true })}` : "";
+          const dateTitle = slaVisible ? `${dateLabel} · ${slaLabel}` : (dateLabel || "");
+          return (
+            <span className="ds-date-cell" title={dateTitle}>
+              <span className="mono">{dateLabel}</span>
+              {slaVisible ? (
+                <span className="ds-sla-note muted" data-testid={`ds-sla-${r.order_number}`}>
+                  {slaLabel}
+                </span>
+              ) : null}
+            </span>
+          );
+        },
       },
       {
         key: "order_number",
@@ -484,6 +502,9 @@ export default function DeliverySchedulePage() {
         label: "Customer",
         type: "text",
         minWidth: 140,
+        render: (v) => (
+          <span className="ds-ellipsis" title={v || ""}>{v || "—"}</span>
+        ),
       },
       {
         key: "status",

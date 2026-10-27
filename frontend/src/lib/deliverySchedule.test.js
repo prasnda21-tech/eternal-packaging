@@ -439,7 +439,7 @@ describe("Rincian Pengiriman qty aggregation", () => {
     const inRange = rows.filter((r) => matchesDeliveryScheduleFilters(r, { dateFrom: "2026-10-12", dateTo: "2026-10-15" }));
     const summary = buildDeliveryDetailsSummary(inRange, { dateFrom: "2026-10-12", dateTo: "2026-10-15" });
     expect(summary.sjCount).toBe(2);
-    expect(summary.days.map((d) => d.date)).toEqual(["2026-10-12", "2026-10-15"]);
+    expect(summary.days.map((d) => d.date)).toEqual(["2026-10-15", "2026-10-12"]);
     expect(summary.grandTotals[0].qty).toBe(350);
     expect(summary.days.find((d) => d.date === "2026-10-16")).toBeFalsy();
   });

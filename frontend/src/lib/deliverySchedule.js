@@ -368,7 +368,8 @@ export function buildDeliveryDetailsSummary(rows, opts = {}) {
   }
 
   const days = Array.from(byDate.values())
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    // Newest Tanggal Pengiriman group first (YYYY-MM-DD lexicographic DESC).
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     .map((g) => ({
       date: g.date,
       dateLabel: g.dateLabel,

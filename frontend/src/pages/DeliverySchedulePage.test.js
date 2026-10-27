@@ -331,10 +331,12 @@ describe("DeliverySchedulePage Optimasi Rute + Status Lokasi", () => {
     await act(async () => {
       btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mockNavigate).toHaveBeenCalledWith(desktopScheduleReviewHref(["ord-a", "ord-b"]));
+    // Newest-first default puts ord-b (later date) before ord-a in selection order.
+    expect(mockNavigate).toHaveBeenCalledWith(desktopScheduleReviewHref(["ord-b", "ord-a"]));
     expect(mockNavigate.mock.calls[0][0]).toMatch(/\/produksi\/jadwal-pengiriman\/review-optimasi\?ids=/);
     expect(mockNavigate.mock.calls[0][0]).not.toMatch(/\/m\//);
     expect(mockNavigate.mock.calls[0][0]).toContain("ord-a");
+    expect(mockNavigate.mock.calls[0][0]).toContain("ord-b");
     expect(mockNavigate.mock.calls[0][0]).toContain("ord-b");
     expect(mockNavigate.mock.calls[0][0]).not.toContain("PO-100");
     expect(open).not.toHaveBeenCalled();
@@ -1376,7 +1378,9 @@ describe("DeliverySchedulePage Advanced Table parity", () => {
     expect(mockNavigate).toHaveBeenCalled();
     const href = mockNavigate.mock.calls[0][0];
     expect(href).toMatch(/review-optimasi\?ids=/);
-    expect(href).toContain("ord-0");
+    // Default date DESC: page 1 holds newest days (ord-27 …), not oldest ord-0.
+    expect(href).toContain("ord-27");
+    expect(href).not.toContain("ord-0");
     expect(href).not.toContain("ord-29");
   });
 
@@ -1534,6 +1538,10 @@ describe("DeliverySchedulePage Rincian Pengiriman + multi-SJ selection", () => {
     });
     expect(container.querySelector('[data-testid="ds-rincian-day-2026-10-23"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="ds-rincian-day-2026-10-24"]')).toBeTruthy();
+    const dayOrder = Array.from(container.querySelectorAll('[data-testid^="ds-rincian-day-"]'))
+      .map((el) => el.getAttribute("data-testid"))
+      .filter((id) => id && !id.includes("total"));
+    expect(dayOrder.indexOf("ds-rincian-day-2026-10-24")).toBeLessThan(dayOrder.indexOf("ds-rincian-day-2026-10-23"));
     expect(container.querySelector('[data-testid="ds-rincian-day-total-2026-10-23"]').textContent).toMatch(/80\.000/);
     expect(container.querySelector('[data-testid="ds-rincian-day-total-2026-10-24"]').textContent).toMatch(/10\.000/);
     await act(async () => {
@@ -1827,6 +1835,67 @@ describe("DeliverySchedulePage filter completeness", () => {
     expect(container.querySelector('[data-testid="ds-filter-status"]').value).toBe("hari_ini");
     expect(Number(container.querySelector('[data-testid="ds-total-count"]').textContent.match(/(\d+)/)?.[1] || 0))
       .toBe(expectTodayOnly);
+  });
+});
+
+describe("DeliverySchedulePage table vertical scroll layout", () => {
+  test("Schedule CSS scopes vertical scroll viewport without changing shared Plan table", () => {
+    const css = fs.readFileSync(path.join(__dirname, "DeliverySchedulePage.css"), "utf8");
+    const shared = fs.readFileSync(
+      path.join(__dirname, "../components/deliveryPlan/DeliveryPlanAdvancedTable.css"),
+      "utf8",
+    );
+    expect(css).toMatch(/\[data-testid="delivery-schedule-table-wrap"\]/);
+    expect(css).toMatch(/\.dp-adv-scroll\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(css).toMatch(/\.dp-adv-scroll\s*\{[^}]*overflow-x:\s*auto/s);
+    expect(css).toMatch(/min-height:\s*0/);
+    expect(css).toMatch(/\.dp-pager\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
+    // Shared Advanced Table stays overflow-x only (Plan unchanged).
+    expect(shared).toMatch(/\.dp-adv-scroll\s*\{[^}]*overflow-x:\s*auto/s);
+    expect(shared).not.toMatch(/\.dp-adv-scroll\s*\{[^}]*overflow-y:\s*auto/s);
+  });
+
+  test("Schedule CSS keeps UX 9.0 compact row density scoped away from Plan table", () => {
+    const css = fs.readFileSync(path.join(__dirname, "DeliverySchedulePage.css"), "utf8");
+    const shared = fs.readFileSync(
+      path.join(__dirname, "../components/deliveryPlan/DeliveryPlanAdvancedTable.css"),
+      "utf8",
+    );
+    expect(css).toMatch(/Eternal UX 9\.0/);
+    expect(css).toMatch(/\.dp-adv-table tbody td\s*\{[^}]*height:\s*40px/s);
+    expect(css).toMatch(/min-height:\s*38px/);
+    expect(css).toMatch(/max-height:\s*42px/);
+    expect(css).toMatch(/\.ship-bar\s*\{[^}]*height:\s*14px/s);
+    // Plan shared defaults remain for non-Schedule hosts.
+    expect(shared).toMatch(/\.dp-adv-table tbody td\s*\{[^}]*height:\s*31px/s);
+  });
+
+  test("pageRows keeps all 24 SJ on page 1 when pageSize=50", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mockLocation.pathname = "/produksi/jadwal-pengiriman";
+    mockLocation.search = "";
+    sessionStorage.clear();
+    mockHasPerm.mockImplementation((p) => p === "schedule.view");
+    const rows24 = Array.from({ length: 24 }, (_, i) => ({
+      ...sampleRows[0],
+      id: `ord-scroll-${i}`,
+      order_number: `PO-SCROLL-${i}`,
+      shipment_id: `shp-scroll-${i}`,
+      sj_label: `SJ-SCROLL-${i}`,
+      effective_delivery_date: "2026-10-24",
+      sj_delivery_date: "2026-10-24",
+      status: "terjadwal",
+      status_label: "Terjadwal",
+    }));
+    mockDeliverySchedule.mockResolvedValue({ rows: rows24 });
+    await act(async () => { root.render(<DeliverySchedulePage />); });
+    expect(container.querySelector('[data-testid="ds-total-count"]').textContent).toMatch(/24/);
+    expect(container.querySelector('[data-testid="ds-page-size"]').value).toBe("50");
+    expect(container.querySelectorAll('tbody tr[data-testid^="ds-row-"]').length).toBe(24);
+    act(() => root.unmount());
+    container.remove();
   });
 });
 

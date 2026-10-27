@@ -137,6 +137,151 @@ test("filter apply sends search params to api", async () => {
   act(() => root.unmount());
 });
 
+test("default sort is tanggal_pengiriman DESC and reset restores it", async () => {
+  api.deliveryPlan.mockResolvedValue({ rows: [], total: 0, total_pages: 1, page: 1 });
+  const { container, root } = renderPage();
+  await act(async () => { await Promise.resolve(); });
+  const first = api.deliveryPlan.mock.calls[0]?.[0] || {};
+  expect(first.sort_by).toBe("tanggal_pengiriman");
+  expect(first.sort_dir).toBe("desc");
+  const sortBtn = container.querySelector('[data-testid="dp-sort-delivery-plan-tanggal_pengiriman"]');
+  expect(sortBtn?.classList.contains("is-active")).toBe(true);
+  expect(sortBtn?.querySelector("svg")).toBeTruthy();
+  await act(async () => {
+    container.querySelector('[data-testid="dp-filter-reset"]').click();
+    await Promise.resolve();
+  });
+  const afterReset = api.deliveryPlan.mock.calls.at(-1)?.[0] || {};
+  expect(afterReset.sort_by).toBe("tanggal_pengiriman");
+  expect(afterReset.sort_dir).toBe("desc");
+  act(() => root.unmount());
+});
+
+test("Rincian Pengiriman fetches all pages not only current page", async () => {
+  api.deliveryPlan.mockImplementation(async (params = {}) => {
+    if (!params.page || params.page === 1) {
+      if (params.page_size === 200) {
+        return {
+          rows: [
+            {
+              id: "p1",
+              po_number: "PO/1",
+              customer_name: "A",
+              delivery_zone: "JT",
+              tanggal_pengiriman: "2026-10-27",
+              qty_total: 10,
+              qty_delivered: 2,
+              qty_remaining: 8,
+            },
+          ],
+          total: 2,
+          total_pages: 2,
+          page: 1,
+          totals: { total_po: 2, qty_total: 30, qty_delivered: 2, qty_remaining: 28 },
+        };
+      }
+      return {
+        rows: [
+          {
+            id: "p1",
+            po_number: "PO/1",
+            customer_name: "A",
+            delivery_zone: "JT",
+            tanggal_pengiriman: "2026-10-27",
+            qty_total: 10,
+            qty_delivered: 2,
+            qty_remaining: 8,
+          },
+        ],
+        total: 2,
+        total_pages: 2,
+        page: 1,
+        page_size: 50,
+        totals: { total_po: 2, qty_total: 30, qty_delivered: 2, qty_remaining: 28 },
+      };
+    }
+    return {
+      rows: [
+        {
+          id: "p2",
+          po_number: "PO/2",
+          customer_name: "B",
+          delivery_zone: "JS",
+          tanggal_pengiriman: "2026-10-24",
+          qty_total: 20,
+          qty_delivered: 0,
+          qty_remaining: 20,
+        },
+      ],
+      total: 2,
+      total_pages: 2,
+      page: 2,
+      totals: { total_po: 2, qty_total: 30, qty_delivered: 2, qty_remaining: 28 },
+    };
+  });
+  const { container, root } = renderPage();
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => {
+    container.querySelector('[data-testid="dp-rincian-pengiriman"]').click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(container.querySelector('[data-testid="dp-rincian-modal"]')).toBeTruthy();
+  const detailCalls = api.deliveryPlan.mock.calls.filter((c) => c[0]?.page_size === 200);
+  expect(detailCalls.length).toBeGreaterThanOrEqual(2);
+  expect(detailCalls.every((c) => c[0].sort_by === "tanggal_pengiriman")).toBe(true);
+  // KPI / pager / modal must share authoritative filtered totals.total_po + total.
+  expect(container.querySelector('[data-testid="dp-kpi-total-po"]')?.textContent).toBe("2");
+  expect(container.querySelector('[data-testid="delivery-plan-total"]')?.textContent).toMatch(/2\s*PO/);
+  expect(container.querySelector('[data-testid="dp-rincian-po-count"]')?.textContent).toBe("2");
+  expect(container.querySelector('[data-testid="dp-rincian-qty-pesanan"]')?.textContent).toBe("30");
+  expect(container.querySelector('[data-testid="dp-kpi-qty-total"]')?.textContent).toBe("30");
+  expect(container.querySelector('[data-testid="dp-rincian-day-2026-10-27"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="dp-rincian-day-2026-10-24"]')).toBeTruthy();
+  const dayOrder = Array.from(container.querySelectorAll('[data-testid^="dp-rincian-day-"]'))
+    .map((el) => el.getAttribute("data-testid"));
+  expect(dayOrder.indexOf("dp-rincian-day-2026-10-27")).toBeLessThan(dayOrder.indexOf("dp-rincian-day-2026-10-24"));
+  act(() => root.unmount());
+});
+
+test("KPI Total PO matches meta.total and modal when totals.total_po is present", async () => {
+  const rows = [
+    { id: "a", po_number: "PO-A", customer_name: "Alpha", tanggal_pengiriman: "2026-10-27", qty_total: 5000, qty_delivered: 1000, qty_remaining: 4000 },
+    { id: "b", po_number: "PO-B", customer_name: "Beta", tanggal_pengiriman: "2026-10-25", qty_total: 3000, qty_delivered: 500, qty_remaining: 2500 },
+    { id: "c", po_number: "PO-C", customer_name: "Gamma", tanggal_pengiriman: "2026-10-27", qty_total: 2000, qty_delivered: 0, qty_remaining: 2000 },
+    { id: "d", po_number: "PO-D", customer_name: "Delta", tanggal_pengiriman: "2026-10-24", qty_total: 8000, qty_delivered: 8000, qty_remaining: 0 },
+    { id: "e", po_number: "PO-E", customer_name: "Epsilon", tanggal_pengiriman: "2026-10-26", qty_total: 1500, qty_delivered: 200, qty_remaining: 1300 },
+  ];
+  const totals = { total_po: 5, qty_total: 19500, qty_delivered: 9700, qty_remaining: 9800 };
+  api.deliveryPlan.mockImplementation(async (params = {}) => ({
+    rows: params.page_size === 200 ? rows : rows.slice(0, params.page_size || 50),
+    total: 5,
+    total_pages: 1,
+    page: 1,
+    page_size: params.page_size || 50,
+    totals,
+    counts: { total: 5, by_status: { terjadwal: 5 } },
+  }));
+  const { container, root } = renderPage();
+  await act(async () => { await Promise.resolve(); });
+  expect(container.querySelector('[data-testid="dp-kpi-total-po"]')?.textContent).toBe("5");
+  expect(container.querySelector('[data-testid="delivery-plan-total"]')?.textContent).toMatch(/5\s*PO/);
+  expect(container.querySelector('[data-testid="dp-kpi-qty-total"]')?.textContent).toBe("19.500");
+  expect(container.querySelector('[data-testid="dp-kpi-qty-delivered"]')?.textContent).toBe("9.700");
+  expect(container.querySelector('[data-testid="dp-kpi-qty-remaining"]')?.textContent).toBe("9.800");
+  expect(container.querySelectorAll('tbody tr').length).toBe(5);
+  await act(async () => {
+    container.querySelector('[data-testid="dp-rincian-pengiriman"]').click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(container.querySelector('[data-testid="dp-rincian-po-count"]')?.textContent).toBe("5");
+  expect(container.querySelector('[data-testid="dp-rincian-qty-pesanan"]')?.textContent).toBe("19.500");
+  expect(container.querySelector('[data-testid="dp-rincian-qty-terkirim"]')?.textContent).toBe("9.700");
+  expect(container.querySelector('[data-testid="dp-rincian-sisa-qty"]')?.textContent).toBe("9.800");
+  act(() => root.unmount());
+});
+
 test("page wires route api and no mutate verbs", () => {
   const src = fs.readFileSync(path.join(__dirname, "DeliveryPlanPage.jsx"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
