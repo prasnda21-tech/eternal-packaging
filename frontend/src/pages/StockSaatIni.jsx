@@ -27,6 +27,7 @@ import "./StockSaatIni.status.css";
 import { storageUserKey } from "../lib/poListReturn";
 import {
   buildStockSaatIniPageCacheKey,
+  getStockSaatIniLastView,
   getStockSaatIniPageCache,
   invalidateStockSaatIniPageCache,
   setStockSaatIniPageCache,
@@ -317,21 +318,30 @@ function newKey() {
 export default function StockSaatIni() {
   const { user, hasPerm } = useAuth();
   const userKey = storageUserKey(user);
+  const identityOk = Boolean(userKey && userKey !== "anon");
+  /** One-shot remount hydrate from in-memory last view (same user only). */
+  const bootViewRef = useRef(null);
+  if (bootViewRef.current === null) {
+    bootViewRef.current = identityOk ? (getStockSaatIniLastView(userKey) || false) : false;
+  }
+  const bootView = bootViewRef.current || null;
   const canOpening = hasPerm("current_stock.update") || hasPerm("permissions.manage");
   const canExport = hasPerm("current_stock.export");
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => bootView?.data || null);
   const canAdjust = Boolean(data?.can_adjust_physical_stock);
   const [branches, setBranches] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
-  const [branchId, setBranchId] = useState("");
-  const [warehouseId, setWarehouseId] = useState(""); // "" = Semua Gudang
+  const [branchId, setBranchId] = useState(() => bootView?.scope?.branchId || "");
+  const [warehouseId, setWarehouseId] = useState(() => bootView?.scope?.warehouseId || ""); // "" = Semua Gudang
   const [filtersReady, setFiltersReady] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(() => !bootView?.data);
+  const [refreshing, setRefreshing] = useState(() => Boolean(bootView?.data));
   const [err, setErr] = useState("");
-  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch();
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const { input: qInput, setInput: setQInput, q, flush: doSearch, clear: clearQuery, pending: searchPending } = useDebouncedLiveSearch(
+    bootView?.scope?.q || "",
+  );
+  const [page, setPage] = useState(() => bootView?.scope?.page || 1);
+  const [pageSize, setPageSize] = useState(() => bootView?.scope?.pageSize || 50);
   const [openingOpen, setOpeningOpen] = useState(false);
   const [openingSeed, setOpeningSeed] = useState(null);
   const [adjustItem, setAdjustItem] = useState(null);
@@ -349,9 +359,11 @@ export default function StockSaatIni() {
   const summarySeq = useRef(0);
   /** Skip one catalog reload when syncing branchId from catalog effective_branch_id. */
   const skipBranchPinReload = useRef(false);
-  const itemsRef = useRef([]);
+  /** Skip mount-triggered page reset when restoring last-view pagination. */
+  const skipScopePageReset = useRef(Boolean(bootView?.data));
+  const itemsRef = useRef(Array.isArray(bootView?.data?.items) ? bootView.data.items : []);
   /** Restore list scroll / focus when closing detail modal (no extra catalog fetch). */
-  const listScrollYRef = useRef(0);
+  const listScrollYRef = useRef(Number(bootView?.scrollY) || 0);
   const detailReturnFocusRef = useRef(null);
 
   const openDetail = useCallback((item) => {
@@ -377,7 +389,23 @@ export default function StockSaatIni() {
     });
   }, []);
 
-  useEffect(() => { setPage(1); }, [q, branchId, warehouseId]);
+  useEffect(() => {
+    if (skipScopePageReset.current) {
+      skipScopePageReset.current = false;
+      return;
+    }
+    setPage(1);
+  }, [q, branchId, warehouseId]);
+
+  useEffect(() => {
+    // Restore list scroll from last view without waiting on catalog.
+    const y = Number(bootView?.scrollY) || 0;
+    if (!y || typeof window.scrollTo !== "function") return undefined;
+    const ua = String(globalThis.navigator?.userAgent || "");
+    if (/jsdom/i.test(ua)) return undefined;
+    const t = window.requestAnimationFrame(() => window.scrollTo(0, y));
+    return () => window.cancelAnimationFrame(t);
+  }, [bootView]);
 
   useEffect(() => {
     let cancelled = false;
@@ -412,14 +440,15 @@ export default function StockSaatIni() {
     pageSize,
   }), [userKey, branchId, warehouseId, q, page, pageSize]);
 
-  const identityOk = Boolean(userKey && userKey !== "anon");
-
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     setErr("");
     const hasVisibleRows = itemsRef.current.length > 0;
     // Cache only when user identity is proven — never reuse anon/cross-user pages.
-    const cached = identityOk && !hasVisibleRows ? getStockSaatIniPageCache(cacheKey) : null;
+    // allowStale: tab-return paint within MAX_STALE; still soft-revalidates below.
+    const cached = identityOk && !hasVisibleRows
+      ? getStockSaatIniPageCache(cacheKey, { allowStale: true })
+      : null;
     if (cached?.data) {
       setData(cached.data);
       itemsRef.current = cached.data.items || [];
@@ -438,7 +467,20 @@ export default function StockSaatIni() {
       if (seq !== loadSeq.current) return;
       setData(d);
       itemsRef.current = Array.isArray(d?.items) ? d.items : [];
-      if (identityOk) setStockSaatIniPageCache(cacheKey, d);
+      if (identityOk) {
+        const scrollY = typeof window !== "undefined"
+          ? (window.scrollY || window.pageYOffset || 0)
+          : 0;
+        setStockSaatIniPageCache(cacheKey, d, {
+          userId: userKey,
+          branchId,
+          warehouseId,
+          q,
+          page,
+          pageSize,
+          scrollY,
+        });
+      }
       if (!branchId && d?.effective_branch_id) {
         // Sync controlled select without a second identical catalog GET.
         skipBranchPinReload.current = true;
@@ -458,7 +500,7 @@ export default function StockSaatIni() {
         setRefreshing(false);
       }
     }
-  }, [q, page, pageSize, branchId, warehouseId, cacheKey, identityOk]);
+  }, [q, page, pageSize, branchId, warehouseId, cacheKey, identityOk, userKey]);
 
   const reloadAfterMutation = useCallback(async () => {
     invalidateStockSaatIniPageCache();

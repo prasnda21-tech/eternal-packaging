@@ -369,7 +369,14 @@ describe("Stock Saat Ini P0-A loading stability", () => {
         qty_polos: 7,
         qty_polos_status: "READY",
       }],
-    }));
+    }), {
+      userId: "user-1",
+      branchId: BRANCH_A.id,
+      warehouseId: "",
+      q: "",
+      page: 1,
+      pageSize: 50,
+    });
 
     let resolveCatalog;
     api.physicalStockCatalog.mockImplementation(() => new Promise((resolve) => {
@@ -382,6 +389,10 @@ describe("Stock Saat Ini P0-A loading stability", () => {
     expect(container.querySelector('[data-testid="stock-row-m-cached"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-loading"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-refreshing"]')).toBeTruthy();
+    // Last-view hydrate restores warehouse chrome without waiting on a blank mode.
+    expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stock-subtitle"]')?.textContent)
+      .not.toMatch(/Memuat persediaan/i);
 
     await act(async () => {
       resolveCatalog(catalogPayload());
@@ -403,7 +414,7 @@ describe("Stock Saat Ini P0-A loading stability", () => {
         base_unit: "PCS",
         physical_qty: 1,
       }],
-    }));
+    }), { userId: "user-1", branchId: BRANCH_A.id });
     authState.user = null;
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -424,6 +435,118 @@ describe("Stock Saat Ini P0-A loading stability", () => {
     });
     await flush();
     expect(container.querySelector('[data-testid="stock-row-m1"]')).toBeTruthy();
+  });
+
+  test("tab return uses stale last-view rows immediately; soft-revalidates once", async () => {
+    const key = buildStockSaatIniPageCacheKey({
+      userId: "user-1",
+      branchId: BRANCH_A.id,
+      warehouseId: "",
+      q: "",
+      page: 1,
+      pageSize: 50,
+    });
+    const entry = setStockSaatIniPageCache(key, catalogPayload({
+      items: [{
+        master_item_id: "m-stale",
+        item_code: "STALE",
+        item_name: "Stale Cached",
+        base_unit: "PCS",
+        physical_qty: 4,
+        stock_dapat_dijual: 4,
+        qty_polos: 4,
+        qty_polos_status: "READY",
+        warehouse_balances: [
+          { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: 4, balance_present: true },
+        ],
+      }],
+    }), {
+      userId: "user-1",
+      branchId: BRANCH_A.id,
+      warehouseId: "",
+      q: "",
+      page: 1,
+      pageSize: 50,
+    });
+
+    const realNow = Date.now;
+    Date.now = () => entry.fetchedAt + 45_000; // past fresh TTL, inside max stale
+    let resolveCatalog;
+    api.physicalStockCatalog.mockImplementation(() => new Promise((resolve) => {
+      resolveCatalog = resolve;
+    }));
+
+    try {
+      await act(async () => { root.render(<StockSaatIni />); });
+      // First paint (before filtersReady network) must already show cached rows.
+      expect(container.querySelector('[data-testid="stock-row-m-stale"]')).toBeTruthy();
+      expect(container.querySelector('[data-testid="stock-loading"]')).toBeNull();
+      expect(container.querySelector('[data-testid="stock-subtitle"]')?.textContent)
+        .not.toMatch(/Memuat persediaan/i);
+      await flush();
+      expect(container.querySelector('[data-testid="stock-refreshing"]')).toBeTruthy();
+      expect(api.physicalStockCatalog).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveCatalog(catalogPayload());
+        await Promise.resolve();
+      });
+      await flush();
+      expect(container.querySelector('[data-testid="stock-row-m1"]')).toBeTruthy();
+      expect(container.querySelector('[data-testid="stock-refreshing"]')).toBeNull();
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("real remount SSI→away→SSI keeps rows from last view without blank Memuat", async () => {
+    await act(async () => { root.render(<StockSaatIni />); });
+    await flush();
+    expect(container.querySelector('[data-testid="stock-row-m1"]')).toBeTruthy();
+    expect(api.physicalStockCatalog).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    container.remove();
+
+    let resolveSecond;
+    api.physicalStockCatalog.mockImplementation(() => new Promise((resolve) => {
+      resolveSecond = resolve;
+    }));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+
+    expect(container.querySelector('[data-testid="stock-row-m1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stock-loading"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-warehouse-placeholder"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="stock-subtitle"]')?.textContent)
+      .not.toMatch(/Memuat persediaan/i);
+
+    await flush();
+    expect(container.querySelector('[data-testid="stock-refreshing"]')).toBeTruthy();
+    await act(async () => {
+      resolveSecond(catalogPayload({
+        items: [{
+          master_item_id: "m1",
+          item_code: "BOX",
+          item_name: "Box Kraft",
+          base_unit: "PCS",
+          physical_qty: 11,
+          stock_dapat_dijual: 11,
+          qty_polos: 11,
+          qty_polos_status: "READY",
+          warehouse_balances: [
+            { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: 11, balance_present: true },
+          ],
+        }],
+      }));
+      await Promise.resolve();
+    });
+    await flush();
+    expect(api.physicalStockCatalog).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="stock-refreshing"]')).toBeNull();
   });
 
   test("API failure shows error and retry-capable state without claiming compatibility forever", async () => {
