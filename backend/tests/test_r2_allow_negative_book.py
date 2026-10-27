@@ -67,6 +67,8 @@ async def _seed(db, *, physical_a=None, physical_b=500):
         "item_code": "NEG-BOX",
         "item_name": "Neg Box",
         "unit": "PCS",
+        # Stock Saat Ini catalog is INVENTORY-only; fixture must be explicit.
+        "item_type": "INVENTORY",
         "is_active": True,
     }
     branch = {"id": f"br-{uuid.uuid4().hex[:8]}", "code": "YGY", "name": "Yogyakarta", "active": True}

@@ -83,6 +83,8 @@ async def _masters(db):
         "item_code": "E2E-BOX",
         "item_name": "E2E Box",
         "unit": "PCS",
+        # Stock Saat Ini catalog is INVENTORY-only; fixture must be explicit.
+        "item_type": "INVENTORY",
         "is_active": True,
     }
     branch = {"id": f"br-{uuid.uuid4().hex[:8]}", "code": "YGY", "name": "Yogyakarta", "active": True}
