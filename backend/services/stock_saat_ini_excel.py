@@ -41,7 +41,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-FORMULA_VERSION = "ssi_excel_v1_2"
+FORMULA_VERSION = "ssi_excel_v1_3"
 
 STATUS_READY = "READY"
 STATUS_UNVERIFIED = "UNVERIFIED"
@@ -50,6 +50,7 @@ REASON_PRINT_DELIVERY_UNPROVEN = "PRINT_DELIVERY_UNPROVEN"
 REASON_COMPLETION_UNPROVEN = "COMPLETION_UNPROVEN"
 REASON_DEPENDENT_UNKNOWN = "DEPENDENT_UNKNOWN"
 REASON_NO_OPERATOR_EVIDENCE = "NO_OPERATOR_EVIDENCE"
+REASON_WIP_COMPOSITION_UNPROVEN = "WIP_COMPOSITION_UNPROVEN"
 
 SOURCE_SALDO_AWAL = "physical_stock_ledger.OPENING_BALANCE"
 SOURCE_PEMBELIAN = "physical_stock_ledger.PURCHASE_RECEIPT"
@@ -58,8 +59,142 @@ SOURCE_STOCK_COMPUTED = "saldo_awal+pembelian+adjustment-delivered"
 SOURCE_PO = "orders.line_items.quantity (active)"
 SOURCE_TERCETAK = "orders.operator_splits → physical parent (not sum warna)"
 SOURCE_CETAK_DIKIRIM = "confirmed SJ lines on print SO parents only"
-SOURCE_POLOS = "stock - tercetak_belum_kirim"
-SOURCE_STOCK_DAPAT = "stock - (po_ordered - so_delivered)"
+SOURCE_POLOS = "stock - tercetak_belum_kirim (UNVERIFIED when incomplete print)"
+SOURCE_STOCK_DAPAT = "stock - open_so_commitment (active SO/line attributed)"
+
+
+def open_so_commitment_qty(*, po_ordered: Any = 0, so_delivered: Any = 0) -> float:
+    """Outstanding SO commitment never goes negative (cancel / over-delivery)."""
+    return _as_pcs(max(0.0, qty_num(po_ordered) - qty_num(so_delivered)))
+
+
+def _line_identity(line: dict) -> Tuple[Optional[str], Optional[int]]:
+    """Return (line_id, line_idx) — prefer stable line_id when present."""
+    if not isinstance(line, dict):
+        return None, None
+    lid = str(line.get("line_id") or line.get("id") or "").strip() or None
+    raw_idx = line.get("line_idx")
+    idx: Optional[int]
+    try:
+        idx = int(raw_idx) if raw_idx is not None and str(raw_idx).strip() != "" else None
+    except (TypeError, ValueError):
+        idx = None
+    return lid, idx
+
+
+def aggregate_active_so_commitment(
+    *,
+    active_lines: Iterable[dict],
+    attributed_deliveries: Iterable[dict],
+) -> Dict[str, float]:
+    """Per-master outstanding commitment from active SO lines only.
+
+    Each active_lines entry: order_id, master_item_id, ordered_qty, optional
+    line_id / line_idx.
+
+    Each attributed_deliveries entry: order_id, master_item_id, qty, optional
+    line_id / line_idx — already filtered to active orders by the caller.
+    Deliveries that cannot be matched to exactly one active line identity are
+    ignored (fail closed: do not invent a product-level guess).
+
+    Commitment per matched line = max(0, ordered − delivered). Aggregated by
+    master_item_id. Cancelled SO deliveries must not appear in attributed_deliveries.
+    """
+    # Keyed by (order_id, master_id, line_id|None, line_idx|None)
+    ordered_slots: Dict[Tuple[str, str, Optional[str], Optional[int]], float] = {}
+    # Ambiguous master on an order (multiple lines, delivery lacks line id)
+    lines_per_order_master: Dict[Tuple[str, str], int] = {}
+
+    for raw in active_lines:
+        if not isinstance(raw, dict):
+            continue
+        oid = str(raw.get("order_id") or "").strip()
+        mid = str(raw.get("master_item_id") or "").strip()
+        if not oid or not mid:
+            continue
+        ordered = max(qty_num(raw.get("ordered_qty")), 0.0)
+        if ordered <= 0:
+            continue
+        lid, idx = _line_identity(raw)
+        key = (oid, mid, lid, idx)
+        ordered_slots[key] = qty_num(ordered_slots.get(key, 0.0)) + ordered
+
+    for oid, mid, _lid, _idx in ordered_slots:
+        om = (oid, mid)
+        lines_per_order_master[om] = lines_per_order_master.get(om, 0) + 1
+
+    delivered_slots: Dict[Tuple[str, str, Optional[str], Optional[int]], float] = {}
+    for raw in attributed_deliveries:
+        if not isinstance(raw, dict):
+            continue
+        oid = str(raw.get("order_id") or "").strip()
+        mid = str(raw.get("master_item_id") or "").strip()
+        qty = max(qty_num(raw.get("qty")), 0.0)
+        if not oid or not mid or qty <= 0:
+            # Missing identity — fail closed (do not reduce any commitment).
+            continue
+        lid, idx = _line_identity(raw)
+        if lid is None and idx is None:
+            # Order+master only: attribute only when that order has exactly one
+            # active line for the master. Otherwise ambiguous → skip.
+            if lines_per_order_master.get((oid, mid), 0) != 1:
+                continue
+            # Resolve the sole slot key for this order+master.
+            matches = [k for k in ordered_slots if k[0] == oid and k[1] == mid]
+            if len(matches) != 1:
+                continue
+            key = matches[0]
+        else:
+            key = (oid, mid, lid, idx)
+            if key not in ordered_slots:
+                # Try matching by line_id alone or line_idx alone when the other
+                # side only stamped one identity field.
+                alt = None
+                if lid is not None:
+                    cands = [
+                        k for k in ordered_slots
+                        if k[0] == oid and k[1] == mid and k[2] == lid
+                    ]
+                    if len(cands) == 1:
+                        alt = cands[0]
+                if alt is None and idx is not None:
+                    cands = [
+                        k for k in ordered_slots
+                        if k[0] == oid and k[1] == mid and k[3] == idx
+                    ]
+                    if len(cands) == 1:
+                        alt = cands[0]
+                if alt is None:
+                    continue
+                key = alt
+        delivered_slots[key] = qty_num(delivered_slots.get(key, 0.0)) + qty
+
+    out: Dict[str, float] = {}
+    for key, ordered in ordered_slots.items():
+        mid = key[1]
+        delivered = qty_num(delivered_slots.get(key, 0.0))
+        commitment = max(0.0, ordered - delivered)
+        if commitment <= 0:
+            continue
+        out[mid] = _as_pcs(qty_num(out.get(mid, 0.0)) + commitment)
+    return out
+
+
+def incomplete_print_demand(progress_row: Optional[dict]) -> bool:
+    """True when print demand remains unfinished — polos/WIP composition uncertain.
+
+    Does not invent a numeric WIP qty. Relies on print_ordered_qty vs
+    print_completed_qty when both are known.
+    """
+    if not isinstance(progress_row, dict):
+        return False
+    if not progress_row.get("has_print_line"):
+        return False
+    if "print_ordered_qty" not in progress_row or "print_completed_qty" not in progress_row:
+        return False
+    ordered = max(qty_num(progress_row.get("print_ordered_qty")), 0.0)
+    completed = max(qty_num(progress_row.get("print_completed_qty")), 0.0)
+    return ordered > completed
 
 
 def qty_num(v: Any) -> float:
@@ -194,6 +329,7 @@ def compute_excel_columns(
     delivered_total: Any = 0,
     po_ordered: Any = 0,
     so_delivered: Any = None,
+    open_so_commitment: Any = None,
     qty_tercetak: Any = None,
     qty_tercetak_status: Optional[str] = None,
     qty_tercetak_reason: Optional[str] = None,
@@ -202,6 +338,7 @@ def compute_excel_columns(
     # Deprecated alias — treated as proven only when explicitly provided.
     cetak_delivered_explicit: Any = None,
     stock_book: Any = None,
+    incomplete_print: bool = False,
 ) -> Dict[str, Any]:
     """Pure Excel SSI row math with column-level verification.
 
@@ -209,6 +346,9 @@ def compute_excel_columns(
     book components are known. Activity columns (Tercetak / Cetak / Polos /
     Belum Kirim) are READY only with sufficient evidence; otherwise null on
     the affected column only — never blank the whole row.
+
+    open_so_commitment: when provided (active SO/line attribution), used as-is
+    after max(0, …). Otherwise derived as max(0, po_ordered − so_delivered).
     """
     sa = qty_num(saldo_awal)
     pb = qty_num(pembelian)
@@ -224,8 +364,11 @@ def compute_excel_columns(
         delivered_total=delivered,
         stock_book=stock_book,
     )
-    # Outstanding SO may be zero (no SO / all cancelled) — still a valid baseline.
-    open_commitment = po - so_del
+    # Never allow negative outstanding commitment (cancel / over-delivery).
+    if open_so_commitment is not None:
+        open_commitment = max(0.0, qty_num(open_so_commitment))
+    else:
+        open_commitment = open_so_commitment_qty(po_ordered=po, so_delivered=so_del)
     stock_dapat_dijual = _as_pcs(stock - open_commitment)
 
     # Qty Tercetak: None / UNVERIFIED = no usable operator evidence (not verified 0).
@@ -255,12 +398,16 @@ def compute_excel_columns(
 
     # Polos / Belum Kirim need both tercetak and cetak READY. If only delivery is
     # ambiguous, tercetak can stay numeric while dependents are UNVERIFIED.
+    # Incomplete print demand → Qty Polos UNVERIFIED (do not invent numeric WIP).
     if tercetak_slot["qty"] is None or cetak_slot["qty"] is None:
         belum_slot = _unknown(REASON_DEPENDENT_UNKNOWN)
         polos_slot = _unknown(REASON_DEPENDENT_UNKNOWN)
     else:
         belum_slot = _known(tercetak_slot["qty"] - cetak_slot["qty"])
-        polos_slot = _known(stock - belum_slot["qty"])
+        if incomplete_print:
+            polos_slot = _unknown(REASON_WIP_COMPOSITION_UNPROVEN)
+        else:
+            polos_slot = _known(stock - belum_slot["qty"])
 
     return {
         "saldo_awal": _as_pcs(sa),
@@ -311,6 +458,9 @@ def apply_excel_fields_to_catalog_row(
     out["pembelian"] = excel["pembelian"]
     out["stock"] = excel["stock"]
     out["stock_dapat_dijual"] = excel["stock_dapat_dijual"]
+    out["open_so_commitment"] = excel.get("open_so_commitment")
+    out["po_ordered"] = excel.get("po_ordered")
+    out["so_delivered"] = excel.get("so_delivered")
     out["qty_tercetak"] = excel["qty_tercetak"]
     out["qty_tercetak_status"] = excel.get("qty_tercetak_status") or STATUS_READY
     out["qty_tercetak_reason"] = excel.get("qty_tercetak_reason")
@@ -345,6 +495,10 @@ def apply_excel_fields_to_catalog_row(
             REASON_DEPENDENT_UNKNOWN: (
                 "Belum terverifikasi: bergantung kolom Qty Tercetak / Cetak Sudah Dikirim "
                 "yang belum pasti; WIP/rusak tidak dihitung dari data fiktif."
+            ),
+            REASON_WIP_COMPOSITION_UNPROVEN: (
+                "Belum terverifikasi: permintaan cetak induk belum selesai — sisa stok "
+                "bisa polos atau masih proses; WIP numerik tidak diinventaris dari demand."
             ),
         }
         return mapping.get(code, fallback)

@@ -5,12 +5,15 @@ from services.stock_saat_ini_excel import (
     REASON_DEPENDENT_UNKNOWN,
     REASON_NO_OPERATOR_EVIDENCE,
     REASON_PRINT_DELIVERY_UNPROVEN,
+    REASON_WIP_COMPOSITION_UNPROVEN,
     STATUS_READY,
     STATUS_UNVERIFIED,
+    aggregate_active_so_commitment,
     aggregate_ledger_components,
     aggregate_proven_print_delivered_qty,
     apply_excel_fields_to_catalog_row,
     compute_excel_columns,
+    incomplete_print_demand,
     parent_qty_tercetak_from_progress,
     resolve_qty_tercetak,
 )
@@ -114,6 +117,187 @@ def test_partial_shipment_and_so_cancel_commitment():
         print_delivery_proven=True,
     )
     assert cancelled["stock_dapat_dijual"] == 5_000
+    # Orphaned historical delivery after cancel must not invent negative commitment.
+    orphan = compute_excel_columns(
+        stock_book=10_000,
+        po_ordered=0,
+        so_delivered=4_000,
+        delivered_total=4_000,
+        qty_tercetak=0,
+        cetak_delivered_proven=0,
+        print_delivery_proven=True,
+    )
+    assert orphan["open_so_commitment"] == 0
+    assert orphan["stock_dapat_dijual"] == 10_000
+
+
+def test_multi_so_cancelled_a_does_not_reduce_active_b():
+    """SO-A cancelled del 4k + SO-B active 10k/0 → commitment 10k (not 6k)."""
+    commitment = aggregate_active_so_commitment(
+        active_lines=[{
+            "order_id": "SO-B",
+            "master_item_id": "M1",
+            "ordered_qty": 10_000,
+            "line_id": "ln-b",
+            "line_idx": 0,
+        }],
+        attributed_deliveries=[
+            # Cancelled SO-A delivery must not be in the attributed set.
+            # Only active-order deliveries are passed by the catalog.
+        ],
+    )
+    assert commitment.get("M1", 0) == 10_000
+    # If a bug passed SO-A delivery without active line match, ignore it.
+    commitment2 = aggregate_active_so_commitment(
+        active_lines=[{
+            "order_id": "SO-B",
+            "master_item_id": "M1",
+            "ordered_qty": 10_000,
+            "line_id": "ln-b",
+            "line_idx": 0,
+        }],
+        attributed_deliveries=[{
+            "order_id": "SO-A",
+            "master_item_id": "M1",
+            "qty": 4_000,
+            "line_id": "ln-a",
+            "line_idx": 0,
+        }],
+    )
+    assert commitment2.get("M1", 0) == 10_000
+    row = compute_excel_columns(
+        stock_book=10_000,
+        po_ordered=10_000,
+        open_so_commitment=commitment2.get("M1", 0),
+        qty_tercetak=0,
+        cetak_delivered_proven=0,
+        print_delivery_proven=True,
+    )
+    assert row["open_so_commitment"] == 10_000
+    assert row["stock_dapat_dijual"] == 0
+
+
+def test_over_delivery_so_a_does_not_reduce_so_b():
+    commitment = aggregate_active_so_commitment(
+        active_lines=[
+            {
+                "order_id": "SO-A",
+                "master_item_id": "M1",
+                "ordered_qty": 100,
+                "line_id": "ln-a",
+                "line_idx": 0,
+            },
+            {
+                "order_id": "SO-B",
+                "master_item_id": "M1",
+                "ordered_qty": 100,
+                "line_id": "ln-b",
+                "line_idx": 0,
+            },
+        ],
+        attributed_deliveries=[{
+            "order_id": "SO-A",
+            "master_item_id": "M1",
+            "qty": 150,
+            "line_id": "ln-a",
+            "line_idx": 0,
+        }],
+    )
+    assert commitment.get("M1", 0) == 100  # only SO-B remains
+
+
+def test_two_lines_same_product_one_so():
+    commitment = aggregate_active_so_commitment(
+        active_lines=[
+            {
+                "order_id": "SO-1",
+                "master_item_id": "M1",
+                "ordered_qty": 500,
+                "line_id": "ln-1",
+                "line_idx": 0,
+            },
+            {
+                "order_id": "SO-1",
+                "master_item_id": "M1",
+                "ordered_qty": 300,
+                "line_id": "ln-2",
+                "line_idx": 1,
+            },
+        ],
+        attributed_deliveries=[{
+            "order_id": "SO-1",
+            "master_item_id": "M1",
+            "qty": 200,
+            "line_id": "ln-1",
+            "line_idx": 0,
+        }],
+    )
+    assert commitment.get("M1", 0) == 600  # (500-200) + 300
+
+
+def test_ambiguous_delivery_without_line_id_fail_closed():
+    """Two lines same master — delivery lacking line identity must not reduce."""
+    commitment = aggregate_active_so_commitment(
+        active_lines=[
+            {
+                "order_id": "SO-1",
+                "master_item_id": "M1",
+                "ordered_qty": 500,
+                "line_id": "ln-1",
+                "line_idx": 0,
+            },
+            {
+                "order_id": "SO-1",
+                "master_item_id": "M1",
+                "ordered_qty": 500,
+                "line_id": "ln-2",
+                "line_idx": 1,
+            },
+        ],
+        attributed_deliveries=[{
+            "order_id": "SO-1",
+            "master_item_id": "M1",
+            "qty": 400,
+            # no line_id / line_idx
+        }],
+    )
+    assert commitment.get("M1", 0) == 1_000
+
+
+def test_qty_polos_incomplete_print_unverified():
+    assert incomplete_print_demand({
+        "has_print_line": True,
+        "print_ordered_qty": 5_000,
+        "print_completed_qty": 3_000,
+    }) is True
+    row = compute_excel_columns(
+        stock_book=10_000,
+        qty_tercetak=3_000,
+        cetak_delivered_proven=0,
+        print_delivery_proven=True,
+        incomplete_print=True,
+    )
+    assert row["tercetak_belum_kirim"] == 3_000
+    assert row["qty_polos"] is None
+    assert row["qty_polos_status"] == STATUS_UNVERIFIED
+    assert row["qty_polos_reason"] == REASON_WIP_COMPOSITION_UNPROVEN
+
+
+def test_qty_polos_complete_print_ready_simple_case():
+    assert incomplete_print_demand({
+        "has_print_line": True,
+        "print_ordered_qty": 3_000,
+        "print_completed_qty": 3_000,
+    }) is False
+    row = compute_excel_columns(
+        stock_book=10_000,
+        qty_tercetak=3_000,
+        cetak_delivered_proven=0,
+        print_delivery_proven=True,
+        incomplete_print=False,
+    )
+    assert row["qty_polos"] == 7_000
+    assert row["qty_polos_status"] == STATUS_READY
 
 
 def test_qty_tercetak_uses_print_completed_not_non_print_ready():
