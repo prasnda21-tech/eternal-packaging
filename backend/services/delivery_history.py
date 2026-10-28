@@ -82,6 +82,41 @@ def _resolve_plate(order: dict, rec: dict) -> Optional[str]:
     return _text(lc.get("vehicle_plate"))
 
 
+def _order_line_id(order: dict, idx: int) -> Optional[str]:
+    lis = order.get("line_items") or []
+    if not (0 <= int(idx) < len(lis)):
+        return None
+    row = lis[int(idx)]
+    if not isinstance(row, dict):
+        return None
+    return _text(row.get("line_id") or row.get("id"))
+
+
+def _confirmation_item_row(
+    order: dict,
+    *,
+    line_idx: int,
+    qty: int,
+    name: Optional[str] = None,
+    line_id: Optional[str] = None,
+) -> dict:
+    """Stable SJ/confirmation line identity for print vs polos attribution.
+
+    Always stores line_idx. Adds line_id when known from the shipment line or
+    the PO line. Never invents identity by qty similarity.
+    """
+    idx = int(line_idx)
+    lid = _text(line_id) or _order_line_id(order, idx)
+    row = {
+        "line_idx": idx,
+        "name": _text(name) or _text(_line_name(order, idx)),
+        "qty": int(qty),
+    }
+    if lid:
+        row["line_id"] = lid
+    return row
+
+
 def _item_deltas(order: dict) -> List[dict]:
     prev = _previous_line_qtys(order)
     rows = []
@@ -91,8 +126,7 @@ def _item_deltas(order: dict) -> List[dict]:
         delta = max(0, loaded - prev.get(idx, 0))
         if delta <= 0:
             continue
-        name = _text(_line_name(order, idx))
-        rows.append({"line_idx": idx, "name": name, "qty": delta})
+        rows.append(_confirmation_item_row(order, line_idx=idx, qty=delta))
     return rows
 
 
@@ -149,13 +183,21 @@ def _items_for_shipment(order: dict, shipment: Optional[dict], qty_increment: in
             if qty <= 0:
                 continue
             name = _text(ln.get("name")) or _text(_line_name(order, idx))
-            rows.append({"line_idx": idx, "name": name, "qty": qty})
+            rows.append(
+                _confirmation_item_row(
+                    order,
+                    line_idx=idx,
+                    qty=qty,
+                    name=name,
+                    line_id=ln.get("line_id"),
+                )
+            )
         if rows:
             return rows
     items = _item_deltas(order)
     if items:
         return items
-    return [{"line_idx": 0, "name": _text(_line_name(order, 0)), "qty": qty_increment}]
+    return [_confirmation_item_row(order, line_idx=0, qty=qty_increment)]
 
 
 def append_confirmation(

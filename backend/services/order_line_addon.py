@@ -430,6 +430,35 @@ def ensure_line_identity_fields(line: dict, idx: int) -> dict:
     return row
 
 
+def sync_parent_line_relations(lines: Sequence[dict]) -> None:
+    """Persist dual parent keys from an already-resolved explicit relation.
+
+    Mutates in place. For every Add On whose parent resolves via parent_line_id
+    or parent_line_idx:
+    - parent_line_idx is set to the resolved index
+    - parent_line_id is set to the induk's stored line_id when present
+
+    Never invents parents from name/qty similarity. Lines that do not resolve
+    are left untouched (legacy ambiguous stays fail-closed / UNVERIFIED).
+    """
+    if not lines:
+        return
+    ids = build_line_id_index(lines)
+    for i, line in enumerate(lines):
+        if not isinstance(line, dict) or line_cancelled(line):
+            continue
+        parent = resolve_parent_idx(line, lines, line_ids=ids)
+        if parent is None:
+            continue
+        parent_row = lines[parent]
+        if not isinstance(parent_row, dict):
+            continue
+        line["parent_line_idx"] = int(parent)
+        parent_lid = str(parent_row.get("line_id") or parent_row.get("id") or "").strip()
+        if parent_lid:
+            line["parent_line_id"] = parent_lid
+
+
 def _line_item_type(line: Optional[dict]) -> str:
     if not isinstance(line, dict):
         return ""

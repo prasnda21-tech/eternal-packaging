@@ -3842,6 +3842,7 @@ async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload
     from services.order_line_addon import (
         ensure_line_identity_fields,
         line_identity,
+        sync_parent_line_relations,
         validate_lines_parent_graph,
     )
 
@@ -3881,6 +3882,8 @@ async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload
                     row.pop("parent_line_id", None)
             if it.parent_line_idx is not None:
                 row["parent_line_idx"] = int(it.parent_line_idx)
+        # Dual-store parent_line_id + parent_line_idx from resolved link only.
+        sync_parent_line_relations(lis)
         err = validate_lines_parent_graph(lis)
         if err:
             raise HTTPException(400, err)
