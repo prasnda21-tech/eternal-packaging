@@ -3882,11 +3882,15 @@ async def set_line_items_addon_parent(order_id: str, payload: AddonParentPayload
                     row.pop("parent_line_id", None)
             if it.parent_line_idx is not None:
                 row["parent_line_idx"] = int(it.parent_line_idx)
-        # Dual-store parent_line_id + parent_line_idx from resolved link only.
-        sync_parent_line_relations(lis)
+        # Reject dual-key conflicts before sync can rewrite either side.
         err = validate_lines_parent_graph(lis)
         if err:
             raise HTTPException(400, err)
+        # Dual-store parent_line_id + parent_line_idx from resolved link only.
+        try:
+            sync_parent_line_relations(lis)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         order["line_items"] = lis
         after_holder["addon_parents"] = {
             str(i): {
@@ -7066,6 +7070,10 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
                 raise HTTPException(400, resolve_err)
             if selected_sh and _qr_shipment_is_delivered(order, selected_sh):
                 return
+            from services.delivery_history import validate_shipment_line_identities_for_confirmation
+            id_err = validate_shipment_line_identities_for_confirmation(order, selected_sh)
+            if id_err:
+                raise HTTPException(400, id_err)
             incoming_name = payload.recipient_name if payload else None
             if incoming_name is not None:
                 from services.delivery_pod_signature import apply_recipient_name_to_active_signature
@@ -7099,11 +7107,14 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
             reconcile_holder["result"] = _qr_reconcile_sj_quantities_to_loaded_delivery(order)
             from services.physical_stock_engine import reject_sj_stock_qty_drift
             reject_sj_stock_qty_drift(order, selected_sh, claim_plan_holder, increment)
-            conf = _append_delivery_confirmation(
-                order, user, qty_increment=increment, now=now, action_id=action_id,
-                shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
-                shipment=selected_sh,
-            )
+            try:
+                conf = _append_delivery_confirmation(
+                    order, user, qty_increment=increment, now=now, action_id=action_id,
+                    shipment_id=_qr_delivery_batch_identity(selected_sh) if selected_sh else None,
+                    shipment=selected_sh,
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
             if conf and claim_plan_holder.get("stock_warning"):
                 conf["stock_warning"] = True
             conf_holder["conf"] = conf
