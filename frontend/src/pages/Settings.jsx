@@ -1583,11 +1583,23 @@ function CustomerApprovalSettingsTab({ notify, canEdit }) {
 
 /* ---------------- Root ---------------- */
 
+const CRM_PROGRESS_EVENT_META = [
+  { key: "pra_po_returned", module: "Pra PO", label: "Pra PO dikembalikan", category: "Perlu Tindakan", recipients: "CRM creator saja" },
+  { key: "sales_order_verified", module: "Pesanan Penjualan", label: "Pesanan Penjualan disetujui", category: "Informasi", recipients: "CRM creator saja" },
+  { key: "sales_invoice_created", module: "Faktur Penjualan", label: "Faktur Penjualan dibuat", category: "Informasi", recipients: "CRM creator saja" },
+  { key: "crm_progress_customer_design_approved", module: "Approval Design Customer", label: "Customer menyetujui design (progres CRM)", category: "Informasi", recipients: "CRM creator saja" },
+  { key: "payment_approved", module: "Approval Pembayaran", label: "Pembayaran disetujui", category: "Informasi", recipients: "CRM creator saja" },
+  { key: "payment_bypassed", module: "Approval Pembayaran", label: "Pembayaran di-bypass", category: "Informasi", recipients: "CRM creator saja" },
+  { key: "crm_progress_surat_jalan_created", module: "Pengiriman Pesanan", label: "Surat Jalan dibuat (progres CRM)", category: "Informasi", recipients: "CRM creator saja" },
+];
+
 function NotificationsSettingsTab({ notify, canEdit }) {
   const { hasPerm } = useAuth();
   const canSearchUsers = hasPerm("users.view") || hasPerm("users.manage");
   const [state, setState] = useState(null);
+  const [progress, setProgress] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [savingProgress, setSavingProgress] = useState(false);
   const [err, setErr] = useState("");
   const [memberQuery, setMemberQuery] = useState("");
   const [directory, setDirectory] = useState([]);
@@ -1606,6 +1618,9 @@ function NotificationsSettingsTab({ notify, canEdit }) {
         });
       })
       .catch((e) => setErr(e?.response?.data?.detail || "Gagal memuat pengaturan notifikasi"));
+    api.crmProgressNotificationSettings()
+      .then((d) => setProgress(d.settings || { events: {} }))
+      .catch(() => setProgress({ events: {} }));
   }, []);
 
   useEffect(() => {
@@ -1893,8 +1908,80 @@ function NotificationsSettingsTab({ notify, canEdit }) {
         </div>
       )}
       {!canEdit && (
-        <p className="muted small">Anda hanya bisa melihat. Butuh permission <code>customer_approval.settings</code> untuk mengubah.</p>
+        <p className="muted small">Anda hanya bisa melihat. Butuh permission <code>customer_approval.settings</code> atau <code>notifications.settings.manage</code> untuk mengubah.</p>
       )}
+
+      <div
+        className="settings-card"
+        data-testid="notifications-crm-progress-settings"
+        style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}
+      >
+        <h3 style={{ marginTop: 0 }}>Progres CRM (creator saja)</h3>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          Penerima wajib akun CRM pembuat Pra PO / Pesanan Penjualan. Tidak ada opsi blast ke semua CRM.
+          Saluran: notifikasi aplikasi. Kategori Informasi kecuali Pra PO dikembalikan (Perlu Tindakan).
+        </p>
+        <p className="muted small">
+          Approval Design Customer role-blast (Designer/CRM/anggota) tetap di kartu di atas — tidak diganti diam-diam.
+        </p>
+        {(progress?.events ? CRM_PROGRESS_EVENT_META : []).map((ev) => (
+          <label
+            key={ev.key}
+            style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 10px", padding: "8px 0", borderTop: "1px solid var(--line)" }}
+            data-testid={`notif-progress-${ev.key}`}
+          >
+            <input
+              type="checkbox"
+              checked={!!progress?.events?.[ev.key]}
+              disabled={!canEdit || savingProgress || !progress}
+              onChange={(e) => setProgress((p) => ({
+                ...p,
+                events: { ...(p?.events || {}), [ev.key]: e.target.checked },
+              }))}
+            />
+            <span>
+              <strong>{ev.module}</strong> — {ev.label}
+              <div className="muted small">{ev.category} · {ev.recipients} · Pemicu: transaksi terkait</div>
+            </span>
+          </label>
+        ))}
+        {canEdit && (
+          <div style={{ marginTop: 12 }}>
+            <button
+              className="primary"
+              disabled={savingProgress || !progress}
+              data-testid="notifications-crm-progress-save"
+              onClick={async () => {
+                setSavingProgress(true);
+                setErr("");
+                try {
+                  const payload = { events: {} };
+                  for (const ev of CRM_PROGRESS_EVENT_META) {
+                    payload.events[ev.key] = !!(progress?.events?.[ev.key]);
+                  }
+                  const r = await api.updateCrmProgressNotificationSettings(payload);
+                  setProgress(r.settings || progress);
+                  notify?.("Pengaturan progres CRM disimpan");
+                } catch (e) {
+                  setErr(e?.response?.data?.detail || "Gagal menyimpan progres CRM");
+                } finally {
+                  setSavingProgress(false);
+                }
+              }}
+            >
+              <Save size={14} /> Simpan Progres CRM
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="settings-card" style={{ padding: 16, border: "1px solid var(--line)", borderRadius: 10 }}>
+        <h3 style={{ marginTop: 0 }}>Notifikasi operasional existing</h3>
+        <p className="muted small" style={{ margin: 0 }}>
+          Loading qty mismatch (CRM cabang), Surat Jalan ke Helper/Driver/Kepala Produksi, SPK, Urgent PO, dan Permintaan Produk
+          tetap berjalan sesuai emitter masing-masing. SJ progress CRM di atas bersifat tambahan dan tidak mengganti notifikasi operasional SJ.
+        </p>
+      </div>
     </div>
   );
 }
@@ -2504,8 +2591,9 @@ export default function Settings() {
   const canManageRoles = hasPerm("roles.manage");
   const canManagePerms = hasPerm("permissions.manage");
   const canViewAudit = hasPerm("audit.view");
-  const canViewCaSettings = hasPerm("customer_approval.view") || hasPerm("customer_approval.settings");
-  const canEditCaSettings = hasPerm("customer_approval.settings");
+  const canViewCaSettings = hasPerm("customer_approval.view") || hasPerm("customer_approval.settings")
+    || hasPerm("notifications.settings.view") || hasPerm("notifications.settings.manage");
+  const canEditCaSettings = hasPerm("customer_approval.settings") || hasPerm("notifications.settings.manage");
   const canViewDdSettings = hasPerm("delivery.deadline.settings") || hasPerm("delivery.deadline.edit") || hasPerm("dashboard.production.view");
   const canEditDdSettings = hasPerm("delivery.deadline.settings");
   const canViewOpTarget = hasPerm("schedule.edit") || hasPerm("users.manage");

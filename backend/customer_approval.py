@@ -890,8 +890,9 @@ def build_router(deps):
         # Side-effect: in-app notifications for Designer/CRM.
         # Must not fail or roll back the authoritative customer decision.
         try:
-            from services.notifications import emit_customer_design_approval_notifications
-            await emit_customer_design_approval_notifications(
+            from services.notifications import emit_customer_design_decision_notifications
+            # Role-blast Designer/CRM/members + single progress row for CRM creator when approved.
+            await emit_customer_design_decision_notifications(
                 db,
                 order=order,
                 approval=rec,

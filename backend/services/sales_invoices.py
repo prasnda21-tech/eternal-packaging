@@ -10,6 +10,7 @@ Penerimaan Penjualan (Sales Receipts).
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 import re
@@ -1007,6 +1008,11 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
 
         invoice_doc.pop("_id", None)
         await attach_invoice_accounting_fields(db, [invoice_doc])
+        try:
+            from services.notifications import emit_sales_invoice_created_to_creator
+            await emit_sales_invoice_created_to_creator(db, order=order, invoice=invoice_doc)
+        except Exception:
+            logging.getLogger(__name__).exception("sales invoice created notification failed")
         return invoice_doc
 
 

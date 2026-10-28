@@ -66,6 +66,9 @@ export default function FloatingNotificationBell({ placement = "floating" } = {}
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [actingId, setActingId] = useState("");
+  const [moduleFilter, setModuleFilter] = useState("");
+  const [searchQ, setSearchQ] = useState("");
+  const [serverUnread, setServerUnread] = useState(null);
 
   const rootRef = useRef(null);
   const dragRef = useRef({
@@ -119,9 +122,20 @@ export default function FloatingNotificationBell({ placement = "floating" } = {}
       setError("");
     }
     try {
-      const data = await api.listNotifications({ limit: 50 });
+      const params = { limit: 50 };
+      if (moduleFilter) params.module = moduleFilter;
+      if (searchQ.trim()) params.q = searchQ.trim();
+      const countsPromise =
+        typeof api.notificationUnreadCounts === "function"
+          ? api.notificationUnreadCounts().catch(() => null)
+          : Promise.resolve(null);
+      const [data, counts] = await Promise.all([
+        api.listNotifications(params),
+        countsPromise,
+      ]);
       if (!mounted.current || gen !== fetchGen.current) return;
       setItems(sortNotificationsUnreadFirst(Array.isArray(data?.notifications) ? data.notifications : []));
+      if (counts && typeof counts.total === "number") setServerUnread(counts);
       setError("");
     } catch (err) {
       if (!mounted.current || gen !== fetchGen.current) return;
@@ -132,7 +146,7 @@ export default function FloatingNotificationBell({ placement = "floating" } = {}
       inFlight.current = false;
       if (mounted.current && gen === fetchGen.current) setLoading(false);
     }
-  }, []);
+  }, [moduleFilter, searchQ]);
 
   useEffect(() => {
     let timer = null;
@@ -186,7 +200,7 @@ export default function FloatingNotificationBell({ placement = "floating" } = {}
     };
   }, [panelOpen]);
 
-  const unreadCount = countUnread(items);
+  const unreadCount = typeof serverUnread?.total === "number" ? serverUnread.total : countUnread(items);
   const panel = isTopbar
     ? null
     : panelPlacement(pos, { width: PANEL_WIDTH, height: PANEL_HEIGHT }, viewportSize());
@@ -349,6 +363,32 @@ export default function FloatingNotificationBell({ placement = "floating" } = {}
             ) : (
               <span className="ep-web-notif-panel-unread is-muted">Semua terbaca</span>
             )}
+          </div>
+          <div style={{ display: "flex", gap: 6, padding: "6px 10px", borderBottom: "1px solid var(--line)" }}>
+            <select
+              aria-label="Filter modul"
+              data-testid="web-notif-module-filter"
+              value={moduleFilter}
+              onChange={(e) => setModuleFilter(e.target.value)}
+              style={{ flex: 1, fontSize: 12 }}
+            >
+              <option value="">Semua modul</option>
+              <option value="pra_po">Pra PO</option>
+              <option value="sales_order">Pesanan Penjualan</option>
+              <option value="sales_invoice">Faktur</option>
+              <option value="customer_design_approval">Design Customer</option>
+              <option value="payment_approval">Pembayaran</option>
+              <option value="sales_delivery">Pengiriman</option>
+              <option value="operational">Operasional</option>
+            </select>
+            <input
+              aria-label="Cari PO / pelanggan"
+              data-testid="web-notif-search"
+              placeholder="Cari PO / pelanggan"
+              value={searchQ}
+              onChange={(e) => setSearchQ(e.target.value)}
+              style={{ flex: 1.2, fontSize: 12 }}
+            />
           </div>
           <div className="ep-web-notif-panel-body">
             {loading && items.length === 0 ? <div className="ep-web-notif-empty">Memuat…</div> : null}

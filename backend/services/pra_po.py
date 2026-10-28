@@ -1,0 +1,823 @@
+"""Pra PO — CRM draft/submit/return/verify gate before operational Pesanan Penjualan.
+
+Pra PO documents live in collection ``pra_pos`` and never enter production, delivery,
+invoice, stock/HPP, or Accurate until Admin verifies and an ``orders`` document is created.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import uuid
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional, Sequence
+
+from fastapi import HTTPException
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
+
+from services.purchase_common import actor_snapshot, actor_user_id, get_named_lock, now_iso
+
+COLLECTION = "pra_pos"
+HISTORY_COLLECTION = "pra_po_history"
+PREFIX = "PRA"
+VERSION_FIELD = "doc_version"
+
+STATUS_DRAFT = "draft"
+STATUS_SUBMITTED = "submitted"
+STATUS_RETURNED = "returned"
+STATUS_RESUBMITTED = "resubmitted"
+STATUS_VERIFYING = "verifying"
+STATUS_VERIFIED = "verified"
+
+STATUS_LABELS = {
+    STATUS_DRAFT: "Draft",
+    STATUS_SUBMITTED: "Diajukan",
+    STATUS_RETURNED: "Dikembalikan",
+    STATUS_RESUBMITTED: "Diajukan Ulang",
+    STATUS_VERIFYING: "Sedang diverifikasi",
+    STATUS_VERIFIED: "Disetujui",
+}
+
+EDITABLE_STATUSES = frozenset({STATUS_DRAFT, STATUS_RETURNED})
+SUBMITTABLE_STATUSES = frozenset({STATUS_DRAFT, STATUS_RETURNED})
+VERIFYABLE_STATUSES = frozenset({STATUS_SUBMITTED, STATUS_RESUBMITTED})
+# Claimable includes in-flight verifying so a crashed worker can resume safely.
+CLAIMABLE_STATUSES = frozenset({STATUS_SUBMITTED, STATUS_RESUBMITTED, STATUS_VERIFYING})
+
+PERM_CREATE = "pra_po.create"
+PERM_EDIT_OWN = "pra_po.edit_own"
+PERM_VIEW_OWN = "pra_po.view_own"
+PERM_VIEW_ALL = "pra_po.view_all"
+PERM_SUBMIT = "pra_po.submit"
+PERM_VERIFY = "pra_po.verify"
+PERM_RETURN = "pra_po.return"
+PERM_AUDIT = "pra_po.audit.view"
+
+logger = logging.getLogger("pra_po")
+
+
+def can_create(perms: set) -> bool:
+    return PERM_CREATE in perms
+
+
+def can_edit_own(perms: set) -> bool:
+    return PERM_EDIT_OWN in perms or PERM_CREATE in perms
+
+
+def can_view_own(perms: set) -> bool:
+    return PERM_VIEW_OWN in perms or PERM_CREATE in perms or PERM_EDIT_OWN in perms
+
+
+def can_view_all(perms: set) -> bool:
+    return PERM_VIEW_ALL in perms or PERM_VERIFY in perms or PERM_RETURN in perms
+
+
+def can_submit(perms: set) -> bool:
+    return PERM_SUBMIT in perms or PERM_CREATE in perms
+
+
+def can_verify(perms: set) -> bool:
+    return PERM_VERIFY in perms
+
+
+def can_return(perms: set) -> bool:
+    return PERM_RETURN in perms
+
+
+def can_audit(perms: set) -> bool:
+    return PERM_AUDIT in perms or can_view_all(perms) or can_view_own(perms)
+
+
+async def ensure_indexes(db) -> None:
+    await db[COLLECTION].create_index("id", unique=True)
+    await db[COLLECTION].create_index("number", unique=True)
+    await db[COLLECTION].create_index([("created_by_user_id", 1), ("updated_at", -1)])
+    await db[COLLECTION].create_index([("status", 1), ("updated_at", -1)])
+    await db[COLLECTION].create_index("sales_order_id", sparse=True)
+    await db[HISTORY_COLLECTION].create_index([("pra_po_id", 1), ("at", -1)])
+    # One operational SO per Pra PO — DB-level guard against concurrent verify races.
+    await db.orders.create_index("pra_po_id", unique=True, sparse=True)
+
+
+def _today_str_po() -> str:
+    return datetime.now(timezone.utc).strftime("%d/%m/%y")
+
+
+async def _next_pra_number(db) -> str:
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    stem = f"{PREFIX}-{day}-"
+    cursor = db[COLLECTION].find({"number": {"$regex": f"^{re.escape(stem)}\\d+$"}}, {"number": 1, "_id": 0})
+    rows = await cursor.to_list(2000)
+    max_seq = 0
+    for row in rows:
+        suffix = str(row.get("number") or "")[len(stem):]
+        try:
+            max_seq = max(max_seq, int(suffix))
+        except ValueError:
+            continue
+    return f"{stem}{max_seq + 1:03d}"
+
+
+async def _next_po_number(db) -> str:
+    today_str = _today_str_po()
+    prefix = f"PO/{today_str}/"
+    regex = f"^{re.escape(prefix)}\\d+"
+    cursor = db.orders.find({"po_number": {"$regex": regex}}, {"po_number": 1, "_id": 0})
+    existing = await cursor.to_list(1000)
+    max_seq = 0
+    for doc in existing:
+        pn = str(doc.get("po_number") or "")
+        suffix = pn[len(prefix):]
+        m = re.match(r"^(\d+)", suffix)
+        if m:
+            try:
+                max_seq = max(max_seq, int(m.group(1)))
+            except ValueError:
+                pass
+    return f"{prefix}{max_seq + 1:03d}"
+
+
+def _history_entry(*, action: str, user: dict, note: str = "", before: Any = None, after: Any = None) -> dict:
+    actor = actor_snapshot(user)
+    return {
+        "id": str(uuid.uuid4()),
+        "action": action,
+        "at": now_iso(),
+        "by_id": actor.get("id"),
+        "by_name": actor.get("name"),
+        "by_email": actor.get("email"),
+        "by_role": actor.get("role"),
+        "note": note or "",
+        "before": before,
+        "after": after,
+    }
+
+
+async def _append_history(db, pra_po_id: str, entry: dict) -> None:
+    entry = dict(entry)
+    entry["pra_po_id"] = pra_po_id
+    await db[HISTORY_COLLECTION].insert_one(entry)
+
+
+def public_view(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return None
+    out = {k: v for k, v in doc.items() if k != "_id"}
+    out["status_label"] = STATUS_LABELS.get(str(out.get("status") or ""), out.get("status"))
+    return out
+
+
+def _require_owner(doc: dict, user: dict) -> None:
+    uid = actor_user_id(user)
+    if str(doc.get("created_by_user_id") or "") != uid:
+        raise HTTPException(403, "Pra PO ini bukan milik Anda.")
+
+
+def _normalize_lines(raw_lines: Any) -> List[dict]:
+    if not isinstance(raw_lines, list) or not raw_lines:
+        raise HTTPException(400, "Minimal 1 line item.")
+    out = []
+    seen = set()
+    for i, li in enumerate(raw_lines):
+        if not isinstance(li, dict):
+            raise HTTPException(400, f"Line item #{i + 1} tidak valid.")
+        name = str(li.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, f"Line item #{i + 1}: Nama barang/jasa wajib diisi.")
+        try:
+            qty = int(li.get("quantity"))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            raise HTTPException(400, f"Line item #{i + 1}: Quantity harus > 0.")
+        line_id = str(li.get("line_id") or "").strip() or f"ln-{uuid.uuid4().hex[:12]}"
+        if line_id in seen:
+            raise HTTPException(400, f"Line item #{i + 1}: line_id duplikat.")
+        seen.add(line_id)
+        row = {
+            "line_id": line_id,
+            "name": name,
+            "quantity": qty,
+            "unit": str(li.get("unit") or "pcs").strip() or "pcs",
+            "item_code": str(li.get("item_code") or "").strip() or None,
+            "color": str(li.get("color") or "").strip() or None,
+            "notes": str(li.get("notes") or "").strip() or None,
+            "master_item_id": str(li.get("master_item_id") or "").strip() or None,
+            "accurate_item_id": str(li.get("accurate_item_id") or "").strip() or None,
+            "production_process": li.get("production_process"),
+            "unit_price": li.get("unit_price"),
+            "price_source": li.get("price_source"),
+            "price_review": bool(li.get("price_review")) if li.get("price_review") is not None else None,
+            "item_type": str(li.get("item_type") or "").strip() or None,
+        }
+        parent = str(li.get("parent_line_id") or "").strip()
+        if parent:
+            row["parent_line_id"] = parent
+        if li.get("parent_line_idx") is not None:
+            try:
+                row["parent_line_idx"] = int(li.get("parent_line_idx"))
+            except (TypeError, ValueError):
+                pass
+        out.append(row)
+    return out
+
+
+def _apply_payload(doc: dict, payload: dict) -> None:
+    if "customer" in payload:
+        cust = str(payload.get("customer") or "").strip()
+        if not cust:
+            raise HTTPException(400, "Customer wajib diisi.")
+        doc["customer"] = cust
+    for key in (
+        "customer_id", "customer_phone", "customer_pic", "customer_email", "customer_city",
+        "outlet", "recipient", "address", "delivery_zone", "payment_terms",
+        "sales", "sales_master_id", "expedition", "estimated_delivery", "deadline",
+        "order_date", "notes", "po_number_hint",
+    ):
+        if key in payload:
+            val = payload.get(key)
+            if val is None:
+                doc[key] = None
+            else:
+                doc[key] = str(val).strip() if not isinstance(val, (int, float, bool)) else val
+    if "line_items" in payload:
+        doc["line_items"] = _normalize_lines(payload.get("line_items"))
+        doc["total_quantity"] = sum(int(x.get("quantity") or 0) for x in doc["line_items"])
+        doc["item_count"] = len(doc["line_items"])
+
+
+async def create_draft(db, payload: dict, user: dict) -> dict:
+    actor = actor_snapshot(user)
+    uid = actor.get("id")
+    if not uid:
+        raise HTTPException(401, "Sesi tidak valid")
+    now = now_iso()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "number": await _next_pra_number(db),
+        "status": STATUS_DRAFT,
+        "created_by_user_id": uid,
+        "created_by_snapshot": actor,
+        "branch_id": str(user.get("branch_id") or user.get("cabang_id") or "").strip() or None,
+        "customer": "",
+        "line_items": [],
+        "notes": "",
+        "return_reason": None,
+        "returned_at": None,
+        "sales_order_id": None,
+        "sales_order_po_number": None,
+        "verified_at": None,
+        "verified_by": None,
+        "submitted_at": None,
+        VERSION_FIELD: 1,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _apply_payload(doc, payload or {})
+    if not doc.get("customer"):
+        raise HTTPException(400, "Customer wajib diisi.")
+    if not doc.get("line_items"):
+        raise HTTPException(400, "Minimal 1 line item.")
+    try:
+        await db[COLLECTION].insert_one(dict(doc))
+    except DuplicateKeyError:
+        doc["number"] = await _next_pra_number(db)
+        await db[COLLECTION].insert_one(dict(doc))
+    doc.pop("_id", None)
+    await _append_history(db, doc["id"], _history_entry(action="create", user=user, after={"status": STATUS_DRAFT}))
+    return public_view(doc)
+
+
+async def get_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
+    doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Pra PO tidak ditemukan")
+    if can_view_all(perms):
+        return public_view(doc)
+    if can_view_own(perms):
+        _require_owner(doc, user)
+        return public_view(doc)
+    raise HTTPException(403, "Tidak berwenang melihat Pra PO")
+
+
+async def list_pra_pos(
+    db,
+    user: dict,
+    perms: set,
+    *,
+    view: Optional[str] = None,
+    status: Optional[str] = None,
+) -> List[dict]:
+    query: Dict[str, Any] = {}
+    view_norm = str(view or "").strip().lower()
+    if view_norm in ("queue", "verification"):
+        if not can_view_all(perms):
+            raise HTTPException(403, "Tidak berwenang melihat antrean verifikasi")
+        query["status"] = {"$in": [STATUS_SUBMITTED, STATUS_RESUBMITTED]}
+    elif view_norm in ("own", "mine", ""):
+        if can_view_all(perms) and view_norm == "":
+            pass
+        elif can_view_own(perms):
+            query["created_by_user_id"] = actor_user_id(user)
+        elif can_view_all(perms):
+            pass
+        else:
+            raise HTTPException(403, "Tidak berwenang melihat Pra PO")
+    else:
+        if can_view_all(perms):
+            pass
+        elif can_view_own(perms):
+            query["created_by_user_id"] = actor_user_id(user)
+        else:
+            raise HTTPException(403, "Tidak berwenang melihat Pra PO")
+    st = str(status or "").strip().lower()
+    if st:
+        query["status"] = st
+    rows = await db[COLLECTION].find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
+    return [public_view(r) for r in rows]
+
+
+async def update_draft(db, pra_po_id: str, payload: dict, user: dict, perms: set) -> dict:
+    if not can_edit_own(perms):
+        raise HTTPException(403, "Tidak berwenang mengubah Pra PO")
+    doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Pra PO tidak ditemukan")
+    _require_owner(doc, user)
+    if doc.get("status") not in EDITABLE_STATUSES:
+        raise HTTPException(400, "Pra PO hanya dapat diubah saat Draft atau Dikembalikan.")
+    before = {"status": doc.get("status"), "customer": doc.get("customer")}
+    _apply_payload(doc, payload or {})
+    doc["updated_at"] = now_iso()
+    doc[VERSION_FIELD] = int(doc.get(VERSION_FIELD) or 1) + 1
+    await db[COLLECTION].replace_one({"id": pra_po_id}, doc)
+    await _append_history(
+        db, pra_po_id,
+        _history_entry(action="update", user=user, before=before, after={"status": doc.get("status")}),
+    )
+    return public_view(doc)
+
+
+async def submit_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
+    if not can_submit(perms):
+        raise HTTPException(403, "Tidak berwenang mengajukan Pra PO")
+    async with get_named_lock(f"pra_po:{pra_po_id}"):
+        doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Pra PO tidak ditemukan")
+        _require_owner(doc, user)
+        status = doc.get("status")
+        if status not in SUBMITTABLE_STATUSES:
+            raise HTTPException(400, "Pra PO tidak dapat diajukan dari status saat ini.")
+        if not doc.get("customer") or not (doc.get("line_items") or []):
+            raise HTTPException(400, "Lengkapi customer dan line item sebelum mengajukan.")
+        new_status = STATUS_RESUBMITTED if status == STATUS_RETURNED else STATUS_SUBMITTED
+        now = now_iso()
+        updated = await db[COLLECTION].find_one_and_update(
+            {"id": pra_po_id, "status": status, VERSION_FIELD: doc.get(VERSION_FIELD)},
+            {"$set": {
+                "status": new_status,
+                "submitted_at": now,
+                "updated_at": now,
+                "return_reason": None if new_status == STATUS_RESUBMITTED else doc.get("return_reason"),
+                VERSION_FIELD: int(doc.get(VERSION_FIELD) or 1) + 1,
+            }},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+        if not updated:
+            raise HTTPException(409, "Pra PO berubah — muat ulang dan coba lagi.")
+        await _append_history(
+            db, pra_po_id,
+            _history_entry(
+                action="submit" if new_status == STATUS_SUBMITTED else "resubmit",
+                user=user,
+                before={"status": status},
+                after={"status": new_status},
+            ),
+        )
+        return public_view(updated)
+
+
+async def return_pra_po(db, pra_po_id: str, payload: dict, user: dict, perms: set) -> dict:
+    if not can_return(perms):
+        raise HTTPException(403, "Tidak berwenang mengembalikan Pra PO")
+    reason = str((payload or {}).get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "Alasan pengembalian wajib diisi.")
+    async with get_named_lock(f"pra_po:{pra_po_id}"):
+        doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Pra PO tidak ditemukan")
+        status = doc.get("status")
+        if status not in VERIFYABLE_STATUSES:
+            raise HTTPException(400, "Hanya Pra PO yang diajukan yang dapat dikembalikan.")
+        now = now_iso()
+        updated = await db[COLLECTION].find_one_and_update(
+            {"id": pra_po_id, "status": status, VERSION_FIELD: doc.get(VERSION_FIELD)},
+            {"$set": {
+                "status": STATUS_RETURNED,
+                "return_reason": reason,
+                "returned_at": now,
+                "updated_at": now,
+                VERSION_FIELD: int(doc.get(VERSION_FIELD) or 1) + 1,
+            }},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+        if not updated:
+            raise HTTPException(409, "Pra PO berubah — muat ulang dan coba lagi.")
+        await _append_history(
+            db, pra_po_id,
+            _history_entry(
+                action="return",
+                user=user,
+                note=reason,
+                before={"status": status},
+                after={"status": STATUS_RETURNED},
+            ),
+        )
+        try:
+            from services.notifications import emit_pra_po_returned_to_creator
+            await emit_pra_po_returned_to_creator(db, pra_po=updated, reason=reason)
+        except Exception:
+            logger.exception("pra_po return notification failed")
+        return public_view(updated)
+
+
+async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
+    """Create one operational orders document from a verified Pra PO."""
+    from services.line_product_replacement import require_po_create_line_master
+    from services.master_items import resolve_line_production_process
+    from services.order_line_addon import validate_service_print_requires_parent
+    from services.physical_stock_engine import attach_order_stock_snapshot
+    from services.stock_engine_v2 import validate_sales_order_availability
+    from services.sales_user_mapping import attach_sales_ownership
+
+    # Local import of stage labels to avoid circular module load at import time.
+    try:
+        from server import STAGES  # type: ignore
+    except Exception:
+        STAGES = ["Order Masuk"]
+
+    creator_id = str(pra.get("created_by_user_id") or "").strip()
+    creator_snap = pra.get("created_by_snapshot") or {}
+    now = now_iso()
+
+    normalized_lines = []
+    seen_line_ids = set()
+    for i, li in enumerate(pra.get("line_items") or []):
+        master, mapped = await require_po_create_line_master(
+            db,
+            master_item_id=li.get("master_item_id"),
+            accurate_item_id=li.get("accurate_item_id"),
+            line_no=i + 1,
+        )
+        mid = mapped.get("master_item_id")
+        aid = mapped.get("accurate_item_id")
+        proc = await resolve_line_production_process(
+            db,
+            master_item_id=mid,
+            accurate_item_id=aid,
+            explicit=li.get("production_process"),
+        )
+        line_id = str(li.get("line_id") or "").strip() or f"ln-{uuid.uuid4().hex[:12]}"
+        if line_id in seen_line_ids:
+            raise HTTPException(400, f"Line item #{i + 1}: line_id duplikat.")
+        seen_line_ids.add(line_id)
+        unit = str(li.get("unit") or mapped.get("unit") or "pcs").strip() or "pcs"
+        row = {
+            "line_id": line_id,
+            "item_code": li.get("item_code") or mapped.get("item_code") or None,
+            "name": li.get("name"),
+            "quantity": int(li.get("quantity") or 0),
+            "unit": unit,
+            "color": li.get("color"),
+            "production_process": proc,
+            "notes": li.get("notes"),
+            "accurate_item_id": aid,
+            "master_item_id": mid,
+            "unit_price": li.get("unit_price"),
+            "price_source": li.get("price_source"),
+            "price_review": bool(li.get("price_review")) if li.get("price_review") is not None else None,
+        }
+        stamped_type = str(master.get("item_type") or li.get("item_type") or "").strip().upper()
+        if stamped_type:
+            row["item_type"] = stamped_type
+        if li.get("parent_line_id"):
+            row["parent_line_id"] = li.get("parent_line_id")
+        if li.get("parent_line_idx") is not None:
+            row["parent_line_idx"] = li.get("parent_line_idx")
+        normalized_lines.append(row)
+
+    parent_err = validate_service_print_requires_parent(normalized_lines)
+    if parent_err:
+        raise HTTPException(400, parent_err)
+
+    order_date = str(pra.get("order_date") or "").strip() or datetime.now(timezone.utc).date().isoformat()
+    estimated = str(pra.get("estimated_delivery") or pra.get("deadline") or "").strip() or None
+    deadline = str(pra.get("deadline") or pra.get("estimated_delivery") or "").strip() or None
+
+    from services.sales_master import resolve_for_po_write
+    sales_master_id, sales_label, _hint = await resolve_for_po_write(
+        db,
+        sales_master_id=pra.get("sales_master_id"),
+        sales_label=pra.get("sales"),
+        user=user,
+    )
+
+    total_qty = sum(int(x.get("quantity") or 0) for x in normalized_lines)
+    order_id = str(uuid.uuid4())
+    po_num = str(pra.get("po_number_hint") or "").strip()
+    if not po_num:
+        for _ in range(5):
+            candidate = await _next_po_number(db)
+            if not await db.orders.find_one({"po_number": candidate}, {"_id": 1}):
+                po_num = candidate
+                break
+        if not po_num:
+            po_num = await _next_po_number(db)
+
+    new_order = {
+        "id": order_id,
+        "po_number": po_num,
+        "accurate_id": None,
+        "accurate_synced_at": None,
+        "accurate_source": "manual",
+        "import_source": "pra_po",
+        "pra_po_id": pra.get("id"),
+        "pra_po_number": pra.get("number"),
+        "import_filename": None,
+        "source_pdf": None,
+        "order_date": order_date,
+        "estimated_delivery": estimated,
+        "deadline": deadline,
+        "priority": "normal",
+        "urgency_approved_by": None,
+        "customer": pra.get("customer"),
+        "customer_id": pra.get("customer_id"),
+        "customer_phone": pra.get("customer_phone"),
+        "outlet": pra.get("outlet"),
+        "recipient": pra.get("recipient"),
+        "address": pra.get("address"),
+        "payment_terms": pra.get("payment_terms"),
+        "payment_status": "Waiting",
+        "design_status": "Waiting",
+        "sales": sales_label,
+        "sales_master_id": sales_master_id,
+        "created_by_user": (
+            (creator_snap or {}).get("name")
+            or (creator_snap or {}).get("email")
+            or user.get("name")
+            or user.get("email")
+        ),
+        "created_by_user_id": creator_id,
+        "imported_by": user.get("email"),
+        "imported_by_name": user.get("name"),
+        "imported_at": now,
+        "expedition": pra.get("expedition"),
+        "delivery_zone": pra.get("delivery_zone"),
+        "seller": sales_label,
+        "line_items": normalized_lines,
+        "total_quantity": total_qty,
+        "item_count": len(normalized_lines),
+        "operator_splits": [],
+        "design_files": [],
+        "sample_files": [],
+        "delivery_proofs": [],
+        "notes": pra.get("notes") or "",
+        "current_stage": 0,
+        "status_label": STAGES[0] if STAGES else "Order Masuk",
+        "packing_status": "Belum",
+        "delivery_status": "Belum Terkirim",
+        "delivery_note_number": "",
+        "loading_checklist": None,
+        "branch_id": pra.get("branch_id"),
+        "timeline": [{
+            "stage": 0,
+            "stage_label": STAGES[0] if STAGES else "Order Masuk",
+            "at": now,
+            "by_email": user.get("email"),
+            "by_role": user.get("role"),
+            "by_name": user.get("name"),
+            "note": f"Diverifikasi dari Pra PO {pra.get('number')}",
+        }],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    await validate_sales_order_availability(db, new_order.get("line_items") or [])
+    await attach_order_stock_snapshot(db, new_order)
+    await attach_sales_ownership(db, new_order)
+
+    try:
+        await db.orders.insert_one(dict(new_order))
+    except DuplicateKeyError:
+        # Unique pra_po_id race → caller recovers the winning SO.
+        existing = await db.orders.find_one({"pra_po_id": new_order.get("pra_po_id")}, {"_id": 0})
+        if existing:
+            raise
+        # Rare race on po_number — retry once with a fresh number.
+        new_order["po_number"] = await _next_po_number(db)
+        await db.orders.insert_one(dict(new_order))
+    new_order.pop("_id", None)
+    return new_order
+
+
+async def _link_existing_order_if_any(db, pra: dict, user: dict) -> Optional[dict]:
+    """If an SO already exists for this Pra PO, finalize Pra PO link and return it."""
+    pra_po_id = str(pra.get("id") or "")
+    existing = await db.orders.find_one({"pra_po_id": pra_po_id}, {"_id": 0})
+    if not existing:
+        linked_id = str(pra.get("sales_order_id") or "").strip()
+        if linked_id:
+            existing = await db.orders.find_one({"id": linked_id}, {"_id": 0})
+    if not existing:
+        return None
+    now = now_iso()
+    actor = actor_snapshot(user)
+    updated = await db[COLLECTION].find_one_and_update(
+        {"id": pra_po_id},
+        {"$set": {
+            "status": STATUS_VERIFIED,
+            "sales_order_id": existing["id"],
+            "sales_order_po_number": existing.get("po_number"),
+            "verified_at": pra.get("verified_at") or now,
+            "verified_by": pra.get("verified_by") or actor,
+            "updated_at": now,
+            "return_reason": None,
+            "verify_prior_status": None,
+            VERSION_FIELD: int(pra.get(VERSION_FIELD) or 1) + 1,
+        }},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    return {"pra_po": public_view(updated or pra), "order": existing, "idempotent": True}
+
+
+async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
+    if not can_verify(perms):
+        raise HTTPException(403, "Tidak berwenang menyetujui Pra PO")
+    async with get_named_lock(f"pra_po:{pra_po_id}"):
+        doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
+        if not doc:
+            raise HTTPException(404, "Pra PO tidak ditemukan")
+
+        # Idempotent: already verified with linked SO.
+        if doc.get("status") == STATUS_VERIFIED and doc.get("sales_order_id"):
+            order = await db.orders.find_one({"id": doc["sales_order_id"]}, {"_id": 0})
+            return {"pra_po": public_view(doc), "order": order, "idempotent": True}
+
+        # Partial success recovery: SO exists (or sales_order_id set) but status not finalized.
+        recovered = await _link_existing_order_if_any(db, doc, user)
+        if recovered:
+            return recovered
+
+        status = doc.get("status")
+        if status not in CLAIMABLE_STATUSES:
+            raise HTTPException(400, "Hanya Pra PO yang diajukan yang dapat disetujui.")
+
+        # Atomic claim BEFORE materialize — only one verifier proceeds to create SO.
+        prior_status = status if status in VERIFYABLE_STATUSES else (doc.get("verify_prior_status") or STATUS_SUBMITTED)
+        now = now_iso()
+        claimed = await db[COLLECTION].find_one_and_update(
+            {
+                "id": pra_po_id,
+                "status": {"$in": list(CLAIMABLE_STATUSES)},
+                "sales_order_id": None,
+            },
+            {"$set": {
+                "status": STATUS_VERIFYING,
+                "verify_prior_status": prior_status if prior_status in VERIFYABLE_STATUSES else STATUS_SUBMITTED,
+                "updated_at": now,
+                VERSION_FIELD: int(doc.get(VERSION_FIELD) or 1) + 1,
+            }},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+        if not claimed:
+            # Another worker claimed or finished — re-read and recover.
+            latest = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
+            if latest and latest.get("status") == STATUS_VERIFIED and latest.get("sales_order_id"):
+                order = await db.orders.find_one({"id": latest["sales_order_id"]}, {"_id": 0})
+                return {"pra_po": public_view(latest), "order": order, "idempotent": True}
+            recovered = await _link_existing_order_if_any(db, latest or doc, user)
+            if recovered:
+                return recovered
+            raise HTTPException(409, "Verifikasi sedang diproses — coba lagi.")
+
+        try:
+            order = await _materialize_sales_order(db, claimed, user)
+        except DuplicateKeyError:
+            # Concurrent insert hit unique pra_po_id — adopt the winner's SO.
+            recovered = await _link_existing_order_if_any(db, claimed, user)
+            if recovered:
+                return recovered
+            raise HTTPException(409, "Verifikasi bentrok — coba lagi.")
+        except HTTPException:
+            # Validation failure (e.g. master item): revert claim, keep submission editable via return/resubmit path.
+            revert_to = claimed.get("verify_prior_status") or STATUS_SUBMITTED
+            if revert_to not in VERIFYABLE_STATUSES:
+                revert_to = STATUS_SUBMITTED
+            await db[COLLECTION].update_one(
+                {"id": pra_po_id, "status": STATUS_VERIFYING, "sales_order_id": None},
+                {"$set": {
+                    "status": revert_to,
+                    "updated_at": now_iso(),
+                    "verify_prior_status": None,
+                }},
+            )
+            raise
+        except Exception:
+            revert_to = claimed.get("verify_prior_status") or STATUS_SUBMITTED
+            if revert_to not in VERIFYABLE_STATUSES:
+                revert_to = STATUS_SUBMITTED
+            await db[COLLECTION].update_one(
+                {"id": pra_po_id, "status": STATUS_VERIFYING, "sales_order_id": None},
+                {"$set": {
+                    "status": revert_to,
+                    "updated_at": now_iso(),
+                    "verify_prior_status": None,
+                }},
+            )
+            raise
+
+        actor = actor_snapshot(user)
+        updated = await db[COLLECTION].find_one_and_update(
+            {
+                "id": pra_po_id,
+                "status": STATUS_VERIFYING,
+                "sales_order_id": None,
+            },
+            {"$set": {
+                "status": STATUS_VERIFIED,
+                "sales_order_id": order["id"],
+                "sales_order_po_number": order.get("po_number"),
+                "verified_at": now_iso(),
+                "verified_by": actor,
+                "updated_at": now_iso(),
+                "return_reason": None,
+                "verify_prior_status": None,
+                VERSION_FIELD: int(claimed.get(VERSION_FIELD) or 1) + 1,
+            }},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
+        if not updated:
+            # SO created but Pra PO link lost the race — adopt whatever is linked now.
+            recovered = await _link_existing_order_if_any(
+                db, {**claimed, "sales_order_id": order.get("id")}, user,
+            )
+            if recovered:
+                # Drop our orphan only if another SO won the unique pra_po_id.
+                if recovered["order"]["id"] != order.get("id"):
+                    await db.orders.delete_one({
+                        "id": order["id"],
+                        "pra_po_id": pra_po_id,
+                        "import_source": "pra_po",
+                    })
+                return recovered
+            # Force-link our SO (SO exists, Pra PO must reflect it).
+            forced = await db[COLLECTION].find_one_and_update(
+                {"id": pra_po_id},
+                {"$set": {
+                    "status": STATUS_VERIFIED,
+                    "sales_order_id": order["id"],
+                    "sales_order_po_number": order.get("po_number"),
+                    "verified_at": now_iso(),
+                    "verified_by": actor,
+                    "updated_at": now_iso(),
+                    "return_reason": None,
+                    "verify_prior_status": None,
+                }},
+                return_document=ReturnDocument.AFTER,
+                projection={"_id": 0},
+            )
+            updated = forced
+
+        await _append_history(
+            db, pra_po_id,
+            _history_entry(
+                action="verify",
+                user=user,
+                before={"status": prior_status},
+                after={"status": STATUS_VERIFIED, "sales_order_id": order["id"]},
+            ),
+        )
+        try:
+            from services.notifications import emit_sales_order_verified_to_creator
+            await emit_sales_order_verified_to_creator(db, order=order)
+        except Exception:
+            logger.exception("sales_order_verified notification failed")
+        return {"pra_po": public_view(updated), "order": order, "idempotent": False}
+
+
+async def list_history(db, pra_po_id: str, user: dict, perms: set) -> List[dict]:
+    # Access check via get
+    await get_pra_po(db, pra_po_id, user, perms)
+    if not can_audit(perms):
+        raise HTTPException(403, "Tidak berwenang melihat audit Pra PO")
+    rows = await db[HISTORY_COLLECTION].find(
+        {"pra_po_id": pra_po_id}, {"_id": 0},
+    ).sort("at", -1).to_list(200)
+    return rows

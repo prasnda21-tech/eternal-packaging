@@ -31,6 +31,14 @@ PERMISSION_CATALOG = [
     ("Penjualan", "sales.customer.manage", "Kelola Data Pelanggan"),
     ("Penjualan", "sales.customer.edit", "Edit Pelanggan"),
     ("Penjualan", "sales.customer.manage_status", "Kelola Status Pelanggan"),
+    ("Penjualan", "pra_po.create", "Buat Pra PO"),
+    ("Penjualan", "pra_po.edit_own", "Ubah Pra PO milik sendiri"),
+    ("Penjualan", "pra_po.view_own", "Lihat Pra PO milik sendiri"),
+    ("Penjualan", "pra_po.view_all", "Lihat semua Pra PO"),
+    ("Penjualan", "pra_po.submit", "Ajukan Pra PO"),
+    ("Penjualan", "pra_po.verify", "Setujui Pra PO menjadi Pesanan Penjualan"),
+    ("Penjualan", "pra_po.return", "Kembalikan Pra PO ke CRM"),
+    ("Penjualan", "pra_po.audit.view", "Lihat audit Pra PO"),
     ("Penjualan", "sales_order.view", "Lihat Pesanan Penjualan"),
     ("Penjualan", "sales_order.create", "Buat Pesanan Penjualan"),
     ("Penjualan", "sales.delivery.view", "Lihat Pengiriman Pesanan"),
@@ -303,6 +311,8 @@ PERMISSION_CATALOG = [
     ("Customer Approval", "customer_approval.view", "Lihat Customer Approval"),
     ("Customer Approval", "customer_approval.manage", "Kelola Link Customer Approval"),
     ("Customer Approval", "customer_approval.settings", "Atur Customer Approval"),
+    ("Notifikasi", "notifications.settings.view", "Lihat pengaturan notifikasi"),
+    ("Notifikasi", "notifications.settings.manage", "Kelola pengaturan notifikasi"),
     # Sidebar / menu visibility (additional layer; does not replace API RBAC)
     ("Akses Menu", "nav.dashboard", "Menu Dashboard"),
     ("Akses Menu", "nav.dashboard.sales", "Menu Dashboard Penjualan"),
@@ -326,6 +336,7 @@ PERMISSION_CATALOG = [
     ("Akses Menu", "nav.sales", "Menu Penjualan"),
     ("Akses Menu", "nav.sales.customers", "Menu Data Pelanggan"),
     ("Akses Menu", "nav.sales.product_requests", "Menu Permintaan Produk"),
+    ("Akses Menu", "nav.sales.pra_po", "Menu Pra PO"),
     ("Akses Menu", "nav.sales.sales_order", "Menu Pesanan Penjualan"),
     ("Akses Menu", "nav.sales.delivery_order", "Menu Pengiriman Pesanan"),
     ("Akses Menu", "nav.sales.sales_invoice", "Menu Faktur Penjualan"),
@@ -505,6 +516,7 @@ LOADING_DEFAULTS_FROM_UPDATE = (
 NAV_ALWAYS_VISIBLE = (
     "nav.sales",
     "nav.sales.product_requests",
+    "nav.sales.pra_po",
     "nav.sales.sales_order",
     "nav.sales.delivery_order",
     "nav.sales.sales_invoice",
@@ -541,6 +553,7 @@ NAV_MENU_ITEMS = (
     ("nav.sales", "Penjualan", None),
     ("nav.sales.customers", "Data Pelanggan", "nav.sales"),
     ("nav.sales.product_requests", "Permintaan Produk", "nav.sales"),
+    ("nav.sales.pra_po", "Pra PO", "nav.sales"),
     ("nav.sales.sales_order", "Pesanan Penjualan", "nav.sales"),
     ("nav.sales.delivery_order", "Pengiriman Pesanan", "nav.sales"),
     ("nav.sales.sales_invoice", "Faktur Penjualan", "nav.sales"),
@@ -753,6 +766,14 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.sales")
         nav.add("nav.sales.product_requests")
     if (
+        "pra_po.create" in existing
+        or "pra_po.view_own" in existing
+        or "pra_po.view_all" in existing
+        or "pra_po.verify" in existing
+    ):
+        nav.add("nav.sales")
+        nav.add("nav.sales.pra_po")
+    if (
         "sales.activity.view" in existing
         or "sales.activity.create" in existing
         or "sales.outlet.create" in existing
@@ -849,6 +870,13 @@ def with_nav_defaults(perms: set) -> set:
     if not nav_is_configured(base):
         base |= derived_nav_permissions(base)
     base.add("nav.sales.product_requests")
+    if (
+        "pra_po.create" in base
+        or "pra_po.view_own" in base
+        or "pra_po.view_all" in base
+        or "pra_po.verify" in base
+    ):
+        base.add("nav.sales.pra_po")
     return base
 
 # Default permission set per role. Admin gets everything except OPT_IN_ONLY.
@@ -856,6 +884,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     "admin": list(DEFAULT_GRANT_PERMISSIONS),
     "head_production": [
         "po.view", "po.edit", "sales_order.view", "sales_order.create",
+        "pra_po.view_all", "pra_po.verify", "pra_po.return", "pra_po.audit.view",
         "sales.delivery.view", "sales.delivery.create", "sales.delivery.print",
         "sales.invoice.view", "sales.invoice.create", "sales.invoice.edit",
         "sales.receipt.view", "sales.receipt.create",
@@ -897,6 +926,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     ],
     "head_operations": [
         "po.view", "po.edit", "po.cancel", "sales_order.view", "sales_order.create",
+        "pra_po.view_all", "pra_po.verify", "pra_po.return", "pra_po.audit.view",
         "sales.delivery.view", "sales.delivery.create", "sales.delivery.print",
         "sales.invoice.view", "sales.invoice.create", "sales.invoice.edit",
         "sales.receipt.view", "sales.receipt.create",
@@ -950,7 +980,8 @@ ROLE_DEFAULT_PERMISSIONS = {
         "delivery.reschedule",
     ],
     "crm": [
-        "po.view", "sales_order.view", "sales_order.create",
+        "po.view", "sales_order.view",
+        "pra_po.create", "pra_po.edit_own", "pra_po.view_own", "pra_po.submit", "pra_po.audit.view",
         "sales.delivery.view", "sales.delivery.create", "sales.delivery.print",
         "sales.invoice.view", "sales.invoice.create", "sales.invoice.edit",
         "sales.receipt.view", "sales.receipt.create",
@@ -961,6 +992,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "reports.order_prediction.view", "reports.order_prediction.import",
         "product_request.create", "product_request.read_own_draft",
         "crm.daily_report.create", "crm.daily_report.view_own", "crm.daily_report.edit_own",
+        "nav.sales.pra_po",
     ],
     "holding_team": [
         "product_request.read_all",

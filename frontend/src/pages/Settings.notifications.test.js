@@ -112,6 +112,10 @@ describe("Customer Design Approval notification settings + inbox wiring", () => 
     expect(settingsSrc).toMatch(/data-testid="notifications-settings-tab"/);
     expect(settingsSrc).toMatch(/customerDesignApprovalNotificationSettings/);
     expect(settingsSrc).toMatch(/updateCustomerDesignApprovalNotificationSettings/);
+    expect(settingsSrc).toMatch(/crmProgressNotificationSettings/);
+    expect(settingsSrc).toMatch(/notifications-crm-progress-settings/);
+    const tabMatches = settingsSrc.match(/id:\s*"notifications"/g) || [];
+    expect(tabMatches.length).toBe(1);
   });
 
   test("navAccess registers notifications under existing Settings authorization", () => {

@@ -213,8 +213,9 @@ async def test_write_failure_is_swallowed():
 def test_create_sales_delivery_emits_after_shipment_persist():
     src = inspect.getsource(create_sales_delivery)
     assert "emit_surat_jalan_created_notifications" in src
-    assert src.index('"shipments": shipment_entry') < src.index("emit_surat_jalan_created_notifications")
+    assert src.index("ensure_order_shipment_synced") < src.index("emit_surat_jalan_created_notifications")
     assert src.index("emit_surat_jalan_created_notifications") < src.index("return delivery_doc")
+    assert "emit_crm_surat_jalan_created_to_creator" in inspect.getsource(notif.emit_surat_jalan_created_notifications)
 
 
 def test_notification_service_has_no_schedule_table_status_helpers():

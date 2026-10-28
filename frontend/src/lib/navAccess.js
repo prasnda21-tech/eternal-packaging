@@ -29,6 +29,7 @@ export const NAV_KEYS = {
   sales: "nav.sales",
   salesCustomers: "nav.sales.customers",
   productRequests: "nav.sales.product_requests",
+  praPo: "nav.sales.pra_po",
   salesOrder: "nav.sales.sales_order",
   salesDeliveryOrder: "nav.sales.delivery_order",
   salesInvoice: "nav.sales.sales_invoice",
@@ -122,6 +123,7 @@ export const NAV_MENU_FALLBACK = [
   { key: NAV_KEYS.sales, label: "Penjualan", parent: null },
   { key: NAV_KEYS.salesCustomers, label: "Data Pelanggan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.productRequests, label: "Permintaan Produk", parent: NAV_KEYS.sales },
+  { key: NAV_KEYS.praPo, label: "Pra PO", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesDeliveryOrder, label: "Pengiriman Pesanan", parent: NAV_KEYS.sales },
   { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", parent: NAV_KEYS.sales },
@@ -267,6 +269,13 @@ export function salesNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "product_request.read_own_draft")
     || canSeeNav(hasPerm, "product_request.read_all")
   );
+  const praPo = parent && (
+    canSeeNav(hasPerm, NAV_KEYS.praPo)
+    || canSeeNav(hasPerm, "pra_po.create")
+    || canSeeNav(hasPerm, "pra_po.view_own")
+    || canSeeNav(hasPerm, "pra_po.view_all")
+    || canSeeNav(hasPerm, "pra_po.verify")
+  );
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
   const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
@@ -286,9 +295,10 @@ export function salesNavVisible(hasPerm) {
   const statusPo = reportsParent && canSeeNav(hasPerm, NAV_KEYS.statusPo);
   const orderPrediction = reportsParent && canSeeNav(hasPerm, NAV_KEYS.orderPrediction);
   return {
-    parent: Boolean(salesCustomers || productRequests || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || crmDailyReport || statusPo || orderPrediction),
+    parent: Boolean(salesCustomers || productRequests || praPo || salesOrder || salesDeliveryOrder || salesInvoice || salesReceipt || importPo || salesActivity || crmDailyReport || statusPo || orderPrediction),
     salesCustomers: Boolean(salesCustomers),
     productRequests: Boolean(productRequests),
+    praPo: Boolean(praPo),
     salesOrder: Boolean(salesOrder),
     salesDeliveryOrder: Boolean(salesDeliveryOrder),
     salesInvoice: Boolean(salesInvoice),
@@ -334,6 +344,7 @@ export function productRequestEntryPath(hasPerm) {
 export const SALES_NAV_ROUTES = {
   [NAV_KEYS.salesCustomers]: "/penjualan/data-pelanggan",
   [NAV_KEYS.productRequests]: PRODUCT_REQUEST_LIST_PATH,
+  [NAV_KEYS.praPo]: "/penjualan/pra-po",
   [NAV_KEYS.salesOrder]: "/penjualan/pesanan-penjualan",
   [NAV_KEYS.salesDeliveryOrder]: "/penjualan/pengiriman-pesanan",
   [NAV_KEYS.salesInvoice]: "/penjualan/faktur-penjualan",
@@ -349,6 +360,7 @@ export const SALES_NAV_ROUTES = {
 const SALES_VIS_FIELD = {
   [NAV_KEYS.salesCustomers]: "salesCustomers",
   [NAV_KEYS.productRequests]: "productRequests",
+  [NAV_KEYS.praPo]: "praPo",
   [NAV_KEYS.salesOrder]: "salesOrder",
   [NAV_KEYS.salesDeliveryOrder]: "salesDeliveryOrder",
   [NAV_KEYS.salesInvoice]: "salesInvoice",
@@ -364,6 +376,7 @@ const SALES_VIS_FIELD = {
 export const SALES_TILE_TONES = {
   [NAV_KEYS.salesCustomers]: "teal",
   [NAV_KEYS.productRequests]: "green",
+  [NAV_KEYS.praPo]: "cyan",
   [NAV_KEYS.salesOrder]: "blue",
   [NAV_KEYS.salesDeliveryOrder]: "amber",
   [NAV_KEYS.salesInvoice]: "purple",
@@ -378,6 +391,7 @@ export const SALES_TILE_TONES = {
 export const SALES_TILE_TESTIDS = {
   [NAV_KEYS.salesCustomers]: "top-nav-sales-customers",
   [NAV_KEYS.productRequests]: "top-nav-product-requests",
+  [NAV_KEYS.praPo]: "top-nav-pra-po",
   [NAV_KEYS.salesOrder]: "top-nav-sales-order",
   [NAV_KEYS.salesDeliveryOrder]: "top-nav-sales-delivery-order",
   [NAV_KEYS.salesInvoice]: "top-nav-sales-invoice",
@@ -1386,7 +1400,9 @@ export function settingsNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "settings.public_catalog.manage")
     || canSeeNav(hasPerm, "permissions.manage");
   const customerApproval = canSeeNav(hasPerm, "customer_approval.view")
-    || canSeeNav(hasPerm, "customer_approval.settings");
+    || canSeeNav(hasPerm, "customer_approval.settings")
+    || canSeeNav(hasPerm, "notifications.settings.view")
+    || canSeeNav(hasPerm, "notifications.settings.manage");
   const deliveryDeadline = canSeeNav(hasPerm, "delivery.deadline.settings")
     || canSeeNav(hasPerm, "delivery.deadline.edit")
     || canSeeNav(hasPerm, "dashboard.production.view");
