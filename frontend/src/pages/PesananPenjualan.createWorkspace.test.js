@@ -616,7 +616,11 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     const css = fs.readFileSync(path.join(__dirname, "pesananPenjualan.css"), "utf8");
     const page = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
     const detail = fs.readFileSync(path.join(__dirname, "PODetail.jsx"), "utf8");
-    expect(page).toMatch(/hasPerm\("sales_order\.create"\) \|\| hasPerm\("po\.edit"\) \|\| user\?\.role === "admin"/);
+    // Create gate uses resolveSalesOrderCanCreate (CRM blocked via isCrmRole; perms preserved).
+    expect(page).toMatch(/resolveSalesOrderCanCreate/);
+    expect(page).toMatch(/hasSalesOrderCreate:\s*hasPerm\("sales_order\.create"\)/);
+    expect(page).toMatch(/hasPoEdit:\s*hasPerm\("po\.edit"\)/);
+    expect(page).toMatch(/trim\(\)\.toLowerCase\(\) === "crm"/);
     expect(css).not.toMatch(/--so-notif-safe:\s*96px/);
     expect(css).toMatch(/\.app-shell:has\(\.so-list-workspace\)[\s\S]*overflow:\s*hidden/);
     expect(css).toMatch(/\.so-list-table-scroll\s*\{[^}]*overflow:\s*auto/);

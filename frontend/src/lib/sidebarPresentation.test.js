@@ -67,6 +67,7 @@ describe("desktop sidebar presentation", () => {
     expect(labels(group(rails, "sales"))).toEqual([
       "Data Pelanggan",
       "Permintaan Produk",
+      "Pra PO",
       "Pesanan Penjualan",
       "Pengiriman Pesanan",
       "Faktur Penjualan",

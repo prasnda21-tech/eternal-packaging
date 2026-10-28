@@ -186,6 +186,7 @@ describe("salesMenuItems", () => {
     expect(NAV_MENU_FALLBACK.filter((m) => m.parent === NAV_KEYS.sales).map((m) => m.label)).toEqual([
       "Data Pelanggan",
       "Permintaan Produk",
+      "Pra PO",
       "Pesanan Penjualan",
       "Pengiriman Pesanan",
       "Faktur Penjualan",
