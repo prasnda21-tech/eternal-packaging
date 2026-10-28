@@ -32,5 +32,15 @@ describe("Pra PO + unified notifications contract", () => {
     expect(pageSrc).toMatch(/pra-po-return-reason/);
     expect(pageSrc).toMatch(/Ajukan Ulang/);
     expect(pageSrc).toMatch(/Alasan pengembalian/);
+    expect(pageSrc).toMatch(/Simpan Draft/);
+  });
+
+  test("Pra PO create mirrors SO pickers without raw master id input", () => {
+    expect(pageSrc).toMatch(/CustomerSearchSelect/);
+    expect(pageSrc).toMatch(/MasterItemSearchSelect/);
+    expect(pageSrc).toMatch(/salesCatalogProducts/);
+    expect(pageSrc).not.toMatch(/placeholder="master_item_id"/);
+    expect(pageSrc).toMatch(/so-create-workspace/);
+    expect(pageSrc).toMatch(/so-list-workspace/);
   });
 });

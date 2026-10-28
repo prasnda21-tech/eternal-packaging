@@ -29,12 +29,27 @@ def register_pra_po_routes(
     async def list_pra_po_endpoint(
         view: Optional[str] = Query(None),
         status: Optional[str] = Query(None),
+        q: Optional[str] = Query(None),
+        page: Optional[int] = Query(None),
+        page_size: Optional[int] = Query(None),
         user=Depends(current_user),
     ):
+        """List Pra PO with optional search + pagination.
+
+        Additive response fields (``total``, ``page``, ``page_size``, ``counts``)
+        preserve the existing ``items`` key for compatibility.
+        """
         perms = await _perms(user)
-        return {
-            "items": await svc.list_pra_pos(get_db(), user, perms, view=view, status=status),
-        }
+        return await svc.list_pra_pos(
+            get_db(),
+            user,
+            perms,
+            view=view,
+            status=status,
+            q=q,
+            page=page,
+            page_size=page_size,
+        )
 
     @api_router.post("/pra-po")
     async def create_pra_po_endpoint(
