@@ -8,3 +8,5 @@ async def ensure_indexes(db) -> None:
     await db[COLLECTION].create_index("id", unique=True)
     await db[COLLECTION].create_index("dedupe_key", unique=True)
     await db[COLLECTION].create_index([("user_id", 1), ("created_at", -1)])
+    await db[COLLECTION].create_index([("user_id", 1), ("module", 1), ("created_at", -1)])
+    await db[COLLECTION].create_index([("user_id", 1), ("read_at", 1)])

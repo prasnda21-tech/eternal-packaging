@@ -243,6 +243,23 @@ export function createSalesOrderLineItem(overrides = {}) {
   };
 }
 
+/** Match backend CRM guard: case/whitespace-insensitive role check. */
+export function isCrmRole(role) {
+  return String(role || "").trim().toLowerCase() === "crm";
+}
+
+/** Direct SO create gate — CRM always blocked; other roles keep existing perm rules. */
+export function resolveSalesOrderCanCreate({
+  role,
+  hasSalesOrderCreate = false,
+  hasPoEdit = false,
+} = {}) {
+  return (
+    !isCrmRole(role)
+    && (Boolean(hasSalesOrderCreate) || Boolean(hasPoEdit) || role === "admin")
+  );
+}
+
 /** Same messages and branches as the previous inline submit validation. */
 /** Create-path: SERVICE + Cetak must pick a valid non-SERVICE induk in this PO. */
 export function validateSalesOrderAddonParents(lineItems) {
@@ -528,7 +545,12 @@ export default function PesananPenjualan() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, hasPerm } = useAuth();
 
-  const canCreate = hasPerm("sales_order.create") || hasPerm("po.edit") || user?.role === "admin";
+  // CRM must use Pra PO → Admin verify; never expose direct SO create even with perm overrides.
+  const canCreate = resolveSalesOrderCanCreate({
+    role: user?.role,
+    hasSalesOrderCreate: hasPerm("sales_order.create"),
+    hasPoEdit: hasPerm("po.edit"),
+  });
   const canDelete = hasPerm("po.delete") || user?.role === "admin";
   const canViewInvoice = hasPerm("sales.invoice.view") || user?.role === "admin";
   const [viewMode, setViewMode] = useState(() =>

@@ -3220,6 +3220,12 @@ async def approve_payment(order_id: str, payload: ApprovalPayload, user=Depends(
     await _persist_order(order)
     await _audit_po(order, "payment.approve" if payload.approved else "payment.approve.revoke", user, before=before,
                     after={"payment_status": order["payment_status"]}, note=payload.note or "")
+    if payload.approved:
+        try:
+            from services.notifications import emit_payment_approved_to_creator
+            await emit_payment_approved_to_creator(db, order=order)
+        except Exception:
+            logging.getLogger(__name__).exception("payment approved notification failed")
     return {"order": order}
 
 
@@ -3285,6 +3291,11 @@ async def bypass_payment(order_id: str, payload: BypassPayload, user=Depends(cur
     await _stamp_delivery_sla_on_write(order)
     await _persist_order(order)
     await _audit_po(order, "payment.bypass", user, after={"payment_bypassed": True}, note=reason)
+    try:
+        from services.notifications import emit_payment_bypassed_to_creator
+        await emit_payment_bypassed_to_creator(db, order=order)
+    except Exception:
+        logging.getLogger(__name__).exception("payment bypassed notification failed")
     return {"order": order}
 
 
@@ -10453,6 +10464,8 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
     `source` is one of: 'accurate_live', 'accurate_mock', 'file'.
     Never overwrites existing orders — caller must check duplicates first.
     """
+    from services.sales_order_create_guard import reject_crm_direct_sales_order_create
+    reject_crm_direct_sales_order_create(user)
     now = now_iso()
     new = {
         "id": str(uuid.uuid4()),
@@ -11616,6 +11629,10 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     Generates a normal PO document with stage 0 (Order Masuk), fully compatible with
     imported POs and downstream production workflows.
     """
+    # CRM must use Pra PO → Admin verify. Do not allow direct operational SO create
+    # even if permission overrides grant sales_order.create / import rights.
+    from services.sales_order_create_guard import reject_crm_direct_sales_order_create
+    reject_crm_direct_sales_order_create(user)
     await _require_any_perm(user, "sales_order.create", "po.edit", "po.import.view")
     
     cust = (payload.customer or "").strip()
@@ -11814,6 +11831,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         "sales": sales_label,
         "sales_master_id": sales_master_id,
         "created_by_user": (payload.created_by_user or "").strip() or user.get("name") or user.get("email"),
+        "created_by_user_id": str(user.get("id") or user.get("user_id") or user.get("sub") or "").strip() or None,
         "imported_by": user.get("email"),
         "imported_by_name": user.get("name"),
         "imported_at": now,
@@ -17101,6 +17119,16 @@ register_notification_routes(
     get_db=lambda: db,
     current_user=current_user,
     require_perm=_require_perm,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+from services.pra_po_http import register_pra_po_routes
+register_pra_po_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    user_permissions=user_permissions,
+    require_any_perm=_require_any_perm,
     Depends=Depends,
 )
 from services.urgent_requests_http import register_urgent_request_routes
@@ -19102,6 +19130,8 @@ async def seed():
         logger.warning("Stock Engine V2 settings ensure failed: %s", e)
     from services.notification_indexes import ensure_indexes as ensure_notification_indexes
     await ensure_notification_indexes(db)
+    from services.pra_po import ensure_indexes as ensure_pra_po_indexes
+    await ensure_pra_po_indexes(db)
     # Object storage init (idempotent) — do not crash the app if unavailable
     try:
         obj_storage.init_storage()

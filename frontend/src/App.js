@@ -71,6 +71,7 @@ const ProductionSchedule = lazy(() => import("./pages/ProductionSchedule"));
 const SentralisasiCat = lazy(() => import("./pages/SentralisasiCat"));
 const SuratJalan = lazy(() => import("./pages/SuratJalan"));
 const PesananPenjualan = lazy(() => import("./pages/PesananPenjualan"));
+const PraPoPage = lazy(() => import("./pages/PraPo"));
 const MasterBarangJasa = lazy(() => import("./pages/MasterBarangJasa"));
 const ProductDetail = lazy(() => import("./pages/ProductDetail"));
 const CabangGudang = lazy(() => import("./pages/CabangGudang"));
@@ -372,6 +373,8 @@ export default function App() {
             <Route path="/penjualan/permintaan-produk/baru" element={<PermGate anyOf={["product_request.create"]}><ProductRequestForm /></PermGate>} />
             <Route path="/penjualan/permintaan-produk/:id" element={<ProductRequestForm />} />
             <Route path="/penjualan/permintaan-produk" element={<ProductRequestList />} />
+            <Route path="/penjualan/pra-po/:id" element={<PermGate anyOf={[NAV_KEYS.praPo, "pra_po.create", "pra_po.view_own", "pra_po.view_all", "pra_po.verify"]}><PraPoPage /></PermGate>} />
+            <Route path="/penjualan/pra-po" element={<PermGate anyOf={[NAV_KEYS.praPo, "pra_po.create", "pra_po.view_own", "pra_po.view_all", "pra_po.verify"]}><PraPoPage /></PermGate>} />
             <Route path="/penjualan/pesanan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesOrder, NAV_KEYS.sales, "sales_order.view", "sales_order.create", "po.view"]}><PesananPenjualan /></PermGate>} />
             <Route path="/penjualan/pengiriman-pesanan" element={<PermGate anyOf={[NAV_KEYS.salesDeliveryOrder, NAV_KEYS.sales, "sales.delivery.view", "sales.delivery.create", "sales_order.view", "po.view"]}><PengirimanPesanan /></PermGate>} />
             <Route path="/penjualan/faktur-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesInvoice, NAV_KEYS.sales, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "po.view"]}><FakturPenjualan /></PermGate>} />

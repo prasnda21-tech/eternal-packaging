@@ -512,10 +512,13 @@ async def test_list_scoped_and_get_readonly():
     await notif.emit_customer_design_approval_notifications(
         db, order=_order(), approval=_approval(id="ca-list"), decision="approved",
     )
-    mine = await notif.list_notifications_for_user(db, "u-designer-1")
+    mine = (await notif.list_notifications_for_user(db, "u-designer-1"))["notifications"]
     assert mine and all(n["is_read"] is False for n in mine)
     assert all(d.get("read_at") is None for d in db.notifications.docs if d["user_id"] == "u-designer-1")
-    other_ids = {n["id"] for n in await notif.list_notifications_for_user(db, "u-crm-1")}
+    other_ids = {
+        n["id"]
+        for n in (await notif.list_notifications_for_user(db, "u-crm-1"))["notifications"]
+    }
     assert {n["id"] for n in mine}.isdisjoint(other_ids)
 
 
@@ -547,6 +550,78 @@ def test_customer_approval_hook_imports_emit_after_persist():
     import customer_approval as ca
 
     src = inspect.getsource(ca)
-    assert "emit_customer_design_approval_notifications" in src
+    assert "emit_customer_design_decision_notifications" in src
     assert "await persist_order(order)" in src
-    assert src.index("await persist_order(order)") < src.index("emit_customer_design_approval_notifications")
+    assert src.index("await persist_order(order)") < src.index("emit_customer_design_decision_notifications")
+
+
+@pytest.mark.anyio
+async def test_cda_decision_dedupes_creator_in_crm_role_blast():
+    """CRM creator in notify_crm role list gets one progress row, not role-blast + progress."""
+    db = FakeDb(users=_users())
+    order = {**_order(), "created_by_user_id": "u-crm-1"}
+    result = await notif.emit_customer_design_decision_notifications(
+        db, order=order, approval=_approval(id="ca-dedupe-role"), decision="approved",
+    )
+    assert result["creator_excluded_from_role_blast"] is True
+    assert result["progress_notification"]["user_id"] == "u-crm-1"
+    assert result["progress_notification"]["event_type"] == notif.EVENT_CRM_CUSTOMER_DESIGN_APPROVED
+    role_uids = [d["user_id"] for d in result["role_notifications"]]
+    assert "u-crm-1" not in role_uids
+    assert "u-designer-1" in role_uids and "u-designer-2" in role_uids
+    creator_rows = [d for d in db.notifications.docs if d["user_id"] == "u-crm-1"]
+    assert len(creator_rows) == 1
+    assert creator_rows[0]["event_type"] == notif.EVENT_CRM_CUSTOMER_DESIGN_APPROVED
+
+
+@pytest.mark.anyio
+async def test_cda_decision_dedupes_creator_as_additional_recipient():
+    db = FakeDb(
+        users=_users(),
+        settings=[{
+            "key": notif.SETTINGS_KEY,
+            "enabled": True,
+            "notify_designer": True,
+            "notify_crm": False,
+            "additional_recipient_user_ids": ["u-crm-1"],
+        }],
+    )
+    order = {**_order(), "created_by_user_id": "u-crm-1"}
+    result = await notif.emit_customer_design_decision_notifications(
+        db, order=order, approval=_approval(id="ca-dedupe-add"), decision="approved",
+    )
+    assert result["creator_excluded_from_role_blast"] is True
+    role_uids = {d["user_id"] for d in result["role_notifications"]}
+    assert "u-crm-1" not in role_uids
+    assert "u-designer-1" in role_uids
+    creator_rows = [d for d in db.notifications.docs if d["user_id"] == "u-crm-1"]
+    assert len(creator_rows) == 1
+    assert creator_rows[0]["event_type"] == notif.EVENT_CRM_CUSTOMER_DESIGN_APPROVED
+
+
+@pytest.mark.anyio
+async def test_cda_decision_other_crm_still_receives_role_blast():
+    users = _users() + [{"id": "u-crm-2", "role": "crm", "status": "active"}]
+    db = FakeDb(users=users)
+    order = {**_order(), "created_by_user_id": "u-crm-1"}
+    result = await notif.emit_customer_design_decision_notifications(
+        db, order=order, approval=_approval(id="ca-other-crm"), decision="approved",
+    )
+    role_uids = {d["user_id"] for d in result["role_notifications"]}
+    assert "u-crm-2" in role_uids
+    assert "u-crm-1" not in role_uids
+    assert "u-designer-1" in role_uids
+
+
+@pytest.mark.anyio
+async def test_cda_decision_rejected_unchanged_no_progress_exclude():
+    db = FakeDb(users=_users())
+    order = {**_order(), "created_by_user_id": "u-crm-1"}
+    result = await notif.emit_customer_design_decision_notifications(
+        db, order=order, approval=_approval(id="ca-rej"), decision="rejected",
+    )
+    assert result["creator_excluded_from_role_blast"] is False
+    assert result["progress_notification"] is None
+    role_uids = {d["user_id"] for d in result["role_notifications"]}
+    assert "u-crm-1" in role_uids
+    assert "u-designer-1" in role_uids

@@ -78,6 +78,73 @@ describe("Pesanan Penjualan UI & Data Invariants", () => {
     expect(src).toMatch(/Quantity harus angka lebih besar dari 0/);
   });
 
+  test("CRM role cannot open direct Sales Order create UI", () => {
+    expect(src).toMatch(/resolveSalesOrderCanCreate/);
+    expect(src).toMatch(/isCrmRole/);
+    expect(src).toMatch(/trim\(\)\.toLowerCase\(\) === "crm"/);
+    expect(src).toMatch(/sales_order\.create/);
+  });
+});
+
+describe("resolveSalesOrderCanCreate CRM role normalization", () => {
+  // Lazy require after jest mocks so the module under test loads cleanly.
+  const {
+    isCrmRole,
+    resolveSalesOrderCanCreate,
+  } = require("./PesananPenjualan");
+
+  test.each(["crm", "CRM", "Crm", " crm ", "\tCRM\n"])(
+    "role %j blocks create SO button",
+    (role) => {
+      expect(isCrmRole(role)).toBe(true);
+      expect(resolveSalesOrderCanCreate({
+        role,
+        hasSalesOrderCreate: true,
+        hasPoEdit: true,
+      })).toBe(false);
+    },
+  );
+
+  test("Admin with legitimate permission keeps create available", () => {
+    expect(resolveSalesOrderCanCreate({
+      role: "admin",
+      hasSalesOrderCreate: false,
+      hasPoEdit: false,
+    })).toBe(true);
+    expect(resolveSalesOrderCanCreate({
+      role: "admin",
+      hasSalesOrderCreate: true,
+      hasPoEdit: false,
+    })).toBe(true);
+  });
+
+  test("non-CRM role without create permission cannot create SO", () => {
+    expect(resolveSalesOrderCanCreate({
+      role: "operator",
+      hasSalesOrderCreate: false,
+      hasPoEdit: false,
+    })).toBe(false);
+    expect(resolveSalesOrderCanCreate({
+      role: "designer",
+      hasSalesOrderCreate: false,
+      hasPoEdit: false,
+    })).toBe(false);
+  });
+
+  test("non-CRM role with sales_order.create can create SO", () => {
+    expect(resolveSalesOrderCanCreate({
+      role: "admin_ops",
+      hasSalesOrderCreate: true,
+      hasPoEdit: false,
+    })).toBe(true);
+  });
+});
+
+// Re-open outer describe for remaining source-contract tests that follow.
+describe("Pesanan Penjualan UI & Data Invariants (continued)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "PesananPenjualan.jsx"), "utf8");
+  const appSrc = fs.readFileSync(path.join(__dirname, "../App.js"), "utf8");
+
   test("loads options on list for filters and seeds PO only in create; aborts duplicate list fetches", () => {
     expect(src).toMatch(/if \(viewMode !== "list"\) return undefined;\s*loadOptions\(\);/);
     expect(src).toMatch(/if \(viewMode === "create"\) \{\s*loadOptions\(\{ applySuggestedPo: true \}\);/);

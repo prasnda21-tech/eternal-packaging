@@ -100,7 +100,8 @@ async def test_edge_50_newer_read_plus_1_old_unread_old_unread_survives_limit_50
     docs.append(_row("old-unread", created_at="2026-09-11T10:00:00Z", read_at=None))
     db = FakeDb(docs)
 
-    rows = await notif.list_notifications_for_user(db, "u-1", limit=50)
+    result = await notif.list_notifications_for_user(db, "u-1", limit=50)
+    rows = result["notifications"]
     assert len(rows) == 50
     assert rows[0]["id"] == "old-unread"
     assert rows[0]["is_read"] is False
@@ -120,7 +121,7 @@ async def test_a_two_unread_two_read_unread_first():
         _row("B", created_at="2026-09-11T11:00:00Z", read_at=None),
         _row("D", created_at="2026-09-11T10:00:00Z", read_at="y"),
     ]
-    rows = await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50)
+    rows = (await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50))["notifications"]
     assert _ids(rows) == ["A", "B", "C", "D"]
 
 
@@ -130,7 +131,7 @@ async def test_b_unread_created_at_desc():
         _row("old", created_at="2026-09-11T11:00:00Z", read_at=None),
         _row("new", created_at="2026-09-11T12:00:00Z", read_at=None),
     ]
-    rows = await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50)
+    rows = (await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50))["notifications"]
     assert _ids(rows) == ["new", "old"]
 
 
@@ -140,7 +141,7 @@ async def test_c_read_created_at_desc():
         _row("old", created_at="2026-09-11T10:00:00Z", read_at="x"),
         _row("new", created_at="2026-09-11T12:30:00Z", read_at="y"),
     ]
-    rows = await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50)
+    rows = (await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50))["notifications"]
     assert _ids(rows) == ["new", "old"]
 
 
@@ -151,7 +152,7 @@ async def test_d_missing_read_at_is_unread():
         _row("missing", created_at="2026-09-11T11:00:00Z", read_at=Ellipsis),
         _row("empty", created_at="2026-09-11T10:30:00Z", read_at=""),
     ]
-    rows = await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50)
+    rows = (await notif.list_notifications_for_user(FakeDb(docs), "u-1", limit=50))["notifications"]
     assert _ids(rows) == ["missing", "empty", "read-newer"]
     assert rows[0]["is_read"] is False
     assert rows[1]["is_read"] is False
@@ -163,4 +164,5 @@ def test_e_default_and_http_limit_remain_50():
     assert "limit: int = 50" in src
     http_src = inspect.getsource(register_notification_routes)
     assert "limit: int = Query(50, ge=1, le=100)" in http_src
-    assert "list_notifications_for_user(db, uid, limit=limit)" in http_src
+    assert "list_notifications_for_user(" in http_src
+    assert "unread-counts" in http_src

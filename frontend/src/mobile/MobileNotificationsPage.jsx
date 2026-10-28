@@ -18,11 +18,15 @@ export default function MobileNotificationsPage() {
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
 
+  const [moduleFilter, setModuleFilter] = useState("");
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await api.listNotifications({ limit: 50 });
+      const params = { limit: 50 };
+      if (moduleFilter) params.module = moduleFilter;
+      const res = await api.listNotifications(params);
       setItems(sortNotificationsUnreadFirst(Array.isArray(res?.notifications) ? res.notifications : []));
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || "Gagal memuat notifikasi");
@@ -30,7 +34,7 @@ export default function MobileNotificationsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [moduleFilter]);
 
   useEffect(() => {
     load();
@@ -68,6 +72,23 @@ export default function MobileNotificationsPage() {
     <>
       <MobileTopBar kicker="ETERNAL PACKAGING" title="Notifikasi" />
       <main className="mop-content" data-testid="mobile-notifications-page">
+        <div style={{ padding: "8px 12px" }}>
+          <select
+            aria-label="Filter modul"
+            data-testid="mobile-notif-module-filter"
+            value={moduleFilter}
+            onChange={(e) => setModuleFilter(e.target.value)}
+          >
+            <option value="">Semua modul</option>
+            <option value="pra_po">Pra PO</option>
+            <option value="sales_order">Pesanan Penjualan</option>
+            <option value="sales_invoice">Faktur</option>
+            <option value="customer_design_approval">Design Customer</option>
+            <option value="payment_approval">Pembayaran</option>
+            <option value="sales_delivery">Pengiriman</option>
+            <option value="operational">Operasional</option>
+          </select>
+        </div>
         {loading && (
           <p className="mop-empty" data-testid="mobile-notifications-loading">Memuat notifikasi...</p>
         )}
