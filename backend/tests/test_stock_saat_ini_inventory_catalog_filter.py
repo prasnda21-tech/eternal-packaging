@@ -197,20 +197,26 @@ async def test_r2_catalog_and_summary_follow_inventory_filter(db):
     assert row["qty_siap_jual_status"] == "READY"
     assert row["baseline_status"] == "reconciled"
 
-    # Missing balance stays non-zero-forced: second INVENTORY without opening.
+    # G1: INVENTORY without opening/ledger/SO → proven operational 0 (not Belum saldo).
     await _seed_master(db, "INV-MISS", item_type="INVENTORY")
     catalog2 = await list_physical_stock_catalog(db, branch_id=branch["id"])
     miss = next(r for r in catalog2["items"] if r["item_code"] == "INV-MISS")
     whb = miss["warehouse_balances"][0]
     assert whb["balance_present"] is False
-    assert whb["physical_qty"] is None
-    assert miss["qty_tersedia_valid"] is False
+    assert whb["physical_qty"] == 0
+    assert whb.get("no_relevant_activity") is True
+    assert miss["no_relevant_activity"] is True
+    assert miss["physical_qty"] == 0
+    assert miss["stock"] == 0
+    assert miss["stock_dapat_dijual"] == 0
+    assert miss["qty_tersedia_valid"] is True
+    assert miss["baseline_status"] == "reconciled"
 
     summary = await summarize_physical_stock_status(db, branch_id=branch["id"])
     assert summary["items_total"] == 2
     assert summary["items_scanned"] == 2
-    assert summary["counts"]["items_physical_ok"] == 1
-    assert summary["counts"]["items_physical_missing"] == 1
+    assert summary["counts"]["items_physical_ok"] == 2
+    assert summary["counts"]["items_physical_missing"] == 0
 
 
 async def test_standalone_catalog_inventory_filter(db):

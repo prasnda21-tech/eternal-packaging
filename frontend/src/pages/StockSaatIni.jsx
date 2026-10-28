@@ -725,7 +725,9 @@ export default function StockSaatIni() {
             name: wb.warehouse_name,
             branch_id: effectiveBranchId,
           }, branches);
-          const qty = wb.balance_present ? wb.physical_qty : "";
+          const qty = (
+            wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity
+          ) ? (wb.physical_qty ?? 0) : "";
           const detail = [
             row.item_code,
             row.item_name,
@@ -739,7 +741,11 @@ export default function StockSaatIni() {
             "",
             "",
             "",
-            wb.baseline_status || (wb.balance_present ? "" : "unreconciled"),
+            wb.baseline_status || (
+              (wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity)
+                ? ""
+                : "unreconciled"
+            ),
             [
               wb.updated_at || "",
               wb.updated_at
@@ -829,6 +835,9 @@ export default function StockSaatIni() {
   };
 
   const whStatusLabel = (wb) => {
+    if (wb.operational_qty_proven || wb.no_relevant_activity) {
+      return { text: "Valid", tone: "valid" };
+    }
     if (!wb.balance_present) return { text: "Belum saldo", tone: "missing" };
     if (wb.saldo_buku_negatif) return { text: "Defisit", tone: "deficit" };
     if (wb.baseline_status === "unreconciled") return { text: "Belum valid", tone: "incomplete" };
@@ -1131,7 +1140,7 @@ export default function StockSaatIni() {
               <p className="stock-legend-detail-title">Penjelasan status stok</p>
               <div className="stock-legend-detail-list">
                 <p><span className="stock-qty-chip">1.500</span> Stok fisik tersedia dan valid.</p>
-                <p><span className="stock-status-badge stock-status-badge--missing">Belum saldo</span> Belum ada saldo fisik untuk gudang ini.</p>
+                <p><span className="stock-status-badge stock-status-badge--missing">Belum saldo</span> Ada history/aktivitas tetapi saldo gudang belum ada — bukan stok 0 terbukti.</p>
                 <p><span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span> Bukti transaksi aktivitas (cetak/kirim) belum cukup.</p>
                 <p><span className="stock-status-badge stock-status-badge--incomplete">Belum lengkap</span> Ada satu atau lebih gudang yang belum valid.</p>
                 <p><span className="stock-status-badge stock-status-badge--indicative">Indikatif</span> Angka dihitung, tetapi baseline stok belum lengkap atau bukti WIP/rusak/polos belum tercakup — bukan status terverifikasi.</p>
@@ -1158,7 +1167,7 @@ export default function StockSaatIni() {
               )}
               {warehouseActive && (
                 <p className="muted small" data-testid="stock-book-vs-count-note">
-                  Kolom Excel lingkup cabang (PO / tercetak / kirim). Saldo gudang belum ada = Belum saldo pada Stock; bukti aktivitas kurang = Belum terverifikasi.
+                  Kolom Excel lingkup cabang (PO / tercetak / kirim). Tanpa aktivitas relevan = Stock 0; ada history tanpa saldo = Belum saldo; bukti aktivitas kurang = Belum terverifikasi.
                 </p>
               )}
             </div>

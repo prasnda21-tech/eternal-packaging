@@ -3822,17 +3822,84 @@ def _legacy_attributed_delivery_rows(
     return out
 
 
+def master_has_relevant_stock_activity(
+    *,
+    has_balance: bool,
+    has_ledger: bool,
+    ordered_qty: Any = 0,
+    open_commit: Any = 0,
+    delivered_qty: Any = 0,
+    demand: Optional[dict] = None,
+) -> bool:
+    """True when stock history/signals exist — missing balance alone is not enough.
+
+    G1 Owner rule: proven no relevant activity → operational numeric 0 (read model
+    only). Any balance, ledger, SO demand/commitment/delivery, or print/operator
+    signal keeps incomplete rows as Belum saldo / UNVERIFIED (never invent zero).
+    """
+    if has_balance or has_ledger:
+        return True
+    if (
+        _qty_num(ordered_qty) > 0
+        or _qty_num(open_commit) > 0
+        or _qty_num(delivered_qty) > 0
+    ):
+        return True
+    d = demand if isinstance(demand, dict) else {}
+    if (
+        d.get("has_print_line")
+        or d.get("operator_evidence_present")
+        or d.get("completion_unproven")
+    ):
+        return True
+    if _qty_num(d.get("completed_qty")) > 0 or _qty_num(d.get("ordered_qty")) > 0:
+        return True
+    return False
+
+
+def apply_proven_no_activity_zero(
+    warehouse_balances: List[dict],
+    *,
+    row_physical_qty: float = 0.0,
+) -> Tuple[List[dict], str]:
+    """Rewrite missing WH slots to operational 0 without writing balance/ledger.
+
+    Returns (warehouse_balances, baseline_status). Does not mutate callers'
+    source balance documents — only the read-model list.
+    """
+    out: List[dict] = []
+    for wb in warehouse_balances:
+        slot = dict(wb)
+        if not bool(slot.get("balance_present")):
+            slot["physical_qty"] = 0.0
+            slot["baseline_status"] = BASELINE_RECONCILED
+            slot["baseline_label"] = None
+            slot["saldo_buku_negatif"] = False
+            slot["no_relevant_activity"] = True
+            # Still no balance document — Adjust/Opname may create one later.
+            slot["balance_present"] = False
+            slot["operational_qty_proven"] = True
+        else:
+            slot["no_relevant_activity"] = True
+            slot["operational_qty_proven"] = True
+        out.append(slot)
+    return out, BASELINE_RECONCILED
+
+
 async def operational_physical_qty_by_item(
     db,
     master_ids: Optional[List[str]] = None,
     *,
     branch_id: Optional[str] = None,
+    include_proven_no_activity_zero: bool = False,
 ) -> Dict[str, float]:
     """Sum R2 physical_qty on operational warehouses for ONE branch. Read only.
 
     Default branch is Yogyakarta (resolve_operational_branch) when branch_id omitted.
     Never aggregates multiple branches. Missing balances are omitted from the map
-    (callers must treat omission as UNAVAILABLE, not proven zero).
+    (callers must treat omission as UNAVAILABLE, not proven zero) unless
+    ``include_proven_no_activity_zero`` is True — then masters with no balance and
+    no ledger in scope are included as numeric 0 (G1 Owner rule; no writes).
     """
     all_branches = await db[BRANCHES_COLLECTION].find(
         {},
@@ -3857,6 +3924,7 @@ async def operational_physical_qty_by_item(
     if not warehouse_ids:
         return {}
     query: Dict[str, Any] = {"warehouse_id": {"$in": warehouse_ids}}
+    ids: Optional[List[str]] = None
     if master_ids is not None:
         ids = [str(mid).strip() for mid in master_ids if str(mid or "").strip()]
         if not ids:
@@ -3872,6 +3940,26 @@ async def operational_physical_qty_by_item(
         if not mid:
             continue
         totals[mid] = _qty_num(totals.get(mid, 0)) + _qty_num(doc.get("physical_qty"))
+    if not include_proven_no_activity_zero or not ids:
+        return totals
+    # G1: masters with neither balance nor ledger → proven operational 0.
+    missing = [mid for mid in ids if mid not in totals]
+    if not missing:
+        return totals
+    ledger_mids = set(
+        str(row.get("master_item_id") or "").strip()
+        for row in await db[LEDGER_COLLECTION].find(
+            {
+                "master_item_id": {"$in": missing},
+                "branch_id": operational["id"],
+            },
+            {"_id": 0, "master_item_id": 1},
+        ).to_list(max(len(missing) * 4, 1))
+        if str(row.get("master_item_id") or "").strip()
+    )
+    for mid in missing:
+        if mid not in ledger_mids:
+            totals[mid] = 0.0
     return totals
 
 
@@ -4149,31 +4237,50 @@ async def list_physical_stock_catalog(
     )
 
     ledger_components: Dict[str, Dict[str, float]] = {}
-    if page_master_ids and operational_id and catalog_mode == "r2":
-        ledger_query: Dict[str, Any] = {
+    masters_with_ledger: set = set()
+    selected_wh = str(warehouse_id or "").strip()
+    if page_master_ids and operational_id:
+        # Activity detection (G1) needs any ledger presence; Excel components still
+        # use the typed subset. Read-only — never inserts.
+        activity_ledger_query: Dict[str, Any] = {
             "master_item_id": {"$in": page_master_ids},
             "branch_id": operational_id,
-            "movement_type": {
-                "$in": [
-                    MOVEMENT_OPENING_BALANCE,
-                    MOVEMENT_PURCHASE_RECEIPT,
-                    MOVEMENT_SALES_DELIVERY,
-                    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
-                    MOVEMENT_MANUAL_ADJUSTMENT,
-                    MOVEMENT_REVERSAL,
-                ]
-            },
         }
-        selected_wh = str(warehouse_id or "").strip()
         if selected_wh:
-            ledger_query["warehouse_id"] = selected_wh
-        ledger_docs = await db[LEDGER_COLLECTION].find(ledger_query, {"_id": 0}).to_list(50000)
-        ledger_components = aggregate_ledger_components(
-            ledger_docs,
-            master_item_ids=page_master_ids,
-            branch_id=operational_id,
-            warehouse_id=selected_wh or None,
-        )
+            activity_ledger_query["warehouse_id"] = selected_wh
+        activity_ledger_docs = await db[LEDGER_COLLECTION].find(
+            activity_ledger_query,
+            {"_id": 0, "master_item_id": 1},
+        ).to_list(50000)
+        masters_with_ledger = {
+            str(doc.get("master_item_id") or "").strip()
+            for doc in activity_ledger_docs
+            if str(doc.get("master_item_id") or "").strip()
+        }
+        if catalog_mode == "r2":
+            ledger_query: Dict[str, Any] = {
+                "master_item_id": {"$in": page_master_ids},
+                "branch_id": operational_id,
+                "movement_type": {
+                    "$in": [
+                        MOVEMENT_OPENING_BALANCE,
+                        MOVEMENT_PURCHASE_RECEIPT,
+                        MOVEMENT_SALES_DELIVERY,
+                        MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+                        MOVEMENT_MANUAL_ADJUSTMENT,
+                        MOVEMENT_REVERSAL,
+                    ]
+                },
+            }
+            if selected_wh:
+                ledger_query["warehouse_id"] = selected_wh
+            ledger_docs = await db[LEDGER_COLLECTION].find(ledger_query, {"_id": 0}).to_list(50000)
+            ledger_components = aggregate_ledger_components(
+                ledger_docs,
+                master_item_ids=page_master_ids,
+                branch_id=operational_id,
+                warehouse_id=selected_wh or None,
+            )
 
     # Proven printed SJ qty only (never estimate from total so_delivered).
     print_delivered, print_delivery_prov = aggregate_proven_print_delivered_qty(
@@ -4296,10 +4403,47 @@ async def list_physical_stock_catalog(
                 "updated_by_name": None,
                 "_last_movement_id": wh_movement_id,
             })
+        # G1: prove no relevant activity before treating missing balances as
+        # operational 0. Activity without balance stays Belum / UNVERIFIED.
+        open_commit = _qty_num(commitment_by_master.get(str(mid) or mid, 0.0))
+        mid_key = str(mid) or mid
+        balance_present_any = any(
+            bool(wb.get("balance_present")) for wb in warehouse_balances
+        )
+        has_ledger = mid_key in masters_with_ledger or str(mid) in masters_with_ledger
+        proven_no_activity = not master_has_relevant_stock_activity(
+            has_balance=balance_present_any,
+            has_ledger=has_ledger,
+            ordered_qty=demand.get("ordered_qty"),
+            open_commit=open_commit,
+            delivered_qty=effective_delivered,
+            demand=demand,
+        )
+        if proven_no_activity and warehouse_balances:
+            warehouse_balances, _ = apply_proven_no_activity_zero(
+                warehouse_balances,
+                row_physical_qty=0.0,
+            )
+            # Recompute availability from proven operational zero stock.
+            buckets = operational_availability(
+                physical_qty=0.0,
+                ordered_qty=demand["ordered_qty"],
+                completed_qty=completed_for_buckets,
+                r2_delivered_qty=effective_delivered,
+            )
+            physical = 0.0
+            scope_baselines = [
+                str(wb.get("baseline_status") or BASELINE_RECONCILED)
+                for wb in warehouse_balances
+            ]
+
         # Branch summary valid only when EVERY operational warehouse in scope has
         # a RECONCILED balance. Selected-warehouse view uses that gudang alone
         # (warehouses list is already filtered to the selection).
-        if not scope_baselines or any(
+        # Proven no-activity zeros are treated as reconciled operational book.
+        if proven_no_activity:
+            baseline_status = BASELINE_RECONCILED
+        elif not scope_baselines or any(
             status != BASELINE_RECONCILED for status in scope_baselines
         ):
             baseline_status = BASELINE_UNRECONCILED
@@ -4357,6 +4501,8 @@ async def list_physical_stock_catalog(
             "saldo_buku_negatif": buckets["physical_qty"] < 0,
             "physical_qty_is_book": True,
             "warehouse_balances": warehouse_balances,
+            "no_relevant_activity": bool(proven_no_activity),
+            "operational_qty_proven": bool(proven_no_activity),
             # Demand/availability is branch-level — never fabricate per-warehouse
             # allocation of orders across gudang.
             "demand_scope": "BRANCH",
@@ -4370,7 +4516,6 @@ async def list_physical_stock_catalog(
             bool(wb.get("balance_present")) for wb in warehouse_balances
         )
         tercetak_slot = resolve_qty_tercetak(demand)
-        mid_key = str(mid) or mid
         print_prov = str(print_delivery_prov.get(mid_key, "") or "")
         delivery_prov = str(delivery_provenance.get(mid_key, "") or "")
         # Print delivery is proven only from confirmed print-line SJ attribution.
@@ -4384,7 +4529,17 @@ async def list_physical_stock_catalog(
         if not print_unproven and not print_proven:
             print_proven = True
             cetak_proven_qty = 0.0
-        open_commit = _qty_num(commitment_by_master.get(str(mid) or mid, 0.0))
+        # G1: proven no history → Stock / Tercetak / Cetak / Polos are verified 0
+        # (not UNVERIFIED / Belum saldo). Never invent HPP or write ledger.
+        if proven_no_activity:
+            tercetak_slot = {
+                "qty": 0.0,
+                "status": "READY",
+                "reason": None,
+            }
+            print_proven = True
+            print_unproven = False
+            cetak_proven_qty = 0.0
         excel = compute_excel_columns(
             saldo_awal=comp.get("saldo_awal", 0),
             pembelian=comp.get("pembelian", 0),
@@ -4403,13 +4558,18 @@ async def list_physical_stock_catalog(
             qty_tercetak_reason=tercetak_slot.get("reason"),
             cetak_delivered_proven=cetak_proven_qty,
             print_delivery_proven=print_proven and not print_unproven,
-            stock_book=buckets["physical_qty"] if balance_present_any else None,
-            incomplete_print=incomplete_print_demand(demand),
+            stock_book=(
+                0.0 if proven_no_activity
+                else (buckets["physical_qty"] if balance_present_any else None)
+            ),
+            incomplete_print=(
+                False if proven_no_activity else incomplete_print_demand(demand)
+            ),
         )
         apply_excel_fields_to_catalog_row(
             row,
             excel,
-            balance_present=balance_present_any or bool(comp),
+            balance_present=balance_present_any or bool(comp) or proven_no_activity,
         )
         row["print_delivery_provenance"] = print_prov or (
             "verified_zero" if print_proven else ""
@@ -4499,15 +4659,19 @@ async def summarize_physical_stock_status(
 
     for row in items:
         wh_rows = list(row.get("warehouse_balances") or [])
-        if wh_rows:
+        # G1: proven no-activity operational zeros are OK — not "Belum saldo".
+        if bool(row.get("no_relevant_activity")) or bool(row.get("operational_qty_proven")):
+            items_physical_ok += 1
+        elif wh_rows:
             slot_missing = 0
             slot_unrec = 0
             for wb in wh_rows:
                 present = bool(wb.get("balance_present"))
                 status = str(wb.get("baseline_status") or "").strip()
-                if not present:
+                proven_slot = bool(wb.get("operational_qty_proven") or wb.get("no_relevant_activity"))
+                if not present and not proven_slot:
                     slot_missing += 1
-                elif status == BASELINE_UNRECONCILED:
+                elif present and status == BASELINE_UNRECONCILED:
                     slot_unrec += 1
             missing_balance_slots += slot_missing
             unreconciled_balance_slots += slot_unrec

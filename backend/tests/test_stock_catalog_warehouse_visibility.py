@@ -67,6 +67,7 @@ async def _seed(db):
         "item_code": "VIS-ADJ-001",
         "item_name": "Visibility Box",
         "unit": "PCS",
+        "item_type": "INVENTORY",
         "is_active": True,
         "accurate_item_id": f"LOCAL-{uuid.uuid4().hex[:6]}",
     }

@@ -202,7 +202,8 @@ async def test_read_model_summary_statuses_and_exact_value(db):
     assert rows["mismatch"]["difference"] == 1
     assert rows["zero"]["stock_fisik"] == 0
     assert rows["zero"]["stock_fisik_status"] == "AVAILABLE"
-    assert rows["zero"]["inventory_value"] is None
+    # G1: proven stock 0 → numeric Rp0 even without usable HPP.
+    assert rows["zero"]["inventory_value"] == 0
     assert rows["zero"]["hpp_status"] == "MISSING_COST"
     assert rows["zero"]["hpp_reason"] is None
     assert rows["zero-valid"]["stock_fisik"] == 0
@@ -213,7 +214,7 @@ async def test_read_model_summary_statuses_and_exact_value(db):
     assert rows["negative"]["stock_fisik"] == 0
     assert rows["negative"]["stock_fisik_status"] == "AVAILABLE"
     assert rows["negative"]["hpp_status"] == "MISSING_COST"
-    assert rows["negative"]["inventory_value"] is None
+    assert rows["negative"]["inventory_value"] == 0
     assert view["physical_stock_source"] == "physical_stock_balances"
     assert view["physical_stock_mode"] == "r2_official"
 
@@ -228,13 +229,25 @@ async def test_read_model_summary_statuses_and_exact_value(db):
 
 @pytest.mark.anyio
 async def test_unavailable_official_stock_is_null_not_zero(db):
-    await _master_stock(db, "legacy-only", "LEG-001", 999, with_official_balance=False)
+    # No balance + no ledger → G1 proven operational 0 (not UNAVAILABLE).
+    await _master_stock(db, "no-history", "NH-001", 999, with_official_balance=False)
+    # No balance but ledger history → incomplete → UNAVAILABLE (not fake 0).
+    await _master_stock(db, "ledger-only", "LED-001", 999, with_official_balance=False)
+    await db.physical_stock_ledger.insert_one({
+        "id": "led-incomplete",
+        "master_item_id": "ledger-only",
+        "branch_id": "branch-ygy",
+        "warehouse_id": "wh-ygy",
+        "movement_type": "PURCHASE_RECEIPT",
+        "qty_delta": 5,
+        "balance_after": 5,
+    })
     await _master_stock(db, "proven-zero", "ZERO-002", 0, with_official_balance=True)
     await db.hpp_cost_layers.insert_one({
         "layer_id": "legacy-hpp",
         "calculation_version": "ver-unavail",
-        "master_item_id": "legacy-only",
-        "item_identity": "a:aid-legacy-only",
+        "master_item_id": "ledger-only",
+        "item_identity": "a:aid-ledger-only",
         "recognized_at": "2026-09-22T10:50:00+00:00",
         "recognized_qty": 1,
         "remaining_qty": 1,
@@ -251,18 +264,21 @@ async def test_unavailable_official_stock_is_null_not_zero(db):
 
     view = await build_inventory_valuation_rows(db)
     rows = {row["master_item_id"]: row for row in view["rows"]}
-    assert rows["legacy-only"]["stock_fisik"] is None
-    assert rows["legacy-only"]["stock_fisik_status"] == "UNAVAILABLE"
-    assert rows["legacy-only"]["inventory_value"] is None
-    assert rows["legacy-only"]["hpp_status"] == "OK"
-    assert rows["legacy-only"]["current_hpp"] == 100
-    assert "belum tersedia" in (rows["legacy-only"]["reconciliation_explanation"] or "").lower()
+    assert rows["no-history"]["stock_fisik"] == 0
+    assert rows["no-history"]["stock_fisik_status"] == "AVAILABLE"
+    assert rows["no-history"]["inventory_value"] == 0
+    assert rows["ledger-only"]["stock_fisik"] is None
+    assert rows["ledger-only"]["stock_fisik_status"] == "UNAVAILABLE"
+    assert rows["ledger-only"]["inventory_value"] is None
+    assert rows["ledger-only"]["hpp_status"] == "OK"
+    assert rows["ledger-only"]["current_hpp"] == 100
+    assert "belum tersedia" in (rows["ledger-only"]["reconciliation_explanation"] or "").lower()
     assert rows["proven-zero"]["stock_fisik"] == 0
     assert rows["proven-zero"]["stock_fisik_status"] == "AVAILABLE"
-    assert rows["proven-zero"]["inventory_value"] is None
+    assert rows["proven-zero"]["inventory_value"] == 0
     assert view["summary"]["items_without_official_stock"] == 1
 
-    payload = export_xlsx([rows["legacy-only"], rows["proven-zero"]])
+    payload = export_xlsx([rows["ledger-only"], rows["proven-zero"]])
     workbook = load_workbook(BytesIO(payload), data_only=True)
     sheet = workbook["Nilai Persediaan"]
     assert sheet["D2"].value is None
@@ -317,7 +333,8 @@ async def test_search_filter_pagination_and_export_are_read_only(db):
     assert sheet["D2"].value == 0
     assert sheet["E2"].value == "Tersedia"
     assert sheet["F2"].value is None
-    assert sheet["G2"].value is None
+    # G1: proven stock 0 → Nilai Persediaan numeric Rp0 (not blank).
+    assert sheet["G2"].value == 0
 
     after_stock = await db.product_stock_state.find({}, {"_id": 0}).sort("_id", 1).to_list(10)
     assert after_stock == before_stock

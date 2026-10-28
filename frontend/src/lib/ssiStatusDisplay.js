@@ -44,12 +44,22 @@ export function normalizeSsiStatus(status, { qty } = {}) {
  * stockPhysicalPrimaryDisplay; fall back to warehouse_balances / baseline_status.
  */
 export function isPhysicalBaselineIncomplete(item, physicalPrimary) {
+  // G1: proven no-activity operational zeros are complete (numeric 0), not Belum.
+  if (item?.operational_qty_proven || item?.no_relevant_activity) return false;
   if (physicalPrimary && physicalPrimary.present === false) return true;
   if (item && String(item.baseline_status || "") === "unreconciled") return true;
   const balances = Array.isArray(item?.warehouse_balances) ? item.warehouse_balances : [];
   if (balances.length > 0) {
-    if (balances.some((wb) => wb?.balance_present === false)) return true;
-    if (balances.some((wb) => String(wb?.baseline_status || "") === "unreconciled")) return true;
+    if (balances.some((wb) => (
+      wb?.balance_present === false
+      && !wb?.operational_qty_proven
+      && !wb?.no_relevant_activity
+    ))) return true;
+    if (balances.some((wb) => (
+      String(wb?.baseline_status || "") === "unreconciled"
+      && !wb?.operational_qty_proven
+      && !wb?.no_relevant_activity
+    ))) return true;
   }
   return false;
 }
