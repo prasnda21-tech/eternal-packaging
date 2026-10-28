@@ -3329,6 +3329,10 @@ def aggregate_operational_orders(
         slot["completed_qty"] = _qty_num(slot["completed_qty"]) + _qty_num(completed)
         if has_print_line:
             slot["has_print_line"] = True
+            # Print ordered demand (parent lines only) — for Qty Polos composition gate.
+            slot["print_ordered_qty"] = (
+                _qty_num(slot.get("print_ordered_qty", 0.0)) + _qty_num(ordered)
+            )
         if operator_evidence:
             slot["operator_evidence_present"] = True
         # Only materialize print_completed_qty when caller records a determination
@@ -3599,6 +3603,223 @@ async def _r2_confirmed_delivery_qty(
         master_id = str(row.get("master_item_id") or "")
         confirmed[master_id] = _qty_num(confirmed.get(master_id, 0)) + abs(delta)
     return confirmed
+
+
+def collect_active_so_commitment_lines(
+    orders: Iterable[dict],
+    accurate_owners: Optional[Dict[str, str]] = None,
+    *,
+    exclude_master_ids: Optional[Iterable[str]] = None,
+) -> List[dict]:
+    """Active SO/line ordered qty for commitment attribution (cancelled excluded)."""
+    owners = accurate_owners or {}
+    excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
+    lines: List[dict] = []
+    for order in orders:
+        if _order_cancelled(order):
+            continue
+        oid = str(order.get("id") or "").strip()
+        if not oid:
+            continue
+        for idx, line in enumerate(order.get("line_items") or []):
+            if not isinstance(line, dict) or _line_item_cancelled(line):
+                continue
+            mid = _line_master_id(line, owners)
+            if not mid or mid in excluded:
+                continue
+            ordered = _qty_num(line.get("quantity"))
+            if ordered <= 0:
+                continue
+            lid = str(line.get("line_id") or line.get("id") or "").strip()
+            entry = {
+                "order_id": oid,
+                "master_item_id": mid,
+                "ordered_qty": ordered,
+                "line_idx": idx,
+            }
+            if lid:
+                entry["line_id"] = lid
+            lines.append(entry)
+    return lines
+
+
+async def _r2_attributed_delivery_rows(
+    db,
+    *,
+    master_ids: List[str],
+    active_order_ids: set,
+    branch_id: Optional[str] = None,
+) -> List[dict]:
+    """Net SALES_DELIVERY rows attributable to active SO identities only.
+
+    Uses metadata.order_id (+ line_id / line_idx). Movements without order_id or
+    whose order is not active are omitted (fail closed — never invent product
+    guess). Ledger documents are not modified.
+    """
+    if not master_ids or not active_order_ids:
+        return []
+    query: Dict[str, Any] = {
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "master_item_id": {"$in": master_ids},
+    }
+    wanted_branch = str(branch_id or "").strip()
+    if wanted_branch:
+        query["branch_id"] = wanted_branch
+    movements = await db[LEDGER_COLLECTION].find(
+        query,
+        {
+            "_id": 0,
+            "id": 1,
+            "master_item_id": 1,
+            "qty_delta": 1,
+            "metadata": 1,
+        },
+    ).to_list(20000)
+    movement_ids = [str(row.get("id") or "") for row in movements if row.get("id")]
+    reversed_ids: set = set()
+    if movement_ids:
+        reversals = await db[LEDGER_COLLECTION].find(
+            {
+                "movement_type": MOVEMENT_REVERSAL,
+                "reference_id": {"$in": movement_ids},
+            },
+            {"_id": 0, "reference_id": 1},
+        ).to_list(20000)
+        reversed_ids = {str(row.get("reference_id") or "") for row in reversals}
+    out: List[dict] = []
+    for row in movements:
+        if str(row.get("id") or "") in reversed_ids:
+            continue
+        delta = _qty_num(row.get("qty_delta"))
+        if delta >= 0:
+            continue
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        oid = str(meta.get("order_id") or "").strip()
+        if not oid or oid not in active_order_ids:
+            continue
+        mid = str(row.get("master_item_id") or "").strip()
+        if not mid:
+            continue
+        entry: Dict[str, Any] = {
+            "order_id": oid,
+            "master_item_id": mid,
+            "qty": abs(delta),
+        }
+        lid = str(meta.get("line_id") or "").strip()
+        if lid:
+            entry["line_id"] = lid
+        raw_idx = meta.get("line_idx")
+        try:
+            if raw_idx is not None and str(raw_idx).strip() != "":
+                entry["line_idx"] = int(raw_idx)
+        except (TypeError, ValueError):
+            pass
+        out.append(entry)
+    return out
+
+
+def _legacy_attributed_delivery_rows(
+    orders: Iterable[dict],
+    accurate_owners: Optional[Dict[str, str]] = None,
+    *,
+    exclude_master_ids: Optional[Iterable[str]] = None,
+) -> List[dict]:
+    """Active-order shipment deliveries for commitment (standalone / Mode B).
+
+    Cancelled orders are skipped. Ambiguous line attribution is omitted.
+    """
+    from services.stock_compatibility_read import (
+        _delivery_line_qty,
+        _line_master_id as _compat_line_master,
+    )
+    from services.r2_go_live import (
+        _confirmation_line_qtys,
+        _delivery_identity_tokens,
+        _proven_shipped_qty_for_shipment,
+        _resolve_proven_line_attribution,
+    )
+
+    owners = accurate_owners or {}
+    excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
+    out: List[dict] = []
+    for order in orders:
+        if _order_cancelled(order):
+            continue
+        oid = str(order.get("id") or "").strip()
+        if not oid:
+            continue
+        order_lines = list(order.get("line_items") or [])
+        if not order_lines:
+            continue
+        seen_identities: set = set()
+        for sh in order.get("shipments") or []:
+            if not isinstance(sh, dict):
+                continue
+            st = str(sh.get("status") or sh.get("delivery_status") or "").strip().lower()
+            if st in ("cancelled", "dibatalkan", "void"):
+                continue
+            proven = _proven_shipped_qty_for_shipment(order, sh)
+            if proven <= 0:
+                continue
+            tokens = _delivery_identity_tokens(sh)
+            if tokens and any(t in seen_identities for t in tokens):
+                continue
+            for t in tokens:
+                seen_identities.add(t)
+            confirmation_lines = _confirmation_line_qtys(
+                order, sh, order_line_count=len(order_lines),
+            )
+            shipment_lines: Dict[int, float] = {}
+            if not confirmation_lines:
+                line_rows = sh.get("lines") if isinstance(sh.get("lines"), list) else []
+                unresolved = False
+                for ln in line_rows:
+                    if not isinstance(ln, dict):
+                        continue
+                    qty = _delivery_line_qty(ln)
+                    if qty <= 0:
+                        continue
+                    try:
+                        idx = int(ln.get("line_idx"))
+                    except (TypeError, ValueError):
+                        unresolved = True
+                        continue
+                    if idx < 0 or idx >= len(order_lines):
+                        unresolved = True
+                        continue
+                    shipment_lines[idx] = float(shipment_lines.get(idx, 0.0)) + qty
+                if unresolved and len(order_lines) > 1:
+                    continue
+            attributed, resolve_issues = _resolve_proven_line_attribution(
+                order_id=oid,
+                identity=(tokens[0] if tokens else "(missing-id)"),
+                proven=proven,
+                order_line_count=len(order_lines),
+                confirmation_lines=confirmation_lines,
+                shipment_lines=shipment_lines,
+            )
+            if resolve_issues or not attributed:
+                continue
+            for idx, qty in attributed.items():
+                if idx < 0 or idx >= len(order_lines) or qty <= 0:
+                    continue
+                line = order_lines[idx]
+                if not isinstance(line, dict) or _line_item_cancelled(line):
+                    continue
+                mid = _line_master_id(line, owners) or _compat_line_master(line, owners)
+                if not mid or mid in excluded:
+                    continue
+                lid = str(line.get("line_id") or line.get("id") or "").strip()
+                entry: Dict[str, Any] = {
+                    "order_id": oid,
+                    "master_item_id": mid,
+                    "qty": float(qty),
+                    "line_idx": int(idx),
+                }
+                if lid:
+                    entry["line_id"] = lid
+                out.append(entry)
+    return out
 
 
 async def operational_physical_qty_by_item(
@@ -3918,10 +4139,12 @@ async def list_physical_stock_catalog(
     # Owner Excel SSI components (Saldo Awal / Pembelian / delivered) from R2 ledger.
     # Read-only aggregation — no dual stock mutation. Scoped to the page only.
     from services.stock_saat_ini_excel import (
+        aggregate_active_so_commitment,
         aggregate_ledger_components,
         aggregate_proven_print_delivered_qty,
         apply_excel_fields_to_catalog_row,
         compute_excel_columns,
+        incomplete_print_demand,
         resolve_qty_tercetak,
     )
 
@@ -3955,6 +4178,32 @@ async def list_physical_stock_catalog(
     # Proven printed SJ qty only (never estimate from total so_delivered).
     print_delivered, print_delivery_prov = aggregate_proven_print_delivered_qty(
         orders, owners, process_master_ids=service_master_ids,
+    )
+
+    # Stock Dapat Dijual commitment: per active SO/line, never let cancelled or
+    # foreign-SO delivery reduce another SO. Ledger history stays untouched.
+    active_commit_lines = collect_active_so_commitment_lines(
+        orders, owners, exclude_master_ids=service_master_ids,
+    )
+    active_order_ids = {
+        str(row.get("order_id") or "").strip()
+        for row in active_commit_lines
+        if str(row.get("order_id") or "").strip()
+    }
+    if catalog_mode == "r2":
+        attributed_deliveries = await _r2_attributed_delivery_rows(
+            db,
+            master_ids=page_master_ids,
+            active_order_ids=active_order_ids,
+            branch_id=operational_id,
+        )
+    else:
+        attributed_deliveries = _legacy_attributed_delivery_rows(
+            orders, owners, exclude_master_ids=service_master_ids,
+        )
+    commitment_by_master = aggregate_active_so_commitment(
+        active_lines=active_commit_lines,
+        attributed_deliveries=attributed_deliveries,
     )
 
     rows = []
@@ -4135,19 +4384,27 @@ async def list_physical_stock_catalog(
         if not print_unproven and not print_proven:
             print_proven = True
             cetak_proven_qty = 0.0
+        open_commit = _qty_num(commitment_by_master.get(str(mid) or mid, 0.0))
         excel = compute_excel_columns(
             saldo_awal=comp.get("saldo_awal", 0),
             pembelian=comp.get("pembelian", 0),
             adjustment_net=comp.get("adjustment_net", 0),
             delivered_total=effective_delivered,
             po_ordered=demand["ordered_qty"],
-            so_delivered=effective_delivered,
+            # Historical product delivery retained for transparency; commitment
+            # uses active SO/line attribution (open_so_commitment).
+            so_delivered=max(
+                0.0,
+                _qty_num(demand["ordered_qty"]) - open_commit,
+            ),
+            open_so_commitment=open_commit,
             qty_tercetak=tercetak_slot["qty"],
             qty_tercetak_status=tercetak_slot["status"],
             qty_tercetak_reason=tercetak_slot.get("reason"),
             cetak_delivered_proven=cetak_proven_qty,
             print_delivery_proven=print_proven and not print_unproven,
             stock_book=buckets["physical_qty"] if balance_present_any else None,
+            incomplete_print=incomplete_print_demand(demand),
         )
         apply_excel_fields_to_catalog_row(
             row,
