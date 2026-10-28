@@ -22,11 +22,18 @@ os.environ.setdefault("DB_NAME", "eternal_packaging_test")
 os.environ.setdefault("JWT_SECRET", "test-secret-key-12345678901234567890")
 os.environ.setdefault("CORS_ORIGINS", "*")
 
-from services.delivery_history import append_confirmation
+from services.delivery_history import (
+    append_confirmation,
+    resolve_confirmation_line_identity,
+    validate_shipment_line_identities_for_confirmation,
+)
 from services.order_line_addon import (
     evaluate_process_group,
+    parent_dual_key_conflict,
     resolve_parent_idx,
     sync_parent_line_relations,
+    validate_lines_parent_graph,
+    validate_parent_relation,
     validate_service_print_requires_parent,
 )
 from services.physical_stock import aggregate_operational_orders
@@ -104,7 +111,8 @@ def test_sync_parent_fills_idx_from_id_and_id_from_idx():
     assert lines[2]["parent_line_idx"] == 0
 
 
-def test_sync_corrects_stale_idx_when_id_resolves():
+def test_dual_parent_keys_conflict_is_rejected_not_silently_preferred():
+    """parent_line_id and parent_line_idx naming different induk → reject."""
     lines = [
         {"line_id": "ln-a", "item_type": "INVENTORY", "quantity": 100},
         {"line_id": "ln-b", "item_type": "INVENTORY", "quantity": 100},
@@ -112,15 +120,23 @@ def test_sync_corrects_stale_idx_when_id_resolves():
             "line_id": "ln-s",
             "item_type": "SERVICE",
             "parent_line_id": "ln-b",
-            "parent_line_idx": 0,  # stale — should follow id → 1
+            "parent_line_idx": 0,  # disagrees with id → ln-b (idx 1)
             "quantity": 100,
             "production_process": "print",
         },
     ]
-    sync_parent_line_relations(lines)
-    assert resolve_parent_idx(lines[2], lines) == 1
-    assert lines[2]["parent_line_idx"] == 1
-    assert lines[2]["parent_line_id"] == "ln-b"
+    conflict = parent_dual_key_conflict(lines[2], lines)
+    assert conflict is not None
+    assert "berbeda" in conflict.lower()
+    assert validate_parent_relation(lines[2], lines, idx=2) is not None
+    assert validate_lines_parent_graph(lines) is not None
+    before = dict(lines[2])
+    with pytest.raises(ValueError) as caught:
+        sync_parent_line_relations(lines)
+    assert "berbeda" in str(caught.value).lower()
+    # No silent rewrite of either key
+    assert lines[2]["parent_line_id"] == before["parent_line_id"] == "ln-b"
+    assert lines[2]["parent_line_idx"] == before["parent_line_idx"] == 0
 
 
 def test_sync_never_invents_parent_by_qty_similarity():
@@ -161,21 +177,22 @@ async def test_price_remap_persists_parent_line_idx_for_warna23():
 
 
 @pytest.mark.anyio
-async def test_price_remap_fixes_stale_client_parent_line_idx():
-    priced, _, _ = await _price([
-        _inv("tmp-a", mid="m-a", name="Induk A"),
-        _inv("tmp-b", mid="m-b", name="Induk B"),
-        _svc(
-            "tmp-s",
-            "m-s",
-            parent_line_id="tmp-b",
-            parent_line_idx=0,  # client stale idx for A
-            name="Warna B",
-        ),
-    ])
-    assert priced[2]["parent_line_id"] == priced[1]["line_id"]
-    assert priced[2]["parent_line_idx"] == 1
-    assert resolve_parent_idx(priced[2], priced) == 1
+async def test_price_remap_rejects_conflicting_parent_id_and_idx():
+    with pytest.raises(HTTPException) as caught:
+        await _price([
+            _inv("tmp-a", mid="m-a", name="Induk A"),
+            _inv("tmp-b", mid="m-b", name="Induk B"),
+            _svc(
+                "tmp-s",
+                "m-s",
+                parent_line_id="tmp-b",
+                parent_line_idx=0,  # disagrees with id → B
+                name="Warna B",
+            ),
+        ])
+    assert caught.value.status_code == 400
+    detail = str(caught.value.detail).lower()
+    assert "berbeda" in detail or "induk" in detail
 
 
 @pytest.mark.anyio
@@ -353,3 +370,60 @@ def test_partial_cancel_retry_confirmation_does_not_duplicate_items():
     assert r1 is r2
     assert len(order["delivery_confirmations"]) == 1
     assert order["delivery_confirmations"][0]["items"][0]["line_id"] == "ln-a"
+
+
+def test_confirmation_rejects_conflicting_sj_line_id_and_line_idx():
+    """SJ line_id naming SO line A while line_idx points at B → fail closed."""
+    order = {
+        "line_items": [
+            {"line_id": "ln-print", "name": "Print", "quantity": 1000},
+            {"line_id": "ln-polos", "name": "Polos", "quantity": 500},
+        ],
+        "shipments": [],
+        "delivery_confirmations": [],
+    }
+    shipment = {
+        "id": "sh-bad",
+        "lines": [
+            {"line_idx": 1, "line_id": "ln-print", "qty": 100},  # conflict
+        ],
+    }
+    err = validate_shipment_line_identities_for_confirmation(order, shipment)
+    assert err is not None
+    assert "berbeda" in err.lower() or "menunjuk" in err.lower()
+    with pytest.raises(ValueError) as caught:
+        resolve_confirmation_line_identity(
+            order, line_idx=1, line_id="ln-print",
+        )
+    assert "stok" in str(caught.value).lower() or "berbeda" in str(caught.value).lower()
+    with pytest.raises(ValueError):
+        append_confirmation(
+            order, {"email": "op@x"}, qty_increment=100, now="t",
+            action_id="conf-bad", shipment=shipment,
+        )
+    assert order.get("delivery_confirmations") in (None, [])
+
+
+def test_confirmation_accepts_matching_line_id_and_line_idx():
+    order = {
+        "line_items": [
+            {"line_id": "ln-print", "name": "Print", "quantity": 1000},
+            {"line_id": "ln-polos", "name": "Polos", "quantity": 500},
+        ],
+        "delivery_confirmations": [],
+    }
+    shipment = {
+        "id": "sh-ok",
+        "lines": [
+            {"line_idx": 0, "line_id": "ln-print", "qty": 40},
+            {"line_idx": 1, "line_id": "ln-polos", "qty": 10},
+        ],
+    }
+    assert validate_shipment_line_identities_for_confirmation(order, shipment) is None
+    rec = append_confirmation(
+        order, {"email": "op@x"}, qty_increment=50, now="t",
+        shipment=shipment,
+    )
+    assert rec is not None
+    assert rec["items"][0]["line_id"] == "ln-print"
+    assert rec["items"][1]["line_id"] == "ln-polos"
