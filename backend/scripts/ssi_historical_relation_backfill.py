@@ -9,7 +9,8 @@ Usage (local / UAT only):
   python -m scripts.ssi_historical_relation_backfill --db-name ... --apply \\
       --i-understand-local-uat-only
 
-Refuse production DB names. Do NOT run against VPS production.
+Refuse production DB names and remote Mongo hosts on --apply.
+Do NOT run against VPS production.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -28,6 +30,8 @@ from services.ssi_historical_relation_backfill import (  # noqa: E402
     STATUS_VERIFIED_CANDIDATE,
     apply_order_relation_ops,
     assert_no_stock_side_effects,
+    build_order_cas_filter,
+    build_relation_identity_mongo_set,
     plan_order_relation_backfill,
     plan_orders_relation_backfill,
     snapshot_ssi_columns_for_order,
@@ -40,6 +44,10 @@ PRODUCTION_DB_DENYLIST = {
     "production",
 }
 
+# --apply may only target loopback Mongo. UAT-like DB names alone are not enough.
+APPLY_ALLOWED_MONGO_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+APPLY_DB_NAME_TOKENS = ("uat", "test", "local", "dev", "preview")
+
 
 def _refuse_production_db(db_name: Optional[str]) -> Optional[str]:
     name = str(db_name or "").strip().lower()
@@ -47,6 +55,59 @@ def _refuse_production_db(db_name: Optional[str]) -> Optional[str]:
         return None
     if name in PRODUCTION_DB_DENYLIST or name.endswith("_prod") or "production" in name:
         return f"Refusing DB_NAME={db_name!r} — production-like name blocked."
+    return None
+
+
+def _mongo_url() -> str:
+    return (os.environ.get("MONGO_URL") or "mongodb://127.0.0.1:27017").strip()
+
+
+def _mongo_host(mongo_url: str) -> str:
+    raw = str(mongo_url or "").strip()
+    if not raw:
+        return ""
+    # mongodb+srv://host/... or mongodb://user:pass@host:port/...
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").strip().lower()
+    if host:
+        return host
+    # Fallback for atypical URIs without netloc
+    if "://" in raw:
+        rest = raw.split("://", 1)[1]
+        authority = rest.split("/", 1)[0]
+        if "@" in authority:
+            authority = authority.rsplit("@", 1)[-1]
+        hostport = authority.split(",")[0]
+        return hostport.split(":")[0].strip().lower()
+    return ""
+
+
+def refuse_apply_database_target(
+    db_name: Optional[str],
+    mongo_url: Optional[str] = None,
+) -> Optional[str]:
+    """Hard guard for --apply: local loopback + non-production UAT-like DB name.
+
+    A UAT-like DB name pointed at a remote/production Mongo host is refused.
+    """
+    err = _refuse_production_db(db_name)
+    if err:
+        return err
+    name = str(db_name or "").strip().lower()
+    if not name:
+        return "Refusing --apply without --db-name."
+    if not any(tok in name for tok in APPLY_DB_NAME_TOKENS):
+        return (
+            f"Refusing --apply to DB_NAME={db_name!r}; "
+            "name must include uat/test/local/dev/preview."
+        )
+    url = mongo_url if mongo_url is not None else _mongo_url()
+    host = _mongo_host(url)
+    if host not in APPLY_ALLOWED_MONGO_HOSTS:
+        return (
+            f"Refusing --apply to Mongo host {host!r} "
+            f"(url={url!r}); loopback only (127.0.0.1/localhost)."
+        )
     return None
 
 
@@ -62,7 +123,7 @@ def _load_fixture(path: Path) -> List[dict]:
 async def _load_db_orders(db_name: str, *, limit: int = 500) -> List[dict]:
     from motor.motor_asyncio import AsyncIOMotorClient
 
-    url = os.environ.get("MONGO_URL") or "mongodb://127.0.0.1:27017"
+    url = _mongo_url()
     client = AsyncIOMotorClient(url)
     try:
         db = client[db_name]
@@ -73,13 +134,23 @@ async def _load_db_orders(db_name: str, *, limit: int = 500) -> List[dict]:
 
 
 async def _apply_db_ops(db_name: str, plans: List[dict]) -> Dict[str, Any]:
-    """Apply VERIFIED_CANDIDATE ops to an isolated UAT DB only."""
+    """Apply VERIFIED_CANDIDATE ops via targeted $set + CAS on updated_at.
+
+    Never uses whole-document replace_one. Concurrent order mutations that
+    change updated_at cause matched_count=0 (stale plan skipped).
+    """
+    guard = refuse_apply_database_target(db_name, _mongo_url())
+    if guard:
+        raise RuntimeError(guard)
+
     from motor.motor_asyncio import AsyncIOMotorClient
 
-    url = os.environ.get("MONGO_URL") or "mongodb://127.0.0.1:27017"
+    url = _mongo_url()
     client = AsyncIOMotorClient(url)
     updated = 0
     skipped = 0
+    stale = 0
+    failed: List[dict] = []
     try:
         db = client[db_name]
         for plan in plans:
@@ -88,17 +159,49 @@ async def _apply_db_ops(db_name: str, plans: List[dict]) -> Dict[str, Any]:
             if not oid or not ops:
                 skipped += 1
                 continue
+            try:
+                set_fields = build_relation_identity_mongo_set(ops)
+            except ValueError as exc:
+                failed.append({"order_id": oid, "error": str(exc)})
+                continue
+            if not set_fields:
+                skipped += 1
+                continue
+
+            # Re-read for side-effect assertion + CAS token freshness check.
             doc = await db.orders.find_one({"id": oid}, {"_id": 0})
             if not doc:
                 skipped += 1
                 continue
+            expected = plan.get("expected_updated_at", doc.get("updated_at"))
+            # If plan token disagrees with live doc before write → stale.
+            plan_token = plan.get("expected_updated_at")
+            live_token = doc.get("updated_at")
+            if plan_token is not None and str(plan_token).strip() != "":
+                if live_token != plan_token:
+                    stale += 1
+                    continue
+
             before = dict(doc)
             after = apply_order_relation_ops(doc, ops)
             assert_no_stock_side_effects(before, after)
-            # Persist only relation identity fields.
-            await db.orders.replace_one({"id": oid}, after)
+
+            filt = build_order_cas_filter(oid, expected_updated_at=expected)
+            result = await db.orders.update_one(filt, {"$set": set_fields})
+            if result.matched_count == 0:
+                stale += 1
+                continue
+            if result.modified_count == 0 and result.matched_count == 1:
+                # Idempotent re-apply: matched but already equal.
+                skipped += 1
+                continue
             updated += 1
-        return {"updated_orders": updated, "skipped_orders": skipped}
+        return {
+            "updated_orders": updated,
+            "skipped_orders": skipped,
+            "stale_orders": stale,
+            "failed": failed,
+        }
     finally:
         client.close()
 
@@ -150,6 +253,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.apply and not args.db_name and not args.fixture_json:
         print("Apply requires --db-name (UAT) or --fixture-json", file=sys.stderr)
         return 2
+    if args.apply and args.db_name:
+        guard = refuse_apply_database_target(args.db_name, _mongo_url())
+        if guard:
+            print(guard, file=sys.stderr)
+            return 2
 
     orders: List[dict] = []
     if args.fixture_json:
@@ -210,7 +318,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             print(f"fixture_apply=ok backup={backup}")
         elif args.db_name:
-            result = asyncio.run(_apply_db_ops(args.db_name, report["plans"]))
+            try:
+                result = asyncio.run(_apply_db_ops(args.db_name, report["plans"]))
+            except RuntimeError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
             report["apply_result"] = result
             print(f"db_apply={json.dumps(result)}")
             # Idempotency check

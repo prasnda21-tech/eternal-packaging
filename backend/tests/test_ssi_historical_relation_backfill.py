@@ -24,6 +24,8 @@ from services.ssi_historical_relation_backfill import (
     STATUS_VERIFIED_CANDIDATE,
     apply_order_relation_ops,
     assert_no_stock_side_effects,
+    build_order_cas_filter,
+    build_relation_identity_mongo_set,
     plan_order_relation_backfill,
     plan_orders_relation_backfill,
     snapshot_ssi_columns_for_order,
@@ -352,6 +354,64 @@ def test_cli_apply_requires_safety_latch(tmp_path):
     assert rc == 2
 
 
+def test_refuse_apply_remote_mongo_even_with_uat_db_name(monkeypatch):
+    """UAT-like DB name must not unlock apply against a remote Mongo host."""
+    monkeypatch.setenv("MONGO_URL", "mongodb://prod-mongo.example.com:27017")
+    err = cli.refuse_apply_database_target("eternal_ssi_prb_uat", cli._mongo_url())
+    assert err is not None
+    assert "loopback" in err.lower() or "host" in err.lower()
+    rc = cli.main([
+        "--db-name", "eternal_ssi_prb_uat",
+        "--apply", "--i-understand-local-uat-only",
+    ])
+    assert rc == 2
+
+
+def test_refuse_apply_db_name_without_uat_token(monkeypatch):
+    monkeypatch.setenv("MONGO_URL", "mongodb://127.0.0.1:27017")
+    err = cli.refuse_apply_database_target("orders_live", "mongodb://127.0.0.1:27017")
+    assert err is not None
+    assert "uat" in err.lower() or "test" in err.lower()
+
+
+def test_build_mongo_set_only_identity_keys():
+    order = {
+        "id": "po-set",
+        "updated_at": "t1",
+        "line_items": [
+            _inv("ln-main"),
+            _svc("ln-w2", "SVC2", parent_line_id="ln-main"),
+        ],
+        "shipments": [{"id": "sh1", "lines": [{"line_idx": 0, "qty": 5}]}],
+        "qty_delivered": 5,
+        "operator_splits": [{"line_idx": 0, "qty_completed": 10}],
+    }
+    plan = plan_order_relation_backfill(order)
+    assert plan["expected_updated_at"] == "t1"
+    mongo_set = build_relation_identity_mongo_set(plan["ops"])
+    assert mongo_set
+    for key in mongo_set:
+        assert key.endswith(".parent_line_id") or key.endswith(".parent_line_idx") \
+            or key.endswith(".line_id") or key.endswith(".line_idx")
+        assert "quantity" not in key
+        assert "operator_splits" not in key
+        assert "qty_delivered" not in key
+    with pytest.raises(ValueError):
+        build_relation_identity_mongo_set([{
+            "field": "line_items",
+            "line_idx": 1,
+            "set": {"quantity": 999},
+        }])
+
+
+def test_cas_filter_requires_exact_updated_at():
+    filt = build_order_cas_filter("po-1", expected_updated_at="2026-01-01T00:00:00Z")
+    assert filt == {"id": "po-1", "updated_at": "2026-01-01T00:00:00Z"}
+    filt_missing = build_order_cas_filter("po-2", expected_updated_at=None)
+    assert filt_missing["id"] == "po-2"
+    assert "$or" in filt_missing
+
+
 def test_before_after_ssi_columns_no_double_count():
     order = {
         "id": "po-ssi",
@@ -388,9 +448,10 @@ def test_before_after_ssi_columns_no_double_count():
 
 
 @pytest.mark.anyio
-async def test_isolated_uat_mongo_apply_and_idempotent():
+async def test_isolated_uat_mongo_apply_and_idempotent(monkeypatch):
     from motor.motor_asyncio import AsyncIOMotorClient
 
+    monkeypatch.setenv("MONGO_URL", os.environ.get("MONGO_URL") or "mongodb://127.0.0.1:27017")
     db_name = "eternal_ssi_prb_uat_test"
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = client[db_name]
@@ -400,6 +461,7 @@ async def test_isolated_uat_mongo_apply_and_idempotent():
         order = {
             "id": oid,
             "po_number": "PO-UAT-PRB-1",
+            "updated_at": "2026-10-28T00:00:00+00:00",
             "line_items": [
                 _inv("ln-main", qty=1000),
                 _svc("ln-w2", "SVC2", parent_line_id="ln-main", qty=1000),
@@ -409,20 +471,22 @@ async def test_isolated_uat_mongo_apply_and_idempotent():
                 {"line_idx": 1, "qty_completed": 1000},
             ],
             "qty_delivered": 0,
+            "notes": "preserve-me",
             "shipments": [{
                 "id": "sh-uat",
                 "lines": [{"line_idx": 0, "qty": 200}],
             }],
         }
         await db.orders.insert_one(order)
-        # dry-run via CLI planning path
         loaded = await db.orders.find({"id": oid}, {"_id": 0}).to_list(1)
         plan = plan_orders_relation_backfill(loaded)
         assert plan["counts"][STATUS_VERIFIED_CANDIDATE] >= 1
-        # apply once
-        after = apply_order_relation_ops(loaded[0], plan["plans"][0]["ops"])
-        assert_no_stock_side_effects(loaded[0], after)
-        await db.orders.replace_one({"id": oid}, after)
+        assert plan["plans"][0]["expected_updated_at"] == order["updated_at"]
+
+        result = await cli._apply_db_ops(db_name, plan["plans"])
+        assert result["updated_orders"] == 1
+        assert result["stale_orders"] == 0
+
         again = await db.orders.find_one({"id": oid}, {"_id": 0})
         plan2 = plan_order_relation_backfill(again)
         assert plan2["counts"][STATUS_VERIFIED_CANDIDATE] == 0
@@ -430,6 +494,66 @@ async def test_isolated_uat_mongo_apply_and_idempotent():
         assert again["shipments"][0]["lines"][0]["line_id"] == "ln-main"
         assert again["qty_delivered"] == 0
         assert again["operator_splits"][0]["qty_completed"] == 1000
+        assert again["notes"] == "preserve-me"
+
+        # Idempotent second apply with refreshed plan → no candidate ops.
+        result2 = await cli._apply_db_ops(db_name, [plan2])
+        assert result2["updated_orders"] == 0
+    finally:
+        await db.orders.delete_many({"id": oid})
+        client.close()
+
+
+@pytest.mark.anyio
+async def test_apply_rejects_stale_plan_and_preserves_concurrent_fields(monkeypatch):
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    monkeypatch.setenv("MONGO_URL", os.environ.get("MONGO_URL") or "mongodb://127.0.0.1:27017")
+    db_name = "eternal_ssi_prb_uat_test"
+    client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    db = client[db_name]
+    oid = "uat-prb-stale-1"
+    try:
+        await db.orders.delete_many({"id": oid})
+        order = {
+            "id": oid,
+            "updated_at": "t-plan",
+            "line_items": [
+                _inv("ln-main", qty=100),
+                _svc("ln-w2", "SVC2", parent_line_id="ln-main", qty=100),
+            ],
+            "operator_splits": [{"line_idx": 0, "qty_completed": 50}],
+            "qty_delivered": 0,
+            "shipments": [{"id": "sh", "lines": [{"line_idx": 0, "qty": 10}]}],
+            "concurrent_marker": "before",
+        }
+        await db.orders.insert_one(order)
+        loaded = await db.orders.find({"id": oid}, {"_id": 0}).to_list(1)
+        stale_plan = plan_orders_relation_backfill(loaded)["plans"][0]
+        assert stale_plan["ops"]
+
+        # Concurrent mutation changes updated_at + business field after plan.
+        await db.orders.update_one(
+            {"id": oid},
+            {"$set": {
+                "updated_at": "t-concurrent",
+                "qty_delivered": 7,
+                "concurrent_marker": "after-concurrent",
+                "operator_splits.0.qty_completed": 77,
+            }},
+        )
+
+        result = await cli._apply_db_ops(db_name, [stale_plan])
+        assert result["updated_orders"] == 0
+        assert result["stale_orders"] == 1
+
+        live = await db.orders.find_one({"id": oid}, {"_id": 0})
+        assert live["updated_at"] == "t-concurrent"
+        assert live["qty_delivered"] == 7
+        assert live["concurrent_marker"] == "after-concurrent"
+        assert live["operator_splits"][0]["qty_completed"] == 77
+        # Stale plan must not have stamped parent_line_idx over the concurrent doc.
+        assert live["line_items"][1].get("parent_line_idx") in (None, "")
     finally:
         await db.orders.delete_many({"id": oid})
         client.close()

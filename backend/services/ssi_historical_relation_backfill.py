@@ -36,6 +36,10 @@ KIND_ADDON_PARENT = "addon_parent"
 KIND_SJ_LINE = "sj_line"
 KIND_CONFIRMATION_ITEM = "confirmation_item"
 
+# Only these keys may appear in a Mongo $set from apply mode.
+ALLOWED_LINE_ITEM_SET_KEYS = frozenset({"parent_line_id", "parent_line_idx"})
+ALLOWED_DELIVERY_LINE_SET_KEYS = frozenset({"line_id", "line_idx"})
+
 
 def _text(raw: Any) -> str:
     return str(raw or "").strip()
@@ -379,6 +383,7 @@ def plan_order_relation_backfill(order: dict) -> Dict[str, Any]:
     return {
         "order_id": order.get("id"),
         "po_number": order.get("po_number"),
+        "expected_updated_at": order.get("updated_at"),
         "findings": findings,
         "counts": counts,
         "ops": ops,
@@ -394,6 +399,93 @@ def _empty_counts() -> Dict[str, int]:
         STATUS_CONFLICT: 0,
         STATUS_SKIP: 0,
     }
+
+
+def _parse_delivery_path(path: str) -> Optional[Tuple[str, int, int]]:
+    """Parse planner path → (collection, outer_idx, inner_idx)."""
+    raw = str(path or "").strip()
+    if raw.startswith("shipments["):
+        try:
+            rest = raw[len("shipments[") :]
+            head, after = rest.split("].lines[", 1)
+            return "shipments", int(head.split(":", 1)[0]), int(after.rstrip("]"))
+        except (ValueError, IndexError):
+            return None
+    if raw.startswith("delivery_confirmations["):
+        try:
+            rest = raw[len("delivery_confirmations[") :]
+            head, after = rest.split("].items[", 1)
+            return (
+                "delivery_confirmations",
+                int(head.split(":", 1)[0]),
+                int(after.rstrip("]")),
+            )
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def build_relation_identity_mongo_set(ops: Sequence[dict]) -> Dict[str, Any]:
+    """Build a Mongo ``$set`` of permitted identity fields only.
+
+    Never includes qty, stock, ledger, operator_splits, item_type, or names.
+    Raises ValueError if an op tries to set a forbidden key.
+    """
+    out: Dict[str, Any] = {}
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        field = op.get("field")
+        payload = op.get("set") or {}
+        if not isinstance(payload, dict) or not payload:
+            continue
+        if field == "line_items":
+            idx = int(op.get("line_idx"))
+            for k, v in payload.items():
+                if k not in ALLOWED_LINE_ITEM_SET_KEYS:
+                    raise ValueError(f"Forbidden line_items update key: {k}")
+                out[f"line_items.{idx}.{k}"] = v
+            continue
+        if field in (KIND_SJ_LINE, KIND_CONFIRMATION_ITEM):
+            parsed = _parse_delivery_path(str(op.get("path") or ""))
+            if not parsed:
+                raise ValueError(f"Invalid delivery identity path: {op.get('path')!r}")
+            coll, outer_i, inner_i = parsed
+            inner = "lines" if coll == "shipments" else "items"
+            for k, v in payload.items():
+                if k not in ALLOWED_DELIVERY_LINE_SET_KEYS:
+                    raise ValueError(f"Forbidden {coll} update key: {k}")
+                out[f"{coll}.{outer_i}.{inner}.{inner_i}.{k}"] = v
+            continue
+        raise ValueError(f"Unsupported backfill op field: {field!r}")
+    return out
+
+
+def build_order_cas_filter(
+    order_id: str,
+    *,
+    expected_updated_at: Any = None,
+) -> Dict[str, Any]:
+    """Optimistic concurrency filter: id + exact updated_at token from the plan.
+
+    When the plan captured a non-empty updated_at, a concurrent mutation that
+    changed updated_at yields matched_count=0 (stale plan rejected).
+    When the source document had no updated_at, require it still be absent/empty.
+    """
+    oid = _text(order_id)
+    if not oid:
+        raise ValueError("order_id wajib untuk CAS filter.")
+    filt: Dict[str, Any] = {"id": oid}
+    token = expected_updated_at
+    if token is not None and str(token).strip() != "":
+        filt["updated_at"] = token
+    else:
+        filt["$or"] = [
+            {"updated_at": {"$exists": False}},
+            {"updated_at": None},
+            {"updated_at": ""},
+        ]
+    return filt
 
 
 def apply_order_relation_ops(order: dict, ops: Sequence[dict]) -> dict:
@@ -413,7 +505,7 @@ def apply_order_relation_ops(order: dict, ops: Sequence[dict]) -> dict:
             lis = out.setdefault("line_items", [])
             if 0 <= idx < len(lis) and isinstance(lis[idx], dict):
                 for k, v in sets.items():
-                    if k in ("parent_line_id", "parent_line_idx"):
+                    if k in ALLOWED_LINE_ITEM_SET_KEYS:
                         lis[idx][k] = v
             continue
         if field in (KIND_SJ_LINE, KIND_CONFIRMATION_ITEM):
@@ -423,42 +515,20 @@ def apply_order_relation_ops(order: dict, ops: Sequence[dict]) -> dict:
 
 def _apply_path_set(order: dict, path: str, sets: dict) -> None:
     """Apply identity stamps using the path encoding from the planner."""
-    # paths: shipments[i:id].lines[j]  OR  delivery_confirmations[i:id].items[j]
-    if path.startswith("shipments["):
-        try:
-            rest = path[len("shipments[") :]
-            head, after = rest.split("].lines[", 1)
-            s_i = int(head.split(":", 1)[0])
-            l_i = int(after.rstrip("]"))
-        except (ValueError, IndexError):
-            return
-        ships = order.get("shipments") or []
-        if not (0 <= s_i < len(ships) and isinstance(ships[s_i], dict)):
-            return
-        lines = ships[s_i].setdefault("lines", [])
-        if not (0 <= l_i < len(lines) and isinstance(lines[l_i], dict)):
-            return
-        for k, v in sets.items():
-            if k in ("line_id", "line_idx"):
-                lines[l_i][k] = v
+    parsed = _parse_delivery_path(path)
+    if not parsed:
         return
-    if path.startswith("delivery_confirmations["):
-        try:
-            rest = path[len("delivery_confirmations[") :]
-            head, after = rest.split("].items[", 1)
-            c_i = int(head.split(":", 1)[0])
-            i_i = int(after.rstrip("]"))
-        except (ValueError, IndexError):
-            return
-        confs = order.get("delivery_confirmations") or []
-        if not (0 <= c_i < len(confs) and isinstance(confs[c_i], dict)):
-            return
-        items = confs[c_i].setdefault("items", [])
-        if not (0 <= i_i < len(items) and isinstance(items[i_i], dict)):
-            return
-        for k, v in sets.items():
-            if k in ("line_id", "line_idx"):
-                items[i_i][k] = v
+    coll, outer_i, inner_i = parsed
+    bucket = order.get(coll) or []
+    if not (0 <= outer_i < len(bucket) and isinstance(bucket[outer_i], dict)):
+        return
+    inner_key = "lines" if coll == "shipments" else "items"
+    rows = bucket[outer_i].setdefault(inner_key, [])
+    if not (0 <= inner_i < len(rows) and isinstance(rows[inner_i], dict)):
+        return
+    for k, v in sets.items():
+        if k in ALLOWED_DELIVERY_LINE_SET_KEYS:
+            rows[inner_i][k] = v
 
 
 def plan_orders_relation_backfill(orders: Iterable[dict]) -> Dict[str, Any]:
