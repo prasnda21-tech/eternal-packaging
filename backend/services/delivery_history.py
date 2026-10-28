@@ -82,6 +82,126 @@ def _resolve_plate(order: dict, rec: dict) -> Optional[str]:
     return _text(lc.get("vehicle_plate"))
 
 
+def _order_line_id(order: dict, idx: int) -> Optional[str]:
+    lis = order.get("line_items") or []
+    if not (0 <= int(idx) < len(lis)):
+        return None
+    row = lis[int(idx)]
+    if not isinstance(row, dict):
+        return None
+    return _text(row.get("line_id") or row.get("id"))
+
+
+def _po_line_indexes_for_id(order: dict, line_id: str) -> List[int]:
+    want = _text(line_id)
+    if not want:
+        return []
+    hits: List[int] = []
+    for i, li in enumerate(order.get("line_items") or []):
+        if not isinstance(li, dict):
+            continue
+        lid = _text(li.get("line_id") or li.get("id"))
+        if lid and lid == want:
+            hits.append(i)
+    return hits
+
+
+def resolve_confirmation_line_identity(
+    order: dict,
+    *,
+    line_idx: int,
+    line_id: Optional[str] = None,
+) -> tuple:
+    """Return (line_idx, line_id) from one consistent SO line.
+
+    Raises ValueError when SJ line_id and line_idx name different SO lines.
+    Never invents identity by qty/name similarity.
+    """
+    idx = int(line_idx)
+    lis = order.get("line_items") or []
+    if idx < 0 or (lis and idx >= len(lis)):
+        raise ValueError(f"line_idx {idx} tidak valid pada SO.")
+    claimed = _text(line_id)
+    po_lid = _order_line_id(order, idx)
+    if claimed:
+        matches = _po_line_indexes_for_id(order, claimed)
+        if len(matches) > 1:
+            raise ValueError(
+                f"line_id '{claimed}' ambigu pada beberapa baris SO — "
+                "sertakan line_idx yang konsisten."
+            )
+        if len(matches) == 1:
+            if matches[0] != idx:
+                raise ValueError(
+                    f"line_id '{claimed}' menunjuk baris SO #{matches[0] + 1} tetapi "
+                    f"line_idx={idx} menunjuk baris #{idx + 1}. "
+                    "Konfirmasi dibatalkan sebelum stok diposting."
+                )
+            return idx, claimed
+        if po_lid and claimed != po_lid:
+            raise ValueError(
+                f"line_id '{claimed}' tidak cocok dengan SO line_idx={idx} "
+                f"(line_id SO='{po_lid}'). Konfirmasi dibatalkan sebelum stok diposting."
+            )
+        raise ValueError(
+            f"line_id '{claimed}' tidak ditemukan pada SO untuk line_idx={idx}."
+        )
+    return idx, po_lid
+
+
+def validate_shipment_line_identities_for_confirmation(
+    order: dict,
+    shipment: Optional[dict],
+) -> Optional[str]:
+    """Return error if any positive-qty SJ line has conflicting line_id/line_idx."""
+    if not isinstance(shipment, dict):
+        return None
+    for ln in shipment.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        try:
+            idx = int(ln.get("line_idx"))
+        except (TypeError, ValueError):
+            continue
+        qty = max(0, int(ln.get("qty") if ln.get("qty") is not None else ln.get("quantity") or 0))
+        if qty <= 0:
+            continue
+        try:
+            resolve_confirmation_line_identity(
+                order, line_idx=idx, line_id=ln.get("line_id"),
+            )
+        except ValueError as exc:
+            return str(exc)
+    return None
+
+
+def _confirmation_item_row(
+    order: dict,
+    *,
+    line_idx: int,
+    qty: int,
+    name: Optional[str] = None,
+    line_id: Optional[str] = None,
+) -> dict:
+    """Stable SJ/confirmation line identity for print vs polos attribution.
+
+    Always stores line_idx. Adds line_id when known from the shipment line or
+    the PO line. Never invents identity by qty similarity. Conflicting
+    line_id vs line_idx raises ValueError (fail closed).
+    """
+    idx, lid = resolve_confirmation_line_identity(
+        order, line_idx=line_idx, line_id=line_id,
+    )
+    row = {
+        "line_idx": idx,
+        "name": _text(name) or _text(_line_name(order, idx)),
+        "qty": int(qty),
+    }
+    if lid:
+        row["line_id"] = lid
+    return row
+
+
 def _item_deltas(order: dict) -> List[dict]:
     prev = _previous_line_qtys(order)
     rows = []
@@ -91,8 +211,7 @@ def _item_deltas(order: dict) -> List[dict]:
         delta = max(0, loaded - prev.get(idx, 0))
         if delta <= 0:
             continue
-        name = _text(_line_name(order, idx))
-        rows.append({"line_idx": idx, "name": name, "qty": delta})
+        rows.append(_confirmation_item_row(order, line_idx=idx, qty=delta))
     return rows
 
 
@@ -149,13 +268,21 @@ def _items_for_shipment(order: dict, shipment: Optional[dict], qty_increment: in
             if qty <= 0:
                 continue
             name = _text(ln.get("name")) or _text(_line_name(order, idx))
-            rows.append({"line_idx": idx, "name": name, "qty": qty})
+            rows.append(
+                _confirmation_item_row(
+                    order,
+                    line_idx=idx,
+                    qty=qty,
+                    name=name,
+                    line_id=ln.get("line_id"),
+                )
+            )
         if rows:
             return rows
     items = _item_deltas(order)
     if items:
         return items
-    return [{"line_idx": 0, "name": _text(_line_name(order, 0)), "qty": qty_increment}]
+    return [_confirmation_item_row(order, line_idx=0, qty=qty_increment)]
 
 
 def append_confirmation(

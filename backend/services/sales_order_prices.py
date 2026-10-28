@@ -123,8 +123,14 @@ def _remap_parent_line_ids(priced: List[dict], id_map: Dict[str, str]) -> None:
     """Rewrite parent_line_id through the explicit old→new line_id map only.
 
     Never invents parents by name or row order. Missing map entry → hard error
-    (do not silently drop the relation).
+    (do not silently drop the relation). After remap, sync parent_line_idx so
+    dual storage (id + idx) stays consistent for Add On warna 2/3.
     """
+    from services.order_line_addon import (
+        sync_parent_line_relations,
+        validate_lines_parent_graph,
+    )
+
     new_ids = {str(row.get("line_id") or "").strip() for row in priced if isinstance(row, dict)}
     for index, line in enumerate(priced):
         if not isinstance(line, dict):
@@ -144,6 +150,17 @@ def _remap_parent_line_ids(priced: List[dict], id_map: Dict[str, str]) -> None:
             f"Baris #{index + 1}: parent_line_id '{raw_parent}' tidak merujuk ke "
             "line induk yang valid.",
         )
+
+    # Reject id/idx that resolve to different induk — never silently prefer one.
+    graph_err = validate_lines_parent_graph(priced)
+    if graph_err:
+        raise HTTPException(400, graph_err)
+    # Sync idx from resolved id (and fill id when only idx was provided).
+    # Does not invent links for unresolved / historical orphans.
+    try:
+        sync_parent_line_relations(priced)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 async def price_order_lines(db, raw_lines: List[dict]) -> Tuple[List[dict], Optional[float], bool]:

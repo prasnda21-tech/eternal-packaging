@@ -430,6 +430,102 @@ def ensure_line_identity_fields(line: dict, idx: int) -> dict:
     return row
 
 
+def _resolve_parent_by_id_only(
+    line: dict,
+    lines: Sequence[dict],
+    *,
+    line_ids: Optional[Dict[str, int]] = None,
+) -> Optional[int]:
+    parent_id = str(line.get("parent_line_id") or "").strip()
+    if not parent_id:
+        return None
+    ids = line_ids if line_ids is not None else build_line_id_index(lines)
+    if parent_id in ids:
+        return ids[parent_id]
+    return None
+
+
+def _resolve_parent_by_idx_only(line: dict, lines: Sequence[dict]) -> Optional[int]:
+    raw_idx = line.get("parent_line_idx")
+    if raw_idx is None or str(raw_idx).strip() == "":
+        return None
+    try:
+        idx = int(raw_idx)
+    except (TypeError, ValueError):
+        return None
+    if idx < 0 or idx >= len(lines):
+        return None
+    if not isinstance(lines[idx], dict):
+        return None
+    return idx
+
+
+def parent_dual_key_conflict(
+    line: dict,
+    lines: Sequence[dict],
+    *,
+    line_ids: Optional[Dict[str, int]] = None,
+) -> Optional[str]:
+    """Reject when both parent keys are present but resolve to different induk.
+
+    Never silently prefers id or idx. Missing/unresolvable single keys are
+    handled by validate_parent_relation / resolve_parent_idx.
+    """
+    if not isinstance(line, dict):
+        return None
+    has_id = bool(str(line.get("parent_line_id") or "").strip())
+    has_idx = (
+        line.get("parent_line_idx") is not None
+        and str(line.get("parent_line_idx")).strip() != ""
+    )
+    if not (has_id and has_idx):
+        return None
+    by_id = _resolve_parent_by_id_only(line, lines, line_ids=line_ids)
+    by_idx = _resolve_parent_by_idx_only(line, lines)
+    if by_id is not None and by_idx is not None and by_id != by_idx:
+        return (
+            "parent_line_id dan parent_line_idx menunjuk induk berbeda "
+            f"(id→baris {by_id + 1}, idx→baris {by_idx + 1}). "
+            "Perbaiki salah satu sebelum disimpan."
+        )
+    return None
+
+
+def sync_parent_line_relations(lines: Sequence[dict]) -> None:
+    """Persist dual parent keys from an already-resolved explicit relation.
+
+    Mutates in place. For every Add On whose parent resolves via parent_line_id
+    or parent_line_idx:
+    - parent_line_idx is set to the resolved index
+    - parent_line_id is set to the induk's stored line_id when present
+
+    Never invents parents from name/qty similarity. Lines that do not resolve
+    are left untouched (legacy ambiguous stays fail-closed / UNVERIFIED).
+
+    Raises ValueError when both parent keys are present but disagree — callers
+    must not silently pick one side.
+    """
+    if not lines:
+        return
+    ids = build_line_id_index(lines)
+    for i, line in enumerate(lines):
+        if not isinstance(line, dict) or line_cancelled(line):
+            continue
+        conflict = parent_dual_key_conflict(line, lines, line_ids=ids)
+        if conflict:
+            raise ValueError(f"Baris #{i + 1}: {conflict}")
+        parent = resolve_parent_idx(line, lines, line_ids=ids)
+        if parent is None:
+            continue
+        parent_row = lines[parent]
+        if not isinstance(parent_row, dict):
+            continue
+        line["parent_line_idx"] = int(parent)
+        parent_lid = str(parent_row.get("line_id") or parent_row.get("id") or "").strip()
+        if parent_lid:
+            line["parent_line_id"] = parent_lid
+
+
 def _line_item_type(line: Optional[dict]) -> str:
     if not isinstance(line, dict):
         return ""
@@ -445,6 +541,9 @@ def validate_parent_relation(
     """Return error message if parent relation is present but invalid; else None."""
     if not isinstance(line, dict):
         return "Line tidak valid."
+    conflict = parent_dual_key_conflict(line, lines)
+    if conflict:
+        return conflict
     has_parent = bool(
         str(line.get("parent_line_id") or "").strip()
         or (line.get("parent_line_idx") is not None and str(line.get("parent_line_idx")).strip() != "")
