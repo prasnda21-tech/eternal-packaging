@@ -17,6 +17,7 @@ jest.mock("../lib/api", () => ({
     branches: jest.fn(),
     warehouses: jest.fn(),
     physicalStockCatalog: jest.fn(),
+    physicalStock: jest.fn(),
     physicalStockStatusSummary: jest.fn().mockResolvedValue({ counts: {}, operational_actions: [], read_only: true }),
     createPhysicalAdjustment: jest.fn(),
     masterItems: jest.fn(),
@@ -57,8 +58,30 @@ function catalog() {
   };
 }
 
+function missingBalanceItem(overrides = {}) {
+  return {
+    ...ITEM,
+    physical_qty: null,
+    balance_present: false,
+    baseline_status: "unreconciled",
+    warehouse_balances: [{
+      warehouse_id: "wh-main",
+      warehouse_code: "MAIN",
+      physical_qty: null,
+      balance_present: false,
+      baseline_status: "unreconciled",
+    }],
+    ...overrides,
+  };
+}
+
 function setNativeValue(el, value) {
-  const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+  const proto = Object.getOwnPropertyDescriptor(
+    el instanceof HTMLTextAreaElement
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype,
+    "value",
+  );
   proto.set.call(el, value);
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
@@ -67,7 +90,10 @@ async function renderStock(warehouses) {
   api.branches.mockResolvedValue({ items: [YGY] });
   api.warehouses.mockResolvedValue({ items: warehouses });
   api.physicalStockCatalog.mockResolvedValue(catalog());
-  api.createPhysicalAdjustment.mockResolvedValue({ ok: true });
+  api.physicalStock.mockResolvedValue({
+    items: [{ warehouse_id: "wh-main", physical_qty: 1050, balance_present: true }],
+  });
+  api.createPhysicalAdjustment.mockResolvedValue({ ok: true, changed: true, movement_id: "mov-1" });
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -94,6 +120,7 @@ describe("Stock Saat Ini inline physical correction", () => {
       operational_actions: [],
       read_only: true,
     });
+    api.physicalStock.mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -102,31 +129,19 @@ describe("Stock Saat Ini inline physical correction", () => {
     document.body.innerHTML = "";
   });
 
-  test("Belum saldo opens Saldo Awal (not a dead click) when opening permission exists", async () => {
+  test("Belum saldo opens Adjustment modal (not Saldo Awal)", async () => {
     mockHasPerm.mockImplementation((perm) => (
       perm === "current_stock.update" || perm === "permissions.manage"
     ));
     api.masterItems.mockResolvedValue({ items: [] });
     api.physicalOpeningBalance.mockResolvedValue({ established: false });
-    const missingItem = {
-      ...ITEM,
-      physical_qty: null,
-      balance_present: false,
-      baseline_status: "unreconciled",
-      warehouse_balances: [{
-        warehouse_id: "wh-main",
-        warehouse_code: "MAIN",
-        physical_qty: null,
-        balance_present: false,
-        baseline_status: "unreconciled",
-      }],
-    };
+    api.physicalStock.mockResolvedValue({ items: [] });
     api.branches.mockResolvedValue({ items: [YGY] });
     api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
     api.physicalStockCatalog.mockResolvedValue({
       ...catalog(),
       warehouse_stock_standalone: true,
-      items: [missingItem],
+      items: [missingBalanceItem()],
     });
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -134,35 +149,31 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
-    // Aggregate view: missing WH → "Belum lengkap"; filtered WH → "Belum saldo".
     expect(button?.textContent).toMatch(/Belum (saldo|lengkap)/);
     await act(async () => { button.click(); });
-    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="saldo-awal-item"]')?.value).toBe("item-1");
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).toBeNull();
+    const modal = container.querySelector('[data-testid="stock-adjust-modal"]');
+    expect(modal).not.toBeNull();
+    expect(modal.querySelector('[data-testid="stock-adjust-current"]')?.textContent)
+      .toMatch(/Belum ada saldo/i);
+    expect(modal.querySelector('[data-testid="stock-adjust-current"]')?.getAttribute("data-balance-present"))
+      .toBe("false");
+    expect(modal.querySelector('[data-testid="stock-adjust-target"]')).not.toBeNull();
     expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
     act(() => root.unmount());
     container.remove();
   });
 
-  test("Belum saldo without opening permission does not open Adjustment", async () => {
+  test("Belum saldo without opening permission still opens Adjustment when can_adjust", async () => {
     mockHasPerm.mockReturnValue(false);
-    const missingItem = {
-      ...ITEM,
-      physical_qty: null,
-      balance_present: false,
-      warehouse_balances: [{
-        warehouse_id: "wh-main",
-        warehouse_code: "MAIN",
-        physical_qty: null,
-        balance_present: false,
-      }],
-    };
+    api.physicalStock.mockResolvedValue({ items: [] });
     api.branches.mockResolvedValue({ items: [YGY] });
     api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
     api.physicalStockCatalog.mockResolvedValue({
       ...catalog(),
-      items: [missingItem],
+      items: [missingBalanceItem()],
     });
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -172,26 +183,41 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => {
       container.querySelector('[data-testid="stock-adjust-item-1"]').click();
     });
-    expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).toBeNull();
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(container.querySelector('[data-testid="saldo-awal-modal"]')).toBeNull();
-    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
-    expect(container.textContent).toMatch(/Saldo Awal memerlukan izin/);
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).not.toBeNull();
+    expect(container.textContent).not.toMatch(/Saldo Awal memerlukan izin/);
     expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
     act(() => root.unmount());
     container.remove();
   });
 
-  test("filtered warehouse Belum saldo opens Saldo Awal with warehouse seed", async () => {
-    mockHasPerm.mockImplementation((perm) => perm === "current_stock.update");
-    api.masterItems.mockResolvedValue({ items: [] });
-    api.physicalOpeningBalance.mockResolvedValue({ established: false });
+  test("permission denied hides Adjustment control", async () => {
+    mockHasPerm.mockReturnValue(false);
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      can_adjust_physical_stock: false,
+      items: [missingBalanceItem()],
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="stock-adjust-item-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("filtered warehouse Belum saldo opens Adjustment with Belum ada saldo label", async () => {
+    api.physicalStock.mockResolvedValue({ items: [] });
     const uatBranch = { id: "ygy", code: "YGY", name: "Yogyakarta", active: true };
     const whMain = warehouse("wh-main", "MAIN");
     const whB = warehouse("wh-b", "WHB");
-    const missingItem = {
-      ...ITEM,
-      physical_qty: null,
-      baseline_status: "unreconciled",
+    const missingItem = missingBalanceItem({
       warehouse_balances: [
         {
           warehouse_id: "wh-main",
@@ -208,10 +234,10 @@ describe("Stock Saat Ini inline physical correction", () => {
           baseline_status: "reconciled",
         },
       ],
-    };
+    });
     api.branches.mockResolvedValue({ items: [uatBranch] });
     api.warehouses.mockResolvedValue({ items: [whMain, whB] });
-    api.physicalStockCatalog.mockImplementation(async (params = {}) => ({
+    api.physicalStockCatalog.mockImplementation(async () => ({
       ...catalog(),
       warehouse_stock_standalone: true,
       can_switch_branches: true,
@@ -234,11 +260,208 @@ describe("Stock Saat Ini inline physical correction", () => {
     const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
     expect(button?.textContent).toMatch(/Belum saldo/);
     await act(async () => { button.click(); });
-    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="saldo-awal-item"]')?.value).toBe("item-1");
-    expect(container.querySelector('[data-testid="saldo-awal-warehouse"]')?.value).toBe("wh-main");
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('[data-testid="saldo-awal-modal"]')).toBeNull();
+    const modal = container.querySelector('[data-testid="stock-adjust-modal"]');
+    expect(modal).not.toBeNull();
+    expect(modal.querySelector('[data-testid="stock-adjust-current"]')?.textContent)
+      .toMatch(/Belum ada saldo/i);
     act(() => root.unmount());
     container.remove();
+  });
+
+  test("missing balance target 10000 posts Adjustment and refreshes catalog", async () => {
+    api.physicalStock.mockResolvedValue({ items: [] });
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      warehouse_stock_standalone: true,
+      items: [missingBalanceItem()],
+    });
+    api.createPhysicalAdjustment.mockResolvedValue({
+      changed: true,
+      movement_id: "mov-new",
+      qty_delta: 10000,
+      physical_qty: 10000,
+      target_physical_qty: 10000,
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const modal = container.querySelector('[data-testid="stock-adjust-modal"]');
+    const target = modal.querySelector('[data-testid="stock-adjust-target"]');
+    const reason = modal.querySelector('[data-testid="stock-adjust-reason"]');
+    await act(async () => { setNativeValue(target, "10000"); });
+    await act(async () => { setNativeValue(reason, "Hitung fisik gudang"); });
+    const catalogCallsBefore = api.physicalStockCatalog.mock.calls.length;
+    await act(async () => {
+      modal.querySelector('[data-testid="stock-adjust-submit"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.createPhysicalAdjustment).toHaveBeenCalledTimes(1);
+    expect(api.createPhysicalAdjustment).toHaveBeenCalledWith("item-1", expect.objectContaining({
+      branch_id: "ygy",
+      warehouse_id: "wh-main",
+      target_physical_qty: 10000,
+      reason: "Hitung fisik gudang",
+    }));
+    expect(api.physicalStockCatalog.mock.calls.length).toBeGreaterThan(catalogCallsBefore);
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("existing balance 6000 target 10000 posts delta Adjustment", async () => {
+    api.physicalStock.mockResolvedValue({
+      items: [{ warehouse_id: "wh-main", physical_qty: 6000, balance_present: true }],
+    });
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      items: [{
+        ...ITEM,
+        physical_qty: 6000,
+        warehouse_balances: [{
+          warehouse_id: "wh-main",
+          physical_qty: 6000,
+          balance_present: true,
+          baseline_status: "reconciled",
+        }],
+      }],
+    });
+    api.createPhysicalAdjustment.mockResolvedValue({
+      changed: true,
+      movement_id: "mov-up",
+      qty_delta: 4000,
+      previous_physical_qty: 6000,
+      physical_qty: 10000,
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    const input = container.querySelector('[data-testid="stock-inline-input-item-1"]');
+    expect(input).not.toBeNull();
+    await act(async () => { setNativeValue(input, "10000"); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(api.createPhysicalAdjustment).toHaveBeenCalledWith("item-1", expect.objectContaining({
+      warehouse_id: "wh-main",
+      target_physical_qty: 10000,
+    }));
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("missing balance target 0 is no-op and not shown as reconciled", async () => {
+    api.physicalStock.mockResolvedValue({ items: [] });
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({ items: [warehouse("wh-main")] });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      warehouse_stock_standalone: true,
+      items: [missingBalanceItem()],
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const modal = container.querySelector('[data-testid="stock-adjust-modal"]');
+    await act(async () => {
+      setNativeValue(modal.querySelector('[data-testid="stock-adjust-target"]'), "0");
+      setNativeValue(modal.querySelector('[data-testid="stock-adjust-reason"]'), "Coba nol");
+    });
+    await act(async () => {
+      modal.querySelector('[data-testid="stock-adjust-submit"]').click();
+      await Promise.resolve();
+    });
+    expect(api.createPhysicalAdjustment).not.toHaveBeenCalled();
+    expect(modal.textContent).toMatch(/tidak menetapkan stok tervalidasi/i);
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).not.toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("backend validation error stays on modal without closing", async () => {
+    api.physicalStock.mockResolvedValue({
+      items: [{ warehouse_id: "wh-main", physical_qty: 100, balance_present: true }],
+    });
+    api.branches.mockResolvedValue({ items: [YGY] });
+    api.warehouses.mockResolvedValue({
+      items: [warehouse("wh-main"), warehouse("wh-b", "WHB")],
+    });
+    api.physicalStockCatalog.mockResolvedValue({
+      ...catalog(),
+      items: [ITEM],
+    });
+    api.createPhysicalAdjustment.mockRejectedValue({
+      response: { data: { detail: "Alasan wajib diisi" } },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => { root.render(<StockSaatIni />); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      container.querySelector('[data-testid="stock-adjust-item-1"]').click();
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const modal = container.querySelector('[data-testid="stock-adjust-modal"]');
+    expect(modal).not.toBeNull();
+    await act(async () => {
+      modal.querySelector('[data-testid="stock-adjust-warehouse"]').value = "wh-main";
+      modal.querySelector('[data-testid="stock-adjust-warehouse"]')
+        .dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {
+      setNativeValue(modal.querySelector('[data-testid="stock-adjust-target"]'), "200");
+      setNativeValue(modal.querySelector('[data-testid="stock-adjust-reason"]'), "x");
+    });
+    await act(async () => {
+      modal.querySelector('[data-testid="stock-adjust-submit"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="stock-adjust-modal"]')).not.toBeNull();
+    expect(container.textContent).toMatch(/Alasan wajib diisi|Gagal menyimpan koreksi/);
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("Saldo Awal button still opens opening workflow", async () => {
+    mockHasPerm.mockImplementation((perm) => perm === "current_stock.update");
+    api.masterItems.mockResolvedValue({ items: [] });
+    api.physicalOpeningBalance.mockResolvedValue({ established: false });
+    const view = await renderStock([warehouse("wh-main")]);
+    const openingBtn = [...view.container.querySelectorAll("button")]
+      .find((b) => /^Saldo Awal$/i.test((b.textContent || "").trim()));
+    expect(openingBtn).not.toBeNull();
+    await act(async () => { openingBtn.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(view.container.querySelector('[data-testid="saldo-awal-modal"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
+    view.cleanup();
   });
 
   test("single warehouse edits inline and does not open the correction modal", async () => {
@@ -462,7 +685,6 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => {
       container.querySelector('[data-testid="stock-adjust-item-1"]').click();
     });
-    // Single selected warehouse → inline edit, not multi-warehouse modal.
     expect(container.querySelector('[data-testid="stock-adjust-modal"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-inline-input-item-1"]')).not.toBeNull();
     act(() => root.unmount());
