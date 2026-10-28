@@ -750,12 +750,24 @@ async def test_no_auto_copy_company_to_warehouse(db):
         "initialized": True,
         "status": "INITIALIZED",
     })
+    before_bal = await db[BALANCE_COLLECTION].count_documents({"master_item_id": item["id"]})
+    before_led = await db[LEDGER_COLLECTION].count_documents({"master_item_id": item["id"]})
     catalog = await list_physical_stock_catalog(
         db, branch_id=branch["id"], warehouse_id=wh_a["id"],
     )
     row = next(r for r in catalog["items"] if r["master_item_id"] == item["id"])
+    # Legacy company PSS must never become warehouse book (not 9999).
     assert row["physical_qty"] == 0
-    assert row["qty_tersedia_valid"] is False
+    # G1: no warehouse balance/ledger/SO → proven operational 0 (read model only).
+    # product_stock_state is not relevant activity for warehouse authority.
+    assert row.get("no_relevant_activity") is True
+    assert row["qty_tersedia_valid"] is True
+    assert row["baseline_status"] == "reconciled"
+    whb = row["warehouse_balances"][0]
+    assert whb["balance_present"] is False
+    assert whb["physical_qty"] == 0
+    assert await db[BALANCE_COLLECTION].count_documents({"master_item_id": item["id"]}) == before_bal
+    assert await db[LEDGER_COLLECTION].count_documents({"master_item_id": item["id"]}) == before_led
 
 
 

@@ -213,6 +213,41 @@ describe("physical stock view helpers", () => {
     expect(book20).toEqual({ present: true, qty: 20, text: null });
   });
 
+  test("bookPhysicalDisplay G1 proven no-activity shows numeric 0 not Belum saldo", () => {
+    const g1 = bookPhysicalDisplay({
+      physical_qty: 0,
+      no_relevant_activity: true,
+      operational_qty_proven: true,
+      warehouse_balances: [{
+        warehouse_id: "wh-a",
+        physical_qty: 0,
+        balance_present: false,
+        no_relevant_activity: true,
+        operational_qty_proven: true,
+        baseline_status: "reconciled",
+      }],
+    }, { warehouseId: "wh-a" });
+    expect(g1).toEqual({ present: true, qty: 0, text: null });
+
+    const primary = stockPhysicalPrimaryDisplay({
+      physical_qty: 0,
+      no_relevant_activity: true,
+      operational_qty_proven: true,
+      baseline_status: "reconciled",
+      warehouse_balances: [{
+        warehouse_id: "wh-a",
+        physical_qty: 0,
+        balance_present: false,
+        no_relevant_activity: true,
+        operational_qty_proven: true,
+        baseline_status: "reconciled",
+      }],
+    }, { branchAggregate: true });
+    expect(primary.present).toBe(true);
+    expect(primary.qty).toBe(0);
+    expect(primary.text).toBeNull();
+  });
+
   test("stockPhysicalPrimaryDisplay is a single status — never Belum saldo + Belum lengkap", () => {
     const partial = {
       physical_qty: 200,

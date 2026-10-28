@@ -453,14 +453,14 @@ export default function StockSaatIniDetailDrawer({
                       <tr key={wb.warehouse_id} data-testid={`ssi-detail-wh-${wb.warehouse_id}`}>
                         <td className="mono">{wb.warehouse_code || wb.warehouse_name || wb.warehouse_id}</td>
                         <td className={`num mono${wb.saldo_buku_negatif ? " stock-book-negative" : ""}`}>
-                          {wb.balance_present ? (
-                            fmtQty(wb.physical_qty)
+                          {(wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity) ? (
+                            fmtQty(wb.physical_qty ?? 0)
                           ) : (
                             <span className="stock-status-badge stock-status-badge--missing">Belum saldo</span>
                           )}
                         </td>
                         <td className="small">
-                          {wb.balance_present
+                          {(wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity)
                             ? (wb.baseline_status || "—")
                             : "Belum ada saldo fisik"}
                         </td>

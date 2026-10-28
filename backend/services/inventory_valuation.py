@@ -5,8 +5,11 @@ or accounting data. Stock Fisik is the R2 physical balance sum for ONE
 selected/effective branch (default YGY). product_stock_state is not the
 official quantity. HPP unit cost remains company-wide — never branch-specific.
 
-Missing R2 balance rows are UNAVAILABLE (stock_fisik=null), not proven zero.
-A balance document with physical_qty 0 is proven zero (stock_fisik=0).
+Missing R2 balance rows with relevant ledger/history are UNAVAILABLE
+(stock_fisik=null), not proven zero. A balance document with physical_qty 0
+is proven zero (stock_fisik=0). G1 Owner rule: no balance AND no ledger in
+branch scope → proven operational zero (stock_fisik=0, nilai Rp0) without
+writing opening/ledger. Incomplete history stays UNAVAILABLE.
 
 Inventory HPP comes only from acquisition cost (PO / Goods Receipt / WMA /
 approved cutover / first-GR bootstrap). Customer Pricing must never become
@@ -165,6 +168,7 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         db,
         [str(master.get("id") or "") for master in masters if master.get("id")],
         branch_id=branch_id,
+        include_proven_no_activity_zero=True,
     )
 
     rows: List[dict] = []
@@ -172,7 +176,8 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         mid = str(master.get("id") or "").strip()
         aid = str(master.get("accurate_item_id") or "").strip()
         state = state_by_mid.get(mid) or {}
-        # Official qty is R2 only. Omitted balance → UNAVAILABLE (null), not legacy PSS.
+        # Official qty is R2 only. Omitted balance with ledger history →
+        # UNAVAILABLE (null). G1 proven no-activity zeros are in the map as 0.
         if mid in physical_by_item:
             stock_status = STOCK_AVAILABLE
             stock = float(physical_by_item.get(mid) or 0)
@@ -217,8 +222,9 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
             status = STATUS_OK if original_status == STATUS_QTY_MISMATCH else original_status
 
         # Never treat unavailable official stock as valued 0.
+        # Proven stock 0 → numeric Rp0 (G1); never invent HPP for positive stock.
         inventory_value = None
-        if stock is not None and stock == 0 and status == STATUS_OK and current_hpp is not None:
+        if stock is not None and stock == 0:
             inventory_value = 0.0
         elif stock is not None and stock > 0 and status == STATUS_OK and current_hpp is not None:
             exact_average = position.get("exact_average")
@@ -243,6 +249,11 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
                     "Saldo resmi R2 belum tersedia. Belum ada HPP akuisisi kanonik. "
                     "Nilai estimasi belum tersedia."
                 )
+        elif stock is not None and stock == 0 and not canonical_exists:
+            recon_explanation = (
+                "Stok resmi 0 (tidak ada aktivitas relevan atau saldo 0). "
+                "Nilai persediaan Rp0 — HPP akuisisi tidak diperlukan untuk qty 0."
+            )
         elif not canonical_exists:
             recon_explanation = (
                 "Belum ada HPP akuisisi kanonik. Nilai estimasi belum tersedia."
@@ -328,7 +339,8 @@ async def build_inventory_valuation_rows(db, *, branch_id: Optional[str] = None)
         "physical_qty_scope": "BRANCH",
         "physical_qty_note": (
             "Qty resmi dari physical_stock_balances per cabang. "
-            "Tanpa baris saldo R2 = belum tersedia (bukan 0 terbukti). "
+            "Tanpa saldo dan tanpa ledger relevan = stok 0 terbukti (G1). "
+            "Tanpa saldo tetapi ada history ledger = belum tersedia. "
             "product_stock_state bukan sumber qty resmi."
         ),
     }

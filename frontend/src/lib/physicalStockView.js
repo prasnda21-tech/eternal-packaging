@@ -112,10 +112,19 @@ export function stockEmptyMessage({ masterItemCount = 0, warehouseCount = 0, bra
   return "Tidak ada baris stok untuk filter ini.";
 }
 
+function slotOperationalZero(wb) {
+  return Boolean(wb?.operational_qty_proven || wb?.no_relevant_activity);
+}
+
+function itemOperationalZero(item) {
+  return Boolean(item?.operational_qty_proven || item?.no_relevant_activity);
+}
+
 /**
  * Book stock cell for Stock Saat Ini.
- * Missing balance (balance_present=false) is NOT a proven zero — do not render 0.
- * Only show numeric 0 when a balance document is present.
+ * Missing balance (balance_present=false) is NOT a proven zero — do not render 0,
+ * unless G1 proven no-relevant-activity (operational_qty_proven) → numeric 0.
+ * Only show numeric 0 when a balance document is present OR no-activity is proven.
  */
 export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
   const balances = Array.isArray(item?.warehouse_balances) ? item.warehouse_balances : [];
@@ -123,6 +132,10 @@ export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
   if (wid) {
     const wb = balances.find((row) => String(row?.warehouse_id || "") === wid)
       || (balances.length === 1 ? balances[0] : null);
+    if (wb && slotOperationalZero(wb)) {
+      const qty = wb.physical_qty != null ? wb.physical_qty : 0;
+      return { present: true, qty, text: null };
+    }
     if (wb && wb.balance_present === false) {
       return { present: false, qty: null, text: "Belum saldo" };
     }
@@ -131,7 +144,14 @@ export function bookPhysicalDisplay(item, { warehouseId = "" } = {}) {
       return { present: true, qty, text: null };
     }
   }
+  if (itemOperationalZero(item)) {
+    const qty = item?.physical_qty != null ? item.physical_qty : 0;
+    return { present: true, qty, text: null };
+  }
   if (balances.length > 0 && balances.every((row) => row?.balance_present === false)) {
+    if (balances.every((row) => slotOperationalZero(row))) {
+      return { present: true, qty: item?.physical_qty != null ? item.physical_qty : 0, text: null };
+    }
     return { present: false, qty: null, text: "Belum saldo" };
   }
   if (item?.balance_present === false) {
@@ -155,10 +175,18 @@ export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggr
   const wid = String(warehouseId || "").trim();
   const book = bookPhysicalDisplay(item, { warehouseId: wid });
   const balances = Array.isArray(item?.warehouse_balances) ? item.warehouse_balances : [];
-  const hasWhMissing = balances.some((wb) => wb?.balance_present === false);
-  const hasWhUnreconciled = balances.some((wb) => wb?.baseline_status === "unreconciled");
+  // G1 proven zeros are not "missing" / incomplete.
+  const hasWhMissing = balances.some(
+    (wb) => wb?.balance_present === false && !slotOperationalZero(wb),
+  );
+  const hasWhUnreconciled = balances.some(
+    (wb) => wb?.baseline_status === "unreconciled" && !slotOperationalZero(wb),
+  );
   const hasWhDeficit = balances.some((wb) => wb?.saldo_buku_negatif);
-  const rowBaselineUnreconciled = String(item?.baseline_status || "") === "unreconciled";
+  const rowBaselineUnreconciled = (
+    String(item?.baseline_status || "") === "unreconciled"
+    && !itemOperationalZero(item)
+  );
   const aggregateIncomplete = Boolean(
     branchAggregate && (hasWhMissing || hasWhUnreconciled || rowBaselineUnreconciled),
   );
