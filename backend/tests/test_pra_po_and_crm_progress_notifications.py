@@ -14,14 +14,37 @@ from services import pra_po
 class FakeCursor:
     def __init__(self, rows: List[dict]):
         self._rows = rows
+        self._skip = 0
+        self._limit = None
 
     def sort(self, key, direction=-1):
-        field = key[0][0] if isinstance(key, list) else key
+        if isinstance(key, list):
+            # Apply last key first so the first key dominates (stable sorts).
+            for field, direction in reversed(list(key)):
+                self._rows = sorted(
+                    self._rows,
+                    key=lambda r, f=field: ("" if r.get(f) is None else r.get(f)),
+                    reverse=(direction == -1),
+                )
+            return self
+        field = key
         self._rows = sorted(self._rows, key=lambda r: r.get(field) or "", reverse=(direction == -1))
         return self
 
+    def skip(self, n):
+        self._skip = max(0, int(n or 0))
+        return self
+
+    def limit(self, n):
+        self._limit = None if n is None else max(0, int(n))
+        return self
+
     async def to_list(self, n):
-        return copy.deepcopy(self._rows[:n])
+        rows = self._rows[self._skip:]
+        cap = self._limit if self._limit is not None else n
+        if cap is not None:
+            rows = rows[:cap]
+        return copy.deepcopy(rows)
 
 
 class FakeCollection:
@@ -121,6 +144,8 @@ class FakeCollection:
 
 
 def _match(doc: dict, query: dict) -> bool:
+    import re as _re
+
     if not query:
         return True
     if "$and" in query:
@@ -145,6 +170,10 @@ def _match(doc: dict, query: dict) -> bool:
             elif "$lt" in v:
                 if not (actual is not None and actual < v["$lt"]):
                     return False
+            elif "$regex" in v:
+                flags = _re.I if "i" in str(v.get("$options") or "") else 0
+                if not _re.search(str(v["$regex"]), str(actual or ""), flags):
+                    return False
             else:
                 if actual != v:
                     return False
@@ -166,6 +195,9 @@ class FakeDb:
         ])
         self.orders = FakeCollection()
         self.sales_invoices = FakeCollection()
+        self.sales_customers = FakeCollection([
+            {"id": "cust-1", "name": "Toko Master", "phone": "081111", "address": "Jl. Master", "is_active": True},
+        ])
 
     def __getitem__(self, name):
         return getattr(self, name)
@@ -181,6 +213,20 @@ CRM_PERMS = {
 }
 ADMIN_PERMS = {
     pra_po.PERM_VIEW_ALL, pra_po.PERM_VERIFY, pra_po.PERM_RETURN, pra_po.PERM_AUDIT,
+}
+
+# Submit-ready payload (new customer free-text + master line + price).
+SUBMIT_READY = {
+    "customer": "Toko A",
+    "customer_phone": "08123456789",
+    "address": "Jl. Melati 1",
+    "line_items": [{
+        "name": "Box",
+        "quantity": 2,
+        "unit": "pcs",
+        "master_item_id": "m1",
+        "unit_price": 1500,
+    }],
 }
 
 
@@ -211,13 +257,138 @@ async def test_pra_po_draft_not_in_orders_collection():
 
 
 @pytest.mark.anyio
-async def test_return_requires_reason_and_crm_cannot_verify():
+async def test_draft_allows_incomplete_price_and_master():
+    """Draft create stays permissive; submit enforces completeness."""
+    db = FakeDb()
+    doc = await pra_po.create_draft(
+        db,
+        {
+            "customer": "Draft Only",
+            "line_items": [{"name": "Tanpa harga", "quantity": 1}],
+        },
+        CRM_A,
+    )
+    assert doc["status"] == pra_po.STATUS_DRAFT
+    assert doc["line_items"][0].get("master_item_id") in (None, "")
+    assert doc["line_items"][0].get("unit_price") in (None, "")
+    with pytest.raises(HTTPException) as exc:
+        await pra_po.submit_pra_po(db, doc["id"], CRM_A, CRM_PERMS)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_submit_requires_master_price_and_new_customer_contact():
+    db = FakeDb()
+    # Missing phone/address for new customer
+    created = await pra_po.create_draft(
+        db,
+        {
+            "customer": "Toko Baru",
+            "line_items": [{
+                "name": "Box", "quantity": 1, "unit": "pcs",
+                "master_item_id": "m1", "unit_price": 1000,
+            }],
+        },
+        CRM_A,
+    )
+    with pytest.raises(HTTPException) as phone_exc:
+        await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert phone_exc.value.status_code == 400
+    assert "HP" in str(phone_exc.value.detail) or "Alamat" in str(phone_exc.value.detail)
+
+    await pra_po.update_draft(
+        db, created["id"],
+        {"customer_phone": "0812", "address": "Jl. A", "line_items": [{
+            "name": "Box", "quantity": 1, "unit": "pcs", "unit_price": 1000,
+        }]},
+        CRM_A, CRM_PERMS,
+    )
+    with pytest.raises(HTTPException) as master_exc:
+        await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert master_exc.value.status_code == 400
+    assert "Master" in str(master_exc.value.detail)
+
+    await pra_po.update_draft(
+        db, created["id"],
+        {"line_items": [{
+            "name": "Box", "quantity": 1, "unit": "pcs",
+            "master_item_id": "m1", "unit_price": 0,
+        }]},
+        CRM_A, CRM_PERMS,
+    )
+    with pytest.raises(HTTPException) as price_exc:
+        await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert price_exc.value.status_code == 400
+    assert "Harga" in str(price_exc.value.detail)
+
+    await pra_po.update_draft(db, created["id"], SUBMIT_READY, CRM_A, CRM_PERMS)
+    submitted = await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert submitted["status"] == pra_po.STATUS_SUBMITTED
+
+
+@pytest.mark.anyio
+async def test_submit_existing_customer_id_must_be_valid():
     db = FakeDb()
     created = await pra_po.create_draft(
         db,
-        {"customer": "Toko A", "line_items": [{"name": "Box", "quantity": 2, "master_item_id": "m1"}]},
+        {
+            "customer": "Ghost",
+            "customer_id": "missing-cust",
+            "line_items": [{
+                "name": "Box", "quantity": 1, "unit": "pcs",
+                "master_item_id": "m1", "unit_price": 500,
+            }],
+        },
         CRM_A,
     )
+    with pytest.raises(HTTPException) as exc:
+        await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert exc.value.status_code == 400
+    assert "Customer master" in str(exc.value.detail)
+
+    await pra_po.update_draft(
+        db, created["id"],
+        {
+            "customer": "Toko Master",
+            "customer_id": "cust-1",
+            "line_items": [{
+                "name": "Box", "quantity": 1, "unit": "pcs",
+                "master_item_id": "m1", "unit_price": 500,
+            }],
+        },
+        CRM_A, CRM_PERMS,
+    )
+    submitted = await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert submitted["status"] == pra_po.STATUS_SUBMITTED
+
+
+@pytest.mark.anyio
+async def test_returned_resubmit_uses_same_validation():
+    db = FakeDb()
+    created = await pra_po.create_draft(db, SUBMIT_READY, CRM_A)
+    await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    await pra_po.return_pra_po(db, created["id"], {"reason": "Perbaiki qty"}, ADMIN, ADMIN_PERMS)
+    # Break price then fail resubmit
+    await pra_po.update_draft(
+        db, created["id"],
+        {"line_items": [{
+            "name": "Box", "quantity": 2, "unit": "pcs",
+            "master_item_id": "m1", "unit_price": None,
+        }]},
+        CRM_A, CRM_PERMS,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert exc.value.status_code == 400
+    await pra_po.update_draft(db, created["id"], SUBMIT_READY, CRM_A, CRM_PERMS)
+    again = await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
+    assert again["status"] == pra_po.STATUS_RESUBMITTED
+
+
+@pytest.mark.anyio
+async def test_return_requires_reason_and_crm_cannot_verify():
+    db = FakeDb()
+    created = await pra_po.create_draft(db, SUBMIT_READY, CRM_A)
     submitted = await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
     assert submitted["status"] == pra_po.STATUS_SUBMITTED
 
@@ -244,11 +415,7 @@ async def test_return_requires_reason_and_crm_cannot_verify():
 @pytest.mark.anyio
 async def test_verify_retry_does_not_duplicate_sales_order(monkeypatch):
     db = FakeDb()
-    created = await pra_po.create_draft(
-        db,
-        {"customer": "Toko A", "line_items": [{"name": "Box", "quantity": 2, "master_item_id": "m1"}]},
-        CRM_A,
-    )
+    created = await pra_po.create_draft(db, SUBMIT_READY, CRM_A)
     await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
 
     calls = {"n": 0}
@@ -353,11 +520,7 @@ async def test_concurrent_verify_creates_single_sales_order(monkeypatch):
     import asyncio
 
     db = FakeDb()
-    created = await pra_po.create_draft(
-        db,
-        {"customer": "Toko A", "line_items": [{"name": "Box", "quantity": 2, "master_item_id": "m1"}]},
-        CRM_A,
-    )
+    created = await pra_po.create_draft(db, SUBMIT_READY, CRM_A)
     await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
 
     calls = {"n": 0}
@@ -399,11 +562,7 @@ async def test_concurrent_verify_creates_single_sales_order(monkeypatch):
 @pytest.mark.anyio
 async def test_verify_recovers_when_so_exists_but_pra_not_finalized(monkeypatch):
     db = FakeDb()
-    created = await pra_po.create_draft(
-        db,
-        {"customer": "Toko A", "line_items": [{"name": "Box", "quantity": 2, "master_item_id": "m1"}]},
-        CRM_A,
-    )
+    created = await pra_po.create_draft(db, SUBMIT_READY, CRM_A)
     await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
     # Simulate partial success: SO inserted, Pra PO still submitted / verifying.
     orphan_so = {
@@ -436,11 +595,14 @@ async def test_verify_recovers_when_so_exists_but_pra_not_finalized(monkeypatch)
 @pytest.mark.anyio
 async def test_invalid_master_item_does_not_verify_or_create_so(monkeypatch):
     db = FakeDb()
-    created = await pra_po.create_draft(
-        db,
-        {"customer": "Toko A", "line_items": [{"name": "Box", "quantity": 2, "master_item_id": "bad-id"}]},
-        CRM_A,
-    )
+    bad_payload = {
+        **SUBMIT_READY,
+        "line_items": [{
+            "name": "Box", "quantity": 2, "unit": "pcs",
+            "master_item_id": "bad-id", "unit_price": 1500,
+        }],
+    }
+    created = await pra_po.create_draft(db, bad_payload, CRM_A)
     await pra_po.submit_pra_po(db, created["id"], CRM_A, CRM_PERMS)
 
     async def bad_master(*_a, **_k):
@@ -495,3 +657,194 @@ async def test_crm_progress_settings_do_not_wipe_cda_recipients():
     assert cda["notify_designer"] is True
     progress = await notif.get_crm_progress_settings(db)
     assert progress["events"][notif.EVENT_CRM_CUSTOMER_DESIGN_APPROVED] is False
+
+
+def _seed_pra_rows(db, rows):
+    for row in rows:
+        db.pra_pos.docs.append(copy.deepcopy(row))
+
+
+@pytest.mark.anyio
+async def test_list_pagination_and_search_beyond_500():
+    db = FakeDb()
+    rows = []
+    for i in range(1, 506):
+        rows.append({
+            "id": f"id-{i:04d}",
+            "number": f"PRA-OLD-{i:04d}",
+            "status": pra_po.STATUS_DRAFT if i % 2 else pra_po.STATUS_SUBMITTED,
+            "created_by_user_id": "crm-a",
+            "customer": f"Cust {i}",
+            "sales_order_po_number": None,
+            "notes": "",
+            "updated_at": f"2026-01-{(i % 28) + 1:02d}T10:00:00+00:00",
+            "line_items": [{"name": "Box", "quantity": 1}],
+            "item_count": 1,
+            "total_quantity": 1,
+        })
+    # Oldest-style marker that must still be findable via search (beyond first 500 by updated_at).
+    rows.append({
+        "id": "id-ancient",
+        "number": "PRA-ANCIENT-NEEDLE",
+        "status": pra_po.STATUS_DRAFT,
+        "created_by_user_id": "crm-a",
+        "customer": "Needle Customer Unique",
+        "sales_order_po_number": None,
+        "notes": "",
+        "updated_at": "2020-01-01T00:00:00+00:00",
+        "line_items": [{"name": "Box", "quantity": 1}],
+        "item_count": 1,
+        "total_quantity": 1,
+    })
+    _seed_pra_rows(db, rows)
+
+    page1 = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", page=1, page_size=50,
+    )
+    assert page1["page"] == 1
+    assert page1["page_size"] == 50
+    assert page1["total"] == 506
+    assert len(page1["items"]) == 50
+    assert page1["counts"]["all"] == 506
+    assert page1["counts"]["draft"] + page1["counts"]["queue"] == 506
+
+    page11 = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", page=11, page_size=50,
+    )
+    assert page11["total"] == 506
+    assert len(page11["items"]) == 6  # 500..506 remainder on last pages: 506/50 => page 11 has 6
+
+    # Boundary: page past end => empty items, total unchanged
+    empty = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", page=99, page_size=50,
+    )
+    assert empty["total"] == 506
+    assert empty["items"] == []
+
+    # Search finds the ancient needle despite being outside first-500 window by recency.
+    found = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", q="ANCIENT-NEEDLE", page=1, page_size=20,
+    )
+    assert found["total"] == 1
+    assert found["items"][0]["number"] == "PRA-ANCIENT-NEEDLE"
+
+    by_cust = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", q="Needle Customer Unique", page=1, page_size=20,
+    )
+    assert by_cust["total"] == 1
+
+    none = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", q="ZZZ-NO-MATCH", page=1, page_size=20,
+    )
+    assert none["total"] == 0
+    assert none["items"] == []
+    assert none["counts"]["all"] == 0
+
+
+@pytest.mark.anyio
+async def test_list_status_counts_and_queue_filter():
+    db = FakeDb()
+    _seed_pra_rows(db, [
+        {"id": "a1", "number": "PRA-A1", "status": "draft", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-01T00:00:00+00:00"},
+        {"id": "a2", "number": "PRA-A2", "status": "submitted", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-02T00:00:00+00:00"},
+        {"id": "a3", "number": "PRA-A3", "status": "resubmitted", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-03T00:00:00+00:00"},
+        {"id": "a4", "number": "PRA-A4", "status": "returned", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-04T00:00:00+00:00"},
+        {"id": "a5", "number": "PRA-A5", "status": "verified", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-05T00:00:00+00:00"},
+        {"id": "b1", "number": "PRA-B1", "status": "submitted", "created_by_user_id": "crm-b",
+         "customer": "B", "updated_at": "2026-10-06T00:00:00+00:00"},
+    ])
+
+    own = await pra_po.list_pra_pos(db, CRM_A, CRM_PERMS, view="own", page=1, page_size=50)
+    assert own["counts"] == {
+        "all": 5, "draft": 1, "queue": 2, "returned": 1, "verified": 1,
+    }
+    queue = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", status="queue", page=1, page_size=50,
+    )
+    assert queue["total"] == 2
+    assert {r["status"] for r in queue["items"]} == {"submitted", "resubmitted"}
+    # counts remain scoped+search (no status) so tabs stay accurate
+    assert queue["counts"]["all"] == 5
+    assert queue["counts"]["queue"] == 2
+
+
+@pytest.mark.anyio
+async def test_list_crm_vs_admin_visibility_no_leakage():
+    db = FakeDb()
+    _seed_pra_rows(db, [
+        {"id": "a1", "number": "PRA-A1", "status": "draft", "created_by_user_id": "crm-a",
+         "customer": "Secret A", "updated_at": "2026-10-01T00:00:00+00:00"},
+        {"id": "b1", "number": "PRA-B1", "status": "draft", "created_by_user_id": "crm-b",
+         "customer": "Secret B", "updated_at": "2026-10-02T00:00:00+00:00"},
+    ])
+    crm_a = await pra_po.list_pra_pos(db, CRM_A, CRM_PERMS, view="own", page=1, page_size=50)
+    assert crm_a["total"] == 1
+    assert crm_a["items"][0]["id"] == "a1"
+
+    crm_b = await pra_po.list_pra_pos(db, CRM_B, CRM_PERMS, view="own", q="Secret", page=1, page_size=50)
+    assert crm_b["total"] == 1
+    assert crm_b["items"][0]["id"] == "b1"
+
+    admin = await pra_po.list_pra_pos(db, ADMIN, ADMIN_PERMS, page=1, page_size=50)
+    assert admin["total"] == 2
+
+    with pytest.raises(HTTPException) as exc:
+        await pra_po.list_pra_pos(db, CRM_A, CRM_PERMS, view="queue", page=1, page_size=50)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_list_sort_updated_at_desc_id_tiebreak():
+    db = FakeDb()
+    _seed_pra_rows(db, [
+        {"id": "id-b", "number": "PRA-1", "status": "draft", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-01T12:00:00+00:00"},
+        {"id": "id-a", "number": "PRA-2", "status": "draft", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-01T12:00:00+00:00"},
+        {"id": "id-c", "number": "PRA-3", "status": "draft", "created_by_user_id": "crm-a",
+         "customer": "A", "updated_at": "2026-10-02T12:00:00+00:00"},
+    ])
+    listed = await pra_po.list_pra_pos(db, CRM_A, CRM_PERMS, view="own", page=1, page_size=50)
+    ids = [r["id"] for r in listed["items"]]
+    assert ids[0] == "id-c"
+    # Same updated_at → id descending
+    assert ids[1:] == ["id-b", "id-a"]
+
+
+@pytest.mark.anyio
+async def test_list_search_escapes_regex_metacharacters():
+    db = FakeDb()
+    _seed_pra_rows(db, [
+        {
+            "id": "rx1",
+            "number": "PRA-RX-1",
+            "status": "draft",
+            "created_by_user_id": "crm-a",
+            "customer": "Toko (A.*B)",
+            "updated_at": "2026-10-01T00:00:00+00:00",
+        },
+        {
+            "id": "rx2",
+            "number": "PRA-RX-2",
+            "status": "draft",
+            "created_by_user_id": "crm-a",
+            "customer": "Toko AB",
+            "updated_at": "2026-10-02T00:00:00+00:00",
+        },
+    ])
+    literal = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", q="(A.*B)", page=1, page_size=10,
+    )
+    assert literal["total"] == 1
+    assert literal["items"][0]["id"] == "rx1"
+    # Unescaped ".*" would match every customer; escaped must match literal only.
+    meta = await pra_po.list_pra_pos(
+        db, CRM_A, CRM_PERMS, view="own", q=".*", page=1, page_size=10,
+    )
+    assert meta["total"] == 1
+    assert meta["items"][0]["id"] == "rx1"

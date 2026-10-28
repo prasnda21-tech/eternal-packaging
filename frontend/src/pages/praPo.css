@@ -1,0 +1,109 @@
+/* Pra PO — reuse Pesanan Penjualan workspace density with thin overrides */
+
+.pra-po-page.sales-order-page {
+  --pra-po-green: #0f766e;
+}
+
+.pra-po-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  background: #e2e8f0;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.pra-po-status-badge.is-draft {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.pra-po-status-badge.is-queue {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.pra-po-status-badge.is-returned {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.pra-po-status-badge.is-verified {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.pra-po-actionbar-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pra-po-return-input {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.pra-po-page .so-create-lines-scroll {
+  overflow-x: auto;
+}
+
+.pra-po-page .so-list-table-wrap {
+  overflow-x: auto;
+}
+
+.pra-po-page .so-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pra-po-page .so-list-table th,
+.pra-po-page .so-list-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line, #e2e8f0);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.pra-po-page .so-list-table th {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .pra-po-actionbar-right {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .pra-po-return-input {
+    min-width: 0;
+    width: 100%;
+    max-width: none;
+  }
+
+  .pra-po-page .so-create-actionbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 700px) {
+  .pra-po-page .ux90-so-vtabs {
+    overflow-x: auto;
+  }
+
+  .pra-po-page .so-create-lines-table {
+    min-width: 720px;
+  }
+}

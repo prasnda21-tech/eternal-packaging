@@ -88,11 +88,18 @@ def can_audit(perms: set) -> bool:
     return PERM_AUDIT in perms or can_view_all(perms) or can_view_own(perms)
 
 
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 100
+LIST_SORT = [("updated_at", -1), ("id", -1)]
+
+
 async def ensure_indexes(db) -> None:
     await db[COLLECTION].create_index("id", unique=True)
     await db[COLLECTION].create_index("number", unique=True)
     await db[COLLECTION].create_index([("created_by_user_id", 1), ("updated_at", -1)])
     await db[COLLECTION].create_index([("status", 1), ("updated_at", -1)])
+    await db[COLLECTION].create_index([("updated_at", -1), ("id", -1)])
+    await db[COLLECTION].create_index("customer")
     await db[COLLECTION].create_index("sales_order_id", sparse=True)
     await db[HISTORY_COLLECTION].create_index([("pra_po_id", 1), ("at", -1)])
     # One operational SO per Pra PO — DB-level guard against concurrent verify races.
@@ -173,6 +180,29 @@ def _require_owner(doc: dict, user: dict) -> None:
         raise HTTPException(403, "Pra PO ini bukan milik Anda.")
 
 
+def _parse_unit_price(raw: Any) -> Optional[float]:
+    """Parse selling price; blank is not zero. Returns None when missing/invalid."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        amount = float(raw)
+        if not (amount == amount) or amount == float("inf") or amount == float("-inf"):  # NaN/inf
+            return None
+        return round(amount * 100) / 100
+    text = str(raw).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        amount = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not (amount == amount) or amount == float("inf") or amount == float("-inf"):
+        return None
+    return round(amount * 100) / 100
+
+
 def _normalize_lines(raw_lines: Any) -> List[dict]:
     if not isinstance(raw_lines, list) or not raw_lines:
         raise HTTPException(400, "Minimal 1 line item.")
@@ -194,6 +224,11 @@ def _normalize_lines(raw_lines: Any) -> List[dict]:
         if line_id in seen:
             raise HTTPException(400, f"Line item #{i + 1}: line_id duplikat.")
         seen.add(line_id)
+        # Draft remains permissive: store parsed price when valid, else keep None.
+        parsed_price = _parse_unit_price(li.get("unit_price"))
+        proc = li.get("production_process")
+        if proc not in ("print", "non_print", None):
+            proc = str(proc or "").strip() or None
         row = {
             "line_id": line_id,
             "name": name,
@@ -204,8 +239,8 @@ def _normalize_lines(raw_lines: Any) -> List[dict]:
             "notes": str(li.get("notes") or "").strip() or None,
             "master_item_id": str(li.get("master_item_id") or "").strip() or None,
             "accurate_item_id": str(li.get("accurate_item_id") or "").strip() or None,
-            "production_process": li.get("production_process"),
-            "unit_price": li.get("unit_price"),
+            "production_process": proc if proc in ("print", "non_print") else (proc or "print"),
+            "unit_price": parsed_price,
             "price_source": li.get("price_source"),
             "price_review": bool(li.get("price_review")) if li.get("price_review") is not None else None,
             "item_type": str(li.get("item_type") or "").strip() or None,
@@ -220,6 +255,57 @@ def _normalize_lines(raw_lines: Any) -> List[dict]:
                 pass
         out.append(row)
     return out
+
+
+async def _validate_for_submit(db, doc: dict) -> None:
+    """Strict checks before submit / resubmit. Draft create/update stays permissive."""
+    customer = str(doc.get("customer") or "").strip()
+    if not customer:
+        raise HTTPException(400, "Customer wajib diisi.")
+
+    customer_id = str(doc.get("customer_id") or "").strip()
+    if customer_id:
+        master = await db.sales_customers.find_one({"id": customer_id}, {"_id": 1, "id": 1})
+        if not master:
+            raise HTTPException(400, "Customer master tidak valid.")
+    else:
+        if not str(doc.get("customer_phone") or "").strip():
+            raise HTTPException(400, "Pelanggan baru: No. HP / WhatsApp wajib diisi.")
+        if not str(doc.get("address") or "").strip():
+            raise HTTPException(400, "Pelanggan baru: Alamat lengkap pengiriman wajib diisi.")
+
+    lines = doc.get("line_items") or []
+    if not isinstance(lines, list) or not lines:
+        raise HTTPException(400, "Minimal harus ada 1 line item.")
+
+    for i, li in enumerate(lines):
+        if not isinstance(li, dict):
+            raise HTTPException(400, f"Line item #{i + 1} tidak valid.")
+        if not str(li.get("name") or "").strip():
+            raise HTTPException(400, f"Line item #{i + 1}: Nama barang/jasa wajib diisi.")
+        mid = str(li.get("master_item_id") or "").strip()
+        aid = str(li.get("accurate_item_id") or "").strip()
+        if not mid and not aid:
+            raise HTTPException(
+                400,
+                f"Line item #{i + 1}: Master Produk wajib dipilih "
+                "(master_item_id atau accurate_item_id).",
+            )
+        try:
+            qty = int(li.get("quantity"))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            raise HTTPException(400, f"Line item #{i + 1}: Quantity harus > 0.")
+        unit = str(li.get("unit") or "").strip()
+        if not unit:
+            raise HTTPException(400, f"Line item #{i + 1}: Satuan wajib diisi.")
+        price = _parse_unit_price(li.get("unit_price"))
+        if price is None or price <= 0:
+            raise HTTPException(
+                400,
+                f"Line item #{i + 1}: Harga jual wajib angka lebih besar dari 0.",
+            )
 
 
 def _apply_payload(doc: dict, payload: dict) -> None:
@@ -300,6 +386,86 @@ async def get_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
     raise HTTPException(403, "Tidak berwenang melihat Pra PO")
 
 
+def _list_visibility_query(user: dict, perms: set, *, view: Optional[str] = None) -> Dict[str, Any]:
+    """Permission-scoped base query (no search/status/pagination)."""
+    query: Dict[str, Any] = {}
+    view_norm = str(view or "").strip().lower()
+    if view_norm in ("queue", "verification"):
+        if not can_view_all(perms):
+            raise HTTPException(403, "Tidak berwenang melihat antrean verifikasi")
+        # Visibility for queue view still unrestricted among view_all; status applied separately.
+        return query
+    if view_norm in ("own", "mine"):
+        if not can_view_own(perms) and not can_view_all(perms):
+            raise HTTPException(403, "Tidak berwenang melihat Pra PO")
+        # own/mine always restricts to actor even for admins who request own.
+        query["created_by_user_id"] = actor_user_id(user)
+        return query
+    # Default / empty view: admins see all; CRM sees own.
+    if can_view_all(perms):
+        return query
+    if can_view_own(perms):
+        query["created_by_user_id"] = actor_user_id(user)
+        return query
+    raise HTTPException(403, "Tidak berwenang melihat Pra PO")
+
+
+def _status_clause(status: Optional[str], *, view: Optional[str] = None) -> Dict[str, Any]:
+    view_norm = str(view or "").strip().lower()
+    st = str(status or "").strip().lower()
+    if view_norm in ("queue", "verification") and not st:
+        return {"status": {"$in": [STATUS_SUBMITTED, STATUS_RESUBMITTED]}}
+    if not st or st in ("all", "*"):
+        return {}
+    if st in ("queue", "verification", "antrean"):
+        return {"status": {"$in": [STATUS_SUBMITTED, STATUS_RESUBMITTED]}}
+    return {"status": st}
+
+
+def _search_clause(q: Optional[str]) -> Dict[str, Any]:
+    text = str(q or "").strip()
+    if not text:
+        return {}
+    # Escape user input for regex; case-insensitive match on key display fields.
+    pat = re.escape(text)
+    rx = {"$regex": pat, "$options": "i"}
+    return {
+        "$or": [
+            {"number": rx},
+            {"customer": rx},
+            {"sales_order_po_number": rx},
+            {"notes": rx},
+        ]
+    }
+
+
+def _merge_query(*parts: Dict[str, Any]) -> Dict[str, Any]:
+    clauses = [p for p in parts if p]
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return dict(clauses[0])
+    return {"$and": clauses}
+
+
+def _clamp_page(page: Optional[int], page_size: Optional[int]) -> tuple[int, int]:
+    try:
+        p = int(page) if page is not None else 1
+    except (TypeError, ValueError):
+        p = 1
+    try:
+        ps = int(page_size) if page_size is not None else DEFAULT_PAGE_SIZE
+    except (TypeError, ValueError):
+        ps = DEFAULT_PAGE_SIZE
+    if p < 1:
+        p = 1
+    if ps < 1:
+        ps = DEFAULT_PAGE_SIZE
+    if ps > MAX_PAGE_SIZE:
+        ps = MAX_PAGE_SIZE
+    return p, ps
+
+
 async def list_pra_pos(
     db,
     user: dict,
@@ -307,34 +473,47 @@ async def list_pra_pos(
     *,
     view: Optional[str] = None,
     status: Optional[str] = None,
-) -> List[dict]:
-    query: Dict[str, Any] = {}
-    view_norm = str(view or "").strip().lower()
-    if view_norm in ("queue", "verification"):
-        if not can_view_all(perms):
-            raise HTTPException(403, "Tidak berwenang melihat antrean verifikasi")
-        query["status"] = {"$in": [STATUS_SUBMITTED, STATUS_RESUBMITTED]}
-    elif view_norm in ("own", "mine", ""):
-        if can_view_all(perms) and view_norm == "":
-            pass
-        elif can_view_own(perms):
-            query["created_by_user_id"] = actor_user_id(user)
-        elif can_view_all(perms):
-            pass
-        else:
-            raise HTTPException(403, "Tidak berwenang melihat Pra PO")
-    else:
-        if can_view_all(perms):
-            pass
-        elif can_view_own(perms):
-            query["created_by_user_id"] = actor_user_id(user)
-        else:
-            raise HTTPException(403, "Tidak berwenang melihat Pra PO")
-    st = str(status or "").strip().lower()
-    if st:
-        query["status"] = st
-    rows = await db[COLLECTION].find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
-    return [public_view(r) for r in rows]
+    q: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Paginated Pra PO list. Search/status applied in Mongo before skip/limit.
+
+    Response shape is additive/compatible: always includes ``items``. Also returns
+    ``total``, ``page``, ``page_size``, and scoped ``counts`` (all/draft/queue/
+    returned/verified) under the same visibility + search filter.
+    """
+    page_n, size_n = _clamp_page(page, page_size)
+    visibility = _list_visibility_query(user, perms, view=view)
+    search = _search_clause(q)
+    status_filter = _status_clause(status, view=view)
+
+    scoped = _merge_query(visibility, search)
+    item_query = _merge_query(scoped, status_filter)
+
+    total = int(await db[COLLECTION].count_documents(item_query))
+    skip = (page_n - 1) * size_n
+    cursor = db[COLLECTION].find(item_query, {"_id": 0}).sort(LIST_SORT).skip(skip).limit(size_n)
+    rows = await cursor.to_list(size_n)
+    items = [public_view(r) for r in rows]
+
+    counts = {
+        "all": int(await db[COLLECTION].count_documents(scoped)),
+        "draft": int(await db[COLLECTION].count_documents(_merge_query(scoped, {"status": STATUS_DRAFT}))),
+        "queue": int(await db[COLLECTION].count_documents(
+            _merge_query(scoped, {"status": {"$in": [STATUS_SUBMITTED, STATUS_RESUBMITTED]}})
+        )),
+        "returned": int(await db[COLLECTION].count_documents(_merge_query(scoped, {"status": STATUS_RETURNED}))),
+        "verified": int(await db[COLLECTION].count_documents(_merge_query(scoped, {"status": STATUS_VERIFIED}))),
+    }
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page_n,
+        "page_size": size_n,
+        "counts": counts,
+    }
 
 
 async def update_draft(db, pra_po_id: str, payload: dict, user: dict, perms: set) -> dict:
@@ -369,8 +548,7 @@ async def submit_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
         status = doc.get("status")
         if status not in SUBMITTABLE_STATUSES:
             raise HTTPException(400, "Pra PO tidak dapat diajukan dari status saat ini.")
-        if not doc.get("customer") or not (doc.get("line_items") or []):
-            raise HTTPException(400, "Lengkapi customer dan line item sebelum mengajukan.")
+        await _validate_for_submit(db, doc)
         new_status = STATUS_RESUBMITTED if status == STATUS_RETURNED else STATUS_SUBMITTED
         now = now_iso()
         updated = await db[COLLECTION].find_one_and_update(
