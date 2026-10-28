@@ -106,6 +106,26 @@ def _po_line_indexes_for_id(order: dict, line_id: str) -> List[int]:
     return hits
 
 
+def _synthetic_po_line_index(order: dict, claimed: str) -> Optional[int]:
+    """Return N when claimed is exactly ``{order.id}_line_N`` for this PO.
+
+    Sales-delivery summary invents this stamp when SO ``line_items`` lack
+    ``line_id``. Foreign PO ids / non-numeric suffixes are not accepted.
+    Never matches by product name.
+    """
+    oid = _text(order.get("id"))
+    want = _text(claimed)
+    if not oid or not want:
+        return None
+    prefix = f"{oid}_line_"
+    if not want.startswith(prefix):
+        return None
+    suffix = want[len(prefix):]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
 def resolve_confirmation_line_identity(
     order: dict,
     *,
@@ -114,8 +134,15 @@ def resolve_confirmation_line_identity(
 ) -> tuple:
     """Return (line_idx, line_id) from one consistent SO line.
 
-    Raises ValueError when SJ line_id and line_idx name different SO lines.
-    Never invents identity by qty/name similarity.
+    Raises ValueError when SJ ``line_id`` uniquely names a *different* SO line
+    than ``line_idx`` (print vs polos fail-closed). Never invents identity by
+    qty/name similarity.
+
+    Orphan/stale stamps (absent from SO ``line_items``) are accepted only when
+    they are the sales-delivery synthetic ``{order.id}_line_N`` for *this* PO
+    and ``N`` agrees with ``line_idx``. A synthetic that names another line
+    index is rejected even if ``line_idx`` alone would be in range. Unrelated
+    orphan strings are rejected. Does not mutate SO/SJ records.
     """
     idx = int(line_idx)
     lis = order.get("line_items") or []
@@ -138,14 +165,19 @@ def resolve_confirmation_line_identity(
                     "Konfirmasi dibatalkan sebelum stok diposting."
                 )
             return idx, claimed
-        if po_lid and claimed != po_lid:
+        synth_n = _synthetic_po_line_index(order, claimed)
+        if synth_n is None:
             raise ValueError(
-                f"line_id '{claimed}' tidak cocok dengan SO line_idx={idx} "
-                f"(line_id SO='{po_lid}'). Konfirmasi dibatalkan sebelum stok diposting."
+                f"line_id '{claimed}' tidak ditemukan pada SO untuk line_idx={idx}."
             )
-        raise ValueError(
-            f"line_id '{claimed}' tidak ditemukan pada SO untuk line_idx={idx}."
-        )
+        if synth_n != idx:
+            raise ValueError(
+                f"line_id '{claimed}' menunjuk baris SO #{synth_n + 1} tetapi "
+                f"line_idx={idx} menunjuk baris #{idx + 1}. "
+                "Konfirmasi dibatalkan sebelum stok diposting."
+            )
+        # Proven synthetic for this PO + this line — prefer canonical SO id.
+        return idx, po_lid
     return idx, po_lid
 
 
