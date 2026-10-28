@@ -98,7 +98,7 @@ Keep dirty `/opt/eternal-packaging` overlay untouched. Pure SHA does **not** aut
 - Preflight: runtime root writable, FE leaf writable, mirror, disk, systemd WD/ExecStart match expected **runtime** paths.
 - Materialize via `git archive` then **fresh venv** + dependency install; validate executable before switching `current`.
 - Failed/incomplete release dirs are **not** deleted automatically. Reuse is allowed only when source SHA, frontend build fingerprint, referenced assets, and venv/requirements provenance all validate; otherwise fail closed for Owner inspection (never `rm -rf` on failed reuse). Required frontend assets are taken from `index.html` `src`/`href` attributes and `asset-manifest.json` `static/…` paths only — inline script strings such as third-party `…/static/array.js` (e.g. PostHog) are not treated as local build assets.
-- Frontend acquisition default is **artifact mode** (`ETERNAL_FRONTEND_BUILD_MODE=artifact`): install a verified GitHub Actions artifact (workflow `frontend-artifact.yml`) and **never** fall back to VPS `yarn`/`craco`. Explicit `legacy` enables the old **Yarn only** VPS production frontend build (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback remains removed. Fingerprint hashes `package.json`, `yarn.lock`, `src/`, `public/`, optional in-tree CRA config/`.env*`, and when set the external `ETERNAL_FRONTEND_ENV_FILE` **content hash only** (values never logged). Artifact manifests also bind public env fingerprint (`FRONTEND_PROD_ENV_MODE=same-origin|explicit-url`).
+- Frontend production build is **Yarn only** (`yarn.lock` + `yarn install --frozen-lockfile`); npm fallback removed (fail closed if Yarn/lock missing). Matching fingerprint skips rebuild. Fingerprint hashes `package.json`, `yarn.lock`, optional in-tree CRA config/`.env*`, and when set the external `ETERNAL_FRONTEND_ENV_FILE` **content hash only** (values never logged).
 - Health checks after restart/publish use a **60s wall-clock budget** (retries include transient HTTP 502); success still requires `mongo=true` and `mode=operational`.
 - **FE-only / no-backend-change:** keep `current` + running process on the active release (no switch, no restart); verify `/proc/<MainPID>/cwd` matches that release.
 - **Backend change:** switch `current`, restart, then verify process cwd == new release backend.
@@ -144,35 +144,11 @@ After a successful single POST, the helper correlates `request_id`, prints `DISP
 
 `.github/workflows/deploy-probe.yml` — literal remote `probe` only. PASS ≠ runtime readiness.
 
-## Frontend production artifact (no auto-deploy)
-
-`.github/workflows/frontend-artifact.yml` — Owner `workflow_dispatch` with exact `commit_sha` + `confirm_sha` on `main`.
-
-1. Verifies SHA is an ancestor of `origin/main`.
-2. Requires repository variable `FRONTEND_PROD_ENV_MODE` = `same-origin` or `explicit-url` (fail-closed if unset). Never inherits reconciliation’s `REACT_APP_BACKEND_URL=http://127.0.0.1:8000`.
-3. Node 20 + Yarn (`packageManager` pin) → `yarn install --frozen-lockfile` → `yarn build` → `scripts/deploy/pack_frontend_artifact.sh`.
-4. Uploads artifact `eternal-frontend-build-<sha40>` (manifest + tar.gz), retention **30 days**.
-5. Does **not** SSH, deploy, restart services, or mutate MongoDB.
-
-VPS consumption (manual Terminal → SSH → gate → runner):
-
-- `ETERNAL_FRONTEND_BUILD_MODE=artifact` (default)
-- Provide artifact via `ETERNAL_FRONTEND_ARTIFACT_DIR` (pre-downloaded) **or** `ETERNAL_GITHUB_REPO` + `ETERNAL_FRONTEND_ARTIFACT_TOKEN` / `GH_TOKEN` (Actions read)
-- Align `FRONTEND_PROD_ENV_MODE` (and URL if explicit) with the artifact build. Expected env fingerprint is **always** derived from that mode — `ETERNAL_FRONTEND_EXPECTED_ENV_FP` cannot bypass production validation.
-- Provenance checks: schema, workflow name, git SHA, Actions `run_id`+`run_attempt` (when downloaded from GitHub), archive digest, expanded input fingerprint, env fingerprint, post-extract index/asset digests; unsafe tar paths/symlinks/special nodes refused
-- Docs/tests-only SHAs emit `DEPLOY_OK_NOOP` and update `last-processed-git-sha.txt` only — they do **not** advance `active-release.txt` or publish/restart
-
-## Gate / runner transactional install
-
-`scripts/deploy/install-gate.sh --activate` now: backup live gate+runner+lib (mode/owner/sha256) → stage → probe → activate → post-probe; automatic restore on failure (`GATE_ACTIVATE_ROLLED_BACK`). Separate from application deploy authorization. Do not run against production from CI.
-
 ## GitHub Environment Secrets / Variables
 
 Secrets: `DEPLOY_SHARED_SECRET` (alias `DEPLOY_APPROVAL_TOKEN`), `DEPLOY_HOST`, `DEPLOY_USER` (=`eternaladmin` gate user), `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, optional `DEPLOY_SSH_PORT`.
 
 Variable: `DEPLOY_ALLOWED_ACTORS` (comma-separated logins).
-
-Repository variables for FE artifacts: `FRONTEND_PROD_ENV_MODE` (`same-origin`|`explicit-url`), optional `FRONTEND_PROD_REACT_APP_BACKEND_URL` when mode is `explicit-url`.
 
 ## Preflight VPS (read-only; no secrets)
 

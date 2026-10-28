@@ -46,11 +46,6 @@ ETERNAL_USE_SYSTEMCTL_SUDO="${ETERNAL_USE_SYSTEMCTL_SUDO:-1}"
 ETERNAL_CURL_BIN="${ETERNAL_CURL_BIN:-curl}"
 ETERNAL_SKIP_FETCH="${ETERNAL_SKIP_FETCH:-0}"
 ETERNAL_DRY_BUILD="${ETERNAL_DRY_BUILD:-0}"
-# Frontend acquisition mode:
-#   artifact — verified GHA/local artifact only (default; never yarn fallback)
-#   legacy   — explicit VPS yarn install/build (Owner override only)
-#   dry      — synthetic fixtures (tests); also implied by ETERNAL_DRY_BUILD=1
-ETERNAL_FRONTEND_BUILD_MODE="${ETERNAL_FRONTEND_BUILD_MODE:-artifact}"
 ETERNAL_BASELINE_DIR="${ETERNAL_BASELINE_DIR:-$ETERNAL_RELEASES_ROOT/baseline-active}"
 ETERNAL_EXPECTED_WD="${ETERNAL_EXPECTED_WD:-$ETERNAL_CURRENT_LINK/backend}"
 ETERNAL_EXPECTED_EXEC_PREFIX="${ETERNAL_EXPECTED_EXEC_PREFIX:-$ETERNAL_CURRENT_LINK/backend}"
@@ -556,82 +551,52 @@ eternal_diff_paths() {
 
 eternal_maybe_build_frontend() {
   local release_dir="$1"
-  local fp recorded mode artifact_dir
+  local fp recorded
   if [[ "$ETERNAL_NEED_FRONTEND" != "1" ]]; then
     eternal_deploy_log "frontend unchanged; skip build"
     return 0
   fi
   [[ -d "$release_dir/frontend" ]] || eternal_deploy_die "frontend tree missing in release"
 
-  mode="${ETERNAL_FRONTEND_BUILD_MODE:-artifact}"
-  if [[ "$ETERNAL_DRY_BUILD" == "1" ]]; then
-    mode="dry"
-  fi
-
   # Reuse existing build when fingerprint matches recorded post-build marker.
-  # Artifact mode also requires a matching provenance marker (no silent yarn).
   if [[ -f "$release_dir/frontend/build/index.html" \
      && -f "$release_dir/.eternal-frontend-fingerprint" ]]; then
     recorded="$(tr -d '\n' <"$release_dir/.eternal-frontend-fingerprint")"
     fp="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
     if [[ -n "$recorded" && "$recorded" == "$fp" ]]; then
-      if [[ "$mode" == "artifact" ]]; then
-        if eternal_frontend_artifact_already_installed "$release_dir" "${TARGET_SHA:-}"; then
-          eternal_deploy_log "frontend artifact reuse OK; skip fetch/yarn"
-          return 0
-        fi
-        eternal_deploy_log "frontend build present without valid artifact provenance; re-install from artifact"
-      else
-        eternal_deploy_log "frontend build reuse fingerprint OK; skip yarn install/build"
-        return 0
-      fi
-    else
-      eternal_deploy_log "frontend build present but fingerprint mismatch; continuing mode=$mode"
+      eternal_deploy_log "frontend build reuse fingerprint OK; skip yarn install/build"
+      return 0
     fi
+    eternal_deploy_log "frontend build present but fingerprint mismatch; rebuilding"
   fi
 
-  case "$mode" in
-    dry)
-      if [[ "${ETERNAL_FORCE_BUILD_FAIL:-0}" == "1" ]]; then
-        eternal_deploy_die "frontend build failed (forced)"
-      fi
-      mkdir -p "$release_dir/frontend/build/static/js"
-      printf 'dry-asset\n' >"$release_dir/frontend/build/static/js/app.js"
-      printf 'dry-build\n<script src="/static/js/app.js"></script>\n' \
-        >"$release_dir/frontend/build/index.html"
-      printf '{"files":{"main.js":"/static/js/app.js"}}\n' \
-        >"$release_dir/frontend/build/asset-manifest.json"
-      eternal_write_frontend_fingerprint "$release_dir"
-      eternal_deploy_log "frontend dry-build written (unpublished)"
-      return 0
-      ;;
-    artifact)
-      if [[ "${ETERNAL_FORCE_BUILD_FAIL:-0}" == "1" ]]; then
-        eternal_deploy_die "frontend artifact install failed (forced)"
-      fi
-      # Never fall back to yarn/CRACO on the VPS.
-      artifact_dir="$(eternal_resolve_frontend_artifact_dir "${TARGET_SHA:?TARGET_SHA required}")"
-      eternal_install_frontend_artifact_from_dir "$release_dir" "$TARGET_SHA" "$artifact_dir"
-      return 0
-      ;;
-    legacy)
-      eternal_deploy_log "WARNING: ETERNAL_FRONTEND_BUILD_MODE=legacy (explicit VPS yarn/CRACO)"
-      export NODE_OPTIONS="${ETERNAL_NODE_OPTIONS}"
-      # NODE_OPTIONS heap limit is NOT a cgroup/RAM ceiling for the whole process tree.
-      if [[ -n "$ETERNAL_FRONTEND_ENV_FILE" ]]; then
-        set -a
-        # shellcheck disable=SC1090
-        source "$ETERNAL_FRONTEND_ENV_FILE"
-        set +a
-      fi
-      eternal_frontend_production_build "$release_dir/frontend"
-      eternal_write_frontend_fingerprint "$release_dir"
-      return 0
-      ;;
-    *)
-      eternal_deploy_die "invalid ETERNAL_FRONTEND_BUILD_MODE=$mode (allowed: artifact|legacy|dry)"
-      ;;
-  esac
+  if [[ "$ETERNAL_DRY_BUILD" == "1" ]]; then
+    if [[ "${ETERNAL_FORCE_BUILD_FAIL:-0}" == "1" ]]; then
+      eternal_deploy_die "frontend build failed (forced)"
+    fi
+    mkdir -p "$release_dir/frontend/build/static/js"
+    printf 'dry-asset\n' >"$release_dir/frontend/build/static/js/app.js"
+    # Keep dry-build token for synthetic assertions; include static ref for required-state checks.
+    printf 'dry-build\n<script src="/static/js/app.js"></script>\n' \
+      >"$release_dir/frontend/build/index.html"
+    printf '{"files":{"main.js":"/static/js/app.js"}}\n' \
+      >"$release_dir/frontend/build/asset-manifest.json"
+    eternal_write_frontend_fingerprint "$release_dir"
+    eternal_deploy_log "frontend dry-build written (unpublished)"
+    return 0
+  fi
+  export NODE_OPTIONS="${ETERNAL_NODE_OPTIONS}"
+  # NODE_OPTIONS heap limit is NOT a cgroup/RAM ceiling for the whole process tree.
+  if [[ -n "$ETERNAL_FRONTEND_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ETERNAL_FRONTEND_ENV_FILE"
+    set +a
+  fi
+  # Yarn-only (CI standard). npm fallback removed — fail closed if yarn/lock missing.
+  # Must not run in a subshell: eternal_deploy_die uses exit.
+  eternal_frontend_production_build "$release_dir/frontend"
+  eternal_write_frontend_fingerprint "$release_dir"
 }
 
 eternal_verify_backup_ready() {
@@ -800,19 +765,9 @@ cmd_deploy() {
   eternal_sha_is_ancestor_of_main "$ETERNAL_MIRROR_DIR" "$sha" "$ETERNAL_MAIN_REF"
   eternal_resolve_previous_release
 
-  # Change classification previous identity:
-  # Prefer active-release.txt (last DEPLOY_OK), which advances on FE-only publishes
-  # even when CURRENT stays on the prior backend release. Falling back to CURRENT
-  # .deploy-ok would incorrectly re-require FE work after every FE-only deploy.
   local prev_sha="none"
-  local active_deploy_sha=""
-  active_deploy_sha="$(eternal_read_active_release_sha "$ETERNAL_RELEASES_ROOT" 2>/dev/null || true)"
   if [[ "$PREV_IS_BASELINE" == "1" ]]; then
     prev_sha="baseline-active"
-  elif eternal_is_sha40 "${active_deploy_sha:-}" \
-    && [[ -f "$ETERNAL_RELEASES_ROOT/$active_deploy_sha/.deploy-ok" ]]; then
-    prev_sha="$active_deploy_sha"
-    eternal_deploy_log "change-classify previous identity from active-release: $prev_sha"
   elif [[ -n "$PREV_RELEASE" && -f "$PREV_RELEASE/.deploy-ok" ]]; then
     prev_sha="$(sed -n 's/^sha=//p' "$PREV_RELEASE/.deploy-ok" | head -n1)"
   fi
@@ -827,35 +782,9 @@ cmd_deploy() {
     eternal_deploy_log "ALLOW_MIGRATIONS=1 (explicit operator override)"
   fi
 
-  # Classify BEFORE materialize so docs/tests-only SHAs never create release trees
-  # or mutate application identity. First cutover always forces BE+FE below.
-  local paths
-  paths="$(eternal_diff_paths "$prev_sha" "$sha")"
-  ETERNAL_NEED_BACKEND=0
-  ETERNAL_NEED_FRONTEND=0
-  eternal_classify_change_set <<<"$paths"
-  if [[ "$prev_sha" == "none" || "$prev_sha" == "baseline-active" ]]; then
-    ETERNAL_NEED_BACKEND=1
-    ETERNAL_NEED_FRONTEND=1
-  fi
-  export ETERNAL_NEED_BACKEND ETERNAL_NEED_FRONTEND
-  eternal_deploy_log "change classification backend=$ETERNAL_NEED_BACKEND frontend=$ETERNAL_NEED_FRONTEND"
-
-  if [[ "$ETERNAL_NEED_BACKEND" != "1" && "$ETERNAL_NEED_FRONTEND" != "1" ]]; then
-    # Docs/tests/non-app paths only: no venv, no FE publish, no CURRENT switch,
-    # no .deploy-ok / active-release advance. Bookkeeping is separate.
-    local active_before=""
-    active_before="$(eternal_read_active_release_sha "$ETERNAL_RELEASES_ROOT" 2>/dev/null || true)"
-    eternal_write_processed_git_sha_marker "$ETERNAL_RELEASES_ROOT" "$sha" "$prev_sha"
-    eternal_deploy_log "no application change for sha=$sha (docs/tests/non-app); active-release preserved"
-    printf 'DEPLOY_OK_NOOP sha=%s kind=no_application_change active_release=%s\n' \
-      "$sha" "${active_before:-none}"
-    return 0
-  fi
-
   # Pure SHA publish on first cutover replaces live webroot (e.g. selective-merge FE).
   # Gate BEFORE materialize so refuse leaves no incomplete release dir.
-  # First cutover always classifies FE=1 (see above); do not assume overlay FE is preserved.
+  # First cutover always classifies FE=1 (see below); do not assume overlay FE is preserved.
   if [[ "$prev_sha" == "baseline-active" ]]; then
     if [[ "${ETERNAL_ACK_REPLACE_LIVE_FRONTEND:-0}" != "1" ]]; then
       cat >&2 <<EOF
@@ -874,20 +803,26 @@ EOF
   eternal_backup_pointer "$sha"
   eternal_materialize_release "$sha"
 
+  local paths
+  paths="$(eternal_diff_paths "$prev_sha" "$sha")"
+  ETERNAL_NEED_BACKEND=0
+  ETERNAL_NEED_FRONTEND=0
+  eternal_classify_change_set <<<"$paths"
+  if [[ "$prev_sha" == "none" || "$prev_sha" == "baseline-active" ]]; then
+    ETERNAL_NEED_BACKEND=1
+    ETERNAL_NEED_FRONTEND=1
+  fi
+  export ETERNAL_NEED_BACKEND ETERNAL_NEED_FRONTEND
+  eternal_deploy_log "change classification backend=$ETERNAL_NEED_BACKEND frontend=$ETERNAL_NEED_FRONTEND"
+
   # Build + fresh venv BEFORE any live activation. Never mutate active service venv.
   # Reused incomplete/successful releases keep validated build + venv (no wipe).
-  # Docs-only path returned earlier — venv prepare only when BE or FE application change.
   eternal_maybe_build_frontend "$NEW_RELEASE"
   if [[ "$ETERNAL_REUSED_RELEASE" == "1" && -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
     eternal_deploy_log "backend runtime reuse OK; skip fresh venv prepare"
     eternal_validate_backend_runtime "$NEW_RELEASE/backend"
-  elif [[ "$ETERNAL_NEED_BACKEND" == "1" ]]; then
+  elif [[ "$ETERNAL_NEED_BACKEND" == "1" || ! -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
     eternal_deploy_log "preparing isolated backend runtime for $sha"
-    eternal_prepare_backend_runtime "$NEW_RELEASE/backend"
-  elif [[ ! -x "$NEW_RELEASE/backend/.venv/bin/uvicorn" ]]; then
-    # FE-only still needs a runnable backend tree under the new release for identity checks,
-    # but prefer copying/linking validation from active CURRENT rather than full prep when possible.
-    eternal_deploy_log "preparing isolated backend runtime for fe-only release $sha"
     eternal_prepare_backend_runtime "$NEW_RELEASE/backend"
   else
     eternal_validate_backend_runtime "$NEW_RELEASE/backend"
@@ -946,58 +881,37 @@ EOF
     "$sha" "$BACKEND_RESTARTED" "$ETERNAL_NEED_FRONTEND" "$current_switched"
 }
 
-# Resolve the filesystem path used to restore/verify CURRENT for a rollback.
-#
-# previous_id = application identity (active-release predecessor). May be an
-# FE-only SHA whose release dir was never CURRENT.
-# recorded_path = backend CURRENT predecessor captured at DEPLOY_OK (PREV_RELEASE).
-# After FE-only publishes, these may differ; prefer recorded_path for CURRENT
-# restore while still requiring previous_id to resolve to a valid .deploy-ok
-# identity for active-release bookkeeping.
+# Resolve previous release path for a recorded previous_id (sha40 or baseline-active).
 eternal_resolve_previous_path_for_id() {
   local previous_id="$1"
   local recorded_path="${2:-}"
-  local id_path="" rec_resolved="" id_resolved="" ok_sha=""
-
   if [[ "$previous_id" == "baseline-active" ]]; then
     eternal_baseline_verify_integrity "$ETERNAL_BASELINE_DIR"
     [[ -d "$ETERNAL_BASELINE_DIR/tree" ]] || eternal_deploy_die "baseline tree missing for rollback"
-    id_path="$ETERNAL_BASELINE_DIR/tree"
-  else
-    eternal_require_sha40 "$previous_id"
-    id_path="$ETERNAL_RELEASES_ROOT/$previous_id"
-    [[ -d "$id_path" ]] || eternal_deploy_die "previous identity release missing: $previous_id"
-    [[ -f "$id_path/.deploy-ok" ]] || eternal_deploy_die "previous identity missing .deploy-ok"
-    ok_sha="$(sed -n 's/^sha=//p' "$id_path/.deploy-ok" | head -n1)"
-    [[ "$ok_sha" == "$previous_id" ]] \
-      || eternal_deploy_die "previous identity .deploy-ok sha mismatch"
-    eternal_path_is_under_root "$(readlink -f "$ETERNAL_RELEASES_ROOT")" "$(readlink -f "$id_path")" \
-      || eternal_deploy_die "previous identity escapes releases root"
-    [[ ! -L "$id_path" ]] || eternal_deploy_die "previous identity must not be a symlink directory"
-  fi
-
-  if [[ -n "$recorded_path" ]]; then
-    rec_resolved="$(readlink -f "$recorded_path" 2>/dev/null || true)"
-    [[ -n "$rec_resolved" && -d "$rec_resolved" ]] \
-      || eternal_deploy_die "recorded previous_path missing or unreadable"
-    if [[ "$previous_id" == "baseline-active" ]]; then
-      id_resolved="$(readlink -f "$id_path" 2>/dev/null || true)"
-      [[ -n "$id_resolved" && "$rec_resolved" == "$id_resolved" ]] \
-        || eternal_deploy_die "baseline previous_path mismatch vs recorded meta"
-    else
-      # Backend CURRENT predecessor may differ from application previous_id after
-      # FE-only deploys. recorded_path must still be a deploy-ok release under root.
-      [[ -f "$rec_resolved/.deploy-ok" ]] \
-        || eternal_deploy_die "recorded previous_path missing .deploy-ok"
-      eternal_path_is_under_root "$(readlink -f "$ETERNAL_RELEASES_ROOT")" "$rec_resolved" \
-        || eternal_deploy_die "recorded previous_path escapes releases root"
-      [[ ! -L "$recorded_path" ]] || eternal_deploy_die "recorded previous_path must not be a symlink directory"
-    fi
-    printf '%s\n' "$rec_resolved"
+    printf '%s\n' "$ETERNAL_BASELINE_DIR/tree"
     return 0
   fi
-
-  printf '%s\n' "$id_path"
+  eternal_require_sha40 "$previous_id"
+  local candidate="$ETERNAL_RELEASES_ROOT/$previous_id"
+  if [[ -n "$recorded_path" ]]; then
+    local rec_resolved cand_resolved
+    rec_resolved="$(readlink -f "$recorded_path" 2>/dev/null || true)"
+    cand_resolved="$(readlink -f "$candidate" 2>/dev/null || true)"
+    if [[ -n "$rec_resolved" && -n "$cand_resolved" && "$rec_resolved" != "$cand_resolved" ]]; then
+      eternal_deploy_die "previous release path mismatch vs recorded meta"
+    fi
+  fi
+  [[ -d "$candidate" ]] || eternal_deploy_die "previous release directory missing: $candidate"
+  [[ -f "$candidate/.deploy-ok" ]] || eternal_deploy_die "previous release missing .deploy-ok"
+  local ok_sha
+  ok_sha="$(sed -n 's/^sha=//p' "$candidate/.deploy-ok" | head -n1)"
+  [[ "$ok_sha" == "$previous_id" ]] \
+    || eternal_deploy_die "previous release .deploy-ok sha mismatch"
+  # Must live under releases root (no arbitrary path).
+  eternal_path_is_under_root "$(readlink -f "$ETERNAL_RELEASES_ROOT")" "$(readlink -f "$candidate")" \
+    || eternal_deploy_die "previous release escapes releases root"
+  [[ ! -L "$candidate" ]] || eternal_deploy_die "previous release must not be a symlink directory"
+  printf '%s\n' "$candidate"
 }
 
 # Owner-requested post-success rollback. Same flock. No DB mutation.
