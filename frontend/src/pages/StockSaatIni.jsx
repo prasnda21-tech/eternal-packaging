@@ -581,44 +581,23 @@ export default function StockSaatIni() {
       setErr("Koreksi tidak tersedia: belum ada gudang aktif.");
       return;
     }
-    // No warehouse balance yet → Saldo Awal only. Do not let Adjustment invent a
-    // first baseline when the operator lacks opening permission.
-    if (!balancePresent) {
-      setInlineItemId(null);
-      setAdjustItem(null);
-      if (!canOpening) {
-        setErr(
-          "Belum ada saldo fisik. Saldo Awal memerlukan izin current_stock.update "
-          + "(atau permissions.manage). Koreksi tidak dapat menggantikan Saldo Awal.",
-        );
-        return;
-      }
-      const wh = singleWarehouse
-        || (warehouseId ? adjustWarehouses.find((row) => row.id === warehouseId) : null)
-        || (adjustWarehouses.length === 1 ? adjustWarehouses[0] : null);
-      setErr("");
-      setOpeningSeed({
-        itemId: item.master_item_id,
-        branchId: wh?.branch_id || effectiveBranchId || branchId || "",
-        warehouseId: wh?.id || warehouseId || "",
-      });
-      setOpeningOpen(true);
-      return;
-    }
-    if (adjustWarehouses.length > 1) {
+    setErr("");
+    // Missing balance → Adjustment modal (Qty Akhir). Do not require Saldo Awal /
+    // Pembelian / GR first. Do not invent a verified zero in the UI.
+    if (!balancePresent || adjustWarehouses.length > 1) {
       setInlineItemId(null);
       setAdjustItem(item);
       return;
     }
     setAdjustItem(null);
-    setErr("");
     setInlineItemId(item.master_item_id);
   };
 
   const saveInline = async (item, target, setCellError, close) => {
     if (saveLock.current || !singleWarehouse) return;
-    const current = Number(item.physical_qty);
-    if (target === current) {
+    const rawCurrent = item.physical_qty;
+    const current = rawCurrent == null || rawCurrent === "" ? null : Number(rawCurrent);
+    if (current != null && Number.isFinite(current) && target === current) {
       close();
       return;
     }
@@ -811,7 +790,7 @@ export default function StockSaatIni() {
         {flag}
       </span>
     ) : null;
-    // Inline koreksi hanya untuk saldo yang sudah ada. Tanpa balance → Saldo Awal.
+    // Inline only when a book row already exists (single WH). Missing balance uses the modal.
     if (canAdjust && !actionsLocked && inlineItemId === it.master_item_id && singleWarehouse && book.present) {
       return (
         <InlinePhysicalEditor
@@ -1438,7 +1417,9 @@ export default function StockSaatIni() {
             setOpeningOpen(true);
           }}
           onOpenAdjust={(row) => {
-            beginAdjust(row, { balancePresent: true });
+            const selectedWhId = selectedFilterWarehouse?.id || "";
+            const book = bookPhysicalDisplay(row, { warehouseId: selectedWhId });
+            beginAdjust(row, { balancePresent: Boolean(book.present) });
           }}
         />
       )}
@@ -1454,7 +1435,7 @@ export default function StockSaatIni() {
           onSaved={reloadAfterMutation}
         />
       )}
-      {adjustItem && adjustWarehouses.length > 1 && (
+      {adjustItem && (
         <PhysicalAdjustModal
           item={adjustItem}
           branches={branches}
@@ -1468,7 +1449,10 @@ export default function StockSaatIni() {
 }
 
 function InlinePhysicalEditor({ item, saving, onCancel, onSave }) {
-  const [draft, setDraft] = useState(() => String(item.physical_qty ?? 0));
+  // Prefill only a known book qty — never invent 0 for a missing balance.
+  const [draft, setDraft] = useState(() => (
+    item.physical_qty == null || item.physical_qty === "" ? "" : String(item.physical_qty)
+  ));
   const [error, setError] = useState("");
   const inputRef = useRef(null);
 
@@ -1534,6 +1518,7 @@ function InlinePhysicalEditor({ item, saving, onCancel, onSave }) {
 function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved }) {
   const [warehouseId, setWarehouseId] = useState(() => preselectedWarehouseId(warehouses));
   const [currentQty, setCurrentQty] = useState(null);
+  const [balancePresent, setBalancePresent] = useState(null);
   const [target, setTarget] = useState("");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
@@ -1547,14 +1532,24 @@ function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved
   useEffect(() => {
     if (!warehouseId) {
       setCurrentQty(null);
+      setBalancePresent(null);
       return undefined;
     }
     let cancelled = false;
+    setBalancePresent(null);
+    setCurrentQty(null);
     api.physicalStock(item.master_item_id, { branch_id: warehouse?.branch_id, warehouse_id: warehouseId })
       .then((res) => {
         if (cancelled) return;
         const row = (res.items || []).find((entry) => entry.warehouse_id === warehouseId);
-        setCurrentQty(row ? row.physical_qty : 0);
+        if (!row || row.balance_present === false || row.physical_qty == null) {
+          // Missing book row — never display a fabricated 0.
+          setBalancePresent(false);
+          setCurrentQty(null);
+          return;
+        }
+        setBalancePresent(true);
+        setCurrentQty(row.physical_qty);
       })
       .catch(() => {
         if (!cancelled) setError("Gagal memuat stok fisik gudang");
@@ -1565,16 +1560,41 @@ function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved
   const submit = async (event) => {
     event.preventDefault();
     if (!ready) return;
+    // Backend no-op for missing balance + target 0 — do not claim reconciled stock.
+    if (balancePresent === false && parsed === 0) {
+      setError(
+        "Belum ada saldo. Target 0 tidak menetapkan stok tervalidasi. "
+        + "Masukkan Qty Akhir hasil hitung fisik (≥ 1), atau biarkan tanpa saldo.",
+      );
+      return;
+    }
+    if (balancePresent === true && currentQty != null && Number(currentQty) === parsed) {
+      onClose();
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      await api.createPhysicalAdjustment(item.master_item_id, {
+      const result = await api.createPhysicalAdjustment(item.master_item_id, {
         branch_id: warehouse.branch_id,
         warehouse_id: warehouseId,
         target_physical_qty: parsed,
         reason: reason.trim(),
         idempotency_key: idempotencyKey,
       });
+      if (
+        balancePresent === false
+        && parsed === 0
+        && result
+        && result.changed === false
+        && !result.movement_id
+      ) {
+        setError(
+          "Tidak ada saldo yang ditetapkan. Target 0 pada item tanpa saldo "
+          + "tidak membuat stok tervalidasi.",
+        );
+        return;
+      }
       await onSaved();
       onClose();
     } catch (ex) {
@@ -1600,9 +1620,10 @@ function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved
           <span>{item.item_name || "—"}</span>
         </p>
         <p className="stock-adjust-hint" data-testid="stock-adjust-hint">
-          Penyesuaian saldo buku saat ini (MANUAL_ADJUSTMENT, PCS) — delta beraudit,
-          boleh diulang. Bukan menimpa Saldo Awal / OPENING_BALANCE historis.
-          Target = stok fisik gudang yang dipilih, bukan agregat seluruh gudang.
+          Tetapkan Qty Akhir (Target Stock Fisik). Sistem menghitung delta
+          (MANUAL_ADJUSTMENT, PCS) — termasuk item yang belum punya saldo gudang.
+          Bukan menimpa Saldo Awal / OPENING_BALANCE historis. Target = satu gudang,
+          bukan agregat cabang.
         </p>
         {error && (
           <div className="signal-strip" role="alert">
@@ -1620,18 +1641,25 @@ function PhysicalAdjustModal({ item, branches = [], warehouses, onClose, onSaved
         </label>
         <label className="stock-adjust-field">
           <span>Stok fisik saat ini</span>
-          <div className="stock-adjust-readonly" data-testid="stock-adjust-current">
-            {currentQty == null ? "—" : fmtQty(currentQty)}
+          <div
+            className="stock-adjust-readonly"
+            data-testid="stock-adjust-current"
+            data-balance-present={balancePresent == null ? "" : (balancePresent ? "true" : "false")}
+          >
+            {balancePresent === false || currentQty == null
+              ? "Belum ada saldo"
+              : fmtQty(currentQty)}
           </div>
         </label>
         <label className="stock-adjust-field">
-          <span>Target Stock Fisik</span>
+          <span>Target Stock Fisik (Qty Akhir)</span>
           <input
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             inputMode="numeric"
-            placeholder="0"
+            placeholder="Qty Akhir"
             data-testid="stock-adjust-target"
+            aria-label="Target Stock Fisik Qty Akhir"
           />
         </label>
         <label className="stock-adjust-field">
