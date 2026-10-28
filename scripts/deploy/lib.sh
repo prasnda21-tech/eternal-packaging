@@ -287,47 +287,16 @@ eternal_path_is_under_root() {
 }
 
 # Fingerprint of frontend build inputs (no secret values logged — hashes only).
-# Includes package/lock/config, src/, public/, and when set the external
-# ETERNAL_FRONTEND_ENV_FILE content hash so reuse cannot skip after inputs change.
-# Emit "digest  stable-label" lines (never absolute paths — fingerprints must be
-# location-independent so packed artifacts verify against materialize trees).
-eternal_frontend_hash_labeled() {
-  local file="$1"
-  local label="$2"
-  local digest
-  [[ -f "$file" ]] || return 0
-  digest="$(sha256sum "$file" | awk '{print $1}')"
-  printf '%s  %s\n' "$digest" "$label"
-}
-
-eternal_frontend_tree_file_hashes() {
-  local root="$1"
-  local rel="$2"
-  local dir="$root/$rel"
-  [[ -d "$dir" ]] || return 0
-  (
-    cd "$root" || exit 1
-    # Sorted deterministic relative paths; regular files only (no symlinks).
-    find "$rel" -type f ! -type l -print0 2>/dev/null \
-      | sort -z \
-      | while IFS= read -r -d '' p; do
-          digest="$(sha256sum "$p" | awk '{print $1}')"
-          printf '%s  %s\n' "$digest" "$p"
-        done
-  )
-}
-
+# Includes in-tree config and, when set, the external ETERNAL_FRONTEND_ENV_FILE content hash
+# so reuse cannot skip rebuild after effective CRA/env inputs change.
 eternal_frontend_input_fingerprint() {
   local frontend_dir="$1"
   local pkg="$frontend_dir/package.json"
   local lock=""
-  local lock_label="yarn.lock"
   if [[ -f "$frontend_dir/yarn.lock" ]]; then
     lock="$frontend_dir/yarn.lock"
-    lock_label="yarn.lock"
   elif [[ -f "$frontend_dir/../yarn.lock" ]]; then
     lock="$frontend_dir/../yarn.lock"
-    lock_label="../yarn.lock"
   fi
   [[ -f "$pkg" ]] || eternal_deploy_die "frontend fingerprint: package.json missing"
   [[ -n "$lock" && -f "$lock" ]] || eternal_deploy_die "frontend fingerprint: yarn.lock missing"
@@ -336,75 +305,24 @@ eternal_frontend_input_fingerprint() {
       || eternal_deploy_die "frontend fingerprint: ETERNAL_FRONTEND_ENV_FILE missing ($ETERNAL_FRONTEND_ENV_FILE)"
   fi
   {
-    eternal_frontend_hash_labeled "$pkg" "package.json"
-    eternal_frontend_hash_labeled "$lock" "$lock_label"
-    eternal_frontend_hash_labeled "$frontend_dir/craco.config.js" "craco.config.js"
-    eternal_frontend_hash_labeled "$frontend_dir/config-overrides.js" "config-overrides.js"
-    eternal_frontend_hash_labeled "$frontend_dir/.env.production" ".env.production"
-    eternal_frontend_hash_labeled "$frontend_dir/.env" ".env"
+    sha256sum "$pkg" "$lock"
+    if [[ -f "$frontend_dir/craco.config.js" ]]; then
+      sha256sum "$frontend_dir/craco.config.js"
+    fi
+    if [[ -f "$frontend_dir/config-overrides.js" ]]; then
+      sha256sum "$frontend_dir/config-overrides.js"
+    fi
+    if [[ -f "$frontend_dir/.env.production" ]]; then
+      sha256sum "$frontend_dir/.env.production"
+    fi
+    if [[ -f "$frontend_dir/.env" ]]; then
+      sha256sum "$frontend_dir/.env"
+    fi
     if [[ -n "${ETERNAL_FRONTEND_ENV_FILE:-}" && -f "$ETERNAL_FRONTEND_ENV_FILE" ]]; then
       # Hash only — never print file contents (may contain non-secret CRA public vars).
-      eternal_frontend_hash_labeled "$ETERNAL_FRONTEND_ENV_FILE" "ETERNAL_FRONTEND_ENV_FILE"
+      sha256sum "$ETERNAL_FRONTEND_ENV_FILE"
     fi
-    eternal_frontend_tree_file_hashes "$frontend_dir" "src"
-    eternal_frontend_tree_file_hashes "$frontend_dir" "public"
   } | sha256sum | awk '{print $1}'
-}
-
-# Public CRA build-env fingerprint (allowlisted keys only; values hashed, never logged).
-# Keys: REACT_APP_* plus DISABLE_ESLINT_PLUGIN. Empty/missing keys still contribute.
-# Optional arg: path to env file (sourced in a subshell only).
-eternal_frontend_public_env_fingerprint() {
-  local env_file="${1:-}"
-  (
-    if [[ -n "$env_file" ]]; then
-      [[ -f "$env_file" ]] || eternal_deploy_die "frontend env fingerprint: file missing ($env_file)"
-      set -a
-      # shellcheck disable=SC1090
-      source "$env_file"
-      set +a
-    fi
-    printf 'DISABLE_ESLINT_PLUGIN=%s\n' "${DISABLE_ESLINT_PLUGIN-}"
-    # Always include backend URL key (empty string is a deliberate same-origin value).
-    printf 'REACT_APP_BACKEND_URL=%s\n' "${REACT_APP_BACKEND_URL-}"
-    while IFS= read -r k; do
-      [[ "$k" == "REACT_APP_BACKEND_URL" ]] && continue
-      printf '%s=%s\n' "$k" "${!k-}"
-    done < <(compgen -v REACT_APP_ 2>/dev/null | sort)
-  ) | sha256sum | awk '{print $1}'
-}
-
-# Resolve canonical production public build env into the current shell (fail-closed).
-# FRONTEND_PROD_ENV_MODE=same-origin|explicit-url (required).
-# same-origin → unset REACT_APP_BACKEND_URL (nginx same host).
-# explicit-url → FRONTEND_PROD_REACT_APP_BACKEND_URL must be non-loopback http(s) URL.
-eternal_apply_frontend_prod_build_env() {
-  local mode="${FRONTEND_PROD_ENV_MODE:-}"
-  local url="${FRONTEND_PROD_REACT_APP_BACKEND_URL-}"
-  case "$mode" in
-    same-origin)
-      unset REACT_APP_BACKEND_URL || true
-      export REACT_APP_BACKEND_URL=""
-      export DISABLE_ESLINT_PLUGIN="${DISABLE_ESLINT_PLUGIN:-true}"
-      ;;
-    explicit-url)
-      [[ -n "$url" ]] || eternal_deploy_die "FRONTEND_PROD_ENV_MODE=explicit-url requires FRONTEND_PROD_REACT_APP_BACKEND_URL"
-      if [[ "$url" =~ ^https?://(127\.0\.0\.1|localhost)(:|/|$) ]]; then
-        eternal_deploy_die "production frontend URL must not be loopback/CI test host"
-      fi
-      if [[ ! "$url" =~ ^https?:// ]]; then
-        eternal_deploy_die "FRONTEND_PROD_REACT_APP_BACKEND_URL must be http(s) URL"
-      fi
-      export REACT_APP_BACKEND_URL="$url"
-      export DISABLE_ESLINT_PLUGIN="${DISABLE_ESLINT_PLUGIN:-true}"
-      ;;
-    "")
-      eternal_deploy_die "FRONTEND_PROD_ENV_MODE unset; Owner must set same-origin or explicit-url (fail-closed)"
-      ;;
-    *)
-      eternal_deploy_die "FRONTEND_PROD_ENV_MODE invalid ($mode); allowed: same-origin|explicit-url"
-      ;;
-  esac
 }
 
 eternal_write_frontend_fingerprint() {
@@ -1000,36 +918,32 @@ eternal_try_reuse_incomplete_release() {
     eternal_deploy_log "reuse refused: source sha mismatch recorded=$recorded_sha want=$sha"
     return 1
   }
-  # Frontend build is required only when a prior FE build was recorded for this
-  # incomplete release. BE-only attempts leave no fingerprint/build — allow reuse.
-  if [[ -f "$release_dir/frontend/build/index.html" ]]; then
-    [[ -f "$release_dir/.eternal-frontend-fingerprint" ]] || {
-      eternal_deploy_log "reuse refused: .eternal-frontend-fingerprint missing"
-      return 1
-    }
-    recorded_fp="$(tr -d '\n' <"$release_dir/.eternal-frontend-fingerprint")"
-    actual_fp="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
-    [[ "$recorded_fp" == "$actual_fp" ]] || {
-      eternal_deploy_log "reuse refused: frontend input fingerprint mismatch"
-      return 1
-    }
-    local ref
-    local manifest="$release_dir/frontend/build/asset-manifest.json"
-    while IFS= read -r ref; do
-      [[ -z "$ref" ]] && continue
-      [[ -f "$release_dir/frontend/build/$ref" ]] || {
-        eternal_deploy_log "reuse refused: build asset missing $ref"
-        return 1
-      }
-    done < <(eternal_fe_list_required_static_assets \
-      "$release_dir/frontend/build/index.html" \
-      "$([[ -f "$manifest" ]] && printf '%s' "$manifest")" | awk 'NF && !seen[$0]++')
-  elif [[ -f "$release_dir/.eternal-frontend-fingerprint" ]]; then
-    eternal_deploy_log "reuse refused: fingerprint present but frontend/build/index.html missing"
+  [[ -f "$release_dir/frontend/build/index.html" ]] || {
+    eternal_deploy_log "reuse refused: frontend/build/index.html missing"
     return 1
-  else
-    eternal_deploy_log "reuse: no frontend build (BE-only or pre-FE incomplete); continuing backend checks"
-  fi
+  }
+  [[ -f "$release_dir/.eternal-frontend-fingerprint" ]] || {
+    eternal_deploy_log "reuse refused: .eternal-frontend-fingerprint missing"
+    return 1
+  }
+  recorded_fp="$(tr -d '\n' <"$release_dir/.eternal-frontend-fingerprint")"
+  actual_fp="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
+  [[ "$recorded_fp" == "$actual_fp" ]] || {
+    eternal_deploy_log "reuse refused: frontend input fingerprint mismatch"
+    return 1
+  }
+  local ref
+  local manifest="$release_dir/frontend/build/asset-manifest.json"
+  # Deduplicate refs (index attrs + manifest may overlap).
+  while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    [[ -f "$release_dir/frontend/build/$ref" ]] || {
+      eternal_deploy_log "reuse refused: build asset missing $ref"
+      return 1
+    }
+  done < <(eternal_fe_list_required_static_assets \
+    "$release_dir/frontend/build/index.html" \
+    "$([[ -f "$manifest" ]] && printf '%s' "$manifest")" | awk 'NF && !seen[$0]++')
 
   [[ -x "$release_dir/backend/.venv/bin/uvicorn" ]] || {
     eternal_deploy_log "reuse refused: backend .venv/uvicorn missing"
@@ -1245,7 +1159,6 @@ sys.exit(0 if mongo is True and mode=="operational" else 1)
 }
 
 # Production frontend install/build: Yarn only (matches CI). No npm fallback.
-# Invoked only when ETERNAL_FRONTEND_BUILD_MODE=legacy (explicit). Never an artifact fallback.
 eternal_frontend_production_build() {
   local frontend_dir="$1"
   [[ -d "$frontend_dir" ]] || eternal_deploy_die "frontend tree missing: $frontend_dir"
@@ -1259,379 +1172,6 @@ eternal_frontend_production_build() {
     yarn install --frozen-lockfile
     yarn build
   ) || eternal_deploy_die "frontend yarn install/build failed; live not activated"
-}
-
-# --- Frontend artifact provenance (schema eternal.frontend-artifact.v1) ---
-
-ETERNAL_FRONTEND_ARTIFACT_SCHEMA="${ETERNAL_FRONTEND_ARTIFACT_SCHEMA:-eternal.frontend-artifact.v1}"
-ETERNAL_FRONTEND_ARTIFACT_WORKFLOW="${ETERNAL_FRONTEND_ARTIFACT_WORKFLOW:-frontend-artifact.yml}"
-
-eternal_frontend_artifact_json_get() {
-  local manifest="$1"
-  local key="$2"
-  python3 - "$manifest" "$key" <<'PY'
-import json, sys
-doc = json.load(open(sys.argv[1], encoding="utf-8"))
-key = sys.argv[2]
-val = doc.get(key, "")
-if val is None:
-    val = ""
-print(val if isinstance(val, str) else str(val))
-PY
-}
-
-# Verify manifest identity fields against expected deploy SHA / trusted workflow / env+input fps.
-# Optional args 5–6: expect_run_id expect_run_attempt (required when verifying a GH download).
-eternal_verify_frontend_artifact_manifest() {
-  local manifest="$1"
-  local expect_sha="$2"
-  local expect_input_fp="$3"
-  local expect_env_fp="$4"
-  local expect_run_id="${5:-}"
-  local expect_run_attempt="${6:-}"
-  local schema workflow git_sha artifact_sha archive_name input_fp env_fp
-  local run_id run_attempt
-  [[ -f "$manifest" ]] || eternal_deploy_die "frontend artifact: manifest missing"
-  schema="$(eternal_frontend_artifact_json_get "$manifest" schema)"
-  [[ "$schema" == "$ETERNAL_FRONTEND_ARTIFACT_SCHEMA" ]] \
-    || eternal_deploy_die "frontend artifact: unsupported schema ($schema)"
-  workflow="$(eternal_frontend_artifact_json_get "$manifest" workflow)"
-  [[ "$workflow" == "$ETERNAL_FRONTEND_ARTIFACT_WORKFLOW" ]] \
-    || eternal_deploy_die "frontend artifact: untrusted workflow ($workflow)"
-  git_sha="$(eternal_frontend_artifact_json_get "$manifest" git_sha)"
-  eternal_require_sha40 "$git_sha"
-  [[ "$git_sha" == "$expect_sha" ]] \
-    || eternal_deploy_die "frontend artifact: git_sha mismatch manifest=$git_sha want=$expect_sha"
-  artifact_sha="$(eternal_frontend_artifact_json_get "$manifest" artifact_sha256)"
-  [[ "$artifact_sha" =~ ^[0-9a-f]{64}$ ]] \
-    || eternal_deploy_die "frontend artifact: artifact_sha256 malformed"
-  archive_name="$(eternal_frontend_artifact_json_get "$manifest" archive_name)"
-  [[ -n "$archive_name" && "$archive_name" != *"/"* && "$archive_name" != *".."* ]] \
-    || eternal_deploy_die "frontend artifact: archive_name unsafe"
-  input_fp="$(eternal_frontend_artifact_json_get "$manifest" input_fingerprint_sha256)"
-  env_fp="$(eternal_frontend_artifact_json_get "$manifest" env_fingerprint_sha256)"
-  [[ "$input_fp" == "$expect_input_fp" ]] \
-    || eternal_deploy_die "frontend artifact: input fingerprint mismatch"
-  [[ "$env_fp" == "$expect_env_fp" ]] \
-    || eternal_deploy_die "frontend artifact: env fingerprint mismatch (production build env)"
-  run_id="$(eternal_frontend_artifact_json_get "$manifest" run_id)"
-  run_attempt="$(eternal_frontend_artifact_json_get "$manifest" run_attempt)"
-  [[ -n "$run_id" && "$run_id" != "0" && "$run_id" =~ ^[0-9]+$ ]] \
-    || eternal_deploy_die "frontend artifact: run_id missing or malformed"
-  [[ -n "$run_attempt" && "$run_attempt" =~ ^[1-9][0-9]*$ ]] \
-    || eternal_deploy_die "frontend artifact: run_attempt missing or malformed"
-  if [[ -n "$expect_run_id" || -n "$expect_run_attempt" ]]; then
-    [[ -n "$expect_run_id" && -n "$expect_run_attempt" ]] \
-      || eternal_deploy_die "frontend artifact: run provenance expectation incomplete"
-    [[ "$run_id" == "$expect_run_id" ]] \
-      || eternal_deploy_die "frontend artifact: run_id mismatch manifest=$run_id actions=$expect_run_id"
-    [[ "$run_attempt" == "$expect_run_attempt" ]] \
-      || eternal_deploy_die "frontend artifact: run_attempt mismatch manifest=$run_attempt actions=$expect_run_attempt"
-  fi
-}
-
-# Extract tar.gz into dest_build with hard path/symlink policy. Atomic via temp dir.
-eternal_safe_extract_frontend_artifact() {
-  local archive="$1"
-  local dest_build="$2"
-  local parent tmp listing
-  [[ -f "$archive" ]] || eternal_deploy_die "frontend artifact: archive missing"
-  parent="$(dirname "$dest_build")"
-  mkdir -p "$parent" || eternal_deploy_die "frontend artifact: cannot create build parent"
-  [[ -w "$parent" ]] || eternal_deploy_die "frontend artifact: build parent not writable"
-  tmp="${dest_build}.artifact-extract.$$"
-  rm -rf "$tmp"
-  mkdir -p "$tmp"
-
-  # List entries first; refuse unsafe paths / symlinks / absolute names.
-  # Include stderr (GNU tar may warn while still listing traversal names).
-  listing="$(tar -tzf "$archive" 2>&1 || true)"
-  [[ -n "$listing" ]] || {
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: archive empty or unreadable"
-  }
-  while IFS= read -r ent; do
-    [[ -z "$ent" || "$ent" == "./" ]] && continue
-    [[ "$ent" == tar:* ]] && continue
-    ent="${ent#./}"
-    if [[ "$ent" == /* || "$ent" == *".."* ]]; then
-      rm -rf "$tmp"
-      eternal_deploy_die "frontend artifact: unsafe archive path ($ent)"
-    fi
-  done <<<"$listing"
-
-  if tar -tzf "$archive" | grep -q '/$'; then
-    :
-  fi
-  # Extract without preserving symlinks as links that escape (GNU tar --no-same-owner).
-  if ! tar -xzf "$archive" -C "$tmp" --no-same-owner --no-same-permissions 2>/dev/null; then
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: extract failed"
-  fi
-  # Permit only regular files and directories (refuse symlink/fifo/device/socket).
-  if find "$tmp" \( -type l -o -type p -o -type b -o -type c -o -type s \) -print -quit | grep -q .; then
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: archive contains non-regular special entry (refused)"
-  fi
-  if find "$tmp" ! -type f ! -type d -print -quit | grep -q .; then
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: archive contains unsupported file type (refused)"
-  fi
-  [[ -f "$tmp/index.html" ]] || {
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: extracted index.html missing"
-  }
-  [[ -f "$tmp/asset-manifest.json" ]] || {
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: extracted asset-manifest.json missing"
-  }
-
-  # Atomic replace of build dir.
-  rm -rf "${dest_build}.old" 2>/dev/null || true
-  if [[ -d "$dest_build" ]]; then
-    mv "$dest_build" "${dest_build}.old"
-  fi
-  if ! mv "$tmp" "$dest_build"; then
-    [[ -d "${dest_build}.old" ]] && mv "${dest_build}.old" "$dest_build"
-    rm -rf "$tmp"
-    eternal_deploy_die "frontend artifact: atomic place failed"
-  fi
-  rm -rf "${dest_build}.old" 2>/dev/null || true
-}
-
-eternal_write_frontend_artifact_marker() {
-  local release_dir="$1"
-  local manifest="$2"
-  local marker="$release_dir/.eternal-frontend-artifact"
-  {
-    printf 'schema=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" schema)"
-    printf 'git_sha=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" git_sha)"
-    printf 'workflow=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" workflow)"
-    printf 'run_id=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" run_id)"
-    printf 'run_attempt=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" run_attempt)"
-    printf 'artifact_sha256=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" artifact_sha256)"
-    printf 'input_fingerprint_sha256=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" input_fingerprint_sha256)"
-    printf 'env_fingerprint_sha256=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" env_fingerprint_sha256)"
-    printf 'index_sha256=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" index_sha256)"
-    printf 'asset_manifest_sha256=%s\n' "$(eternal_frontend_artifact_json_get "$manifest" asset_manifest_sha256)"
-  } >"$marker"
-}
-
-# Install artifact from a local directory containing manifest.json + archive.
-eternal_install_frontend_artifact_from_dir() {
-  local release_dir="$1"
-  local sha="$2"
-  local artifact_dir="$3"
-  local manifest archive expect_input expect_env actual_sha index_got asset_got
-  local frontend_dir="$release_dir/frontend"
-
-  [[ -d "$artifact_dir" ]] || eternal_deploy_die "frontend artifact dir missing: $artifact_dir"
-  manifest="$artifact_dir/manifest.json"
-  expect_input="$(eternal_frontend_input_fingerprint "$frontend_dir")"
-  expect_env="$(eternal_frontend_expected_env_fingerprint)"
-  eternal_verify_frontend_artifact_manifest "$manifest" "$sha" "$expect_input" "$expect_env"
-
-  archive="$artifact_dir/$(eternal_frontend_artifact_json_get "$manifest" archive_name)"
-  [[ -f "$archive" ]] || eternal_deploy_die "frontend artifact: archive file missing"
-  actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
-  [[ "$actual_sha" == "$(eternal_frontend_artifact_json_get "$manifest" artifact_sha256)" ]] \
-    || eternal_deploy_die "frontend artifact: archive checksum mismatch"
-
-  eternal_safe_extract_frontend_artifact "$archive" "$frontend_dir/build"
-
-  index_got="$(sha256sum "$frontend_dir/build/index.html" | awk '{print $1}')"
-  asset_got="$(sha256sum "$frontend_dir/build/asset-manifest.json" | awk '{print $1}')"
-  [[ "$index_got" == "$(eternal_frontend_artifact_json_get "$manifest" index_sha256)" ]] \
-    || eternal_deploy_die "frontend artifact: index.html digest mismatch after extract"
-  [[ "$asset_got" == "$(eternal_frontend_artifact_json_get "$manifest" asset_manifest_sha256)" ]] \
-    || eternal_deploy_die "frontend artifact: asset-manifest digest mismatch after extract"
-
-  # Required static assets from index/manifest must exist.
-  local ref
-  while IFS= read -r ref; do
-    [[ -z "$ref" ]] && continue
-    [[ -f "$frontend_dir/build/$ref" ]] \
-      || eternal_deploy_die "frontend artifact: required asset missing after extract ($ref)"
-  done < <(eternal_fe_list_required_static_assets \
-    "$frontend_dir/build/index.html" \
-    "$frontend_dir/build/asset-manifest.json")
-
-  eternal_write_frontend_fingerprint "$release_dir"
-  eternal_write_frontend_artifact_marker "$release_dir" "$manifest"
-  eternal_deploy_log "frontend artifact installed (yarn/craco skipped) sha=$sha"
-}
-
-# Expected public env fingerprint for artifact verification (fail-closed).
-# ALWAYS derived from validated FRONTEND_PROD_ENV_MODE (+ URL). Production must
-# never accept ETERNAL_FRONTEND_EXPECTED_ENV_FP as an independent bypass.
-# Test harness may set ETERNAL_FRONTEND_EXPECTED_ENV_FP only when
-# ETERNAL_FRONTEND_ENV_FP_TEST_LOCK=1; the value must still equal the derivation
-# (wrong override is rejected).
-eternal_frontend_expected_env_fingerprint() {
-  local derived
-  derived="$(
-    eternal_apply_frontend_prod_build_env
-    eternal_frontend_public_env_fingerprint
-  )"
-  if [[ -n "${ETERNAL_FRONTEND_EXPECTED_ENV_FP:-}" ]]; then
-    if [[ "${ETERNAL_FRONTEND_ENV_FP_TEST_LOCK:-0}" != "1" ]]; then
-      eternal_deploy_die "ETERNAL_FRONTEND_EXPECTED_ENV_FP is set but ETERNAL_FRONTEND_ENV_FP_TEST_LOCK!=1; refuse production env bypass"
-    fi
-    if [[ "$ETERNAL_FRONTEND_EXPECTED_ENV_FP" != "$derived" ]]; then
-      eternal_deploy_die "frontend artifact: ETERNAL_FRONTEND_EXPECTED_ENV_FP does not match FRONTEND_PROD_ENV_MODE derivation (bypass refused)"
-    fi
-  fi
-  printf '%s\n' "$derived"
-}
-
-# True when release already has a verified artifact marker matching sha+fingerprints.
-eternal_frontend_artifact_already_installed() {
-  local release_dir="$1"
-  local sha="$2"
-  local marker="$release_dir/.eternal-frontend-artifact"
-  local recorded_sha recorded_input expect_input
-  [[ -f "$marker" ]] || return 1
-  [[ -f "$release_dir/frontend/build/index.html" ]] || return 1
-  recorded_sha="$(sed -n 's/^git_sha=//p' "$marker" | head -n1)"
-  [[ "$recorded_sha" == "$sha" ]] || return 1
-  recorded_input="$(sed -n 's/^input_fingerprint_sha256=//p' "$marker" | head -n1)"
-  expect_input="$(eternal_frontend_input_fingerprint "$release_dir/frontend")"
-  [[ "$recorded_input" == "$expect_input" ]] || return 1
-  local recorded_env expect_env
-  recorded_env="$(sed -n 's/^env_fingerprint_sha256=//p' "$marker" | head -n1)"
-  expect_env="$(eternal_frontend_expected_env_fingerprint)"
-  [[ "$recorded_env" == "$expect_env" ]] || return 1
-  return 0
-}
-
-# Resolve artifact directory for SHA: local dir, or mock GH dir, or die (no yarn fallback).
-eternal_resolve_frontend_artifact_dir() {
-  local sha="$1"
-  local local_dir="${ETERNAL_FRONTEND_ARTIFACT_DIR:-}"
-  local mock="${ETERNAL_GH_ARTIFACT_MOCK_DIR:-}"
-
-  if [[ -n "$local_dir" ]]; then
-    [[ -d "$local_dir" ]] || eternal_deploy_die "ETERNAL_FRONTEND_ARTIFACT_DIR missing: $local_dir"
-    printf '%s\n' "$local_dir"
-    return 0
-  fi
-  if [[ -n "$mock" ]]; then
-    local cand="$mock/$sha"
-    [[ -d "$cand" ]] || eternal_deploy_die "frontend artifact mock missing for sha=$sha"
-    printf '%s\n' "$cand"
-    return 0
-  fi
-  # Live GitHub download path (least privilege token). Never log token.
-  if [[ -n "${ETERNAL_FRONTEND_ARTIFACT_TOKEN:-${GH_TOKEN:-}}" && -n "${ETERNAL_GITHUB_REPO:-}" ]]; then
-    eternal_download_frontend_artifact_from_github "$sha"
-    return 0
-  fi
-  eternal_deploy_die "frontend artifact unavailable for sha=$sha (set ETERNAL_FRONTEND_ARTIFACT_DIR or GH credentials; no yarn fallback)"
-}
-
-# Bind downloaded Actions run identity to manifest (fail-closed; never swap artifacts).
-eternal_verify_frontend_artifact_actions_run() {
-  local manifest="$1"
-  local expect_run_id="$2"
-  local expect_run_attempt="$3"
-  local run_id run_attempt
-  [[ -f "$manifest" ]] || eternal_deploy_die "frontend artifact: manifest missing for run provenance"
-  [[ -n "$expect_run_id" && "$expect_run_id" =~ ^[0-9]+$ ]] \
-    || eternal_deploy_die "frontend artifact: Actions run_id expectation malformed"
-  [[ -n "$expect_run_attempt" && "$expect_run_attempt" =~ ^[1-9][0-9]*$ ]] \
-    || eternal_deploy_die "frontend artifact: Actions run_attempt expectation malformed"
-  run_id="$(eternal_frontend_artifact_json_get "$manifest" run_id)"
-  run_attempt="$(eternal_frontend_artifact_json_get "$manifest" run_attempt)"
-  [[ "$run_id" == "$expect_run_id" ]] \
-    || eternal_deploy_die "frontend artifact: run_id mismatch manifest=$run_id actions=$expect_run_id"
-  [[ "$run_attempt" == "$expect_run_attempt" ]] \
-    || eternal_deploy_die "frontend artifact: run_attempt mismatch manifest=$run_attempt actions=$expect_run_attempt"
-}
-
-eternal_download_frontend_artifact_from_github() {
-  local sha="$1"
-  local repo="${ETERNAL_GITHUB_REPO:?}"
-  local token="${ETERNAL_FRONTEND_ARTIFACT_TOKEN:-${GH_TOKEN:-}}"
-  local workflow="$ETERNAL_FRONTEND_ARTIFACT_WORKFLOW"
-  local dest="${ETERNAL_FRONTEND_ARTIFACT_CACHE:-/tmp}/eternal-fe-artifact-${sha}"
-  local api="${ETERNAL_GITHUB_API:-https://api.github.com}"
-  local runs_json run_id run_attempt arts_json art_id zip_path
-  [[ -n "$token" ]] || eternal_deploy_die "frontend artifact: token missing"
-  rm -rf "$dest"
-  mkdir -p "$dest"
-
-  # Find newest successful workflow run for head SHA (Actions API).
-  runs_json="$(
-    curl -fsS \
-      -H "Authorization: Bearer ${token}" \
-      -H "Accept: application/vnd.github+json" \
-      "${api}/repos/${repo}/actions/workflows/${workflow}/runs?head_sha=${sha}&per_page=10" \
-      2>/dev/null
-  )" || eternal_deploy_die "frontend artifact: failed to list workflow runs (network/auth)"
-  # Emit "run_id run_attempt" for the selected successful run (no silent alternate).
-  read -r run_id run_attempt < <(
-    printf '%s' "$runs_json" | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-runs=d.get("workflow_runs") or []
-for r in runs:
-    if r.get("head_sha")==sys.argv[1] and r.get("status")=="completed" and r.get("conclusion")=="success":
-        attempt=r.get("run_attempt") or 1
-        print("%s %s" % (r.get("id"), attempt))
-        sys.exit(0)
-sys.exit(1)
-' "$sha"
-  ) || eternal_deploy_die "frontend artifact: no successful $workflow run for sha=$sha"
-  [[ "$run_id" =~ ^[0-9]+$ ]] || eternal_deploy_die "frontend artifact: Actions run_id malformed"
-  [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]] || eternal_deploy_die "frontend artifact: Actions run_attempt malformed"
-
-  arts_json="$(
-    curl -fsS \
-      -H "Authorization: Bearer ${token}" \
-      -H "Accept: application/vnd.github+json" \
-      "${api}/repos/${repo}/actions/runs/${run_id}/artifacts?per_page=50"
-  )" || eternal_deploy_die "frontend artifact: list artifacts failed"
-  art_id="$(
-    printf '%s' "$arts_json" | python3 -c '
-import json,sys
-want="eternal-frontend-build-"+sys.argv[1]
-d=json.load(sys.stdin)
-for a in d.get("artifacts") or []:
-    if a.get("name")==want and not a.get("expired"):
-        print(a.get("id")); sys.exit(0)
-sys.exit(1)
-' "$sha"
-  )" || eternal_deploy_die "frontend artifact: named artifact missing/expired for sha=$sha"
-
-  zip_path="$dest/artifact.zip"
-  curl -fsSL \
-    -H "Authorization: Bearer ${token}" \
-    -H "Accept: application/vnd.github+json" \
-    -o "$zip_path" \
-    "${api}/repos/${repo}/actions/artifacts/${art_id}/zip" \
-    || eternal_deploy_die "frontend artifact: download failed"
-  # Token must not appear in logs; avoid dumping curl headers.
-  (
-    cd "$dest" || exit 1
-    python3 - "$zip_path" <<'PY'
-import sys, zipfile
-zpath = sys.argv[1]
-with zipfile.ZipFile(zpath) as zf:
-    for info in zf.infolist():
-        name = info.filename
-        parts = name.split("/")
-        if ".." in parts or name.startswith("/"):
-            raise SystemExit("unsafe zip entry")
-    zf.extractall(".")
-PY
-  ) || eternal_deploy_die "frontend artifact: zip extract refused"
-  rm -f "$zip_path"
-  [[ -f "$dest/manifest.json" ]] || eternal_deploy_die "frontend artifact: manifest.json missing after download"
-  # Provenance bind: refuse mismatched run/attempt (do not try another artifact).
-  eternal_verify_frontend_artifact_actions_run "$dest/manifest.json" "$run_id" "$run_attempt"
-  printf '%s\n' "$run_id" >"$dest/.eternal-actions-run-id"
-  printf '%s\n' "$run_attempt" >"$dest/.eternal-actions-run-attempt"
-  printf '%s\n' "$dest"
 }
 
 eternal_constant_time_eq() {
@@ -2041,24 +1581,6 @@ eternal_write_active_release_marker() {
   {
     printf 'sha=%s\n' "$sha"
     printf 'previous_id=%s\n' "$previous_id"
-    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } >"$marker"
-}
-
-# Bookkeeping for docs/tests-only SHAs: processed Git identity ≠ application runtime identity.
-# Does not update active-release.txt and does not create .deploy-ok application markers.
-eternal_write_processed_git_sha_marker() {
-  local releases_root="$1"
-  local sha="$2"
-  local prev_sha="$3"
-  local marker="$releases_root/last-processed-git-sha.txt"
-  eternal_require_sha40 "$sha"
-  mkdir -p "$releases_root"
-  {
-    printf 'sha=%s\n' "$sha"
-    printf 'kind=no_application_change\n'
-    printf 'previous_classify_sha=%s\n' "$prev_sha"
-    printf 'active_release_unchanged=1\n'
     printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } >"$marker"
 }
