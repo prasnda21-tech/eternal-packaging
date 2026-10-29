@@ -7,8 +7,11 @@ import {
   Package,
   Info,
   Plus,
+  RefreshCw,
   Search,
+  Trash2,
   Truck,
+  UserPlus,
   X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
@@ -20,6 +23,7 @@ import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import {
   formatOrderRupiah,
   lineSellingSubtotal,
+  orderSellingTotal,
 } from "../lib/salesOrderLinePrice";
 import {
   STATUS_LABEL,
@@ -33,6 +37,7 @@ import {
   praPoLineQtyLabel,
 } from "../lib/praPoForm";
 import "./pesananPenjualan.css";
+import "./ux90SalesCreate.css";
 import "./praPo.css";
 
 export {
@@ -221,6 +226,15 @@ export default function PraPoPage() {
   }, [page, pageCount]);
 
   const newCustomer = Boolean(form.customer?.trim()) && !form.customer_id;
+  const sellingTotal = orderSellingTotal(form.line_items);
+
+  const startNewCustomer = () => {
+    handleCustomerClear();
+    window.setTimeout(() => {
+      const input = document.querySelector('[data-testid="pra-po-customer"]');
+      if (input && typeof input.focus === "function") input.focus();
+    }, 0);
+  };
 
   const openCreate = () => {
     setSelected(null);
@@ -452,6 +466,7 @@ export default function PraPoPage() {
           className="so-create-form"
           noValidate
           data-create-tab={createTab}
+          data-form-tab={createTab}
           onSubmit={(e) => {
             e.preventDefault();
             if (canEditForm) saveDraft();
@@ -508,19 +523,30 @@ export default function PraPoPage() {
                 <div className="ux90-txn-header ux90-so-txn-header so-sum-row" data-testid="pra-po-main-fields">
                   <div className="so-sum-chip is-customer is-editing ux90-txn-field">
                     <PraField label="Pelanggan" required error={/Customer|Pelanggan/i.test(fieldError)}>
-                      <div className="so-sum-editor">
+                      <div className="so-sum-editor pra-po-customer-editor">
                         {canEditForm ? (
-                          <CustomerSearchSelect
-                            customers={masterCustomers}
-                            value={form.customer}
-                            selectedId={form.customer_id}
-                            onTextChange={handleCustomerTextChange}
-                            onSelectCustomer={handleCustomerSelect}
-                            onClear={handleCustomerClear}
-                            disabled={busy}
-                            required
-                            testId="pra-po-customer"
-                          />
+                          <>
+                            <CustomerSearchSelect
+                              customers={masterCustomers}
+                              value={form.customer}
+                              selectedId={form.customer_id}
+                              onTextChange={handleCustomerTextChange}
+                              onSelectCustomer={handleCustomerSelect}
+                              onClear={handleCustomerClear}
+                              disabled={busy}
+                              required
+                              testId="pra-po-customer"
+                            />
+                            <button
+                              type="button"
+                              className="pra-po-new-customer-btn"
+                              onClick={startNewCustomer}
+                              disabled={busy}
+                              data-testid="pra-po-new-customer"
+                            >
+                              <UserPlus size={14} aria-hidden="true" /> Pelanggan Baru
+                            </button>
+                          </>
                         ) : (
                           <input className="so-line-input" value={form.customer} readOnly data-testid="pra-po-customer" />
                         )}
@@ -528,7 +554,7 @@ export default function PraPoPage() {
                     </PraField>
                   </div>
                   <div className="so-sum-chip is-editing so-sum-chip-date ux90-txn-field">
-                    <PraField label="Tanggal">
+                    <PraField label="Tanggal Pra PO">
                       <div className="so-sum-editor">
                         {canEditForm ? (
                           <SalesInvoiceDateField
@@ -546,11 +572,24 @@ export default function PraPoPage() {
                 </div>
 
                 {form.customer?.trim() ? (
-                  <div className="so-create-note">
+                  <div
+                    className={`pra-po-customer-card ${form.customer_id ? "is-registered" : "is-new"}`}
+                    data-testid="pra-po-customer-card"
+                  >
+                    <div className="pra-po-customer-card-main">
+                      <strong data-testid="pra-po-customer-card-name">{form.customer}</strong>
+                      {form.customer_phone ? (
+                        <span data-testid="pra-po-customer-card-phone">{form.customer_phone}</span>
+                      ) : null}
+                    </div>
                     {form.customer_id ? (
-                      <span data-testid="pra-po-badge-customer-registered">✓ Pelanggan Terdaftar di Master</span>
+                      <span className="pra-po-customer-pill is-registered" data-testid="pra-po-badge-customer-registered">
+                        Terdaftar di Master
+                      </span>
                     ) : (
-                      <span data-testid="pra-po-badge-customer-new">+ Pelanggan Baru — isi HP dan alamat di tab Pengiriman</span>
+                      <span className="pra-po-customer-pill is-new" data-testid="pra-po-badge-customer-new">
+                        Pelanggan Baru — isi HP &amp; alamat di Pengiriman
+                      </span>
                     )}
                   </div>
                 ) : null}
@@ -566,7 +605,7 @@ export default function PraPoPage() {
                       onClick={() => setCreateTab("items")}
                     >
                       <Package size={18} aria-hidden="true" />
-                      <span>Rincian</span>
+                      <span>Rincian Barang</span>
                     </button>
                     <button
                       type="button"
@@ -600,6 +639,8 @@ export default function PraPoPage() {
                       className="ux90-so-pane-panel ux90-so-pane-items so-create-lines so-items-only"
                       data-pane="items"
                       hidden={createTab !== "items"}
+                      aria-hidden={createTab !== "items"}
+                      inert={createTab !== "items" ? true : undefined}
                     >
                       <div className="so-create-line-toolbar">
                         <div className="so-create-line-heading">
@@ -728,19 +769,22 @@ export default function PraPoPage() {
                                         data-testid={`pra-po-line-price-${index}`}
                                       />
                                     </td>
-                                    <td className="so-col-sub" data-testid={`pra-po-line-subtotal-${index}`}>
+                                    <td className="so-col-sub pra-po-money" data-testid={`pra-po-line-subtotal-${index}`}>
                                       {formatOrderRupiah(subtotal)}
                                     </td>
                                     <td className="so-col-action">
                                       {canEditForm ? (
                                         <button
                                           type="button"
+                                          className="pra-po-line-remove"
                                           onClick={() => removeLineItem(index)}
                                           disabled={form.line_items.length <= 1}
                                           data-testid={`pra-po-remove-line-${index}`}
                                           aria-label="Hapus baris"
+                                          title="Hapus baris"
                                         >
-                                          Hapus
+                                          <Trash2 size={15} aria-hidden="true" />
+                                          <span className="pra-po-line-remove-label">Hapus</span>
                                         </button>
                                       ) : null}
                                     </td>
@@ -751,12 +795,18 @@ export default function PraPoPage() {
                           </tbody>
                         </table>
                       </div>
+                      <div className="pra-po-lines-total" data-testid="pra-po-order-total">
+                        <span>Total</span>
+                        <strong>{formatOrderRupiah(sellingTotal)}</strong>
+                      </div>
                     </div>
 
                     <div
                       className="ux90-so-pane-panel ux90-so-pane-info so-create-extra so-info-only"
                       data-pane="info"
                       hidden={createTab !== "info"}
+                      aria-hidden={createTab !== "info"}
+                      inert={createTab !== "info" ? true : undefined}
                       data-testid="pra-po-info-pane"
                     >
                       <PraField label="Catatan Pesanan">
@@ -799,9 +849,11 @@ export default function PraPoPage() {
                     </div>
 
                     <div
-                      className="ux90-so-pane-panel ux90-so-pane-ship so-create-extra"
+                      className="ux90-so-pane-panel ux90-so-pane-ship so-ship-panel so-ship-only"
                       data-pane="ship"
                       hidden={createTab !== "ship"}
+                      aria-hidden={createTab !== "ship"}
+                      inert={createTab !== "ship" ? true : undefined}
                       data-testid="pra-po-ship-pane"
                     >
                       <PraField
@@ -946,19 +998,27 @@ export default function PraPoPage() {
         <header className="so-list-header">
           <div className="so-list-heading">
             <h1>Pra PO</h1>
-            <p>
-              CRM mengajukan Pra PO. Admin memverifikasi sebelum menjadi Pesanan Penjualan.
-              {" "}
-              <span data-testid="pra-po-list-count">
+            <div className="so-list-summary" data-testid="pra-po-list-count">
+              <strong>{listTotal.toLocaleString("id-ID")}</strong>
+              <span>
                 {listTotal === 0
-                  ? "0 dokumen"
-                  : `${listRangeStart}–${listRangeEnd} dari ${listTotal.toLocaleString("id-ID")} dokumen`}
+                  ? "dokumen"
+                  : `dokumen · ${listRangeStart}–${listRangeEnd}`}
               </span>
-            </p>
+              {listLoading ? <span> · memuat</span> : null}
+            </div>
           </div>
           <div className="so-list-header-actions">
-            <button type="button" className="so-list-refresh" onClick={reload} disabled={listLoading} data-testid="pra-po-refresh">
-              Muat ulang
+            <button
+              type="button"
+              className="so-list-refresh pra-po-refresh"
+              onClick={reload}
+              disabled={listLoading}
+              data-testid="pra-po-refresh"
+              aria-label="Muat ulang"
+            >
+              <RefreshCw size={15} className={listLoading ? "spin" : ""} aria-hidden="true" />
+              <span className="pra-po-refresh-label">Muat ulang</span>
             </button>
             {canCreate ? (
               <button type="button" className="so-list-create" onClick={openCreate} data-testid="pra-po-btn-create">
@@ -1022,7 +1082,7 @@ export default function PraPoPage() {
           </div>
         ) : null}
 
-        <div className="so-list-table-wrap">
+        <div className="so-list-table-scroll" data-testid="pra-po-table-scroll">
           <table className="so-list-table" data-testid="pra-po-table">
             <thead>
               <tr>
@@ -1039,7 +1099,18 @@ export default function PraPoPage() {
               {listLoading ? (
                 <tr><td colSpan={7} className="muted">Memuat…</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={7} className="muted" data-testid="pra-po-empty">Belum ada Pra PO.</td></tr>
+                <tr>
+                  <td colSpan={7} className="so-list-empty pra-po-list-empty" data-testid="pra-po-empty">
+                    <div className="pra-po-empty-inner">
+                      <p>Belum ada Pra PO.</p>
+                      {canCreate ? (
+                        <button type="button" onClick={openCreate} data-testid="pra-po-empty-create">
+                          <Plus size={14} /> Buat Pra PO
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
               ) : items.map((row) => (
                 <tr key={row.id} data-testid={`pra-po-row-${row.id}`}>
                   <td>{row.number}</td>
