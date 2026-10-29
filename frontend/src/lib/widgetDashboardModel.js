@@ -368,7 +368,9 @@ export function mapSchedule(payload, todayIso) {
 export function mapProduction(payload, todayIso) {
   const source = Array.isArray(payload?.rows) ? payload.rows : null;
   if (!source) return { status: "unavailable", rows: [] };
-  const truncated = source.length >= 1000;
+  const truncated = payload?.completeness
+    ? payload.completeness === "incomplete"
+    : source.length >= 1000;
   const rows = [];
   source.forEach((row) => {
     const dates = [];

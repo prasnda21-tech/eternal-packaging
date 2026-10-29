@@ -16,7 +16,10 @@ import {
   mapToday,
 } from "./widgetDashboardModel";
 import { shouldApplyDashboardResponse } from "./financialDashboard";
-import { WIDGET_IDS } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { WIDGETS, WIDGET_IDS } from "../components/widgetDashboard/widgetDashboardCatalog";
+import { financeWidgetMeta } from "../components/financeDashboard/financeWidgetCatalog";
+import fs from "fs";
+import path from "path";
 
 test("catalog has the twenty widgets", () => {
   expect(WIDGET_IDS).toHaveLength(20);
@@ -101,6 +104,19 @@ test("purchase bars are invoice values and failure has no amount", () => {
     unpaid_count: 2,
   });
   expect(body.settledGrand + body.openOutstanding).toBe(230);
+  expect(body.openOutstanding).toBe(130);
+  expect(WIDGETS.purchases.info).toContain("Nilai Faktur Belum Lunas");
+  expect(WIDGETS.purchases.info).toContain("grand_total");
+  expect(WIDGETS.purchases.info).toContain("DP");
+  expect(WIDGETS.purchases.info).toContain("Bukan sisa utang");
+  expect(WIDGETS.settlement.info).toContain("Belum lunas");
+  expect(financeWidgetMeta("purchases").summary).toContain("Nilai Faktur Belum Lunas");
+  const widgetBoard = fs.readFileSync(path.join(__dirname, "../components/widgetDashboard/WidgetBoard.jsx"), "utf8");
+  const financeBoard = fs.readFileSync(path.join(__dirname, "../components/financeDashboard/FinanceWidgetBoard.jsx"), "utf8");
+  expect(widgetBoard).toContain("Nilai Faktur Belum Lunas · ${model.openCount} faktur");
+  expect(widgetBoard).toContain("Belum lunas · ${model.openCount} faktur");
+  expect(financeBoard).toContain("Nilai Faktur Belum Lunas");
+  expect(financeBoard).toContain("Belum ada faktur pembelian pada periode ini.");
   expect(failedModel({ response: { status: 500, data: { detail: "Gagal" } } })).toEqual({ status: "error", detail: "Gagal" });
   expect(failedModel({ response: { status: 403 } }).status).toBe("forbidden");
   expect(failedModel({}).amount).toBeUndefined();
@@ -150,6 +166,15 @@ test("ship today and production do not invent totals from a cut list", () => {
   expect(production.rows.map((row) => row.order)).toEqual(["PO-9"]);
   expect(production.rows[0].name).toBe("Lunch Box");
   expect(production.rows[0].date).toBe("6 Okt 2026");
+  const capped = mapProduction({
+    completeness: "incomplete",
+    read_limit: 1000,
+    matched_count: 1400,
+    rows: [{ id: "p1", po_number: "PO-9", customer: "Nusantara", work_date: "2026-10-06", operators: [] }],
+  }, "2026-10-04");
+  expect(capped.status).toBe("incomplete");
+  expect(capped.detail).toContain("terpotong");
+  expect(JSON.stringify(capped)).not.toContain("1400");
 });
 
 test("reconciliation empty is not a matched zero and finalized keeps a difference", () => {

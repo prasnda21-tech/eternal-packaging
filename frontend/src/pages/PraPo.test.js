@@ -4,6 +4,14 @@ import path from "path";
 const src = fs.readFileSync(path.join(__dirname, "PraPo.jsx"), "utf8");
 
 describe("Pra PO page source contract — SO parity", () => {
+  test("sales field uses the master catalog lookup, not free text", () => {
+    expect(src).toMatch(/LookupSearchSelect/);
+    expect(src).toMatch(/api\.salesMasterCatalog/);
+    expect(src).toMatch(/applyPraPoSalesChoice/);
+    expect(src).toMatch(/data-testid="pra-po-sales-error"/);
+    expect(src).not.toMatch(/setForm\(\(p\) => \(\{ \.\.\.p, sales: e\.target\.value \}\)\)/);
+  });
+
   test("uses CustomerSearchSelect and MasterItemSearchSelect", () => {
     expect(src).toMatch(/CustomerSearchSelect/);
     expect(src).toMatch(/MasterItemSearchSelect/);
@@ -28,6 +36,44 @@ describe("Pra PO page source contract — SO parity", () => {
     expect(src).toMatch(/pra-po-pagination/);
     expect(src).toMatch(/pra-po-page-next/);
     expect(src).toMatch(/params\.q/);
+  });
+
+  test("list uses compact SO table-scroll fill and nowrap refresh", () => {
+    expect(src).toMatch(/so-list-table-scroll/);
+    expect(src).toMatch(/pra-po-table-scroll/);
+    expect(src).toMatch(/pra-po-refresh-label/);
+    expect(src).toMatch(/so-list-summary/);
+    expect(src).toMatch(/pra-po-empty-inner/);
+    expect(src).not.toMatch(/so-list-table-wrap/);
+  });
+
+  test("create form imports SO ux90 create CSS and binds form tab panes", () => {
+    expect(src).toMatch(/ux90SalesCreate\.css/);
+    expect(src).toMatch(/data-form-tab=\{createTab\}/);
+    expect(src).toMatch(/data-create-tab=\{createTab\}/);
+    expect(src).toMatch(/inert=\{createTab !== "items"/);
+    expect(src).toMatch(/so-ship-panel/);
+  });
+
+  test("create form shows order total and new-customer affordance", () => {
+    expect(src).toMatch(/orderSellingTotal/);
+    expect(src).toMatch(/pra-po-order-total/);
+    expect(src).toMatch(/pra-po-new-customer/);
+    expect(src).toMatch(/\+ Pelanggan Baru/);
+    expect(src).toMatch(/pra-po-new-customer-modal/);
+    expect(src).toMatch(/Gunakan Pelanggan/);
+    expect(src).toMatch(/applyPraPoNewCustomer/);
+    expect(src).toMatch(/pra-po-customer-card/);
+    expect(src).toMatch(/Rincian Barang/);
+  });
+
+  test("create CSS keeps customer editor compact and pinned action bar", () => {
+    const css = fs.readFileSync(path.join(__dirname, "praPo.css"), "utf8");
+    expect(css).toMatch(/pra-po-customer-editor \.mis-root/);
+    expect(css).toMatch(/height:\s*auto\s*!important/);
+    expect(css).toMatch(/so-create-form[\s\S]*height:\s*100%\s*!important/);
+    expect(css).toMatch(/so-create-actionbar[\s\S]*flex:\s*0\s+0\s+auto/);
+    expect(css).toMatch(/white-space:\s*nowrap\s*!important/);
   });
 
   test("admin verify/return and CRM submit actions present", () => {

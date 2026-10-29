@@ -93,7 +93,12 @@ function DateFilterTodayShortcut({ testid, onClick }) {
 function ingestProductionDashboard(d) {
   const nextRows = mergeHariIniPreviewDummyRows(d?.rows || []);
   const total = isProductionScheduleHariIniPreviewHost() ? nextRows.length : (d?.total || 0);
-  return { rows: nextRows, total };
+  return {
+    rows: nextRows,
+    total,
+    completeness: d?.completeness || "",
+    readLimit: d?.read_limit,
+  };
 }
 
 function ProdColResizeHandle({ colKey, onPointerDown, onDoubleClick }) {
@@ -166,6 +171,7 @@ export default function ProductionSchedule() {
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [err, setErr] = useState("");
   const [total, setTotal] = useState(0);
+  const [scheduleRead, setScheduleRead] = useState(null);
   const [colWidths, setColWidths] = useState(() => readProductionScheduleColWidths(listUserId));
   const colResizeRef = useRef(null);
   const [q, setQ] = useState(FILTER_DEFAULTS.q);
@@ -209,6 +215,7 @@ export default function ProductionSchedule() {
         const ingested = ingestProductionDashboard(payload);
         setRows(ingested.rows);
         setTotal(ingested.total);
+        setScheduleRead(ingested);
         setHasLoadedOnce(true);
         setErr("");
       })
@@ -245,6 +252,7 @@ export default function ProductionSchedule() {
         const ingested = ingestProductionDashboard(result.payload);
         setRows(ingested.rows);
         setTotal(ingested.total);
+        setScheduleRead(ingested);
         setHasLoadedOnce(true);
         setErr("");
       },
@@ -642,6 +650,11 @@ export default function ProductionSchedule() {
               <span className="prod-schedule-count-pill" data-testid="prod-schedule-count">
                 {Number(total).toLocaleString("id-ID")} pekerjaan
               </span>
+            )}
+            {scheduleRead?.completeness === "incomplete" && (
+              <p className="muted small" data-testid="prod-schedule-incomplete" role="status">
+                Jadwal belum lengkap. Batas baca {scheduleRead.readLimit}.
+              </p>
             )}
           </div>
           <div className="prod-schedule-heading-actions">

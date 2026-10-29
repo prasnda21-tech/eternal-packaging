@@ -249,6 +249,7 @@ from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.finance_widget_layout_http import register_finance_widget_layout_routes
 from services.production_dashboard_http import register_production_dashboard_routes
 from services.production_wave2_http import register_production_wave2_routes
+from services.po_late_tracking_http import register_po_late_tracking_routes
 from services.production_dashboard_snapshot import summary_flags as _production_summary_flags
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
@@ -1198,12 +1199,15 @@ def _orders_list_match(st: str, extra: Optional[dict] = None) -> dict:
 async def _list_orders_summary(st: str, extra: Optional[dict] = None) -> dict:
     """Mobile PO list: same status semantics, no file blobs, no stage_counts scan."""
     q = _orders_list_match(st, extra)
+    from services.production_dashboard_http import scoped_read_meta
+    list_matched = await db.orders.count_documents(q)
     raw = await db.orders.aggregate([
         {"$match": q},
         {"$sort": {"created_at": -1}},
         {"$limit": _ORDERS_SUMMARY_LIMIT},
         {"$project": _orders_list_summary_projection()},
     ]).to_list(_ORDERS_SUMMARY_LIMIT)
+    list_fetched = len(raw)
     # Physical qty before finalize so hold filter still sees stamped lines.
     await _attach_list_packing_required_totals(raw)
     orders = [_finalize_orders_summary_row(o) for o in raw]
@@ -1233,6 +1237,7 @@ async def _list_orders_summary(st: str, extra: Optional[dict] = None) -> dict:
         "stage_counts": {},
         "status": st,
         "view": "summary",
+        "list_read": scoped_read_meta(list_matched, list_fetched, _ORDERS_SUMMARY_LIMIT),
     }
 
 
@@ -1260,18 +1265,22 @@ async def list_orders(
     q: dict = {}
     st = (status or "aktif").lower()
     view_norm = (view or "").strip().lower()
-    scope = sales_owner_match(user)
+    from services.production_dashboard_http import order_access_scope
+    access = await order_access_scope(db, user)
     if view_norm == "summary":
-        return await _list_orders_summary(st, extra=scope)
+        return await _list_orders_summary(st, extra=access)
     if view_norm == "dashboard":
-        return await _list_orders_dashboard(st, extra=scope)
+        return await _list_orders_dashboard(st, extra=access)
     if st == "cancelled":
         q["cancelled"] = True
     else:
         # Non-cancelled by default (Aktif/HOLD/Selesai/stage_view)
         q["cancelled"] = {"$ne": True}
-    q.update(scope)
+    q.update(access)
+    from services.production_dashboard_http import scoped_read_meta
+    list_matched = await db.orders.count_documents(q)
     orders = await db.orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    list_fetched = len(orders)
     _dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
     holidays = await _holiday_dates(db)
@@ -1298,23 +1307,33 @@ async def list_orders(
     elif st == "selesai":
         orders = [o for o in orders if o.get("current_stage", 0) >= 14]
     # stage_view / all / cancelled → no additional post-filter
+    open_scope = {"cancelled": {"$ne": True}, **access}
     counts = {
-        "aktif": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$lt": 14}}),
-        "selesai": await db.orders.count_documents({"cancelled": {"$ne": True}, "current_stage": {"$gte": 14}}),
-        "cancelled": await db.orders.count_documents({"cancelled": True}),
+        "aktif": await db.orders.count_documents({**open_scope, "current_stage": {"$lt": 14}}),
+        "selesai": await db.orders.count_documents({**open_scope, "current_stage": {"$gte": 14}}),
+        "cancelled": await db.orders.count_documents({"cancelled": True, **access}),
     }
-    # Bagian 7 & 11: canonical work-queue counts. Compute from ALL non-cancelled
-    # orders (not filtered by status). Multi-membership allowed — same PO can
-    # count di beberapa queue kalau memang outstanding di keduanya (mis. design
-    # + payment approval sama-sama pending).
-    all_active = await db.orders.find({"cancelled": {"$ne": True}}, {"_id": 0}).to_list(1000)
+    # Bagian 7 & 11: canonical work-queue counts. Compute from non-cancelled
+    # orders in the caller scope (not filtered by status). Multi-membership
+    # allowed — same PO can count di beberapa queue kalau memang outstanding
+    # di keduanya (mis. design + payment approval sama-sama pending).
+    all_active = await db.orders.find(open_scope, {"_id": 0}).to_list(1000)
+    stage_matched = await db.orders.count_documents(open_scope)
     for a in all_active:
         _apply_hold_snapshot(a)
     stage_counts: Dict[str, int] = {slug: 0 for slug in WORK_QUEUE_SLUGS}
     for a in all_active:
         for slug in _compute_pending_queues(a):
             stage_counts[slug] = stage_counts.get(slug, 0) + 1
-    return {"orders": orders, "last_sync": now_iso(), "counts": counts, "stage_counts": stage_counts, "status": st}
+    return {
+        "orders": orders,
+        "last_sync": now_iso(),
+        "counts": counts,
+        "stage_counts": stage_counts,
+        "status": st,
+        "list_read": scoped_read_meta(list_matched, list_fetched, 500),
+        "stage_read": scoped_read_meta(stage_matched, len(all_active), 1000),
+    }
 
 
 _ORDERS_DASHBOARD_LIMIT = 500
@@ -1871,10 +1890,14 @@ async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
         orders = [o for o in orders if not o.get("hold") and o.get("current_stage", 0) < 14]
     elif st == "selesai":
         orders = [o for o in orders if o.get("current_stage", 0) >= 14]
+    from services.production_dashboard_http import scoped_read_meta
+    list_matched = await db.orders.count_documents(q)
+    list_fetched = len(raw)
     counts = await _orders_dashboard_tab_counts(extra)
     stage_match = {"cancelled": {"$ne": True}}
     if extra:
         stage_match.update(extra)
+    stage_matched = await db.orders.count_documents(stage_match)
     stage_raw = await db.orders.aggregate([
         {"$match": stage_match},
         {"$limit": _ORDERS_DASHBOARD_STAGE_LIMIT},
@@ -1893,6 +1916,8 @@ async def _list_orders_dashboard(st: str, extra: Optional[dict] = None) -> dict:
         "stage_counts": stage_counts,
         "status": st,
         "view": "dashboard",
+        "list_read": scoped_read_meta(list_matched, list_fetched, _ORDERS_DASHBOARD_LIMIT),
+        "stage_read": scoped_read_meta(stage_matched, len(stage_raw), _ORDERS_DASHBOARD_STAGE_LIMIT),
     }
 
 
@@ -4567,9 +4592,11 @@ def _deadline_priority(o: dict) -> int:
 async def dashboard_action_items(user=Depends(current_user)):
     """Batch 3: Canonical action center. Backend menghitung PO yang benar-benar
     membutuhkan tindakan `action_key` DAN user punya permission efektif untuk
-    action tsb. Frontend hanya render hasil. Count == list length."""
+    action tsb. Frontend hanya render hasil. Count adalah panjang jendela yang
+    terbaca, bukan populasi bila completeness incomplete."""
     # Effective permissions: admin bypass (minus OPT_IN_ONLY), else role + overrides.
     from permissions import strip_opt_in_permissions
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
 
     if user.get("role") == "admin":
         perms = strip_opt_in_permissions(ALL_PERMISSIONS)
@@ -4587,8 +4614,10 @@ async def dashboard_action_items(user=Depends(current_user)):
         and not action_keys_needed
     )
     query: dict = {"cancelled": {"$ne": True}}
+    query.update(await order_access_scope(db, user))
     if operator_only:
         query["operator_splits.operator_email"] = user_email
+    matched_count = await db.orders.count_documents(query)
     raw = await db.orders.aggregate([
         {"$match": query},
         {"$limit": _ACTION_CENTER_LIMIT},
@@ -4658,7 +4687,11 @@ async def dashboard_action_items(user=Depends(current_user)):
             "items": [m[0] for m in matched],
         })
 
-    return {"actions": actions, "generated_at": now_iso()}
+    return {
+        "actions": actions,
+        "generated_at": now_iso(),
+        **scoped_read_meta(matched_count, len(raw), _ACTION_CENTER_LIMIT),
+    }
 
 
 @api_router.get("/work/division-tasks")
@@ -4691,12 +4724,19 @@ async def work_division_tasks(
         perms = set(await user_permissions(user))
     view_all = _can_view_all_division(perms)
     mine_only = (scope or "mine").strip().lower() != "all" or not view_all
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
+
     query: dict = {"cancelled": {"$ne": True}}
+    query.update(await order_access_scope(db, user))
     if div == "operator" and mine_only:
         email = (user.get("email") or "").strip()
         if email:
             query["operator_splits.operator_email"] = email
-    raw = await db.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
+    _division_read_limit = 1000
+    matched_count = await db.orders.count_documents(query)
+    raw = await db.orders.aggregate(
+        _division_tasks_read_pipeline(query, limit=_division_read_limit)
+    ).to_list(_division_read_limit)
     dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
     holidays = await _holiday_dates(db)
@@ -4718,6 +4758,7 @@ async def work_division_tasks(
         "tasks": tasks,
         "count": len(tasks),
         "generated_at": now_iso(),
+        **scoped_read_meta(matched_count, len(raw), _division_read_limit),
     }
     if div == "kepala_produksi":
         stock_rows, _, _ = await _load_stock_context()
@@ -7839,8 +7880,9 @@ async def create_delivery_reschedule(order_id: str, payload: DeliveryRescheduleP
 @api_router.get("/delivery/schedule")
 async def list_delivery_schedule(user=Depends(current_user)):
     await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
+    from services.production_dashboard_http import order_population_query
     docs = await db.orders.find(
-        {"cancelled": {"$ne": True}},
+        await order_population_query(db, user),
         SCHEDULE_PROJECTION,
     ).sort("deadline", 1).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
@@ -7905,7 +7947,9 @@ async def list_delivery_plan(
     Optional unit matches Qty Rencana Pengiriman widget buckets (incl. campuran).
     """
     await _require_any_perm(user, "delivery.schedule.view", "schedule.view", "nav.delivery_schedule")
-    scope = sales_owner_match(user)
+    from services.production_dashboard_http import order_access_scope
+
+    scope = await order_access_scope(db, user)
     match = _delivery_plan_mongo_match(scope)
     docs = await db.orders.find(match, _DELIVERY_PLAN_PROJECTION).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
@@ -7952,7 +7996,9 @@ async def delivery_plan_qty_widget(
         raise HTTPException(status_code=400, detail="Periode harus 7 atau 30 hari")
     from services.dashboard_today import wib_today
 
-    scope = sales_owner_match(user)
+    from services.production_dashboard_http import order_access_scope
+
+    scope = await order_access_scope(db, user)
     match = _delivery_plan_mongo_match(scope)
     docs = await db.orders.find(match, _DELIVERY_QTY_PROJECTION).to_list(None)
     dd_settings = await _get_delivery_deadline_settings()
@@ -7976,15 +8022,23 @@ async def list_delivery_reschedules(user=Depends(current_user)):
         "nav.delivery_reschedule",
         "schedule.edit",
     )
-    docs = await db.orders.find(
-        {"cancelled": {"$ne": True}, "delivery_reschedules.0": {"$exists": True}},
-        RESCHEDULE_PROJECTION,
-    ).to_list(1000)
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
+
+    _reschedule_read_limit = 1000
+    query = {"cancelled": {"$ne": True}, "delivery_reschedules.0": {"$exists": True}}
+    query.update(await order_access_scope(db, user))
+    matched_count = await db.orders.count_documents(query)
+    docs = await db.orders.find(query, RESCHEDULE_PROJECTION).to_list(_reschedule_read_limit)
     rows = []
     for o in docs:
         rows.extend(_delivery_reschedule_rows(o))
     rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
-    return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+    return {
+        "rows": rows,
+        "generated_at": now_iso(),
+        "total": len(rows),
+        **scoped_read_meta(matched_count, len(docs), _reschedule_read_limit),
+    }
 
 
 @api_router.patch("/delivery/reschedules/{reschedule_id}")
@@ -8642,8 +8696,9 @@ def _shape_order_for_dashboard_summary_compute(order: dict) -> dict:
 
 @api_router.get("/dashboard/summary")
 async def dashboard_summary(user=Depends(require_perm("dashboard.production.view"))):
+    from services.production_dashboard_http import order_population_query
     raw_orders = await db.orders.aggregate([
-        {"$match": {"cancelled": {"$ne": True}}},
+        {"$match": await order_population_query(db, user)},
         {"$project": _orders_dashboard_summary_projection()},
     ]).to_list(None)
     # Cancelled PO tidak boleh ikut card apa pun di Dashboard Produksi.
@@ -8797,14 +8852,21 @@ async def dashboard_summary(user=Depends(require_perm("dashboard.production.view
 async def dashboard_today(user=Depends(require_perm("po.view"))):
     """Compact Pengerjaan/Pengiriman Hari Ini. Targeted queries, not a full DB scan."""
     today = wib_today()
-    work_docs = await db.orders.find(work_today_mongo_query(today), TODAY_WORK_PROJECTION).to_list(500)
-    ship_docs = await db.orders.find(
-        shipments_today_mongo_query(today), SCHEDULE_PROJECTION
-    ).to_list(None)
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
+    scope = await order_access_scope(db, user)
+    work_query = work_today_mongo_query(today)
+    work_query.update(scope)
+    ship_query = shipments_today_mongo_query(today)
+    ship_query.update(scope)
+    work_matched = await db.orders.count_documents(work_query)
+    work_docs = await db.orders.find(work_query, TODAY_WORK_PROJECTION).to_list(500)
+    ship_docs = await db.orders.find(ship_query, SCHEDULE_PROJECTION).to_list(None)
+    work_today = build_work_today(work_docs, today)
+    work_today.update(scoped_read_meta(work_matched, len(work_docs), 500))
     return {
         "date": today.isoformat(),
         "timezone": "WIB",
-        "work_today": build_work_today(work_docs, today),
+        "work_today": work_today,
         "shipments_today": build_shipments_today(ship_docs, today),
         "generated_at": now_iso(),
     }
@@ -9039,13 +9101,17 @@ async def production_dashboard(
     projection (no file bytes). Default (no view) keeps the full-document
     load for desktop /produksi.
     """
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
     q: dict = {}
     if not include_cancelled:
         q["cancelled"] = {"$ne": True}
+    q.update(await order_access_scope(db, user))
+    schedule_matched = await db.orders.count_documents(q)
     if (view or "").strip().lower() == "summary":
         orders = await db.orders.find(q, _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
     else:
         orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
+    schedule_fetched = len(orders)
     _dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
     holidays = await _holiday_dates(db)
@@ -9056,7 +9122,12 @@ async def production_dashboard(
     if not include_completed:
         orders = [o for o in orders if o.get("current_stage", 0) < 14]
     rows = [_production_row(o) for o in orders]
-    return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+    return {
+        "rows": rows,
+        "generated_at": now_iso(),
+        "total": len(rows),
+        **scoped_read_meta(schedule_matched, schedule_fetched, _PRODUCTION_DASHBOARD_LIMIT),
+    }
 
 
 @api_router.get("/dashboard/shipment-status")
@@ -9065,10 +9136,14 @@ async def shipment_status_dashboard(
     user=Depends(require_perm("schedule.view")),
 ):
     """Read-only Status Pengiriman Barang. One query; percents from existing qty rules."""
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
     q: dict = {}
     if not include_cancelled:
         q["cancelled"] = {"$ne": True}
+    q.update(await order_access_scope(db, user))
+    shipment_matched = await db.orders.count_documents(q)
     orders = await db.orders.find(q, SHIPMENT_STATUS_PROJECTION).sort("deadline", 1).to_list(1000)
+    shipment_fetched = len(orders)
     _dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
     holidays = await _holiday_dates(db)
@@ -9076,7 +9151,12 @@ async def shipment_status_dashboard(
     for o in orders:
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
         rows.append(shipment_status_row(o))
-    return {"rows": rows, "generated_at": now_iso(), "total": len(rows)}
+    return {
+        "rows": rows,
+        "generated_at": now_iso(),
+        "total": len(rows),
+        **scoped_read_meta(shipment_matched, shipment_fetched, 1000),
+    }
 
 
 # Dedicated Status PO inclusion — presence-only file arrays, no embedded bytes.
@@ -17293,8 +17373,13 @@ from services.purchase_invoices import list_purchase_invoices as _list_purchase_
 
 async def _build_kepala_board_for_rincian(db_conn, user, *, lead_days, holidays):
     """Read-only Kepala board for Dashboard Rincian (same predicates as division tasks)."""
-    query = {"cancelled": {"$ne": True}}
-    raw = await db_conn.orders.aggregate(_division_tasks_read_pipeline(query)).to_list(1000)
+    from services.production_dashboard_http import order_population_query
+    raw = await db_conn.orders.aggregate(
+        _division_tasks_read_pipeline(
+            await order_population_query(db_conn, user),
+            limit=None,
+        )
+    ).to_list(None)
     for o in raw:
         _attach_deadline_snapshot(o, lead_days, holidays=holidays)
         _apply_hold_snapshot(o)
@@ -17329,6 +17414,23 @@ register_production_wave2_routes(
     require_perm=require_perm,
     with_quantity_lock=_with_quantity_lock,
     skip_mutation=_OrderMutationSkipped,
+    now_iso=now_iso,
+    Depends=Depends,
+)
+
+
+async def _po_late_holiday_dates(database):
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    return await _holiday_dates(database)
+
+
+register_po_late_tracking_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    get_delivery_deadline_settings=_get_delivery_deadline_settings,
+    holiday_dates=_po_late_holiday_dates,
     now_iso=now_iso,
     Depends=Depends,
 )
@@ -18724,13 +18826,20 @@ def _shape_order_for_reminders_compute(order: dict) -> dict:
 
 @api_router.get("/reminders")
 async def reminders(user=Depends(current_user)):
-    """Return active POs with reminder status. Filters by role — HoP/admin see all,
-    other roles see only reminders where they are the current owner.
+    """Return active POs with reminder status. Filters by role — HoP/admin/crm
+    see every stage inside their branch scope, other roles see only reminders
+    where they are the current owner.
 
     Operational buckets still use legacy `orders.deadline`. Buffer Stock never
-    enters the customer-overdue reminder count/badge.
+    enters the customer-overdue reminder count/badge. Branch scope is applied
+    before the read cap. Cancelled orders stay in this query.
     """
+    from services.production_dashboard_http import order_access_scope, scoped_read_meta
+
+    scope = await order_access_scope(db, user)
+    matched_count = await db.orders.count_documents(scope)
     orders = await db.orders.aggregate([
+        {"$match": scope},
         {"$limit": _REMINDERS_LIMIT},
         {"$project": _orders_reminders_projection()},
     ]).to_list(_REMINDERS_LIMIT)
@@ -18782,6 +18891,7 @@ async def reminders(user=Depends(current_user)):
         },
         "role_scope": "all" if role in ("admin", "head_production", "crm") else "own",
         "generated_at": now_iso(),
+        **scoped_read_meta(matched_count, len(orders), _REMINDERS_LIMIT),
     }
 
 

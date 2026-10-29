@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -360,6 +360,7 @@ def test_operator_widget_is_absent_without_its_permission():
         "po_urgent",
         "po_hold",
         "po_aktif",
+        "po_terlambat",
         "output_hari_ini",
         "tren_output",
         "sisa_qty",
@@ -493,13 +494,18 @@ async def test_routes_are_permissioned_and_do_not_mutate(clean_db):
 
     assert plant.status_code == 200
     confirmed_day = "2026-10-23"
+    today_key = plant.json()["today_wib"]
     today_units = plant.json()["today"]["by_unit"]
-    if plant.json()["today_wib"] == confirmed_day:
+    series = (plant.json().get("trend") or {}).get("series") or {}
+    window_start = (date.fromisoformat(today_key) - timedelta(days=6)).isoformat()
+    if today_key == confirmed_day:
         assert today_units == {"pack": 1}
     else:
         assert today_units == {}
-        trend = plant.json()["trend"]["series"]["pack"]
-        assert any(point["day"] == confirmed_day and point["qty"] == 1 for point in trend)
+    if window_start <= confirmed_day <= today_key:
+        assert any(point["day"] == confirmed_day and point["qty"] == 1 for point in series["pack"])
+    else:
+        assert "pack" not in series
     assert plant.json()["conversion"]["status"] == "unverified"
     assert "pcs" not in plant.json()["today"]["by_unit"]
     assert denied.status_code == 403
@@ -529,15 +535,16 @@ async def test_new_default_layout_does_not_overwrite_a_saved_layout(clean_db):
     assert [row["widget_id"] for row in view["widgets"]] == list(PRODUCTION_SPEC["order"])
     assert boxes["perlu_produksi"] == (0, 0, 3, 2)
     assert boxes["po_aktif"] == (9, 0, 3, 2)
-    assert boxes["output_hari_ini"] == (0, 2, 4, 3)
-    assert boxes["tren_output"] == (4, 2, 4, 3)
-    assert boxes["sisa_qty"] == (8, 2, 4, 3)
-    assert boxes["deadline"] == (0, 5, 4, 3)
-    assert boxes["distribusi_tahap"] == (4, 5, 4, 3)
-    assert boxes["approval"] == (8, 5, 4, 3)
-    assert boxes["output_operator"] == (0, 8, 6, 3)
-    assert boxes["beban_operator"] == (6, 8, 6, 3)
-    assert boxes["prioritas"] == (0, 11, 12, 4)
+    assert boxes["po_terlambat"] == (0, 2, 6, 3)
+    assert boxes["output_hari_ini"] == (6, 2, 4, 3)
+    assert boxes["tren_output"] == (0, 5, 4, 3)
+    assert boxes["sisa_qty"] == (4, 5, 4, 3)
+    assert boxes["deadline"] == (8, 5, 4, 3)
+    assert boxes["distribusi_tahap"] == (0, 8, 4, 3)
+    assert boxes["approval"] == (4, 8, 4, 3)
+    assert boxes["output_operator"] == (0, 11, 6, 3)
+    assert boxes["beban_operator"] == (6, 11, 6, 3)
+    assert boxes["prioritas"] == (0, 14, 12, 4)
     saved = await save_production_layout(
         server.db,
         user,

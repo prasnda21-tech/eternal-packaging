@@ -776,6 +776,43 @@ describe("MobileTasksPage remount retention", () => {
     expect(api.divisionTasks).toHaveBeenCalledTimes(2);
     expect(api.divisionTasks).toHaveBeenLastCalledWith("operator", "mine");
   });
+
+  test("shows the read cap only when the queue is incomplete", async () => {
+    api.divisionTasks.mockResolvedValue({
+      tasks: [task("OP-1")],
+      count: 1,
+      completeness: "incomplete",
+      read_limit: 1000,
+      matched_count: 2400,
+    });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    const note = container.querySelector("[data-testid='mobile-tasks-incomplete']");
+    expect(note.textContent).toContain("Antrean belum lengkap");
+    expect(note.textContent).toContain("1000");
+    expect(note.textContent).not.toContain("2400");
+    expect(visibleTaskIds(container)).toEqual(["mobile-task-OP-1"]);
+  });
+
+  test("hides the read cap when the queue is complete and keeps API errors", async () => {
+    api.divisionTasks.mockResolvedValue({
+      tasks: [task("OP-1")],
+      completeness: "complete",
+      read_limit: 1000,
+      matched_count: 1,
+    });
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(container.querySelector("[data-testid='mobile-tasks-incomplete']")).toBeNull();
+
+    api.divisionTasks.mockRejectedValue({ response: { data: { detail: "Gagal memuat tugas." } } });
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => { root.render(<MobileTasksPage />); });
+    await flush();
+    expect(container.querySelector("[data-testid='mobile-tasks-incomplete']")).toBeNull();
+    expect(container.textContent).toContain("Gagal memuat tugas.");
+  });
 });
 
 

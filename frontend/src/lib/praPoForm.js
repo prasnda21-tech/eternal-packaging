@@ -44,11 +44,76 @@ export function emptyPraPoLine() {
   };
 }
 
+export function emptyPraPoNewCustomerDraft() {
+  return {
+    name: "",
+    phone: "",
+    address: "",
+    pic: "",
+    email: "",
+    city: "",
+  };
+}
+
+/** Prefill the new-customer dialog from an untied draft. A linked master starts blank. */
+export function praPoNewCustomerDraftFromForm(form) {
+  if (form?.customer_id) return emptyPraPoNewCustomerDraft();
+  return {
+    name: form?.customer || "",
+    phone: form?.customer_phone || "",
+    address: form?.address || "",
+    pic: form?.customer_pic || "",
+    email: form?.customer_email || "",
+    city: form?.customer_city || "",
+  };
+}
+
+/** Put a new-customer identity on the Pra-PO draft. Master is not written. */
+export function applyPraPoNewCustomer(form, draft) {
+  const name = String(draft?.name || "").trim();
+  const phone = String(draft?.phone || "").trim();
+  const address = String(draft?.address || "").trim();
+  if (!name) return { form, error: "Nama pelanggan wajib diisi." };
+  if (!phone) return { form, error: "No. HP / WhatsApp wajib diisi." };
+  if (!address) return { form, error: "Alamat lengkap wajib diisi." };
+  return {
+    error: "",
+    form: {
+      ...form,
+      customer: name,
+      customer_id: null,
+      customer_phone: phone,
+      address,
+      customer_pic: String(draft?.pic || "").trim(),
+      customer_email: String(draft?.email || "").trim(),
+      customer_city: String(draft?.city || "").trim(),
+    },
+  };
+}
+
+/** Replace the transaction identity with one explicit master row. Profile fields come from that row only. */
+export function applyPraPoExistingCustomer(form, customer) {
+  if (!customer?.id) return form;
+  return {
+    ...form,
+    customer: customer.name || "",
+    customer_id: customer.id,
+    customer_phone: customer.phone || "",
+    address: customer.address || "",
+    customer_pic: customer.pic || "",
+    customer_email: customer.email || "",
+    customer_city: customer.city || "",
+  };
+}
+
 export function emptyPraPoForm() {
   return {
     customer: "",
     customer_id: null,
     customer_phone: "",
+    customer_pic: "",
+    customer_email: "",
+    customer_city: "",
     address: "",
     order_date: getWibTodayString(),
     notes: "",
@@ -60,7 +125,75 @@ export function emptyPraPoForm() {
     deadline: "",
     payment_terms: "",
     sales: "",
+    sales_master_id: "",
+    sales_identity_cleared: false,
     line_items: [emptyPraPoLine()],
+  };
+}
+
+/** Sentinel id for a stored label that has no Master Sales id. Not a catalog choice. */
+export const STORED_SALES_OPTION_ID = "__pra_po_stored_sales__";
+
+export function praPoSalesOptions(catalog, form) {
+  const active = (Array.isArray(catalog) ? catalog : []).filter(
+    (row) => row && String(row.id || "").trim() && String(row.sales_name || "").trim(),
+  );
+  const storedId = String(form?.sales_master_id || "").trim();
+  const storedLabel = String(form?.sales || "").trim();
+  if (!storedId && !storedLabel) return active;
+  const inCatalog = storedId && active.some((row) => String(row.id) === storedId);
+  if (inCatalog) return active;
+  return [{
+    id: storedId || STORED_SALES_OPTION_ID,
+    sales_name: storedLabel || "Sales tersimpan",
+    stored: true,
+  }, ...active];
+}
+
+export function praPoSalesSelectValue(form) {
+  const storedId = String(form?.sales_master_id || "").trim();
+  if (storedId) return storedId;
+  if (String(form?.sales || "").trim()) return STORED_SALES_OPTION_ID;
+  return "";
+}
+
+export function praPoSalesOptionLabel(option, form) {
+  if (!option) return "";
+  if (option.stored) return String(option.sales_name || "");
+  const storedId = String(form?.sales_master_id || "").trim();
+  const storedLabel = String(form?.sales || "").trim();
+  if (
+    !form?.sales_identity_cleared
+    && storedId
+    && String(option.id) === storedId
+    && storedLabel
+  ) {
+    return storedLabel;
+  }
+  return String(option.sales_name || "");
+}
+
+export function isPraPoStoredSalesOption(option) {
+  return Boolean(option?.stored);
+}
+
+/** Explicit catalog pick or explicit clear. Stored rows are not a new choice. */
+export function applyPraPoSalesChoice(form, salesId, hit) {
+  if (hit?.stored) return form;
+  const nextId = String(salesId || hit?.id || "").trim();
+  if (!nextId) {
+    return {
+      ...form,
+      sales: "",
+      sales_master_id: "",
+      sales_identity_cleared: true,
+    };
+  }
+  return {
+    ...form,
+    sales_master_id: nextId,
+    sales: String(hit?.sales_name || "").trim(),
+    sales_identity_cleared: false,
   };
 }
 
@@ -72,6 +205,9 @@ export function praPoDocToForm(doc) {
     customer: doc.customer || "",
     customer_id: doc.customer_id || null,
     customer_phone: doc.customer_phone || "",
+    customer_pic: doc.customer_pic || "",
+    customer_email: doc.customer_email || "",
+    customer_city: doc.customer_city || "",
     address: doc.address || "",
     order_date: doc.order_date || getWibTodayString(),
     notes: doc.notes || "",
@@ -83,6 +219,8 @@ export function praPoDocToForm(doc) {
     deadline: doc.deadline || "",
     payment_terms: doc.payment_terms || "",
     sales: doc.sales || "",
+    sales_master_id: String(doc.sales_master_id || "").trim(),
+    sales_identity_cleared: false,
     line_items: (doc.line_items || []).length
       ? doc.line_items.map((li) => ({
           ...emptyPraPoLine(),
@@ -97,10 +235,15 @@ export function praPoDocToForm(doc) {
 }
 
 export function buildPraPoPayload(form) {
-  return {
+  const sales = String(form.sales || "").trim() || null;
+  const masterId = String(form.sales_master_id || "").trim();
+  const payload = {
     customer: String(form.customer || "").trim(),
     customer_id: form.customer_id || null,
     customer_phone: String(form.customer_phone || "").trim() || null,
+    customer_pic: String(form.customer_pic || "").trim() || null,
+    customer_email: String(form.customer_email || "").trim() || null,
+    customer_city: String(form.customer_city || "").trim() || null,
     address: String(form.address || "").trim() || null,
     order_date: String(form.order_date || "").trim() || null,
     notes: String(form.notes || "").trim() || "",
@@ -111,7 +254,7 @@ export function buildPraPoPayload(form) {
     estimated_delivery: String(form.estimated_delivery || "").trim() || null,
     deadline: String(form.deadline || "").trim() || null,
     payment_terms: String(form.payment_terms || "").trim() || null,
-    sales: String(form.sales || "").trim() || null,
+    sales,
     line_items: (form.line_items || []).map((li) => {
       const price = linePriceNumber(li.unit_price);
       const mid = String(li.master_item_id || "").trim() || null;
@@ -133,6 +276,12 @@ export function buildPraPoPayload(form) {
       };
     }),
   };
+  if (masterId) {
+    payload.sales_master_id = masterId;
+  } else if (form?.sales_identity_cleared) {
+    payload.sales_master_id = null;
+  }
+  return payload;
 }
 
 /** Draft save: only require a customer name so empty shells are not stored blindly. */

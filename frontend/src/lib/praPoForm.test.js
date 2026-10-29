@@ -1,10 +1,17 @@
 import {
+  applyPraPoExistingCustomer,
+  applyPraPoNewCustomer,
+  applyPraPoSalesChoice,
   buildPraPoPayload,
   emptyPraPoForm,
   emptyPraPoLine,
   filterPraPoRows,
+  isPraPoStoredSalesOption,
   praPoDocToForm,
   praPoLineQtyLabel,
+  praPoSalesOptionLabel,
+  praPoSalesOptions,
+  praPoSalesSelectValue,
   validatePraPoDraft,
   validatePraPoSubmit,
 } from "./praPoForm";
@@ -119,6 +126,237 @@ describe("Pra PO validation helpers", () => {
       ...form,
       customer_id: "cust-1",
     })).toBe("");
+  });
+});
+
+describe("Pra PO sales master payload", () => {
+  const catalog = [
+    { id: "sm-euis", sales_name: "Euis Risnawati", active: true },
+    { id: "sm-ayub", sales_name: "Sholahudin Al - Ayubi", active: true },
+  ];
+
+  test("active catalog rows are the selectable choices", () => {
+    const options = praPoSalesOptions(catalog, emptyPraPoForm());
+    expect(options.map((row) => row.id)).toEqual(["sm-euis", "sm-ayub"]);
+    expect(options.some(isPraPoStoredSalesOption)).toBe(false);
+  });
+
+  test("new choice stores master id and canonical sales_name", () => {
+    const form = applyPraPoSalesChoice(emptyPraPoForm(), "sm-euis", catalog[0]);
+    const payload = buildPraPoPayload(form);
+    expect(payload.sales_master_id).toBe("sm-euis");
+    expect(payload.sales).toBe("Euis Risnawati");
+    expect(praPoSalesSelectValue(form)).toBe("sm-euis");
+  });
+
+  test("empty sales stays allowed and does not send a null master id", () => {
+    const payload = buildPraPoPayload(emptyPraPoForm());
+    expect(payload.sales).toBeNull();
+    expect(payload).not.toHaveProperty("sales_master_id");
+    expect(validatePraPoSubmit({
+      ...emptyPraPoForm(),
+      customer: "Toko",
+      customer_id: "cust-1",
+      line_items: [{
+        ...emptyPraPoLine(),
+        name: "Box",
+        master_item_id: "m1",
+        unit_price: "1000",
+        quantity: 1,
+        unit: "pcs",
+      }],
+    })).toBe("");
+  });
+
+  test("reopen keeps stored id and label, including a renamed catalog row", () => {
+    const form = praPoDocToForm({
+      customer: "Toko",
+      sales: "Euis Lama",
+      sales_master_id: "sm-euis",
+      line_items: [],
+    });
+    expect(form.sales).toBe("Euis Lama");
+    expect(form.sales_master_id).toBe("sm-euis");
+    expect(praPoSalesOptionLabel(catalog[0], form)).toBe("Euis Lama");
+    const payload = buildPraPoPayload(form);
+    expect(payload.sales).toBe("Euis Lama");
+    expect(payload.sales_master_id).toBe("sm-euis");
+  });
+
+  test("historical free text and inactive id stay visible and are not auto-replaced", () => {
+    const legacy = praPoDocToForm({ customer: "Toko", sales: "Sales Catatan Lama", line_items: [] });
+    const options = praPoSalesOptions(catalog, legacy);
+    expect(options[0].stored).toBe(true);
+    expect(options[0].sales_name).toBe("Sales Catatan Lama");
+    expect(isPraPoStoredSalesOption(options[0])).toBe(true);
+    expect(praPoSalesSelectValue(legacy)).not.toBe("sm-euis");
+    expect(applyPraPoSalesChoice(legacy, options[0].id, options[0])).toBe(legacy);
+    const payload = buildPraPoPayload(legacy);
+    expect(payload.sales).toBe("Sales Catatan Lama");
+    expect(payload).not.toHaveProperty("sales_master_id");
+
+    const inactive = praPoDocToForm({
+      customer: "Toko",
+      sales: "Vira",
+      sales_master_id: "sm-inactive",
+      line_items: [],
+    });
+    const inactiveOptions = praPoSalesOptions(catalog, inactive);
+    expect(inactiveOptions.some((row) => row.id === "sm-inactive" && row.stored)).toBe(true);
+    expect(inactiveOptions.filter((row) => !row.stored).map((row) => row.id)).toEqual(["sm-euis", "sm-ayub"]);
+  });
+
+  test("explicit clear sends null master id; catalog failure does not", () => {
+    const saved = praPoDocToForm({
+      customer: "Toko",
+      sales: "Euis Risnawati",
+      sales_master_id: "sm-euis",
+      line_items: [],
+    });
+    const cleared = applyPraPoSalesChoice(saved, "", null);
+    expect(buildPraPoPayload(cleared).sales).toBeNull();
+    expect(buildPraPoPayload(cleared).sales_master_id).toBeNull();
+    expect(buildPraPoPayload(saved).sales_master_id).toBe("sm-euis");
+  });
+});
+
+describe("Pra PO new and existing customer identity", () => {
+  function readyForm() {
+    const form = emptyPraPoForm();
+    form.customer = "Lama";
+    form.sales = "Euis";
+    form.sales_master_id = "sm-1";
+    form.line_items = [{
+      ...emptyPraPoLine(),
+      name: "Box",
+      master_item_id: "m1",
+      unit_price: "1000",
+      quantity: 2,
+    }];
+    return form;
+  }
+
+  test("new customer stays off the master and keeps the rest of the draft", () => {
+    const form = readyForm();
+    const applied = applyPraPoNewCustomer(form, {
+      name: "  Toko Baru  ",
+      phone: "08111",
+      address: "Jl. Baru 1",
+      pic: "Ani",
+      email: "ani@toko.test",
+      city: "Jogja",
+    });
+    expect(applied.error).toBe("");
+    expect(applied.form.customer).toBe("Toko Baru");
+    expect(applied.form.customer_id).toBeNull();
+    expect(applied.form.customer_phone).toBe("08111");
+    expect(applied.form.address).toBe("Jl. Baru 1");
+    expect(applied.form.customer_pic).toBe("Ani");
+    expect(applied.form.customer_email).toBe("ani@toko.test");
+    expect(applied.form.customer_city).toBe("Jogja");
+    expect(applied.form.sales_master_id).toBe("sm-1");
+    expect(applied.form.line_items).toHaveLength(1);
+    const payload = buildPraPoPayload(applied.form);
+    expect(payload.customer_id).toBeNull();
+    expect(payload.customer_phone).toBe("08111");
+    expect(payload.customer_pic).toBe("Ani");
+    expect(payload.address).toBe("Jl. Baru 1");
+  });
+
+  test("new customer dialog requires name, phone, and address", () => {
+    const form = readyForm();
+    expect(applyPraPoNewCustomer(form, { name: "", phone: "1", address: "Jl" }).error).toMatch(/Nama/);
+    expect(applyPraPoNewCustomer(form, { name: "A", phone: " ", address: "Jl" }).error).toMatch(/HP/);
+    expect(applyPraPoNewCustomer(form, { name: "A", phone: "1", address: "" }).error).toMatch(/Alamat/);
+    expect(form.customer).toBe("Lama");
+  });
+
+  test("reopen keeps a new-customer draft and an existing master id", () => {
+    const draft = praPoDocToForm({
+      customer: "Toko Baru",
+      customer_id: null,
+      customer_phone: "08111",
+      address: "Jl. Baru 1",
+      customer_pic: "Ani",
+      customer_email: "ani@toko.test",
+      customer_city: "Jogja",
+      line_items: [],
+    });
+    expect(draft.customer_id).toBeNull();
+    expect(draft.customer_phone).toBe("08111");
+    expect(draft.address).toBe("Jl. Baru 1");
+    expect(draft.customer_city).toBe("Jogja");
+    expect(validatePraPoSubmit({
+      ...draft,
+      line_items: [{
+        ...emptyPraPoLine(),
+        name: "Box",
+        master_item_id: "m1",
+        unit_price: "1000",
+        quantity: 1,
+      }],
+    })).toBe("");
+
+    const existing = praPoDocToForm({
+      customer: "Toko Master",
+      customer_id: "cust-1",
+      customer_phone: "081",
+      address: "Jl. Master",
+      line_items: [],
+    });
+    expect(existing.customer_id).toBe("cust-1");
+    expect(existing.customer).toBe("Toko Master");
+  });
+
+  test("switching master replaces identity and leaves line items", () => {
+    const form = applyPraPoNewCustomer(readyForm(), {
+      name: "Toko Baru",
+      phone: "08999",
+      address: "Jl. Baru",
+      pic: "Ani",
+      email: "a@b.c",
+      city: "Jogja",
+    }).form;
+    const next = applyPraPoExistingCustomer(form, {
+      id: "cust-2",
+      name: "Toko Dua",
+      phone: "08222",
+      address: "Jl. Dua",
+      pic: "Budi",
+      email: "b@b.c",
+      city: "Solo",
+    });
+    expect(next.customer_id).toBe("cust-2");
+    expect(next.customer).toBe("Toko Dua");
+    expect(next.customer_phone).toBe("08222");
+    expect(next.address).toBe("Jl. Dua");
+    expect(next.customer_pic).toBe("Budi");
+    expect(next.customer_city).toBe("Solo");
+    expect(next.line_items).toHaveLength(1);
+    expect(next.sales_master_id).toBe("sm-1");
+    const other = applyPraPoExistingCustomer(next, {
+      id: "cust-9",
+      name: "Toko Sembilan",
+      phone: "",
+      address: "",
+    });
+    expect(other.customer_id).toBe("cust-9");
+    expect(other.customer_phone).toBe("");
+    expect(other.customer_pic).toBe("");
+  });
+
+  test("editing sales does not clear the customer identity", () => {
+    const form = applyPraPoExistingCustomer(readyForm(), {
+      id: "cust-1",
+      name: "Toko Master",
+      phone: "081",
+      address: "Jl. Master",
+    });
+    const next = applyPraPoSalesChoice(form, "sm-2", { id: "sm-2", sales_name: "Ayub" });
+    expect(next.customer_id).toBe("cust-1");
+    expect(next.customer).toBe("Toko Master");
+    expect(next.customer_phone).toBe("081");
+    expect(next.sales).toBe("Ayub");
   });
 });
 

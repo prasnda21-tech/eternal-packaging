@@ -7,7 +7,9 @@ import {
   Package,
   Info,
   Plus,
+  RefreshCw,
   Search,
+  Trash2,
   Truck,
   X,
 } from "lucide-react";
@@ -15,11 +17,13 @@ import { useAuth } from "../lib/auth";
 import api from "../lib/api";
 import { NAV_KEYS } from "../lib/navAccess";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import LookupSearchSelect from "../components/LookupSearchSelect";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import {
   formatOrderRupiah,
   lineSellingSubtotal,
+  orderSellingTotal,
 } from "../lib/salesOrderLinePrice";
 import {
   STATUS_LABEL,
@@ -31,8 +35,18 @@ import {
   validatePraPoDraft,
   validatePraPoSubmit,
   praPoLineQtyLabel,
+  praPoSalesOptions,
+  praPoSalesSelectValue,
+  praPoSalesOptionLabel,
+  isPraPoStoredSalesOption,
+  applyPraPoSalesChoice,
+  applyPraPoExistingCustomer,
+  applyPraPoNewCustomer,
+  emptyPraPoNewCustomerDraft,
+  praPoNewCustomerDraftFromForm,
 } from "../lib/praPoForm";
 import "./pesananPenjualan.css";
+import "./ux90SalesCreate.css";
 import "./praPo.css";
 
 export {
@@ -90,6 +104,8 @@ export default function PraPoPage() {
   const [createTab, setCreateTab] = useState("items");
   const [returnReason, setReturnReason] = useState("");
   const [masterCustomers, setMasterCustomers] = useState([]);
+  const [salesCatalog, setSalesCatalog] = useState([]);
+  const [salesCatalogState, setSalesCatalogState] = useState("loading");
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
   const [statusFilter, setStatusFilter] = useState(canViewAll ? "queue" : "all");
@@ -100,6 +116,9 @@ export default function PraPoPage() {
     all: 0, draft: 0, queue: 0, returned: 0, verified: 0,
   });
   const [fieldError, setFieldError] = useState("");
+  const [newCustomerOpen, setNewCustomerOpen] = useState(false);
+  const [newCustomerDraft, setNewCustomerDraft] = useState(emptyPraPoNewCustomerDraft);
+  const [newCustomerError, setNewCustomerError] = useState("");
 
   const uid = String(user?.id || user?.user_id || "");
 
@@ -140,6 +159,17 @@ export default function PraPoPage() {
     }
   }, []);
 
+  const loadSalesCatalog = useCallback(async () => {
+    setSalesCatalogState("loading");
+    try {
+      const data = await api.salesMasterCatalog();
+      setSalesCatalog(Array.isArray(data?.items) ? data.items : []);
+      setSalesCatalogState("ready");
+    } catch {
+      setSalesCatalogState("error");
+    }
+  }, []);
+
   useEffect(() => {
     if (viewMode !== "list") return undefined;
     reload();
@@ -148,7 +178,8 @@ export default function PraPoPage() {
 
   useEffect(() => {
     loadOptions();
-  }, [loadOptions]);
+    loadSalesCatalog();
+  }, [loadOptions, loadSalesCatalog]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -221,6 +252,34 @@ export default function PraPoPage() {
   }, [page, pageCount]);
 
   const newCustomer = Boolean(form.customer?.trim()) && !form.customer_id;
+  const sellingTotal = orderSellingTotal(form.line_items);
+
+  const startNewCustomer = () => {
+    setNewCustomerDraft(praPoNewCustomerDraftFromForm(form));
+    setNewCustomerError("");
+    setNewCustomerOpen(true);
+  };
+
+  const closeNewCustomer = () => {
+    setNewCustomerOpen(false);
+    setNewCustomerError("");
+  };
+
+  const setNewCustomerField = (key, value) => {
+    setNewCustomerDraft((prev) => ({ ...prev, [key]: value }));
+    setNewCustomerError("");
+  };
+
+  const confirmNewCustomer = () => {
+    const applied = applyPraPoNewCustomer(form, newCustomerDraft);
+    if (applied.error) {
+      setNewCustomerError(applied.error);
+      return;
+    }
+    setForm(applied.form);
+    setFieldError("");
+    setNewCustomerOpen(false);
+  };
 
   const openCreate = () => {
     setSelected(null);
@@ -248,14 +307,9 @@ export default function PraPoPage() {
   };
 
   const handleCustomerSelect = (customer) => {
-    if (!customer) return;
-    setForm((prev) => ({
-      ...prev,
-      customer: customer.name || "",
-      customer_id: customer.id || null,
-      customer_phone: customer.phone || prev.customer_phone || "",
-      address: customer.address || prev.address || "",
-    }));
+    if (!customer?.id) return;
+    setForm((prev) => applyPraPoExistingCustomer(prev, customer));
+    setFieldError("");
   };
 
   const handleCustomerTextChange = (text) => {
@@ -273,6 +327,9 @@ export default function PraPoPage() {
       customer_id: null,
       customer_phone: "",
       address: "",
+      customer_pic: "",
+      customer_email: "",
+      customer_city: "",
     }));
   };
 
@@ -452,6 +509,7 @@ export default function PraPoPage() {
           className="so-create-form"
           noValidate
           data-create-tab={createTab}
+          data-form-tab={createTab}
           onSubmit={(e) => {
             e.preventDefault();
             if (canEditForm) saveDraft();
@@ -508,19 +566,30 @@ export default function PraPoPage() {
                 <div className="ux90-txn-header ux90-so-txn-header so-sum-row" data-testid="pra-po-main-fields">
                   <div className="so-sum-chip is-customer is-editing ux90-txn-field">
                     <PraField label="Pelanggan" required error={/Customer|Pelanggan/i.test(fieldError)}>
-                      <div className="so-sum-editor">
+                      <div className="so-sum-editor pra-po-customer-editor">
                         {canEditForm ? (
-                          <CustomerSearchSelect
-                            customers={masterCustomers}
-                            value={form.customer}
-                            selectedId={form.customer_id}
-                            onTextChange={handleCustomerTextChange}
-                            onSelectCustomer={handleCustomerSelect}
-                            onClear={handleCustomerClear}
-                            disabled={busy}
-                            required
-                            testId="pra-po-customer"
-                          />
+                          <>
+                            <CustomerSearchSelect
+                              customers={masterCustomers}
+                              value={form.customer}
+                              selectedId={form.customer_id}
+                              onTextChange={handleCustomerTextChange}
+                              onSelectCustomer={handleCustomerSelect}
+                              onClear={handleCustomerClear}
+                              disabled={busy}
+                              required
+                              testId="pra-po-customer"
+                            />
+                            <button
+                              type="button"
+                              className="pra-po-new-customer-btn"
+                              onClick={startNewCustomer}
+                              disabled={busy}
+                              data-testid="pra-po-new-customer"
+                            >
+                              + Pelanggan Baru
+                            </button>
+                          </>
                         ) : (
                           <input className="so-line-input" value={form.customer} readOnly data-testid="pra-po-customer" />
                         )}
@@ -528,7 +597,7 @@ export default function PraPoPage() {
                     </PraField>
                   </div>
                   <div className="so-sum-chip is-editing so-sum-chip-date ux90-txn-field">
-                    <PraField label="Tanggal">
+                    <PraField label="Tanggal Pra PO">
                       <div className="so-sum-editor">
                         {canEditForm ? (
                           <SalesInvoiceDateField
@@ -546,11 +615,29 @@ export default function PraPoPage() {
                 </div>
 
                 {form.customer?.trim() ? (
-                  <div className="so-create-note">
+                  <div
+                    className={`pra-po-customer-card ${form.customer_id ? "is-registered" : "is-new"}`}
+                    data-testid="pra-po-customer-card"
+                  >
+                    <div className="pra-po-customer-card-main">
+                      <strong data-testid="pra-po-customer-card-name">{form.customer}</strong>
+                      {form.customer_phone || form.customer_city ? (
+                        <span data-testid="pra-po-customer-card-phone">
+                          {[form.customer_phone, form.customer_city].filter(Boolean).join(" · ")}
+                        </span>
+                      ) : null}
+                      {form.address ? (
+                        <span data-testid="pra-po-customer-card-address">{form.address}</span>
+                      ) : null}
+                    </div>
                     {form.customer_id ? (
-                      <span data-testid="pra-po-badge-customer-registered">✓ Pelanggan Terdaftar di Master</span>
+                      <span className="pra-po-customer-pill is-registered" data-testid="pra-po-badge-customer-registered">
+                        Terdaftar di Master
+                      </span>
                     ) : (
-                      <span data-testid="pra-po-badge-customer-new">+ Pelanggan Baru — isi HP dan alamat di tab Pengiriman</span>
+                      <span className="pra-po-customer-pill is-new" data-testid="pra-po-badge-customer-new">
+                        Pelanggan Baru
+                      </span>
                     )}
                   </div>
                 ) : null}
@@ -566,7 +653,7 @@ export default function PraPoPage() {
                       onClick={() => setCreateTab("items")}
                     >
                       <Package size={18} aria-hidden="true" />
-                      <span>Rincian</span>
+                      <span>Rincian Barang</span>
                     </button>
                     <button
                       type="button"
@@ -600,6 +687,8 @@ export default function PraPoPage() {
                       className="ux90-so-pane-panel ux90-so-pane-items so-create-lines so-items-only"
                       data-pane="items"
                       hidden={createTab !== "items"}
+                      aria-hidden={createTab !== "items"}
+                      inert={createTab !== "items" ? true : undefined}
                     >
                       <div className="so-create-line-toolbar">
                         <div className="so-create-line-heading">
@@ -728,19 +817,22 @@ export default function PraPoPage() {
                                         data-testid={`pra-po-line-price-${index}`}
                                       />
                                     </td>
-                                    <td className="so-col-sub" data-testid={`pra-po-line-subtotal-${index}`}>
+                                    <td className="so-col-sub pra-po-money" data-testid={`pra-po-line-subtotal-${index}`}>
                                       {formatOrderRupiah(subtotal)}
                                     </td>
                                     <td className="so-col-action">
                                       {canEditForm ? (
                                         <button
                                           type="button"
+                                          className="pra-po-line-remove"
                                           onClick={() => removeLineItem(index)}
                                           disabled={form.line_items.length <= 1}
                                           data-testid={`pra-po-remove-line-${index}`}
                                           aria-label="Hapus baris"
+                                          title="Hapus baris"
                                         >
-                                          Hapus
+                                          <Trash2 size={15} aria-hidden="true" />
+                                          <span className="pra-po-line-remove-label">Hapus</span>
                                         </button>
                                       ) : null}
                                     </td>
@@ -751,12 +843,18 @@ export default function PraPoPage() {
                           </tbody>
                         </table>
                       </div>
+                      <div className="pra-po-lines-total" data-testid="pra-po-order-total">
+                        <span>Total</span>
+                        <strong>{formatOrderRupiah(sellingTotal)}</strong>
+                      </div>
                     </div>
 
                     <div
                       className="ux90-so-pane-panel ux90-so-pane-info so-create-extra so-info-only"
                       data-pane="info"
                       hidden={createTab !== "info"}
+                      aria-hidden={createTab !== "info"}
+                      inert={createTab !== "info" ? true : undefined}
                       data-testid="pra-po-info-pane"
                     >
                       <PraField label="Catatan Pesanan">
@@ -779,13 +877,40 @@ export default function PraPoPage() {
                         />
                       </PraField>
                       <PraField label="Tenaga Penjual (Sales)">
-                        <input
-                          className="so-line-input"
-                          value={form.sales || ""}
-                          onChange={(e) => setForm((p) => ({ ...p, sales: e.target.value }))}
+                        <LookupSearchSelect
+                          options={praPoSalesOptions(salesCatalog, form)}
+                          value={praPoSalesSelectValue(form)}
+                          onChange={(sid, hit) => {
+                            setForm((prev) => applyPraPoSalesChoice(prev, sid, hit));
+                          }}
+                          getOptionValue={(row) => row.id}
+                          getOptionLabel={(row) => praPoSalesOptionLabel(row, form)}
+                          getSearchText={(row) => row.sales_name || ""}
+                          isOptionDisabled={isPraPoStoredSalesOption}
+                          getOptionDisabledReason={() => "Nilai tersimpan, tidak ada di daftar aktif"}
+                          placeholder="Ketik nama Sales…"
+                          noResultLabel="Tidak ada Sales aktif yang cocok"
                           disabled={!canEditForm}
-                          data-testid="pra-po-sales"
+                          testId="pra-po-sales"
                         />
+                        {salesCatalogState === "loading" ? (
+                          <p className="pra-po-sales-note" data-testid="pra-po-sales-loading">Memuat daftar Sales…</p>
+                        ) : null}
+                        {salesCatalogState === "error" ? (
+                          <p className="pra-po-sales-note is-error" data-testid="pra-po-sales-error">
+                            Daftar Sales gagal dimuat. Nilai tersimpan tidak diubah.
+                          </p>
+                        ) : null}
+                        {salesCatalogState === "ready" && salesCatalog.length === 0 ? (
+                          <p className="pra-po-sales-note" data-testid="pra-po-sales-empty">
+                            Tidak ada Sales aktif untuk cabang Anda.
+                          </p>
+                        ) : null}
+                        {salesCatalogState === "ready" && praPoSalesOptions(salesCatalog, form).some(isPraPoStoredSalesOption) ? (
+                          <p className="pra-po-sales-note" data-testid="pra-po-sales-stored">
+                            Sales tersimpan tetap ditampilkan dan tidak diganti otomatis.
+                          </p>
+                        ) : null}
                       </PraField>
                       <PraField label="Termin Pembayaran">
                         <input
@@ -799,9 +924,11 @@ export default function PraPoPage() {
                     </div>
 
                     <div
-                      className="ux90-so-pane-panel ux90-so-pane-ship so-create-extra"
+                      className="ux90-so-pane-panel ux90-so-pane-ship so-ship-panel so-ship-only"
                       data-pane="ship"
                       hidden={createTab !== "ship"}
+                      aria-hidden={createTab !== "ship"}
+                      inert={createTab !== "ship" ? true : undefined}
                       data-testid="pra-po-ship-pane"
                     >
                       <PraField
@@ -946,19 +1073,27 @@ export default function PraPoPage() {
         <header className="so-list-header">
           <div className="so-list-heading">
             <h1>Pra PO</h1>
-            <p>
-              CRM mengajukan Pra PO. Admin memverifikasi sebelum menjadi Pesanan Penjualan.
-              {" "}
-              <span data-testid="pra-po-list-count">
+            <div className="so-list-summary" data-testid="pra-po-list-count">
+              <strong>{listTotal.toLocaleString("id-ID")}</strong>
+              <span>
                 {listTotal === 0
-                  ? "0 dokumen"
-                  : `${listRangeStart}–${listRangeEnd} dari ${listTotal.toLocaleString("id-ID")} dokumen`}
+                  ? "dokumen"
+                  : `dokumen · ${listRangeStart}–${listRangeEnd}`}
               </span>
-            </p>
+              {listLoading ? <span> · memuat</span> : null}
+            </div>
           </div>
           <div className="so-list-header-actions">
-            <button type="button" className="so-list-refresh" onClick={reload} disabled={listLoading} data-testid="pra-po-refresh">
-              Muat ulang
+            <button
+              type="button"
+              className="so-list-refresh pra-po-refresh"
+              onClick={reload}
+              disabled={listLoading}
+              data-testid="pra-po-refresh"
+              aria-label="Muat ulang"
+            >
+              <RefreshCw size={15} className={listLoading ? "spin" : ""} aria-hidden="true" />
+              <span className="pra-po-refresh-label">Muat ulang</span>
             </button>
             {canCreate ? (
               <button type="button" className="so-list-create" onClick={openCreate} data-testid="pra-po-btn-create">
@@ -1022,7 +1157,7 @@ export default function PraPoPage() {
           </div>
         ) : null}
 
-        <div className="so-list-table-wrap">
+        <div className="so-list-table-scroll" data-testid="pra-po-table-scroll">
           <table className="so-list-table" data-testid="pra-po-table">
             <thead>
               <tr>
@@ -1039,7 +1174,18 @@ export default function PraPoPage() {
               {listLoading ? (
                 <tr><td colSpan={7} className="muted">Memuat…</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={7} className="muted" data-testid="pra-po-empty">Belum ada Pra PO.</td></tr>
+                <tr>
+                  <td colSpan={7} className="so-list-empty pra-po-list-empty" data-testid="pra-po-empty">
+                    <div className="pra-po-empty-inner">
+                      <p>Belum ada Pra PO.</p>
+                      {canCreate ? (
+                        <button type="button" onClick={openCreate} data-testid="pra-po-empty-create">
+                          <Plus size={14} /> Buat Pra PO
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
               ) : items.map((row) => (
                 <tr key={row.id} data-testid={`pra-po-row-${row.id}`}>
                   <td>{row.number}</td>
@@ -1109,6 +1255,96 @@ export default function PraPoPage() {
       </div>
       {canViewAll ? <span hidden data-testid="pra-po-queue" /> : null}
       <span hidden>{NAV_KEYS.praPo}</span>
+      {newCustomerOpen ? (
+        <div
+          className="modal pra-po-new-customer-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pra-po-new-customer-title"
+          data-testid="pra-po-new-customer-modal"
+          onClick={closeNewCustomer}
+        >
+          <div className="modal-inner pra-po-new-customer-inner" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h3 id="pra-po-new-customer-title">Pelanggan Baru</h3>
+              <button type="button" className="ghost sm" onClick={closeNewCustomer} aria-label="Tutup" data-testid="pra-po-new-customer-close">
+                <X size={16} />
+              </button>
+            </div>
+            <form
+              className="pra-po-new-customer-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                confirmNewCustomer();
+              }}
+            >
+              <PraField label="Nama pelanggan" required error={/Nama pelanggan/i.test(newCustomerError)}>
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.name}
+                  onChange={(event) => setNewCustomerField("name", event.target.value)}
+                  data-testid="pra-po-new-customer-name"
+                  autoFocus
+                />
+              </PraField>
+              <PraField label="HP / WhatsApp" required error={/HP|WhatsApp/i.test(newCustomerError)}>
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.phone}
+                  onChange={(event) => setNewCustomerField("phone", event.target.value)}
+                  data-testid="pra-po-new-customer-phone"
+                />
+              </PraField>
+              <PraField label="Alamat lengkap" required error={/Alamat/i.test(newCustomerError)}>
+                <textarea
+                  className="so-line-input"
+                  rows={3}
+                  value={newCustomerDraft.address}
+                  onChange={(event) => setNewCustomerField("address", event.target.value)}
+                  data-testid="pra-po-new-customer-address"
+                />
+              </PraField>
+              <PraField label="PIC">
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.pic}
+                  onChange={(event) => setNewCustomerField("pic", event.target.value)}
+                  data-testid="pra-po-new-customer-pic"
+                />
+              </PraField>
+              <PraField label="Email">
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.email}
+                  onChange={(event) => setNewCustomerField("email", event.target.value)}
+                  data-testid="pra-po-new-customer-email"
+                />
+              </PraField>
+              <PraField label="Kota">
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.city}
+                  onChange={(event) => setNewCustomerField("city", event.target.value)}
+                  data-testid="pra-po-new-customer-city"
+                />
+              </PraField>
+              {newCustomerError ? (
+                <p className="pra-po-sales-note is-error" data-testid="pra-po-new-customer-error" role="alert">
+                  {newCustomerError}
+                </p>
+              ) : null}
+              <div className="pra-po-new-customer-actions">
+                <button type="button" className="ghost" onClick={closeNewCustomer} data-testid="pra-po-new-customer-cancel">
+                  Batal
+                </button>
+                <button type="submit" className="primary" data-testid="pra-po-new-customer-use">
+                  Gunakan Pelanggan
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

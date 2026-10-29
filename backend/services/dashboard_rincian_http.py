@@ -27,6 +27,7 @@ def register_dashboard_rincian_routes(
     Depends=Depends,
 ):
     from services.dashboard_rincian import query_dashboard_rincian
+    from services.production_dashboard_http import order_branch_scope
 
     @api_router.get("/dashboard/rincian")
     async def dashboard_rincian(
@@ -44,6 +45,9 @@ def register_dashboard_rincian_routes(
         user=Depends(current_user),
     ):
         """Spreadsheet detail for one dashboard KPI card. Read-only."""
+        basis_key = (basis or "").strip().lower()
+        if basis_key not in ("", "snapshot"):
+            raise HTTPException(400, "basis tidak dikenali")
         db = get_db()
         try:
             perms = set(await user_permissions(user))
@@ -76,8 +80,8 @@ def register_dashboard_rincian_routes(
         async def _sales(_db, **kwargs):
             return await query_sales_invoices(_db, **kwargs)
 
-        # basis reserved for status_po widgets (snapshot); accepted for URL stability
-        _ = basis
+        async def _branch_scope(db_conn, actor):
+            return await order_branch_scope(db_conn, actor)
 
         return await query_dashboard_rincian(
             db,
@@ -97,6 +101,7 @@ def register_dashboard_rincian_routes(
             lead_days=int(lead_days),
             holidays=holidays,
             sales_scope=sales_owner_match(user) if callable(sales_owner_match) else None,
+            branch_scope=await _branch_scope(db, user),
             status_po_projection=status_po_projection,
             list_delivery_schedule_rows=_schedule,
             query_sales_invoices=_sales,

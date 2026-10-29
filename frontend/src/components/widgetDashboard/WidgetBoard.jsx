@@ -423,7 +423,7 @@ export default function WidgetBoard({
           <p className="wp-hero"><Money amount={model.amount} /></p>
           <Bars scale="total" rows={[
             { label: `Lunas · ${model.settledCount} faktur`, amount: model.settledGrand, kind: "is-paid" },
-            { label: `Belum lunas · ${model.openCount} faktur`, amount: model.openOutstanding, kind: "is-open" },
+            { label: `Nilai Faktur Belum Lunas · ${model.openCount} faktur`, amount: model.openOutstanding, kind: "is-open" },
           ]} />
           <StateLine status={model.status} detail={model.detail} />
         </>

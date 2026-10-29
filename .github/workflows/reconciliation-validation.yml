@@ -341,6 +341,31 @@ jobs:
             mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
             exit "${status}"
           fi
+      - name: Run PO late tracking tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_po_late_tracking
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          echo "Starting PO late tracking focused suite"
+          set +e
+          timeout --signal=TERM --kill-after=15s 120s \
+            python -m pytest -vv -n 0 --durations=20 \
+            tests/test_po_late_tracking.py \
+            tests/test_po_late_tracking_http.py
+          status=$?
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::PO late tracking tests exited with status ${status}"
+            echo "--- process snapshot ---"
+            ps -eo pid,ppid,stat,etime,cmd --sort=etime | head -80 || true
+            echo "--- mongo ping ---"
+            mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
+            exit "${status}"
+          fi
 
   # Isolated from backend-focused: stock compatibility read needs replicaSet=eternal_local_rs.
   backend-stock-compat-rs:
@@ -704,6 +729,11 @@ jobs:
           npm test -- --watchAll=false --runInBand
           src/App.boot.test.js
           src/App.phase2a.lazyRoutes.test.js
+          src/lib/poLateTracking.test.js
+          src/lib/poLateTrackingVisualFixture.test.js
+          src/pages/PoLateTrackingPage.test.js
+          src/components/productionDashboard/productionWidgetLayout.test.js
+          src/pages/ProductionDashboard.test.js
           src/mobile/MobileRoutes.test.js
           src/mobile/MobileSuratJalanViewerPage.test.js
           src/lib/mobileOpsSession.test.js
