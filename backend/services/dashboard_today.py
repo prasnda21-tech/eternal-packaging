@@ -296,12 +296,20 @@ def partition_orders_by_delivery(orders: Iterable[dict], is_fully_delivered) -> 
     return active, completed
 
 
+def _effective_calendar_day(value: Any) -> str:
+    """Date key or WIB-midnight ISO both name the same calendar day."""
+    raw = str(value or "").strip()
+    if len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
+        return raw[:10]
+    return ""
+
+
 def due_today_orders(orders: Iterable[dict], today: date) -> List[dict]:
     """PO-level target count from authoritative Tanggal Pengiriman snapshot."""
     key = today.isoformat()
     return [
         order for order in orders
-        if order.get("delivery_deadline_effective") == key
+        if _effective_calendar_day(order.get("delivery_deadline_effective")) == key
     ]
 
 

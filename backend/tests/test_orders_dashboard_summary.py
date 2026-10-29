@@ -8,6 +8,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -382,7 +383,8 @@ def test_handler_uses_dedicated_aggregate_not_full_find():
     assert 'find({}, {"_id": 0}).to_list(1000)' not in body
     assert 'to_list(None)' in body
     assert '"$project": _orders_dashboard_summary_projection()' in body
-    assert '{"$match": {"cancelled": {"$ne": True}}}' in body
+    assert '{"$match": await order_population_query(db, user)}' in body
+    assert "order_population_query" in (ROOT / "services" / "production_dashboard_http.py").read_text(encoding="utf-8")
     assert '"$limit"' not in body
     assert '"$sort"' not in body
     assert "cancelled" in body
@@ -401,7 +403,9 @@ def test_handler_uses_dedicated_aggregate_not_full_find():
 
 def test_cancelled_is_filtered_before_projection_without_truncation():
     body = _summary_fn_body()
-    assert '{"cancelled": {"$ne": True}}' in body
+    helper = (ROOT / "services" / "production_dashboard_http.py").read_text(encoding="utf-8")
+    assert "order_population_query" in body
+    assert '{"cancelled": {"$ne": True}}' in helper
     assert '"$limit"' not in body
     assert 'orders = [o for o in raw_orders if not o.get("cancelled")]' in body
 
@@ -468,13 +472,15 @@ def test_require_perm_denies_without_dashboard_production_view():
     server = _import_server()
     checker = server.require_perm("dashboard.production.view")
 
+    request = SimpleNamespace(url=SimpleNamespace(path="/api/dashboard/summary"))
+
     async def _run():
         with patch.object(server, "user_permissions", AsyncMock(return_value=set())):
             with pytest.raises(HTTPException) as ei:
-                await checker({"email": "screener@x.com", "role": "screener"})
+                await checker(request, {"email": "screener@x.com", "role": "screener"})
             assert ei.value.status_code == 403
         with patch.object(server, "user_permissions", AsyncMock(return_value={"dashboard.production.view"})):
-            user = await checker({"email": "hop@x.com", "role": "head_production"})
+            user = await checker(request, {"email": "hop@x.com", "role": "head_production"})
             assert user["email"] == "hop@x.com"
 
     asyncio.run(_run())
@@ -618,7 +624,7 @@ def test_due_today_uses_tanggal_pengiriman_not_legacy_deadline():
     assert out["kpi"]["due_today"] == 1
     due_row = out["due_today"][0]
     assert due_row["deadline"] == not_due["deadline"]
-    assert due_row["delivery_deadline_effective"] == "2026-09-13"
+    assert str(due_row["delivery_deadline_effective"]).startswith("2026-09-13")
 
 
 def test_deadline_h1_h6_overdue_use_snapshot_status():
@@ -923,10 +929,12 @@ def test_helpers_unchanged_in_endpoint():
     assert "stage_breakdown" in body
     assert "operator_load" in body
     assert "waiting_design.append" in body
-    assert 'o.get("design_status") != "Approved"' in body
-    assert 'o.get("priority") == "urgent"' in body
+    assert "_production_summary_flags" in body
+    flags = (ROOT / "services" / "production_dashboard_snapshot.py").read_text(encoding="utf-8")
+    assert 'order.get("design_status") != "Approved"' in flags
+    assert 'order.get("priority") == "urgent"' in flags
     assert "_qr_is_fully_delivered" in body
-    assert 'o.get("deadline")' not in body
+    assert "due_today_orders" in body
     assert "delivery_deadline_status" in body
 
 

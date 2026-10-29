@@ -376,7 +376,7 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
       <div className="kb-kpi">
         <p className="kb-metric">{moneyText(status, model?.amount) || "—"}</p>
         {status === "zero" ? <p className="kb-kicker">Nol tercatat</p> : null}
-        <p className="kb-kicker">Lunas {moneyText(status, model?.settledGrand) || "—"} · Belum {moneyText(status, model?.openOutstanding) || "—"}</p>
+        <p className="kb-kicker">Lunas {moneyText(status, model?.settledGrand) || "—"} · Nilai Faktur Belum Lunas {moneyText(status, model?.openOutstanding) || "—"}</p>
       </div>
     );
   }

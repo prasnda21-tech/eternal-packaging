@@ -188,6 +188,11 @@ export default function MobileTasksPage() {
         )}
         {busy && !tasks.length && <p className="mop-empty">Memuat tugas...</p>}
         {err && <div className="mop-error" role="alert">{err}</div>}
+        {!err && data?.completeness === "incomplete" && (
+          <p className="mop-empty" data-testid="mobile-tasks-incomplete" role="status">
+            Antrean belum lengkap. Batas baca {data.read_limit}.
+          </p>
+        )}
         {!workspaces.length && (
           <p className="mop-empty">
             Tidak ada workspace operasional untuk akun ini. Pastikan role Anda memiliki akses tugas produksi.

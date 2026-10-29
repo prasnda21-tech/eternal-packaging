@@ -2,13 +2,14 @@ import { Link } from "react-router-dom";
 import { fmtQty } from "./qtyUi";
 import PoIdentityBadges from "./PoIdentityBadges";
 
-function TodayTable({ title, empty, rows, columns, allHref, allLabel, total, testid }) {
+function TodayTable({ title, empty, rows, columns, allHref, allLabel, total, testid, note }) {
   return (
     <section className="today-card" data-testid={testid}>
       <header className="today-card-head">
         <h3>{title}</h3>
         {typeof total === "number" && <span className="muted small">{total}</span>}
       </header>
+      {note}
       {rows.length === 0 ? (
         <p className="today-empty" data-testid={`${testid}-empty`}>{empty}</p>
       ) : (
@@ -141,6 +142,11 @@ export default function TodayActivityCards({ data }) {
         allHref="/produksi"
         allLabel="Lihat semua"
         testid="today-work"
+        note={work.completeness === "incomplete" ? (
+          <p className="muted small" data-testid="today-work-incomplete" role="status">
+            Pengerjaan belum lengkap. Batas baca {work.read_limit}.
+          </p>
+        ) : null}
       />
       <TodayTable
         title="Pengiriman Terjadwal Hari Ini"

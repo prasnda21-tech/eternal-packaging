@@ -115,6 +115,8 @@ def _pipeline_from_reminders_source() -> list:
             name = key_node.value
             if isinstance(val_node, ast.Name) and val_node.id == "_REMINDERS_LIMIT":
                 stages.append({name: 1000})
+            elif isinstance(val_node, ast.Name) and name == "$match":
+                stages.append({name: val_node.id})
             elif (
                 isinstance(val_node, ast.Call)
                 and isinstance(val_node.func, ast.Name)
@@ -138,26 +140,27 @@ def test_reminders_uses_aggregate_not_near_full_find():
 def test_reminders_limit_is_exactly_1000():
     assert server._REMINDERS_LIMIT == 1000
     pipeline = _pipeline_from_reminders_source()
-    assert pipeline[0] == {"$limit": 1000}
+    assert pipeline[0] == {"$match": "scope"}
+    assert pipeline[1] == {"$limit": 1000}
+    assert "order_access_scope" in _REMINDERS_SRC
     assert ".to_list(_REMINDERS_LIMIT)" in _REMINDERS_SRC or ".to_list(1000)" in _REMINDERS_SRC
 
 
-def test_reminders_pipeline_has_no_match_and_no_sort():
+def test_reminders_pipeline_scopes_before_limit_and_has_no_sort():
     pipeline = _pipeline_from_reminders_source()
     stages = [next(iter(stage)) for stage in pipeline]
-    assert "$match" not in stages
     assert "$sort" not in stages
-    assert stages == ["$limit", "$project"]
+    assert stages == ["$match", "$limit", "$project"]
 
 
-def test_reminders_limit_precedes_project_with_no_semantic_match():
-    """Query universe remains first 1000 natural-order documents."""
+def test_reminders_scope_precedes_limit_without_changing_deadline_rules():
+    """Branch scope is the only Mongo match. Stage and deadline stay in Python."""
     pipeline = _pipeline_from_reminders_source()
-    assert list(pipeline[0].keys()) == ["$limit"]
-    assert pipeline[0]["$limit"] == 1000
-    assert list(pipeline[1].keys()) == ["$project"]
+    assert list(pipeline[0].keys()) == ["$match"]
+    assert pipeline[0]["$match"] == "scope"
+    assert pipeline[1]["$limit"] == 1000
+    assert list(pipeline[2].keys()) == ["$project"]
     pipeline_src = _REMINDERS_SRC[_REMINDERS_SRC.index("aggregate(") : _REMINDERS_SRC.index(".to_list")]
-    assert "$match" not in pipeline_src
     assert "$sort" not in pipeline_src
     assert "cancelled" not in pipeline_src
     assert "current_stage" not in pipeline_src  # stage filter stays in Python loop
@@ -315,7 +318,12 @@ class _FakeOrders:
         self.docs = docs
         self.aggregate_calls = []
         self.find_calls = []
+        self.count_calls = []
         self.write_calls = []
+
+    async def count_documents(self, query, *args, **kwargs):
+        self.count_calls.append(query)
+        return len(self.docs)
 
     def aggregate(self, pipeline):
         self.aggregate_calls.append(pipeline)
@@ -428,7 +436,8 @@ def test_reminders_cancelled_open_stage_parity_current_behavior():
     proj_out, _ = _run_reminders([_projected(cancelled)])
     assert full_out["reminders"] == proj_out["reminders"]
     pipeline = fake.aggregate_calls[0]
-    assert all("$match" not in stage for stage in pipeline)
+    assert pipeline[0] == {"$match": {}}
+    assert "cancelled" not in json.dumps(pipeline[0])
     # If current code emits the cancelled overdue PO, projected path must too.
     if full_out["reminders"]:
         assert full_out["reminders"][0]["id"] == "can-open"
@@ -483,7 +492,13 @@ def test_reminders_sort_parity_urgency_then_hours_left():
 def test_reminders_response_contract_keys():
     order = _full_order(id="contract", deadline=_now_iso(-3), current_stage=1)
     out, _ = _run_reminders([_projected(order)])
-    assert set(out.keys()) == {"reminders", "counts", "role_scope", "generated_at"}
+    assert set(out.keys()) == {
+        "reminders", "counts", "role_scope", "generated_at",
+        "read_limit", "matched_count", "completeness",
+    }
+    assert out["read_limit"] == 1000
+    assert out["matched_count"] == 1
+    assert out["completeness"] == "complete"
     assert isinstance(out["reminders"], list)
     assert out["reminders"]
     row = out["reminders"][0]
@@ -499,11 +514,11 @@ def test_reminders_zero_write_and_aggregate_shape():
     assert fake.find_calls == []
     assert len(fake.aggregate_calls) == 1
     pipeline = fake.aggregate_calls[0]
-    assert pipeline[0] == {"$limit": 1000}
-    assert "$match" not in pipeline[0]
-    assert "$match" not in pipeline[1]
+    assert pipeline[0] == {"$match": {}}
+    assert pipeline[1] == {"$limit": 1000}
     assert "$sort" not in pipeline[1]
-    assert pipeline[1]["$project"] == server._orders_reminders_projection()
+    assert pipeline[2]["$project"] == server._orders_reminders_projection()
+    assert fake.count_calls == [{}]
     assert out["reminders"][0]["id"] == "zw"
 
 

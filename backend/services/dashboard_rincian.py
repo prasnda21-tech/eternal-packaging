@@ -427,6 +427,7 @@ async def _status_po_rincian(
     lead_days: int,
     holidays,
     sales_scope: Optional[dict] = None,
+    branch_scope: Optional[dict] = None,
     projection: Optional[dict] = None,
 ) -> dict:
     view = meta["view"]
@@ -434,6 +435,8 @@ async def _status_po_rincian(
     clauses: List[dict] = [{"cancelled": {"$ne": True}}]
     if sales_scope:
         clauses.append(sales_scope)
+    if branch_scope:
+        clauses.append(branch_scope)
     query = {"$and": clauses} if len(clauses) > 1 else clauses[0]
     proj = projection or {
         "id": 1, "po_number": 1, "customer": 1, "order_date": 1, "priority": 1,
@@ -524,6 +527,7 @@ async def query_dashboard_rincian(
     lead_days: int = 3,
     holidays=None,
     sales_scope: Optional[dict] = None,
+    branch_scope: Optional[dict] = None,
     status_po_projection: Optional[dict] = None,
     list_delivery_schedule_rows=None,
     query_sales_invoices=None,
@@ -562,10 +566,16 @@ async def query_dashboard_rincian(
             lead_days=lead_days,
             holidays=holidays or [],
             sales_scope=sales_scope,
+            branch_scope=branch_scope,
             projection=status_po_projection,
         )
     elif meta["source"] == "delivery_plan":
-        match = delivery_plan_mongo_match(sales_scope)
+        plan_scope = {}
+        if sales_scope:
+            plan_scope.update(sales_scope)
+        if branch_scope:
+            plan_scope.update(branch_scope)
+        match = delivery_plan_mongo_match(plan_scope or None)
         docs = await db.orders.find(match, PLAN_PROJECTION).to_list(None)
         st = status or meta.get("status") or ""
         today = datetime.now(WIB).date().isoformat()

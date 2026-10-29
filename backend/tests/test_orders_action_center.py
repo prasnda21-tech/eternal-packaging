@@ -242,9 +242,9 @@ def test_response_slim_keys_unchanged():
     keys = set(server._slim_action(_base_print_po()).keys())
     assert keys == {
         "id", "po_number", "outlet", "customer", "item", "work_date",
-        "current_stage", "total_quantity", "delivery_deadline_effective",
-        "delivery_deadline_status", "delivery_deadline_source",
-        "requires_printing", "design_status",
+        "current_stage", "total_quantity", "priority", "urgent", "buffer_stock",
+        "delivery_deadline_effective", "delivery_deadline_status",
+        "delivery_deadline_source", "requires_printing", "design_status",
     }
 
 

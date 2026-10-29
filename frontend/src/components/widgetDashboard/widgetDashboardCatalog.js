@@ -138,7 +138,7 @@ export const WIDGETS = {
     kicker: "Nilai faktur, bukan kas pembayaran",
     perm: "purchase_invoices.view",
     endpoint: "GET /dashboard/pembelian",
-    info: "Jumlah grand_total faktur pembelian aktif menurut invoice_date. Lunas hanya bila pembayaran PAID yang tidak dibatalkan menutup grand_total. DP tetap belum lunas. Bagian batang adalah nilai faktur. Izin purchase_invoices.view, bukan dashboard.finance.view.",
+    info: "Jumlah grand_total faktur pembelian aktif menurut invoice_date. Lunas hanya bila pembayaran PAID yang tidak dibatalkan menutup grand_total. Nilai Faktur Belum Lunas adalah grand_total penuh faktur yang belum berstatus LUNAS, termasuk yang sudah DP. Bukan sisa utang. Izin purchase_invoices.view, bukan dashboard.finance.view.",
   },
   ap: {
     code: "F2",

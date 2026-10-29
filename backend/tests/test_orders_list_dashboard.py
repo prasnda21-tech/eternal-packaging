@@ -33,14 +33,16 @@ def test_dashboard_view_is_additive_opt_in():
     body = _list_orders_fn_body()
     assert 'view: Optional[str] = None' in body
     assert 'view_norm == "dashboard"' in body
-    assert "return await _list_orders_dashboard(st)" in body
-    assert "return await _list_orders_summary(st)" in body
+    assert "return await _list_orders_dashboard(st, extra=access)" in body
+    assert "return await _list_orders_summary(st, extra=access)" in body
+    assert "order_access_scope" in body
 
 
 def test_default_list_orders_path_still_full_documents():
     body = _list_orders_fn_body()
     assert 'db.orders.find(q, {"_id": 0})' in body
-    assert 'all_active = await db.orders.find({"cancelled": {"$ne": True}}, {"_id": 0}).to_list(1000)' in body
+    assert 'all_active = await db.orders.find(open_scope, {"_id": 0}).to_list(1000)' in body
+    assert '{"cancelled": {"$ne": True}, **access}' in body
 
 
 def test_summary_path_still_skips_stage_counts():
@@ -510,7 +512,7 @@ def test_cancelled_status_preserves_historical_match_and_no_postfilter():
     server = _import_server()
     body = _dashboard_fn_body()
     default_body = _list_orders_fn_body()
-    assert 'q = _orders_list_match(st)' in body
+    assert "q = _orders_list_match(st, extra)" in body
     assert 'st == "cancelled"' in default_body
     assert "stage_view / all / cancelled" in default_body
     assert server._orders_list_match("cancelled") == {"cancelled": True}
