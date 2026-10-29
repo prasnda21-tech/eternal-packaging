@@ -71,6 +71,7 @@ async function renderPage(hasPerm, apis) {
           operatorAnalyticsApi={apis.operatorAnalyticsApi || null}
           branchOutputApi={apis.branchOutputApi || null}
           deliveryPlanQtyApi={apis.deliveryPlanQtyApi || null}
+          poLateTrackingSummaryApi={apis.poLateTrackingSummaryApi || null}
           simulation={apis.simulation || null}
         />
       </MemoryRouter>,
@@ -158,7 +159,7 @@ test("catalog blocks pending widgets and edit mode saves a move", async () => {
   expect(operatorOption.querySelector("button")).toBeNull();
   expect(operatorOption.textContent).toContain("Tidak memiliki akses");
   expect(view.host.querySelector("[data-testid='produksi-catalog-output_hari_ini'] button").getAttribute("aria-label")).toBe("Tambahkan Output Cetak Hari Ini");
-  expect(view.host.querySelector("[data-testid='produksi-catalog-po_terlambat'] button").getAttribute("aria-label")).toBe("Tambahkan PO Terlambat");
+  expect(view.host.querySelector("[data-testid='produksi-catalog-po_terlambat'] button").getAttribute("aria-label")).toBe("Tambahkan PO Terlambat Kirim");
   const add = view.host.querySelector("[data-testid='produksi-catalog-po_urgent'] button");
   expect(add.getAttribute("aria-label")).toBe("Tambahkan PO Urgent");
   await act(async () => { add.click(); });
@@ -554,7 +555,6 @@ test("wave 2 widgets render locked targets and stay off a saved layout", async (
       note: "Realisasi cohort mengikuti tanggal jadwal.",
       series: [{ day: "2026-10-23", unit: "pcs", awal: 10000, revisi: null, realisasi: 7000, persen_awal: 70, persen_revisi: null }],
     },
-    po_terlambat: { status: "complete", overdue: 1, unscheduled: 1, legacy: 1, rows: [{ order_id: "a", po_number: "PO-A", source: "otomatis", date: "2026-10-20" }], note: "Buffer Stock tidak masuk terlambat." },
     aging: { status: "complete", produksi: { aktif: 1, selesai: 0, belum: 0, histori: 0 }, total: { aktif: 1, selesai: 0, belum: 0, histori: 0 }, note: "Aging" },
     ketepatan: { status: "complete", produksi: { tepat: 0, terlambat: 0, berjalan: 1, tidak_tersedia: 0 }, pengiriman: { tepat: 0, terlambat: 0, berjalan: 0, tidak_tersedia: 1 }, note: "Terpisah" },
     bottleneck: { status: "complete", po: 1, lines: 1, by_unit: { pcs: 3 }, pengiriman_belum_selesai: 0, rows: [], note: "HOLD bukan bottleneck." },
@@ -574,11 +574,19 @@ test("wave 2 widgets render locked targets and stay off a saved layout", async (
     widget("bottleneck", 0, 7, 12, 4),
   ]));
   shownApis.snapshotApi = jest.fn(async () => ({ ...snapshot, wave2: wave }));
+  shownApis.poLateTrackingSummaryApi = jest.fn(async () => ({
+    status: "complete",
+    total: 3,
+    counts: { lewat_1_hari: 1, terlambat: 1, kritis: 1 },
+    note: "PO aktif melewati tanggal pengiriman.",
+  }));
   const view = await renderPage(allow, shownApis);
   expect(view.host.querySelector("[data-testid='produksi-target']").textContent).toContain("10.000");
   expect(view.host.querySelector("[data-testid='produksi-target']").textContent).toContain("Belum ada revisi");
   expect(view.host.querySelector("[data-testid='produksi-target']").textContent).toContain("7.000");
-  expect(view.host.querySelector("[data-testid='produksi-terlambat-sumber']").textContent).toContain("otomatis");
+  expect(view.host.querySelector("[data-testid='produksi-terlambat-total']").textContent).toContain("3");
+  expect(view.host.querySelector("[data-testid='produksi-terlambat']").textContent).toContain("Lewat 1 Hari");
+  expect(view.host.querySelector("[data-testid='produksi-terlambat']").textContent).toContain("Kritis");
   expect(view.host.querySelector("[data-testid='produksi-aging']").textContent).toContain("Produksi");
   expect(view.host.querySelector("[data-testid='produksi-ketepatan']").textContent).toContain("Pengiriman");
   expect(view.host.querySelector("[data-testid='produksi-bottleneck']").textContent).toContain("HOLD bukan bottleneck");

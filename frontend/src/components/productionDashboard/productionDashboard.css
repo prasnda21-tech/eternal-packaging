@@ -492,6 +492,64 @@
 .produksi-board-page .pd-panel.is-design strong { color: #e11d48; }
 .produksi-board-page .pd-panel.is-payment strong { color: #c2410c; }
 
+.produksi-board-page .pd-late {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.9fr) minmax(0, 1.6fr);
+  gap: 8px 10px;
+  align-items: stretch;
+  min-width: 0;
+  height: 100%;
+}
+.produksi-board-page .pd-late-total {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.produksi-board-page .pd-late-total .kb-metric {
+  margin: 0;
+  font-size: clamp(1.55rem, 2.4vw, 2rem);
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  color: #b42318;
+}
+.produksi-board-page .pd-late-total .kb-kicker {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: normal;
+}
+.produksi-board-page .pd-late-cats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+.produksi-board-page .pd-late-cats .pd-metric {
+  padding: 6px 7px;
+}
+.produksi-board-page .pd-late-cats .pd-metric span {
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: normal;
+}
+.produksi-board-page .pd-late-cats .pd-metric strong {
+  margin-top: 2px;
+  font-size: 18px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.produksi-board-page [data-testid="produksi-widget-po_terlambat"] .kb-card-title p {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+@media (max-width: 720px) {
+  .produksi-board-page .pd-late { grid-template-columns: 1fr; }
+}
+
 .produksi-board-page .pd-kesiapan {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);

@@ -9,6 +9,11 @@ import {
 } from "../components/productionDashboard/productionWidgetCatalog";
 import { addWidget, defaultLayout } from "../components/productionDashboard/productionWidgetLayout";
 import { mapDeliveryQty } from "../lib/widgetDashboardModel";
+import { mapPoLateSummary } from "../lib/poLateTracking";
+import {
+  buildPoLateVisualSummary,
+  isPoLateVisualFixtureEnabled,
+} from "../lib/poLateTrackingVisualFixture";
 import "../components/financeDashboard/financeDashboard.css";
 import "../components/productionDashboard/productionDashboard.css";
 
@@ -24,11 +29,12 @@ function zeroOrComplete(value) {
   return value === 0 ? "zero" : "complete";
 }
 
-const SNAPSHOT_IDS = ["po_aktif", "perlu_produksi", "po_urgent", "po_hold", "sisa_qty", "deadline", "approval", "prioritas", "kesiapan", "target_produksi", "po_terlambat", "target_realisasi", "aging", "ketepatan", "bottleneck"];
+const SNAPSHOT_IDS = ["po_aktif", "perlu_produksi", "po_urgent", "po_hold", "sisa_qty", "deadline", "approval", "prioritas", "kesiapan", "target_produksi", "target_realisasi", "aging", "ketepatan", "bottleneck"];
 const PLANT_IDS = ["output_hari_ini", "tren_output", "distribusi_tahap", "komposisi"];
 const OPERATOR_IDS = ["output_operator", "beban_operator"];
 const BRANCH_IDS = ["output_cabang"];
 const DELIVERY_QTY_IDS = ["delivery_qty"];
+const PO_LATE_IDS = ["po_terlambat"];
 
 function mapToday(plant) {
   const today = plant?.today || {};
@@ -150,7 +156,6 @@ function modelsFromSnapshot(body) {
     kesiapan: mapKesiapan(body),
     target_produksi: mapWaveBlock(body, "target_produksi"),
     target_realisasi: mapWaveBlock(body, "target_realisasi"),
-    po_terlambat: mapWaveBlock(body, "po_terlambat"),
     aging: mapWaveBlock(body, "aging"),
     ketepatan: mapWaveBlock(body, "ketepatan"),
     bottleneck: mapWaveBlock(body, "bottleneck"),
@@ -165,6 +170,7 @@ export function ProductionDashboardView({
   operatorAnalyticsApi = null,
   branchOutputApi = null,
   deliveryPlanQtyApi = null,
+  poLateTrackingSummaryApi = null,
   simulation = null,
 }) {
   const [widgets, setWidgets] = useState([]);
@@ -298,7 +304,8 @@ export function ProductionDashboardView({
     const needOperator = OPERATOR_IDS.some(allowed);
     const needBranch = BRANCH_IDS.some(allowed);
     const needDeliveryQty = DELIVERY_QTY_IDS.some(allowed);
-    if (!needSnapshot && !needPlant && !needOperator && !needBranch && !needDeliveryQty) return undefined;
+    const needPoLate = PO_LATE_IDS.some(allowed);
+    if (!needSnapshot && !needPlant && !needOperator && !needBranch && !needDeliveryQty && !needPoLate) return undefined;
     let live = true;
     const jobs = [];
     if (needSnapshot) {
@@ -324,6 +331,15 @@ export function ProductionDashboardView({
         .then((body) => ({ kind: "delivery_qty", body }))
         .catch((error) => ({ kind: "delivery_qty", error: true, forbidden: error?.response?.status === 403 })));
     }
+    if (needPoLate) {
+      const wantVisualFixture = typeof window !== "undefined"
+        && isPoLateVisualFixtureEnabled(new URLSearchParams(window.location.search));
+      jobs.push((wantVisualFixture
+        ? Promise.resolve(buildPoLateVisualSummary())
+        : (poLateTrackingSummaryApi ? poLateTrackingSummaryApi() : Promise.reject(new Error("missing"))))
+        .then((body) => ({ kind: "po_late", body }))
+        .catch((error) => ({ kind: "po_late", error: true, forbidden: error?.response?.status === 403 })));
+    }
     Promise.all(jobs).then((results) => {
       if (!live || requestId !== requestRef.current) return;
       const snapshot = results.find((item) => item.kind === "snapshot");
@@ -331,6 +347,7 @@ export function ProductionDashboardView({
       const operatorResult = results.find((item) => item.kind === "operator");
       const branchResult = results.find((item) => item.kind === "branch");
       const deliveryResult = results.find((item) => item.kind === "delivery_qty");
+      const poLateResult = results.find((item) => item.kind === "po_late");
       const mapped = snapshot && !snapshot.error ? modelsFromSnapshot(snapshot.body) : null;
       setPlant(plantResult && !plantResult.error ? plantResult.body : null);
       setOperatorBody(operatorResult && !operatorResult.error ? operatorResult.body : null);
@@ -359,6 +376,11 @@ export function ProductionDashboardView({
             patch[widget.widget_id] = deliveryResult && !deliveryResult.error
               ? mapDeliveryQty(deliveryResult.body)
               : { status: deliveryResult && deliveryResult.forbidden ? "forbidden" : "error" };
+          }
+          if (PO_LATE_IDS.includes(widget.widget_id)) {
+            patch[widget.widget_id] = poLateResult && !poLateResult.error
+              ? mapPoLateSummary(poLateResult.body)
+              : { status: poLateResult && poLateResult.forbidden ? "forbidden" : "error" };
           }
         });
         return patch;
@@ -547,6 +569,7 @@ function RoutedProductionDashboard() {
       operatorAnalyticsApi={(period) => api.productionOperatorAnalytics(period)}
       branchOutputApi={(period) => api.productionBranchOutput(period)}
       deliveryPlanQtyApi={(period) => api.deliveryPlanQty({ days: period })}
+      poLateTrackingSummaryApi={() => api.poLateTrackingSummary()}
     />
   );
 }

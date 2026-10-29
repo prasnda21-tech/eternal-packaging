@@ -84,6 +84,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
       "DivisionTaskPage",
       "DeliverySchedulePage",
       "DeliveryScheduleRouteReviewPage",
+      "PoLateTrackingPage",
       "DeliveryReschedulePage",
       "DeliveryBatchPage",
       "FormShowcase",

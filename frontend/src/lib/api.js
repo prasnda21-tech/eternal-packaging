@@ -992,6 +992,8 @@ export const api = {
   orderTrackingLink: (id) => client.post(`/orders/${id}/tracking-link`).then((r) => r.data),
   deliverySchedule: (params = {}) => client.get(`/delivery/schedule`, { params }).then((r) => r.data),
   deliveryPlan: (params = {}) => client.get(`/delivery/plan`, { params, paramsSerializer: paintParamsSerializer }).then((r) => r.data),
+  poLateTracking: (params = {}) => client.get(`/delivery/po-late-tracking`, { params }).then((r) => r.data),
+  poLateTrackingSummary: (params = {}) => client.get(`/delivery/po-late-tracking/summary`, { params }).then((r) => r.data),
   deliveryReschedules: (params = {}) => client.get(`/delivery/reschedules`, { params }).then((r) => r.data),
   requestDeliveryReschedule: (id, payload) => client.post(`/orders/${id}/delivery-reschedule`, payload).then((r) => r.data),
   setDeliveryRescheduleDate: (rescheduleId, payload) => client.patch(`/delivery/reschedules/${encodeURIComponent(rescheduleId)}`, payload).then((r) => r.data),
