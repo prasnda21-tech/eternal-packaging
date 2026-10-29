@@ -125,7 +125,7 @@ const CAPTION = {
   beban_operator: "Sisa alokasi aktif",
   kesiapan: "Dua indikator terpisah",
   target_produksi: "Cohort jadwal, bukan kalender",
-  po_terlambat: "Qty wajib belum terkirim",
+  po_terlambat: "Satu PO = satu baris",
   target_realisasi: "Awal, revisi, realisasi",
   aging: "Produksi terpisah dari total PO",
   ketepatan: "Produksi dan pengiriman",
@@ -905,19 +905,22 @@ function RealisasiBody({ model }) {
 }
 
 function LateBody({ model }) {
-  if (model.status === "zero") return <Quiet status="zero" title="Tidak ada PO aktif" />;
-  if (model.status !== "complete") return <Quiet status="incomplete" />;
+  if (model.status === "empty" || model.status === "zero") {
+    return <Quiet status="zero" title="Tidak ada PO terlambat" note={model.note || "PO aktif melewati tanggal pengiriman."} />;
+  }
+  if (model.status !== "complete") return <Quiet status={model.status === "incomplete" ? "incomplete" : model.status} />;
+  const counts = model.counts || {};
   return (
-    <div className="pd-kesiapan" data-testid="produksi-terlambat">
-      <div className="pd-kesiapan-metrics">
-        <CountPair label="Terlambat" value={model.overdue} title="Hari WIB sudah melewati tanggal kirim dan qty wajib belum penuh." />
-        <CountPair label="Belum dijadwalkan" value={model.unscheduled} title="Urgent tanpa tanggal Jadwal Pengiriman." />
-        <CountPair label="Legacy" value={model.legacy} title="Tanggal otomatis tiga hari kerja belum tersimpan." />
+    <div className="pd-late" data-testid="produksi-terlambat">
+      <div className="pd-late-total">
+        <p className="kb-metric" data-testid="produksi-terlambat-total">{formatCount(model.overdue)}</p>
+        <p className="kb-kicker">PO terlambat aktif</p>
       </div>
-      {(model.rows || []).slice(0, 4).map((row) => (
-        <p key={row.order_id} className="pd-note" data-testid="produksi-terlambat-sumber">{row.po_number}: {row.source} {row.date || ""}</p>
-      ))}
-      <p className="pd-note">{model.note}</p>
+      <div className="pd-late-cats" aria-label="Rincian kategori terlambat">
+        <CountPair label="Lewat 1 Hari" value={counts.lewat_1_hari || 0} title="Terlambat tepat 1 hari kalender WIB." />
+        <CountPair label="Terlambat" value={counts.terlambat || 0} title="Terlambat 2–3 hari kalender WIB." />
+        <CountPair label="Kritis" value={counts.kritis || 0} title="Terlambat ≥ 4 hari kalender WIB." />
+      </div>
     </div>
   );
 }
@@ -1308,6 +1311,7 @@ const CARD_DRILL_IDS = new Set([
   "prioritas",
   "po_urgent",
   "po_hold",
+  "po_terlambat",
 ]);
 
 export default function ProductionWidgetBoard({ widgets, models, editing, hasPerm, onLayout, onRetry, controls = {} }) {

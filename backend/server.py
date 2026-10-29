@@ -249,6 +249,7 @@ from services.widget_dashboard_http import register_widget_dashboard_routes
 from services.finance_widget_layout_http import register_finance_widget_layout_routes
 from services.production_dashboard_http import register_production_dashboard_routes
 from services.production_wave2_http import register_production_wave2_routes
+from services.po_late_tracking_http import register_po_late_tracking_routes
 from services.production_dashboard_snapshot import summary_flags as _production_summary_flags
 from services.balance_sheet_http import register_balance_sheet_routes
 from services.inventory_reconciliation_http import register_inventory_reconciliation_routes
@@ -17329,6 +17330,23 @@ register_production_wave2_routes(
     require_perm=require_perm,
     with_quantity_lock=_with_quantity_lock,
     skip_mutation=_OrderMutationSkipped,
+    now_iso=now_iso,
+    Depends=Depends,
+)
+
+
+async def _po_late_holiday_dates(database):
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    return await _holiday_dates(database)
+
+
+register_po_late_tracking_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    get_delivery_deadline_settings=_get_delivery_deadline_settings,
+    holiday_dates=_po_late_holiday_dates,
     now_iso=now_iso,
     Depends=Depends,
 )

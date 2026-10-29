@@ -97,6 +97,7 @@ const DivisionTaskIndex = lazy(() => import("./pages/DivisionTaskPage").then((mo
 const KepalaProduksiKpiDetailPage = lazy(() => import("./pages/KepalaProduksiKpiDetailPage"));
 const DeliverySchedulePage = lazy(() => import("./pages/DeliverySchedulePage"));
 const DeliveryScheduleRouteReviewPage = lazy(() => import("./pages/DeliveryScheduleRouteReviewPage"));
+const PoLateTrackingPage = lazy(() => import("./pages/PoLateTrackingPage"));
 const DeliveryPlanPage = lazy(() => import("./pages/DeliveryPlanPage"));
 const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage"));
 const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
@@ -362,6 +363,7 @@ export default function App() {
             <Route path="/produksi/jadwal-pengiriman/buat" element={<Navigate to="/produksi/jadwal-pengiriman" replace />} />
             <Route path="/produksi/jadwal-pengiriman/batch/:batchId" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "delivery.update"]}><DeliveryBatchPage /></PermGate>} />
             <Route path="/produksi/rencana-jadwal-kirim" element={<PermGate anyOf={[NAV_KEYS.deliverySchedule, "delivery.schedule.view", "schedule.view"]}><DeliveryPlanPage /></PermGate>} />
+            <Route path="/produksi/tracking-po-terlambat" element={<PermGate anyOf={["dashboard.production.view", NAV_KEYS.deliverySchedule, "delivery.schedule.view", "schedule.view"]}><PoLateTrackingPage /></PermGate>} />
             <Route path="/produksi/jadwal-pengiriman-ulang" element={<PermGate anyOf={[NAV_KEYS.deliveryReschedule, "delivery.reschedule", "delivery.reschedule.set_date"]}><DeliveryReschedulePage /></PermGate>} />
             <Route path="/produksi/pengiriman-hari-ini" element={<Navigate to="/produksi/jadwal-pengiriman?status=hari_ini" replace />} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
