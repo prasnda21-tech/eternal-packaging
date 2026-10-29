@@ -3652,6 +3652,7 @@ async def _r2_attributed_delivery_rows(
 ) -> List[dict]:
     """Net SALES_DELIVERY rows attributable to active SO identities only.
 
+    Shared commitment delivery authority for R2 and warehouse_standalone (D1-A).
     Uses metadata.order_id (+ line_id / line_idx). Movements without order_id or
     whose order is not active are omitted (fail closed — never invent product
     guess). Ledger documents are not modified.
@@ -3724,9 +3725,10 @@ def _legacy_attributed_delivery_rows(
     *,
     exclude_master_ids: Optional[Iterable[str]] = None,
 ) -> List[dict]:
-    """Active-order shipment deliveries for commitment (standalone / Mode B).
+    """Shipment/confirmation line attribution (legacy).
 
-    Cancelled orders are skipped. Ambiguous line attribution is omitted.
+    Not used for Stock Dapat Dijual open_so after D1-A — retained for any
+    non-ATP callers / diagnostics. Cancelled orders skipped; ambiguous omitted.
     """
     from services.stock_compatibility_read import (
         _delivery_line_qty,
@@ -4289,6 +4291,9 @@ async def list_physical_stock_catalog(
 
     # Stock Dapat Dijual commitment: per active SO/line, never let cancelled or
     # foreign-SO delivery reduce another SO. Ledger history stays untouched.
+    # D1-A: delivery authority for open_so is always non-reversed SALES_DELIVERY
+    # ledger rows attributed to (order_id, line_id|line_idx) — standalone and R2.
+    # Legacy shipment attribution must NOT reduce ATP (avoids dual-path drift).
     active_commit_lines = collect_active_so_commitment_lines(
         orders, owners, exclude_master_ids=service_master_ids,
     )
@@ -4297,17 +4302,12 @@ async def list_physical_stock_catalog(
         for row in active_commit_lines
         if str(row.get("order_id") or "").strip()
     }
-    if catalog_mode == "r2":
-        attributed_deliveries = await _r2_attributed_delivery_rows(
-            db,
-            master_ids=page_master_ids,
-            active_order_ids=active_order_ids,
-            branch_id=operational_id,
-        )
-    else:
-        attributed_deliveries = _legacy_attributed_delivery_rows(
-            orders, owners, exclude_master_ids=service_master_ids,
-        )
+    attributed_deliveries = await _r2_attributed_delivery_rows(
+        db,
+        master_ids=page_master_ids,
+        active_order_ids=active_order_ids,
+        branch_id=operational_id,
+    )
     commitment_by_master = aggregate_active_so_commitment(
         active_lines=active_commit_lines,
         attributed_deliveries=attributed_deliveries,
