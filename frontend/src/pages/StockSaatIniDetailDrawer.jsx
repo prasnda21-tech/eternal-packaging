@@ -49,6 +49,20 @@ const EXCEL_DETAIL_FIELDS = [
     contract: "polos",
   },
   {
+    key: "blank_open_commitment",
+    label: "Komitmen Blank",
+    statusKey: "blank_open_commitment_status",
+    reasonKey: "blank_open_commitment_reason",
+    noteKey: "blank_open_commitment_note",
+  },
+  {
+    key: "stock_polos_dapat_dijual",
+    label: "Stock Polos Dapat Dijual",
+    statusKey: "stock_polos_dapat_dijual_status",
+    reasonKey: "stock_polos_dapat_dijual_reason",
+    noteKey: "stock_polos_dapat_dijual_note",
+  },
+  {
     key: "tercetak_belum_kirim",
     label: "Barang Tercetak Belum Kirim",
     statusKey: "tercetak_belum_kirim_status",

@@ -29,6 +29,10 @@ export const SSI_REASON_LABEL = {
   SIMPLE_POLOS_NO_WIP_COVERAGE:
     "Formula sederhana (Stock − Tercetak Belum Kirim); WIP/rusak/pengiriman polos terpisah belum tercakup",
   NO_BALANCE: "Belum ada saldo fisik",
+  BLANK_PRINT_COMPLETION_UNPROVEN:
+    "Kebutuhan blank belum terbukti — selesai cetak induk belum terverifikasi",
+  BRANCH_DEMAND_WAREHOUSE_SCOPE:
+    "Komitmen blank bersifat cabang; tidak dialokasikan ke satu gudang",
 };
 
 /** @param {string|undefined|null} status */

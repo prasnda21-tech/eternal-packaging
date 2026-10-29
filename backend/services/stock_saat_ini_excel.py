@@ -51,6 +51,8 @@ REASON_COMPLETION_UNPROVEN = "COMPLETION_UNPROVEN"
 REASON_DEPENDENT_UNKNOWN = "DEPENDENT_UNKNOWN"
 REASON_NO_OPERATOR_EVIDENCE = "NO_OPERATOR_EVIDENCE"
 REASON_WIP_COMPOSITION_UNPROVEN = "WIP_COMPOSITION_UNPROVEN"
+REASON_BLANK_PRINT_COMPLETION_UNPROVEN = "BLANK_PRINT_COMPLETION_UNPROVEN"
+REASON_BRANCH_DEMAND_WAREHOUSE_SCOPE = "BRANCH_DEMAND_WAREHOUSE_SCOPE"
 
 SOURCE_SALDO_AWAL = "physical_stock_ledger.OPENING_BALANCE"
 SOURCE_PEMBELIAN = "physical_stock_ledger.PURCHASE_RECEIPT"
@@ -61,6 +63,11 @@ SOURCE_TERCETAK = "orders.operator_splits → physical parent (not sum warna)"
 SOURCE_CETAK_DIKIRIM = "confirmed SJ lines on print SO parents only"
 SOURCE_POLOS = "stock - tercetak_belum_kirim (UNVERIFIED when incomplete print)"
 SOURCE_STOCK_DAPAT = "stock - open_so_commitment (active SO/line attributed)"
+SOURCE_BLANK_COMMIT = (
+    "non_print: max(0, ordered-delivered); "
+    "print parent: max(0, ordered-print_completed) — never sum SERVICE/Add On"
+)
+SOURCE_POLOS_DAPAT = "qty_polos - blank_open_commitment (branch scope; fail-closed on WH view)"
 
 
 def open_so_commitment_qty(*, po_ordered: Any = 0, so_delivered: Any = 0) -> float:
@@ -195,6 +202,96 @@ def incomplete_print_demand(progress_row: Optional[dict]) -> bool:
     ordered = max(qty_num(progress_row.get("print_ordered_qty")), 0.0)
     completed = max(qty_num(progress_row.get("print_completed_qty")), 0.0)
     return ordered > completed
+
+
+def blank_need_for_physical_line(
+    *,
+    ordered_qty: Any,
+    is_print: bool,
+    print_completed_qty: Any = None,
+    print_completion_proven: bool = False,
+    delivered_qty: Any = 0,
+) -> Dict[str, Any]:
+    """Blank physical stock still required for one active SO parent line.
+
+    non_print: outstanding ordered − attributed delivery.
+    print: ordered − proven print_completed (finished print no longer needs blank).
+    Unproven print completion → UNVERIFIED (never invent 0 need).
+    SERVICE/Add On lines must not be passed here (caller excludes them).
+    """
+    ordered = max(qty_num(ordered_qty), 0.0)
+    delivered = max(qty_num(delivered_qty), 0.0)
+    if ordered <= 0:
+        return _known(0.0)
+    if not is_print:
+        return _known(_as_pcs(max(0.0, ordered - delivered)))
+    if not print_completion_proven or print_completed_qty is None:
+        return _unknown(REASON_BLANK_PRINT_COMPLETION_UNPROVEN)
+    completed = max(qty_num(print_completed_qty), 0.0)
+    return _known(_as_pcs(max(0.0, ordered - completed)))
+
+
+def aggregate_blank_open_commitment(
+    line_needs: Iterable[dict],
+) -> Dict[str, Dict[str, Any]]:
+    """Sum per-line blank needs by master_item_id.
+
+    Any UNVERIFIED line for a master fail-closes that master's blank commitment
+    (do not mix proven partial sums with inventing the unknown remainder).
+    """
+    acc: Dict[str, Dict[str, Any]] = {}
+    for raw in line_needs:
+        if not isinstance(raw, dict):
+            continue
+        mid = str(raw.get("master_item_id") or "").strip()
+        if not mid:
+            continue
+        slot = acc.setdefault(
+            mid,
+            {"qty": 0.0, "status": STATUS_READY, "reason": None},
+        )
+        st = str(raw.get("status") or STATUS_READY).strip().upper()
+        if st == STATUS_UNVERIFIED or raw.get("qty") is None:
+            slot["status"] = STATUS_UNVERIFIED
+            slot["reason"] = (
+                str(raw.get("reason") or "").strip()
+                or REASON_BLANK_PRINT_COMPLETION_UNPROVEN
+            )
+            slot["qty"] = None
+            continue
+        if slot["status"] == STATUS_UNVERIFIED:
+            continue
+        slot["qty"] = _as_pcs(qty_num(slot.get("qty")) + qty_num(raw.get("qty")))
+    return acc
+
+
+def resolve_stock_polos_dapat_dijual(
+    *,
+    qty_polos: Any,
+    qty_polos_status: Optional[str] = None,
+    blank_open_commitment: Any = None,
+    blank_open_commitment_status: Optional[str] = None,
+    blank_open_commitment_reason: Optional[str] = None,
+    warehouse_scoped: bool = False,
+) -> Dict[str, Any]:
+    """Stock Polos Dapat Dijual = proven Qty Polos − proven blank commitment.
+
+    Distinct from Jalur A ``stock_dapat_dijual`` (stock − all SO commitment).
+    Warehouse-selected views fail closed: branch SO blank demand is not allocated
+    to a single gudang.
+    """
+    if warehouse_scoped:
+        return _unknown(REASON_BRANCH_DEMAND_WAREHOUSE_SCOPE)
+    polos_st = str(qty_polos_status or "").strip().upper()
+    if qty_polos is None or polos_st == STATUS_UNVERIFIED:
+        return _unknown(REASON_DEPENDENT_UNKNOWN)
+    blank_st = str(blank_open_commitment_status or "").strip().upper()
+    if blank_open_commitment is None or blank_st == STATUS_UNVERIFIED:
+        return _unknown(
+            str(blank_open_commitment_reason or "").strip()
+            or REASON_BLANK_PRINT_COMPLETION_UNPROVEN
+        )
+    return _known(_as_pcs(qty_num(qty_polos) - qty_num(blank_open_commitment)))
 
 
 def qty_num(v: Any) -> float:
@@ -540,8 +637,49 @@ def apply_excel_fields_to_catalog_row(
     out["qty_siap_jual_status"] = "READY" if balance_present else "BELUM_TERSEDIA"
     out["qty_siap_jual_reason"] = None if balance_present else "NO_BALANCE"
     out["qty_siap_jual_note"] = (
-        "Stock Dapat Dijual = Stock − (PO aktif − qty sudah dikirim); boleh negatif"
+        "Stock Dapat Dijual = Stock − (PO aktif − qty sudah dikirim); boleh negatif "
+        "(Jalur A — bukan Stock Polos Dapat Dijual)"
     )
+
+    # Option A blank availability (separate from Jalur A ATP).
+    if "blank_open_commitment" in excel or "stock_polos_dapat_dijual" in excel:
+        blank_q = excel.get("blank_open_commitment")
+        blank_st = excel.get("blank_open_commitment_status") or (
+            STATUS_UNVERIFIED if blank_q is None else STATUS_READY
+        )
+        blank_rs = excel.get("blank_open_commitment_reason")
+        out["blank_open_commitment"] = blank_q
+        out["blank_open_commitment_status"] = blank_st
+        out["blank_open_commitment_reason"] = blank_rs
+        out["blank_open_commitment_note"] = (
+            "Sisa kebutuhan blank fisik dari SO (non_print: ordered−kirim; "
+            "print: ordered−selesai cetak induk). Bukan alokasi per gudang."
+        )
+        polos_dapat = resolve_stock_polos_dapat_dijual(
+            qty_polos=excel.get("qty_polos"),
+            qty_polos_status=excel.get("qty_polos_status"),
+            blank_open_commitment=blank_q,
+            blank_open_commitment_status=blank_st,
+            blank_open_commitment_reason=blank_rs,
+            warehouse_scoped=bool(excel.get("blank_warehouse_scoped")),
+        )
+        # Allow precomputed slot from caller (already scoped).
+        if "stock_polos_dapat_dijual" in excel and excel.get("stock_polos_dapat_dijual_status"):
+            out["stock_polos_dapat_dijual"] = excel.get("stock_polos_dapat_dijual")
+            out["stock_polos_dapat_dijual_status"] = excel.get("stock_polos_dapat_dijual_status")
+            out["stock_polos_dapat_dijual_reason"] = excel.get("stock_polos_dapat_dijual_reason")
+        else:
+            out["stock_polos_dapat_dijual"] = polos_dapat["qty"]
+            out["stock_polos_dapat_dijual_status"] = polos_dapat["status"]
+            out["stock_polos_dapat_dijual_reason"] = polos_dapat.get("reason")
+        out["stock_polos_dapat_dijual_note"] = (
+            "Stock Polos Dapat Dijual = Qty Polos − blank commitment (bukti lengkap); "
+            "terpisah dari Stock Dapat Dijual Jalur A."
+        )
+        sources = dict(out.get("ssi_sources") or {})
+        sources["blank_open_commitment"] = SOURCE_BLANK_COMMIT
+        sources["stock_polos_dapat_dijual"] = SOURCE_POLOS_DAPAT
+        out["ssi_sources"] = sources
     return out
 
 

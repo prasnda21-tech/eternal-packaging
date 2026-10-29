@@ -3643,6 +3643,253 @@ def collect_active_so_commitment_lines(
     return lines
 
 
+def collect_blank_open_commitment_by_master(
+    orders: Iterable[dict],
+    accurate_owners: Optional[Dict[str, str]] = None,
+    *,
+    exclude_master_ids: Optional[Iterable[str]] = None,
+    attributed_deliveries: Optional[Iterable[dict]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Derive blank-stock still needed from active SO + print workflow (Option A).
+
+    Persisted evidence used:
+    - line identity (order_id + line_id|line_idx)
+    - production_process print vs non_print
+    - operator_splits qty_completed on physical print parents
+    - linked Add On FULLY_COMPLETED → parent physical_ready (not sum warna)
+    - attributed SALES_DELIVERY for non_print outstanding
+
+    Not invented: warehouse ownership of blank demand; blank ledger allocation
+    events (operator progress does not consume blank). SERVICE/process masters
+    in exclude_master_ids never contribute.
+    """
+    from quantity_rules import is_print_line
+    from services.order_line_addon import (
+        STATUS_FULLY_COMPLETED,
+        evaluate_process_group,
+        process_children_for_parent,
+    )
+    from services.stock_saat_ini_excel import (
+        _line_identity,
+        aggregate_blank_open_commitment,
+        blank_need_for_physical_line,
+        qty_num as _excel_qty,
+    )
+
+    owners = accurate_owners or {}
+    excluded = {str(mid).strip() for mid in (exclude_master_ids or []) if str(mid).strip()}
+    deliveries = list(attributed_deliveries or [])
+
+    # Delivered qty keyed like aggregate_active_so_commitment matching.
+    active_lines = collect_active_so_commitment_lines(
+        orders, owners, exclude_master_ids=excluded,
+    )
+
+    # Per-line delivered via the same attribution rules (reuse commitment matcher).
+    ordered_slots: Dict[tuple, float] = {}
+    lines_per_om: Dict[tuple, int] = {}
+    for raw in active_lines:
+        oid = str(raw.get("order_id") or "").strip()
+        mid = str(raw.get("master_item_id") or "").strip()
+        lid, idx = _line_identity(raw)
+        key = (oid, mid, lid, idx)
+        ordered_slots[key] = _excel_qty(ordered_slots.get(key, 0.0)) + _excel_qty(raw.get("ordered_qty"))
+    for oid, mid, _lid, _idx in ordered_slots:
+        lines_per_om[(oid, mid)] = lines_per_om.get((oid, mid), 0) + 1
+    delivered_slots: Dict[tuple, float] = {}
+    for raw in deliveries:
+        if not isinstance(raw, dict):
+            continue
+        oid = str(raw.get("order_id") or "").strip()
+        mid = str(raw.get("master_item_id") or "").strip()
+        qty = max(_excel_qty(raw.get("qty")), 0.0)
+        if not oid or not mid or qty <= 0:
+            continue
+        lid, idx = _line_identity(raw)
+        if lid is None and idx is None:
+            if lines_per_om.get((oid, mid), 0) != 1:
+                continue
+            matches = [k for k in ordered_slots if k[0] == oid and k[1] == mid]
+            if len(matches) != 1:
+                continue
+            key = matches[0]
+        else:
+            key = (oid, mid, lid, idx)
+            if key not in ordered_slots:
+                alt = None
+                if lid is not None:
+                    cands = [k for k in ordered_slots if k[0] == oid and k[1] == mid and k[2] == lid]
+                    if len(cands) == 1:
+                        alt = cands[0]
+                if alt is None and idx is not None:
+                    cands = [k for k in ordered_slots if k[0] == oid and k[1] == mid and k[3] == idx]
+                    if len(cands) == 1:
+                        alt = cands[0]
+                if alt is None:
+                    continue
+                key = alt
+        delivered_slots[key] = _excel_qty(delivered_slots.get(key, 0.0)) + qty
+
+    line_needs: List[dict] = []
+    for order in orders:
+        if _order_cancelled(order):
+            continue
+        oid = str(order.get("id") or "").strip()
+        if not oid:
+            continue
+        lines = list(order.get("line_items") or [])
+        master_ids = [_line_master_id(line, owners) for line in lines]
+        active_idxs = [
+            idx for idx, line in enumerate(lines)
+            if isinstance(line, dict) and not _line_item_cancelled(line)
+        ]
+        print_candidates = [idx for idx in active_idxs if is_print_line(lines[idx])]
+        has_orphan_print = any(not master_ids[idx] for idx in print_candidates)
+
+        process_completed_by_idx: Dict[int, float] = {}
+        completed_by_idx: Dict[int, float] = {}
+        unassigned = []
+        for split in order.get("operator_splits") or []:
+            raw_idx = split.get("line_idx")
+            if raw_idx is None or str(raw_idx).strip() == "":
+                unassigned.append(split)
+                continue
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= len(lines) or not master_ids[idx]:
+                continue
+            if _line_item_cancelled(lines[idx]):
+                continue
+            if not is_print_line(lines[idx]):
+                continue
+            qty = _qty_num(split.get("qty_completed"))
+            process_completed_by_idx[idx] = _qty_num(process_completed_by_idx.get(idx, 0)) + qty
+            if master_ids[idx] not in excluded:
+                completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + qty
+
+        unassigned_ambiguous = False
+        if unassigned:
+            if len(print_candidates) == 1 and master_ids[print_candidates[0]] and (
+                master_ids[print_candidates[0]] not in excluded
+            ):
+                idx = print_candidates[0]
+                extra = sum(_qty_num(split.get("qty_completed")) for split in unassigned)
+                process_completed_by_idx[idx] = _qty_num(process_completed_by_idx.get(idx, 0)) + extra
+                completed_by_idx[idx] = _qty_num(completed_by_idx.get(idx, 0)) + extra
+            else:
+                unassigned_ambiguous = True
+
+        order_unlinked_process = False
+        children_by_parent: Dict[int, List[int]] = {}
+        for idx in active_idxs:
+            mid = master_ids[idx]
+            if not mid or mid in excluded:
+                continue
+            children, unlinked = process_children_for_parent(
+                idx,
+                lines,
+                process_master_ids=excluded,
+                master_ids=master_ids,
+                is_print_line=is_print_line,
+            )
+            children_by_parent[idx] = children
+            if unlinked:
+                order_unlinked_process = True
+
+        process_gate_unproven = (
+            order_unlinked_process or has_orphan_print or unassigned_ambiguous
+        )
+
+        for idx in active_idxs:
+            mid = master_ids[idx]
+            if not mid or mid in excluded:
+                continue
+            line = lines[idx]
+            ordered = _qty_num(line.get("quantity"))
+            if ordered <= 0:
+                continue
+            lid = str(line.get("line_id") or line.get("id") or "").strip() or None
+            key = (oid, mid, lid, idx)
+            # Resolve delivery against commitment slot keys (line_id may differ).
+            delivered = 0.0
+            if key in delivered_slots:
+                delivered = _qty_num(delivered_slots.get(key))
+            else:
+                # Fall back to unique line_id / line_idx match on order+master.
+                cands = [k for k in delivered_slots if k[0] == oid and k[1] == mid]
+                if lid is not None:
+                    by_id = [k for k in cands if k[2] == lid]
+                    if len(by_id) == 1:
+                        delivered = _qty_num(delivered_slots.get(by_id[0]))
+                if delivered <= 0:
+                    by_idx = [k for k in cands if k[3] == idx]
+                    if len(by_idx) == 1:
+                        delivered = _qty_num(delivered_slots.get(by_idx[0]))
+
+            if not is_print_line(line):
+                need = blank_need_for_physical_line(
+                    ordered_qty=ordered,
+                    is_print=False,
+                    delivered_qty=delivered,
+                )
+                line_needs.append({
+                    "master_item_id": mid,
+                    "qty": need["qty"],
+                    "status": need["status"],
+                    "reason": need.get("reason"),
+                })
+                continue
+
+            ops_evidence = idx in completed_by_idx
+            parent_completed = min(_qty_num(completed_by_idx.get(idx, 0)), ordered)
+            children = children_by_parent.get(idx) or []
+            print_completed: Optional[float]
+            proven = False
+            if children:
+                group = evaluate_process_group(
+                    order,
+                    idx,
+                    process_master_ids=excluded,
+                    master_ids=master_ids,
+                    is_print_line=is_print_line,
+                    completed_by_idx=process_completed_by_idx,
+                )
+                if group.status == STATUS_FULLY_COMPLETED:
+                    print_completed = float(group.physical_ready_qty)
+                    proven = not process_gate_unproven
+                else:
+                    # Inspected incomplete / partial — proven blank still needed.
+                    print_completed = 0.0
+                    proven = not process_gate_unproven
+            elif process_gate_unproven:
+                print_completed = parent_completed if ops_evidence else None
+                proven = False
+            elif ops_evidence:
+                print_completed = float(parent_completed)
+                proven = True
+            else:
+                print_completed = None
+                proven = False
+
+            need = blank_need_for_physical_line(
+                ordered_qty=ordered,
+                is_print=True,
+                print_completed_qty=print_completed,
+                print_completion_proven=proven,
+                delivered_qty=delivered,
+            )
+            line_needs.append({
+                "master_item_id": mid,
+                "qty": need["qty"],
+                "status": need["status"],
+                "reason": need.get("reason"),
+            })
+
+    return aggregate_blank_open_commitment(line_needs)
+
+
 async def _r2_attributed_delivery_rows(
     db,
     *,
@@ -4236,6 +4483,7 @@ async def list_physical_stock_catalog(
         compute_excel_columns,
         incomplete_print_demand,
         resolve_qty_tercetak,
+        resolve_stock_polos_dapat_dijual,
     )
 
     ledger_components: Dict[str, Dict[str, float]] = {}
@@ -4312,6 +4560,14 @@ async def list_physical_stock_catalog(
         active_lines=active_commit_lines,
         attributed_deliveries=attributed_deliveries,
     )
+    blank_commit_by_master = collect_blank_open_commitment_by_master(
+        orders,
+        owners,
+        exclude_master_ids=service_master_ids,
+        attributed_deliveries=attributed_deliveries,
+    )
+    # Selected warehouse: blank SO demand stays branch-scoped — never fabricate WH ATP.
+    blank_warehouse_scoped = bool(selected_warehouse)
 
     rows = []
     for master in page_masters:
@@ -4566,6 +4822,30 @@ async def list_physical_stock_catalog(
                 False if proven_no_activity else incomplete_print_demand(demand)
             ),
         )
+        # Option A: blank commitment + Stock Polos Dapat Dijual (≠ Jalur A ATP).
+        if proven_no_activity:
+            blank_slot = {"qty": 0.0, "status": "READY", "reason": None}
+        else:
+            blank_slot = blank_commit_by_master.get(str(mid) or mid) or {
+                "qty": 0.0,
+                "status": "READY",
+                "reason": None,
+            }
+        excel["blank_open_commitment"] = blank_slot.get("qty")
+        excel["blank_open_commitment_status"] = blank_slot.get("status") or "READY"
+        excel["blank_open_commitment_reason"] = blank_slot.get("reason")
+        excel["blank_warehouse_scoped"] = blank_warehouse_scoped
+        polos_dapat = resolve_stock_polos_dapat_dijual(
+            qty_polos=excel.get("qty_polos"),
+            qty_polos_status=excel.get("qty_polos_status"),
+            blank_open_commitment=blank_slot.get("qty"),
+            blank_open_commitment_status=blank_slot.get("status"),
+            blank_open_commitment_reason=blank_slot.get("reason"),
+            warehouse_scoped=blank_warehouse_scoped,
+        )
+        excel["stock_polos_dapat_dijual"] = polos_dapat["qty"]
+        excel["stock_polos_dapat_dijual_status"] = polos_dapat["status"]
+        excel["stock_polos_dapat_dijual_reason"] = polos_dapat.get("reason")
         apply_excel_fields_to_catalog_row(
             row,
             excel,
