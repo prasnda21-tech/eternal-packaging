@@ -153,6 +153,8 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
           qty_siap_jual_status: "READY",
           qty_polos: 2000,
           qty_polos_status: "READY",
+          sisa_belum_cetak: 500,
+          sisa_belum_cetak_status: "READY",
           warehouse_balances: [
             {
               warehouse_id: "wh-a",
@@ -177,6 +179,12 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     expect(polos?.textContent).toMatch(/2/);
     expect(polos?.textContent).not.toMatch(/Indikatif/i);
     expect(polos?.textContent).not.toMatch(/Belum terverifikasi/i);
+    expect(container.querySelector('[data-testid="stock-sisa-belum-cetak-header"]')?.textContent)
+      .toMatch(/Sisa Belum Cetak/);
+    const sisa = container.querySelector('[data-testid="stock-sisa-belum-cetak-m-ok"]');
+    expect(sisa?.getAttribute("data-condition-status")).toBe("READY");
+    expect(sisa?.getAttribute("data-presentation-fallback")).toBeNull();
+    expect(sisa?.textContent).toMatch(/500/);
 
     await act(async () => {
       container.querySelector('[data-testid="stock-row-m-ok"]').click();
@@ -194,6 +202,8 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
       .toMatch(/2/);
     expect(container.querySelector('[data-testid="ssi-detail-qty_polos"]')?.textContent)
       .not.toMatch(/Indikatif/i);
+    expect(container.querySelector('[data-testid="ssi-detail-sisa_belum_cetak"]')?.textContent)
+      .toMatch(/500/);
     await act(async () => {
       container.querySelector('[data-testid="ssi-detail-close"]').click();
     });
@@ -219,6 +229,8 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     expect(exportQtyCellValue({ qty_polos: null, qty_polos_status: "UNVERIFIED" }, "qty_polos")).toBe("");
     expect(exportQtyCellValue({ stock_dapat_dijual: null }, "stock_dapat_dijual")).toBe("");
     expect(exportQtyCellValue({ qty_polos: 0 }, "qty_polos")).toBe(0);
+    expect(exportQtyCellValue({ sisa_belum_cetak: null }, "sisa_belum_cetak")).toBe("");
+    expect(exportQtyCellValue({ sisa_belum_cetak: 500 }, "sisa_belum_cetak")).toBe(500);
 
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "warehouse_standalone",
@@ -242,6 +254,9 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
         qty_polos: null,
         qty_polos_status: "UNVERIFIED",
         qty_polos_reason: "WIP_COMPOSITION_UNPROVEN",
+        sisa_belum_cetak: null,
+        sisa_belum_cetak_status: "UNVERIFIED",
+        sisa_belum_cetak_reason: "BLANK_PRINT_COMPLETION_UNPROVEN",
         warehouse_balances: [{
           warehouse_id: "wh-a",
           warehouse_code: "MAIN",
@@ -260,6 +275,9 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     const polos = container.querySelector('[data-testid="stock-polos-m-atp-null"]');
     expect(polos?.getAttribute("data-presentation-fallback")).toBe("true");
     expect(polos?.textContent?.replace(/\s/g, "")).toBe("0");
+    const sisa = container.querySelector('[data-testid="stock-sisa-belum-cetak-m-atp-null"]');
+    expect(sisa?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(sisa?.textContent?.replace(/\s/g, "")).toBe("0");
     expect(container.querySelector('[data-testid="stock-presentation-zero-legend"]')).toBeNull();
   });
 

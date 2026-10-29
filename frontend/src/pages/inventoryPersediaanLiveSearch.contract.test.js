@@ -85,11 +85,16 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/label: "Stock Dapat Dijual"/);
     expect(stock).toMatch(/label: "Qty Tercetak"/);
     expect(stock).toMatch(/label: "Qty Polos"/);
+    expect(stock).toMatch(/label: "Sisa Belum Cetak"/);
+    expect(stock).toMatch(/sisa_belum_cetak/);
     expect(stock).toMatch(/label: "Barang Tercetak Belum Kirim"/);
     expect(stock).toMatch(/label: "Barang Cetak Sudah Dikirim"/);
     expect(stock).toMatch(/stock-physical-header/);
     expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
     expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
+    expect(stock).toMatch(/stock-sisa-belum-cetak-header|testId: "stock-sisa-belum-cetak"/);
+    expect(detail).toMatch(/sisa_belum_cetak/);
+    expect(detail).toMatch(/Sisa Belum Cetak/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
     // Simplified numeric cells: presentation fallback attrs; no tampilan / Belum labels in qty path.
     expect(stock).toMatch(/resolvePhysicalDisplay/);

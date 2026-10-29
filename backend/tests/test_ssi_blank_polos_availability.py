@@ -148,9 +148,12 @@ def test_collect_blank_multi_so_print_done_plus_blank_so():
         exclude_master_ids={"m-svc"},
         attributed_deliveries=[],
     )
-    slot = out["m-cup"]
+    slot = out["blank_open_commitment"]["m-cup"]
     assert slot["status"] == STATUS_READY
     assert slot["qty"] == 3_000  # print fully done → 0 blank need; blank SO 3k
+    # Print fully done → sisa belum cetak 0; blank SO does not contribute to sisa.
+    sisa = out["sisa_belum_cetak"].get("m-cup") or {"qty": 0, "status": STATUS_READY}
+    assert sisa["qty"] == 0
 
 
 def test_service_master_excluded_from_blank_commitment():
@@ -169,7 +172,8 @@ def test_service_master_excluded_from_blank_commitment():
     out = collect_blank_open_commitment_by_master(
         orders, {}, exclude_master_ids={"m-svc"}, attributed_deliveries=[],
     )
-    assert "m-svc" not in out
+    assert "m-svc" not in out["blank_open_commitment"]
+    assert "m-svc" not in out["sisa_belum_cetak"]
 
 
 

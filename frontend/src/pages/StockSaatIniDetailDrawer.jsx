@@ -49,6 +49,13 @@ const EXCEL_DETAIL_FIELDS = [
     contract: "polos",
   },
   {
+    key: "sisa_belum_cetak",
+    label: "Sisa Belum Cetak",
+    statusKey: "sisa_belum_cetak_status",
+    reasonKey: "sisa_belum_cetak_reason",
+    noteKey: "sisa_belum_cetak_note",
+  },
+  {
     key: "blank_open_commitment",
     label: "Komitmen Blank",
     statusKey: "blank_open_commitment_status",

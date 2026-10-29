@@ -3649,19 +3649,18 @@ def collect_blank_open_commitment_by_master(
     *,
     exclude_master_ids: Optional[Iterable[str]] = None,
     attributed_deliveries: Optional[Iterable[dict]] = None,
-) -> Dict[str, Dict[str, Any]]:
-    """Derive blank-stock still needed from active SO + print workflow (Option A).
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Derive blank commitment + Sisa Belum Cetak from the same SO/print walk.
 
-    Persisted evidence used:
-    - line identity (order_id + line_id|line_idx)
-    - production_process print vs non_print
-    - operator_splits qty_completed on physical print parents
-    - linked Add On FULLY_COMPLETED → parent physical_ready (not sum warna)
-    - attributed SALES_DELIVERY for non_print outstanding
+    Returns::
+        {
+          "blank_open_commitment": {master_id: {qty, status, reason}},
+          "sisa_belum_cetak": {master_id: {qty, status, reason}},
+        }
 
-    Not invented: warehouse ownership of blank demand; blank ledger allocation
-    events (operator progress does not consume blank). SERVICE/process masters
-    in exclude_master_ids never contribute.
+    Sisa Belum Cetak reuses print-parent completion evidence
+    (ordered − proven completed) — never a second formula, never subtracts
+    shipment again. SERVICE/process masters in exclude_master_ids never contribute.
     """
     from quantity_rules import is_print_line
     from services.order_line_addon import (
@@ -3674,6 +3673,7 @@ def collect_blank_open_commitment_by_master(
         aggregate_blank_open_commitment,
         blank_need_for_physical_line,
         qty_num as _excel_qty,
+        sisa_belum_cetak_for_print_line,
     )
 
     owners = accurate_owners or {}
@@ -3731,6 +3731,7 @@ def collect_blank_open_commitment_by_master(
         delivered_slots[key] = _excel_qty(delivered_slots.get(key, 0.0)) + qty
 
     line_needs: List[dict] = []
+    sisa_needs: List[dict] = []
     for order in orders:
         if _order_cancelled(order):
             continue
@@ -3886,8 +3887,23 @@ def collect_blank_open_commitment_by_master(
                 "status": need["status"],
                 "reason": need.get("reason"),
             })
+            # Same print completion evidence — do not invent a second formula.
+            sisa = sisa_belum_cetak_for_print_line(
+                ordered_qty=ordered,
+                print_completed_qty=print_completed,
+                print_completion_proven=proven,
+            )
+            sisa_needs.append({
+                "master_item_id": mid,
+                "qty": sisa["qty"],
+                "status": sisa["status"],
+                "reason": sisa.get("reason"),
+            })
 
-    return aggregate_blank_open_commitment(line_needs)
+    return {
+        "blank_open_commitment": aggregate_blank_open_commitment(line_needs),
+        "sisa_belum_cetak": aggregate_blank_open_commitment(sisa_needs),
+    }
 
 
 async def _r2_attributed_delivery_rows(
@@ -4560,12 +4576,14 @@ async def list_physical_stock_catalog(
         active_lines=active_commit_lines,
         attributed_deliveries=attributed_deliveries,
     )
-    blank_commit_by_master = collect_blank_open_commitment_by_master(
+    blank_pack = collect_blank_open_commitment_by_master(
         orders,
         owners,
         exclude_master_ids=service_master_ids,
         attributed_deliveries=attributed_deliveries,
     )
+    blank_commit_by_master = blank_pack.get("blank_open_commitment") or {}
+    sisa_belum_cetak_by_master = blank_pack.get("sisa_belum_cetak") or {}
     # Selected warehouse: blank SO demand stays branch-scoped — never fabricate WH ATP.
     blank_warehouse_scoped = bool(selected_warehouse)
 
@@ -4822,11 +4840,18 @@ async def list_physical_stock_catalog(
                 False if proven_no_activity else incomplete_print_demand(demand)
             ),
         )
-        # Option A: blank commitment + Stock Polos Dapat Dijual (≠ Jalur A ATP).
+        # Option A: blank commitment + Stock Polos Dapat Dijual (≠ Jalur A ATP)
+        # + Sisa Belum Cetak (same print completion walk).
         if proven_no_activity:
             blank_slot = {"qty": 0.0, "status": "READY", "reason": None}
+            sisa_slot = {"qty": 0.0, "status": "READY", "reason": None}
         else:
             blank_slot = blank_commit_by_master.get(str(mid) or mid) or {
+                "qty": 0.0,
+                "status": "READY",
+                "reason": None,
+            }
+            sisa_slot = sisa_belum_cetak_by_master.get(str(mid) or mid) or {
                 "qty": 0.0,
                 "status": "READY",
                 "reason": None,
@@ -4835,6 +4860,9 @@ async def list_physical_stock_catalog(
         excel["blank_open_commitment_status"] = blank_slot.get("status") or "READY"
         excel["blank_open_commitment_reason"] = blank_slot.get("reason")
         excel["blank_warehouse_scoped"] = blank_warehouse_scoped
+        excel["sisa_belum_cetak"] = sisa_slot.get("qty")
+        excel["sisa_belum_cetak_status"] = sisa_slot.get("status") or "READY"
+        excel["sisa_belum_cetak_reason"] = sisa_slot.get("reason")
         polos_dapat = resolve_stock_polos_dapat_dijual(
             qty_polos=excel.get("qty_polos"),
             qty_polos_status=excel.get("qty_polos_status"),

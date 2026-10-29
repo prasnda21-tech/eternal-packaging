@@ -68,6 +68,10 @@ SOURCE_BLANK_COMMIT = (
     "print parent: max(0, ordered-print_completed) — never sum SERVICE/Add On"
 )
 SOURCE_POLOS_DAPAT = "qty_polos - blank_open_commitment (branch scope; fail-closed on WH view)"
+SOURCE_SISA_BELUM_CETAK = (
+    "print parent only: max(0, ordered-print_completed); "
+    "same completion evidence as blank print need — never subtract shipment again"
+)
 
 
 def open_so_commitment_qty(*, po_ordered: Any = 0, so_delivered: Any = 0) -> float:
@@ -229,6 +233,27 @@ def blank_need_for_physical_line(
         return _unknown(REASON_BLANK_PRINT_COMPLETION_UNPROVEN)
     completed = max(qty_num(print_completed_qty), 0.0)
     return _known(_as_pcs(max(0.0, ordered - completed)))
+
+
+def sisa_belum_cetak_for_print_line(
+    *,
+    ordered_qty: Any,
+    print_completed_qty: Any = None,
+    print_completion_proven: bool = False,
+) -> Dict[str, Any]:
+    """Remaining print demand on one physical print parent line.
+
+    Reuses print branch of ``blank_need_for_physical_line`` — same completion
+    evidence. Does **not** subtract shipped qty (shipment is independent via
+    tercetak_belum_kirim = qty_tercetak − cetak_sudah_dikirim).
+    """
+    return blank_need_for_physical_line(
+        ordered_qty=ordered_qty,
+        is_print=True,
+        print_completed_qty=print_completed_qty,
+        print_completion_proven=print_completion_proven,
+        delivered_qty=0,
+    )
 
 
 def aggregate_blank_open_commitment(
@@ -679,6 +704,24 @@ def apply_excel_fields_to_catalog_row(
         sources = dict(out.get("ssi_sources") or {})
         sources["blank_open_commitment"] = SOURCE_BLANK_COMMIT
         sources["stock_polos_dapat_dijual"] = SOURCE_POLOS_DAPAT
+        out["ssi_sources"] = sources
+
+    # Sisa Belum Cetak — same print completion walk; never subtract shipment.
+    if "sisa_belum_cetak" in excel or "sisa_belum_cetak_status" in excel:
+        sisa_q = excel.get("sisa_belum_cetak")
+        sisa_st = excel.get("sisa_belum_cetak_status") or (
+            STATUS_UNVERIFIED if sisa_q is None else STATUS_READY
+        )
+        sisa_rs = excel.get("sisa_belum_cetak_reason")
+        out["sisa_belum_cetak"] = sisa_q
+        out["sisa_belum_cetak_status"] = sisa_st
+        out["sisa_belum_cetak_reason"] = sisa_rs
+        out["sisa_belum_cetak_note"] = (
+            "Sisa Belum Cetak = max(0, ordered − selesai cetak induk) pada SO cetak aktif; "
+            "tidak mengurangi pengiriman lagi (tercetak belum kirim terpisah)."
+        )
+        sources = dict(out.get("ssi_sources") or {})
+        sources["sisa_belum_cetak"] = SOURCE_SISA_BELUM_CETAK
         out["ssi_sources"] = sources
     return out
 

@@ -111,6 +111,15 @@ const EXCEL_SSI_COLUMNS = [
     noteKey: "qty_polos_gudang_note",
   },
   {
+    key: "sisa_belum_cetak",
+    label: "Sisa Belum Cetak",
+    testId: "stock-sisa-belum-cetak",
+    note: "max(0, ordered − selesai cetak induk) SO cetak aktif — tidak kurangi kirim lagi",
+    statusKey: "sisa_belum_cetak_status",
+    reasonKey: "sisa_belum_cetak_reason",
+    noteKey: "sisa_belum_cetak_note",
+  },
+  {
     key: "tercetak_belum_kirim",
     label: "Barang Tercetak Belum Kirim",
     testId: "stock-tercetak-belum",
@@ -636,8 +645,8 @@ export default function StockSaatIni() {
 
   const physicalHeader = "Stock";
   // Owner Excel: Produk + 8 qty columns + unit/lokasi/update (+ expand).
-  // Compact Owner list: Produk | Stock | Stock Dapat Dijual | Qty Polos (row opens detail)
-  const tableColCount = 4;
+  // Compact Owner list: Produk | Stock | Stock Dapat Dijual | Qty Polos | Sisa Belum Cetak
+  const tableColCount = 5;
 
   const download = () => {
     const header = [
@@ -1135,6 +1144,13 @@ export default function StockSaatIni() {
                   <th className="col-fit num" data-testid="stock-polos-header" title="Stock − Tercetak Belum Kirim (PCS)">
                     Qty Polos
                   </th>
+                  <th
+                    className="col-fit num"
+                    data-testid="stock-sisa-belum-cetak-header"
+                    title="max(0, ordered − selesai cetak induk); tidak kurangi kirim lagi"
+                  >
+                    Sisa Belum Cetak
+                  </th>
                 </tr>
               </thead>
               <tbody data-testid="stock-tbody" data-search-state={tableView} data-refreshing={refreshing ? "true" : "false"}>
@@ -1161,6 +1177,7 @@ export default function StockSaatIni() {
                   const book = bookPhysicalDisplay(it, { warehouseId: selectedWhId });
                   const dapatCol = EXCEL_SSI_COLUMNS.find((c) => c.key === "stock_dapat_dijual");
                   const polosCol = EXCEL_SSI_COLUMNS.find((c) => c.key === "qty_polos");
+                  const sisaCol = EXCEL_SSI_COLUMNS.find((c) => c.key === "sisa_belum_cetak");
                   const dapatDisp = resolveDapatDijualDisplay(it, primary);
                   const dapatNeg = Number(dapatDisp.qty) < 0;
                   const rowClass = [
@@ -1211,6 +1228,7 @@ export default function StockSaatIni() {
                     </td>
                     {excelQtyCell(dapatCol, it, "stock_dapat_dijual", primary)}
                     {excelQtyCell(polosCol, it, "qty_polos", primary)}
+                    {excelQtyCell(sisaCol, it, "sisa_belum_cetak", primary)}
                   </tr>
                   );
                 })}
@@ -1299,6 +1317,24 @@ export default function StockSaatIni() {
                         title={polosDisp.title}
                       >
                         {fmtQty(polosDisp.qty)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Sisa Belum Cetak</span>
+                      <strong
+                        data-testid={`stock-sisa-belum-cetak-mobile-${it.master_item_id}`}
+                        data-condition-status={
+                          String(it?.sisa_belum_cetak_status || (it?.sisa_belum_cetak == null ? "UNVERIFIED" : "READY")).toUpperCase()
+                        }
+                        data-presentation-fallback={
+                          it?.sisa_belum_cetak == null
+                          || String(it?.sisa_belum_cetak_status || "").toUpperCase() === "UNVERIFIED"
+                            ? "true"
+                            : undefined
+                        }
+                        title={it?.sisa_belum_cetak_note || undefined}
+                      >
+                        {fmtQty(it?.sisa_belum_cetak == null ? 0 : it.sisa_belum_cetak)}
                       </strong>
                     </div>
                   </div>
