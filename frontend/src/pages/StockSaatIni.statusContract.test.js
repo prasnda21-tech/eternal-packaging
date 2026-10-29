@@ -78,7 +78,7 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     container.remove();
   });
 
-  test("Belum lengkap → Dapat Dijual numeric Indikatif; Polos unverified stays badge", async () => {
+  test("incomplete physical → Stock/Polos/ATP plain numbers; no status labels in cells", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "warehouse_standalone",
       r2_authority_active: false,
@@ -104,6 +104,7 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
           qty_siap_jual_status: "READY",
           qty_polos: null,
           qty_polos_status: "UNVERIFIED",
+          qty_polos_reason: "WIP_COMPOSITION_UNPROVEN",
           warehouse_balances: [
             { warehouse_id: "wh-a", warehouse_code: "MAIN", physical_qty: null, balance_present: false },
             { warehouse_id: "wh-b", warehouse_code: "B", physical_qty: 0, balance_present: true },
@@ -113,17 +114,22 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     });
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
-    expect(container.querySelector('[data-testid="stock-physical-m-partial"]')?.textContent)
-      .toMatch(/Belum lengkap/);
+    const physical = container.querySelector('[data-testid="stock-physical-m-partial"]');
+    expect(physical?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(physical?.textContent).not.toMatch(/Belum lengkap|Belum terverifikasi|Indikatif|tampilan/i);
     const dapat = container.querySelector('[data-testid="stock-siap-jual-m-partial"]');
     expect(dapat?.getAttribute("data-condition-status")).toBe("INDICATIVE");
     expect(dapat?.textContent).toMatch(/8/);
-    expect(dapat?.textContent).toMatch(/Indikatif/i);
-    expect(container.querySelector('[data-testid="stock-polos-m-partial"]')?.textContent)
-      .toMatch(/Belum terverifikasi/i);
+    expect(dapat?.textContent).not.toMatch(/Indikatif|Belum|tampilan/i);
+    const polos = container.querySelector('[data-testid="stock-polos-m-partial"]');
+    expect(polos?.getAttribute("data-condition-status")).toBe("UNVERIFIED");
+    expect(polos?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(polos?.getAttribute("data-unverified-reason")).toBe("WIP_COMPOSITION_UNPROVEN");
+    expect(polos?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(polos?.textContent).not.toMatch(/Belum terverifikasi|tampilan/i);
   });
 
-  test("complete baseline negative SO → Dapat without Indikatif; Polos Indikatif", async () => {
+  test("complete baseline negative SO → Dapat/Polos numbers only; detail keeps presentation contract", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "warehouse_standalone",
       can_adjust_physical_stock: true,
@@ -147,6 +153,8 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
           qty_siap_jual_status: "READY",
           qty_polos: 2000,
           qty_polos_status: "READY",
+          sisa_belum_cetak: 500,
+          sisa_belum_cetak_status: "READY",
           warehouse_balances: [
             {
               warehouse_id: "wh-a",
@@ -166,9 +174,17 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     expect(dapat?.textContent).toMatch(/22/);
     expect(dapat?.textContent).not.toMatch(/Indikatif/i);
     const polos = container.querySelector('[data-testid="stock-polos-m-ok"]');
-    expect(polos?.getAttribute("data-condition-status")).toBe("INDICATIVE");
+    expect(polos?.getAttribute("data-condition-status")).toBe("READY");
+    expect(polos?.getAttribute("data-presentation-fallback")).toBeNull();
     expect(polos?.textContent).toMatch(/2/);
-    expect(polos?.textContent).toMatch(/Indikatif/i);
+    expect(polos?.textContent).not.toMatch(/Indikatif/i);
+    expect(polos?.textContent).not.toMatch(/Belum terverifikasi/i);
+    expect(container.querySelector('[data-testid="stock-sisa-belum-cetak-header"]')?.textContent)
+      .toMatch(/Sisa Belum Cetak/);
+    const sisa = container.querySelector('[data-testid="stock-sisa-belum-cetak-m-ok"]');
+    expect(sisa?.getAttribute("data-condition-status")).toBe("READY");
+    expect(sisa?.getAttribute("data-presentation-fallback")).toBeNull();
+    expect(sisa?.textContent).toMatch(/500/);
 
     await act(async () => {
       container.querySelector('[data-testid="stock-row-m-ok"]').click();
@@ -183,7 +199,11 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     expect(container.querySelector('[data-testid="ssi-detail-stock_dapat_dijual"]')?.textContent)
       .not.toMatch(/PCS · terverifikasi/);
     expect(container.querySelector('[data-testid="ssi-detail-qty_polos"]')?.textContent)
-      .toMatch(/Indikatif/i);
+      .toMatch(/2/);
+    expect(container.querySelector('[data-testid="ssi-detail-qty_polos"]')?.textContent)
+      .not.toMatch(/Indikatif/i);
+    expect(container.querySelector('[data-testid="ssi-detail-sisa_belum_cetak"]')?.textContent)
+      .toMatch(/500/);
     await act(async () => {
       container.querySelector('[data-testid="ssi-detail-close"]').click();
     });
@@ -202,6 +222,63 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     await flush();
     expect(container.querySelector('[data-testid="ssi-detail-drawer"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
+  });
+
+  test("null ATP/Polos show plain 0 in UI; CSV export keeps null empty", async () => {
+    const { exportQtyCellValue } = require("../lib/ssiStatusDisplay");
+    expect(exportQtyCellValue({ qty_polos: null, qty_polos_status: "UNVERIFIED" }, "qty_polos")).toBe("");
+    expect(exportQtyCellValue({ stock_dapat_dijual: null }, "stock_dapat_dijual")).toBe("");
+    expect(exportQtyCellValue({ qty_polos: 0 }, "qty_polos")).toBe(0);
+    expect(exportQtyCellValue({ sisa_belum_cetak: null }, "sisa_belum_cetak")).toBe("");
+    expect(exportQtyCellValue({ sisa_belum_cetak: 500 }, "sisa_belum_cetak")).toBe(500);
+
+    api.physicalStockCatalog.mockResolvedValue({
+      stock_read_mode: "warehouse_standalone",
+      can_adjust_physical_stock: true,
+      can_switch_branches: true,
+      effective_branch_id: BRANCH.id,
+      effective_branch_code: "YGY",
+      master_item_count: 1,
+      warehouse_count: 1,
+      total: 1,
+      page: 1,
+      page_count: 1,
+      items: [{
+        master_item_id: "m-atp-null",
+        item_code: "ATP0",
+        item_name: "ATP Null",
+        physical_qty: 10,
+        baseline_status: "reconciled",
+        stock_dapat_dijual: null,
+        qty_siap_jual_status: "UNVERIFIED",
+        qty_polos: null,
+        qty_polos_status: "UNVERIFIED",
+        qty_polos_reason: "WIP_COMPOSITION_UNPROVEN",
+        sisa_belum_cetak: null,
+        sisa_belum_cetak_status: "UNVERIFIED",
+        sisa_belum_cetak_reason: "BLANK_PRINT_COMPLETION_UNPROVEN",
+        warehouse_balances: [{
+          warehouse_id: "wh-a",
+          warehouse_code: "MAIN",
+          physical_qty: 10,
+          balance_present: true,
+          baseline_status: "reconciled",
+        }],
+      }],
+    });
+    await act(async () => { root.render(<StockSaatIni />); });
+    await flush();
+    const dapat = container.querySelector('[data-testid="stock-siap-jual-m-atp-null"]');
+    expect(dapat?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(dapat?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(dapat?.textContent).not.toMatch(/tampilan|Belum|Indikatif/i);
+    const polos = container.querySelector('[data-testid="stock-polos-m-atp-null"]');
+    expect(polos?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(polos?.textContent?.replace(/\s/g, "")).toBe("0");
+    const sisa = container.querySelector('[data-testid="stock-sisa-belum-cetak-m-atp-null"]');
+    expect(sisa?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(sisa?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(container.querySelector('[data-testid="stock-presentation-zero-legend"]')).toBeNull();
   });
 
   test("Enter key on row opens detail; adjust control does not", async () => {

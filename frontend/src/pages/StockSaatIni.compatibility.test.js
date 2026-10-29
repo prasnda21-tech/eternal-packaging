@@ -161,7 +161,7 @@ describe("Stock Saat Ini compatibility mode", () => {
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock");
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.getAttribute("data-physical-scope")).toBe("BRANCH");
     expect(container.querySelector('[data-testid="stock-warehouse-select"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/Excel|cabang|Belum saldo|Belum terverifikasi|defisit/i);
+    expect(container.querySelector('[data-testid="stock-book-vs-count-note"]')?.textContent).toMatch(/Excel|cabang/i);
     expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toMatch(/stock-opname/);
     expect(container.textContent).not.toMatch(/Preview.*R2 OFF|R2 OFF/i);
   });

@@ -77,7 +77,6 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Satuan Dasar/);
     expect(stock).not.toMatch(/data-testid="stock-unit-header"/);
     expect(stock).not.toMatch(/stock-expand-m-/);
-    expect(stock).toMatch(/stock-status-badge/);
     expect(stock).toMatch(/data-baseline-label/);
     expect(stock).toMatch(/EXCEL_SSI_COLUMNS/);
     expect(stock).toMatch(/label: "Saldo Awal"/);
@@ -86,16 +85,26 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/label: "Stock Dapat Dijual"/);
     expect(stock).toMatch(/label: "Qty Tercetak"/);
     expect(stock).toMatch(/label: "Qty Polos"/);
+    expect(stock).toMatch(/label: "Sisa Belum Cetak"/);
+    expect(stock).toMatch(/sisa_belum_cetak/);
     expect(stock).toMatch(/label: "Barang Tercetak Belum Kirim"/);
     expect(stock).toMatch(/label: "Barang Cetak Sudah Dikirim"/);
     expect(stock).toMatch(/stock-physical-header/);
     expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
     expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
+    expect(stock).toMatch(/stock-sisa-belum-cetak-header|testId: "stock-sisa-belum-cetak"/);
+    expect(detail).toMatch(/sisa_belum_cetak/);
+    expect(detail).toMatch(/Sisa Belum Cetak/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
-    expect(stock).toMatch(/Belum terverifikasi/);
-    expect(stock).toMatch(/Belum saldo/);
+    // Simplified numeric cells: presentation fallback attrs; no tampilan / Belum labels in qty path.
+    expect(stock).toMatch(/resolvePhysicalDisplay/);
+    expect(stock).toMatch(/data-presentation-fallback/);
+    expect(stock).toMatch(/exportQtyCellValue/);
+    expect(stock).not.toMatch(/0 tampilan/);
     expect(stock).not.toMatch(/Belum tersedia/);
-    expect(detail).toMatch(/Belum terverifikasi/);
+    expect(detail).toMatch(/resolvePhysicalDisplay/);
+    expect(detail).toMatch(/data-presentation-fallback/);
+    expect(detail).not.toMatch(/0 tampilan/);
     expect(detail).toMatch(/centered-modal/);
     expect(detail).toMatch(/ssi-detail-modal-panel/);
     expect(detail).toMatch(/ssi-detail-backdrop/);
@@ -152,13 +161,17 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/qty_polos/);
     expect(stock).toMatch(/tercetak_belum_kirim/);
     expect(stock).toMatch(/cetak_sudah_dikirim/);
-    // Reason codes live in shared status contract helper (P0-B1).
+    // Reason codes live in shared status contract helper (P0-B1 + Jalur B Option A).
     expect(ssiStatus).toMatch(/NO_OPERATOR_EVIDENCE/);
     expect(ssiStatus).toMatch(/INDICATIVE/);
     expect(ssiStatus).toMatch(/BASELINE_INCOMPLETE/);
+    expect(ssiStatus).toMatch(/WIP_COMPOSITION_UNPROVEN/);
+    expect(ssiStatus).toMatch(/presentation_zero/);
+    expect(ssiStatus).toMatch(/exportQtyCellValue/);
+    expect(ssiStatus).toMatch(/resolvePhysicalDisplay/);
     expect(stock).toMatch(/resolveDapatDijualDisplay/);
     expect(stock).toMatch(/resolvePolosDisplay/);
-    expect(stock).toMatch(/Indikatif/);
+    expect(stock).toMatch(/presentationFallback|data-presentation-fallback/);
     expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 

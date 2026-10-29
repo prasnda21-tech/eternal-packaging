@@ -1,13 +1,12 @@
 /**
- * SSI P0-B1 UI-only display-status contract.
+ * SSI UI-only display-status contract (Jalur B simplified numeric cells).
  *
  * Uses existing catalog fields + stockPhysicalPrimaryDisplay incompleteness.
- * Does not change API payloads or Excel formulas.
+ * Does not change API payloads, Excel formulas, ATP math, DB, or valuation.
  *
- * Precedence: UNVERIFIED > INDICATIVE > READY (display verified).
- * - Stock Dapat Dijual: Indikatif when Stock cell is Belum lengkap / Belum saldo.
- * - Qty Polos: never shown as fully verified (no WIP/rusak/plain coverage in API);
- *   Belum terverifikasi when qty null / UNVERIFIED; Indikatif when a number exists.
+ * All quantity cells: plain Indonesian-formatted numbers.
+ * Null/unknown qty → presentation 0 in UI only (never written to export/DB/math).
+ * Valid negatives/positives are never replaced.
  */
 
 export const SSI_STATUS = {
@@ -16,15 +15,24 @@ export const SSI_STATUS = {
   READY: "READY",
 };
 
+/** @deprecated kept for import stability; not shown in UI cells. */
+export const SSI_PRESENTATION_ZERO_HINT = "";
+
 export const SSI_REASON_LABEL = {
   PRINT_DELIVERY_UNPROVEN: "Pengiriman cetak belum terbukti dari SJ print",
   COMPLETION_UNPROVEN: "Konfirmasi selesai cetak induk belum terverifikasi (multiwarna/Add On)",
   NO_OPERATOR_EVIDENCE: "Belum ada konfirmasi cetak selesai operator yang valid",
   DEPENDENT_UNKNOWN: "Nilai bergantung kolom yang belum terverifikasi",
   BASELINE_INCOMPLETE: "Stok fisik belum lengkap / belum direkonsiliasi",
+  WIP_COMPOSITION_UNPROVEN:
+    "Komposisi polos/WIP belum terbukti (print ordered > completed)",
   SIMPLE_POLOS_NO_WIP_COVERAGE:
     "Formula sederhana (Stock − Tercetak Belum Kirim); WIP/rusak/pengiriman polos terpisah belum tercakup",
   NO_BALANCE: "Belum ada saldo fisik",
+  BLANK_PRINT_COMPLETION_UNPROVEN:
+    "Kebutuhan blank belum terbukti — selesai cetak induk belum terverifikasi",
+  BRANCH_DEMAND_WAREHOUSE_SCOPE:
+    "Komitmen blank bersifat cabang; tidak dialokasikan ke satu gudang",
 };
 
 /** @param {string|undefined|null} status */
@@ -39,12 +47,11 @@ export function normalizeSsiStatus(status, { qty } = {}) {
 }
 
 /**
- * Physical baseline incomplete when the Stock cell hides the number
- * (Belum saldo / Belum lengkap). Prefer physicalPrimary from
- * stockPhysicalPrimaryDisplay; fall back to warehouse_balances / baseline_status.
+ * Physical baseline incomplete when Stock has no proven numeric primary.
+ * Prefer physicalPrimary from stockPhysicalPrimaryDisplay; fall back to balances.
  */
 export function isPhysicalBaselineIncomplete(item, physicalPrimary) {
-  // G1: proven no-activity operational zeros are complete (numeric 0), not Belum.
+  // G1: proven no-activity operational zeros are complete (numeric 0).
   if (item?.operational_qty_proven || item?.no_relevant_activity) return false;
   if (physicalPrimary && physicalPrimary.present === false) return true;
   if (item && String(item.baseline_status || "") === "unreconciled") return true;
@@ -65,7 +72,29 @@ export function isPhysicalBaselineIncomplete(item, physicalPrimary) {
 }
 
 /**
- * Resolve Stock Dapat Dijual display from existing API numerics + FE completeness.
+ * Physical Stock cell: proven qty as-is (incl. negative); missing → presentation 0.
+ */
+export function resolvePhysicalDisplay(physicalPrimary) {
+  if (physicalPrimary?.present) {
+    return {
+      mode: "qty",
+      qty: physicalPrimary.qty,
+      presentationFallback: false,
+      statusText: physicalPrimary.text || null,
+    };
+  }
+  return {
+    mode: "presentation_zero",
+    qty: 0,
+    presentationFallback: true,
+    statusText: physicalPrimary?.text || null,
+  };
+}
+
+/**
+ * Resolve Stock Dapat Dijual display.
+ * Numeric ATP (incl. negative) always shown as that number.
+ * Null/unproven ATP → presentation 0 only (not sellable availability).
  */
 export function resolveDapatDijualDisplay(item, physicalPrimary) {
   const qty = item?.stock_dapat_dijual ?? item?.qty_siap_jual;
@@ -76,30 +105,31 @@ export function resolveDapatDijualDisplay(item, physicalPrimary) {
 
   if (qty == null) {
     return {
-      mode: "unverified",
-      qty: null,
+      mode: "presentation_zero",
+      qty: 0,
       status: SSI_STATUS.UNVERIFIED,
       reason: reasonCode || null,
-      label: "Belum terverifikasi",
-      title: note || "Stock Dapat Dijual belum terverifikasi",
+      label: null,
+      presentationFallback: true,
+      title: note || undefined,
     };
   }
 
-  // Keep negatives; qualify when Stock baseline incomplete or API says unavailable.
+  const titleParts = [
+    incomplete ? (SSI_REASON_LABEL.BASELINE_INCOMPLETE) : null,
+    SSI_REASON_LABEL[reasonCode] || reasonCode || null,
+    note || null,
+  ].filter(Boolean);
+
   if (incomplete || apiStatus === SSI_STATUS.UNVERIFIED) {
-    const title = [
-      "Indikatif — stok fisik belum lengkap",
-      SSI_REASON_LABEL[reasonCode] || reasonCode,
-      note,
-      "Komitmen SO boleh negatif",
-    ].filter(Boolean).join(" — ");
     return {
-      mode: "indicative",
+      mode: "qty",
       qty,
       status: SSI_STATUS.INDICATIVE,
       reason: reasonCode || "BASELINE_INCOMPLETE",
-      label: "Indikatif",
-      title,
+      label: null,
+      presentationFallback: false,
+      title: titleParts.join(" — ") || undefined,
     };
   }
 
@@ -109,12 +139,15 @@ export function resolveDapatDijualDisplay(item, physicalPrimary) {
     status: SSI_STATUS.READY,
     reason: null,
     label: null,
-    title: note || "Stock − (PO aktif − qty sudah dikirim); boleh negatif",
+    presentationFallback: false,
+    title: titleParts.join(" — ") || undefined,
   };
 }
 
 /**
- * Resolve Qty Polos display — never fully verified without WIP coverage evidence.
+ * Resolve Qty Polos display.
+ * - Known numeric (incl. 0) → exact qty.
+ * - null → presentation 0 only; API/DB semantics unchanged.
  */
 export function resolvePolosDisplay(item, physicalPrimary) {
   const qty = item?.qty_polos ?? item?.qty_polos_gudang;
@@ -128,34 +161,41 @@ export function resolvePolosDisplay(item, physicalPrimary) {
   const note = String(item?.qty_polos_gudang_note || "").trim();
   const incomplete = isPhysicalBaselineIncomplete(item, physicalPrimary);
 
-  if (qty == null || apiStatus === SSI_STATUS.UNVERIFIED) {
+  if (qty == null) {
     return {
-      mode: "unverified",
-      qty: null,
+      mode: "presentation_zero",
+      qty: 0,
       status: SSI_STATUS.UNVERIFIED,
       reason: reasonCode || "DEPENDENT_UNKNOWN",
-      label: "Belum terverifikasi",
-      title: [
-        note || "Belum terverifikasi",
-        SSI_REASON_LABEL[reasonCode] || reasonCode,
-      ].filter(Boolean).join(" — "),
+      label: null,
+      presentationFallback: true,
+      title: [SSI_REASON_LABEL[reasonCode] || reasonCode, note].filter(Boolean).join(" — ") || undefined,
     };
   }
 
-  // Numeric exists (often API READY when print/SJ ready) — still Indikatif only.
   const reason = incomplete
     ? "BASELINE_INCOMPLETE"
     : (reasonCode || "SIMPLE_POLOS_NO_WIP_COVERAGE");
+  const status = apiStatus === SSI_STATUS.READY
+    ? SSI_STATUS.READY
+    : (apiStatus === SSI_STATUS.UNVERIFIED ? SSI_STATUS.UNVERIFIED : SSI_STATUS.INDICATIVE);
   return {
-    mode: "indicative",
+    mode: "qty",
     qty,
-    status: SSI_STATUS.INDICATIVE,
+    status,
     reason,
-    label: "Indikatif",
-    title: [
-      "Indikatif",
-      SSI_REASON_LABEL[reason] || reason,
-      note,
-    ].filter(Boolean).join(" — "),
+    label: null,
+    presentationFallback: false,
+    title: [SSI_REASON_LABEL[reason] || reason, note].filter(Boolean).join(" — ") || undefined,
   };
+}
+
+/**
+ * CSV/export helper: never treat presentation fallback as a confirmed quantity.
+ * Returns "" when backend qty is null/unknown; otherwise the raw numeric.
+ */
+export function exportQtyCellValue(row, key) {
+  const v = row?.[key];
+  if (v == null || v === "") return "";
+  return v;
 }
