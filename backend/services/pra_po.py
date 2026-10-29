@@ -850,6 +850,126 @@ async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
     return new_order
 
 
+def _normalized_name_absent(doc: dict) -> bool:
+    if "normalized_name" not in doc or doc.get("normalized_name") is None:
+        return True
+    return not str(doc.get("normalized_name") or "").strip()
+
+
+async def _find_master_by_customer_name(db, name: str) -> Optional[dict]:
+    """Find one master by normalized_name, then by a legacy row that lacks that field.
+
+    Does not write normalized_name onto the legacy row. Several legacy rows with
+    the same normalized display name are refused instead of picking one.
+    """
+    from services.sales_customers import (
+        COLLECTION as CUSTOMERS,
+        find_customer_by_normalized_name,
+        normalize_customer_name,
+    )
+
+    existing = await find_customer_by_normalized_name(db, name)
+    if existing and str(existing.get("id") or "").strip():
+        return existing
+    norm = normalize_customer_name(name)
+    if not norm:
+        return None
+    rows = await db[CUSTOMERS].find(
+        {"$or": [
+            {"normalized_name": {"$exists": False}},
+            {"normalized_name": None},
+            {"normalized_name": ""},
+        ]},
+        {"_id": 0, "id": 1, "name": 1, "normalized_name": 1},
+    ).to_list(5000)
+    if len(rows) >= 5000:
+        raise HTTPException(
+            409,
+            "Pencarian Master Customer lama tidak lengkap. Pilih pelanggan dari katalog.",
+        )
+    matches = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or not _normalized_name_absent(row):
+            continue
+        if normalize_customer_name(row.get("name")) != norm:
+            continue
+        cid = str(row.get("id") or "").strip()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        matches.append(row)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise HTTPException(
+            409,
+            "Beberapa Master Customer lama memiliki nama yang sama. Pilih pelanggan dari katalog.",
+        )
+    return None
+
+
+async def _resolve_customer_for_verify(db, pra: dict, user: dict) -> str:
+    """Resolve the master used by this verification. Does not edit an existing profile.
+
+    A stored customer_id must already exist. A missing id reuses the one master
+    with the same normalized_name, including a legacy row that has no
+    normalized_name field, or inserts one row from the Pra-PO snapshot.
+    A unique-name race returns the winning row. The master document is not updated.
+    """
+    from services.sales_customers import (
+        COLLECTION as CUSTOMERS,
+        normalize_customer_name,
+        now_iso as customer_now_iso,
+    )
+
+    stored_id = str(pra.get("customer_id") or "").strip()
+    if stored_id:
+        master = await db[CUSTOMERS].find_one({"id": stored_id}, {"_id": 0, "id": 1})
+        if not master:
+            raise HTTPException(400, "Customer master tidak valid.")
+        return stored_id
+
+    name = str(pra.get("customer") or "").strip()
+    if not name:
+        raise HTTPException(400, "Customer wajib diisi.")
+    existing = await _find_master_by_customer_name(db, name)
+    if existing and str(existing.get("id") or "").strip():
+        return str(existing["id"])
+
+    phone = str(pra.get("customer_phone") or "").strip()
+    address = str(pra.get("address") or "").strip()
+    if not phone:
+        raise HTTPException(400, "Pelanggan baru: No. HP / WhatsApp wajib diisi.")
+    if not address:
+        raise HTTPException(400, "Pelanggan baru: Alamat lengkap pengiriman wajib diisi.")
+
+    cid = str(uuid.uuid4())
+    now = customer_now_iso()
+    doc = {
+        "id": cid,
+        "name": name,
+        "normalized_name": normalize_customer_name(name),
+        "phone": phone,
+        "address": address,
+        "pic": str(pra.get("customer_pic") or "").strip(),
+        "email": str(pra.get("customer_email") or "").strip(),
+        "city": str(pra.get("customer_city") or "").strip(),
+        "notes": "",
+        "created_at": now,
+        "updated_at": now,
+        "created_by": str((user or {}).get("email") or "").strip() or None,
+    }
+    try:
+        await db[CUSTOMERS].insert_one(doc)
+    except DuplicateKeyError:
+        winner = await _find_master_by_customer_name(db, name)
+        if winner and str(winner.get("id") or "").strip():
+            return str(winner["id"])
+        raise
+    return cid
+
+
 async def _link_existing_order_if_any(db, pra: dict, user: dict) -> Optional[dict]:
     """If an SO already exists for this Pra PO, finalize Pra PO link and return it."""
     pra_po_id = str(pra.get("id") or "")
@@ -862,19 +982,23 @@ async def _link_existing_order_if_any(db, pra: dict, user: dict) -> Optional[dic
         return None
     now = now_iso()
     actor = actor_snapshot(user)
+    link_set = {
+        "status": STATUS_VERIFIED,
+        "sales_order_id": existing["id"],
+        "sales_order_po_number": existing.get("po_number"),
+        "verified_at": pra.get("verified_at") or now,
+        "verified_by": pra.get("verified_by") or actor,
+        "updated_at": now,
+        "return_reason": None,
+        "verify_prior_status": None,
+        VERSION_FIELD: int(pra.get(VERSION_FIELD) or 1) + 1,
+    }
+    linked_customer_id = str(existing.get("customer_id") or pra.get("customer_id") or "").strip()
+    if linked_customer_id:
+        link_set["customer_id"] = linked_customer_id
     updated = await db[COLLECTION].find_one_and_update(
         {"id": pra_po_id},
-        {"$set": {
-            "status": STATUS_VERIFIED,
-            "sales_order_id": existing["id"],
-            "sales_order_po_number": existing.get("po_number"),
-            "verified_at": pra.get("verified_at") or now,
-            "verified_by": pra.get("verified_by") or actor,
-            "updated_at": now,
-            "return_reason": None,
-            "verify_prior_status": None,
-            VERSION_FIELD: int(pra.get(VERSION_FIELD) or 1) + 1,
-        }},
+        {"$set": link_set},
         return_document=ReturnDocument.AFTER,
         projection={"_id": 0},
     )
@@ -933,6 +1057,13 @@ async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
             raise HTTPException(409, "Verifikasi sedang diproses — coba lagi.")
 
         try:
+            resolved_id = await _resolve_customer_for_verify(db, claimed, user)
+            if str(claimed.get("customer_id") or "").strip() != resolved_id:
+                await db[COLLECTION].update_one(
+                    {"id": pra_po_id, "status": STATUS_VERIFYING, "sales_order_id": None},
+                    {"$set": {"customer_id": resolved_id, "updated_at": now_iso()}},
+                )
+                claimed = {**claimed, "customer_id": resolved_id}
             order = await _materialize_sales_order(db, claimed, user)
         except DuplicateKeyError:
             # Concurrent insert hit unique pra_po_id — adopt the winner's SO.
@@ -969,23 +1100,27 @@ async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
             raise
 
         actor = actor_snapshot(user)
+        verified_customer_id = str(order.get("customer_id") or claimed.get("customer_id") or "").strip()
+        verified_set = {
+            "status": STATUS_VERIFIED,
+            "sales_order_id": order["id"],
+            "sales_order_po_number": order.get("po_number"),
+            "verified_at": now_iso(),
+            "verified_by": actor,
+            "updated_at": now_iso(),
+            "return_reason": None,
+            "verify_prior_status": None,
+            VERSION_FIELD: int(claimed.get(VERSION_FIELD) or 1) + 1,
+        }
+        if verified_customer_id:
+            verified_set["customer_id"] = verified_customer_id
         updated = await db[COLLECTION].find_one_and_update(
             {
                 "id": pra_po_id,
                 "status": STATUS_VERIFYING,
                 "sales_order_id": None,
             },
-            {"$set": {
-                "status": STATUS_VERIFIED,
-                "sales_order_id": order["id"],
-                "sales_order_po_number": order.get("po_number"),
-                "verified_at": now_iso(),
-                "verified_by": actor,
-                "updated_at": now_iso(),
-                "return_reason": None,
-                "verify_prior_status": None,
-                VERSION_FIELD: int(claimed.get(VERSION_FIELD) or 1) + 1,
-            }},
+            {"$set": verified_set},
             return_document=ReturnDocument.AFTER,
             projection={"_id": 0},
         )
@@ -1004,18 +1139,21 @@ async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
                     })
                 return recovered
             # Force-link our SO (SO exists, Pra PO must reflect it).
+            forced_set = {
+                "status": STATUS_VERIFIED,
+                "sales_order_id": order["id"],
+                "sales_order_po_number": order.get("po_number"),
+                "verified_at": now_iso(),
+                "verified_by": actor,
+                "updated_at": now_iso(),
+                "return_reason": None,
+                "verify_prior_status": None,
+            }
+            if verified_customer_id:
+                forced_set["customer_id"] = verified_customer_id
             forced = await db[COLLECTION].find_one_and_update(
                 {"id": pra_po_id},
-                {"$set": {
-                    "status": STATUS_VERIFIED,
-                    "sales_order_id": order["id"],
-                    "sales_order_po_number": order.get("po_number"),
-                    "verified_at": now_iso(),
-                    "verified_by": actor,
-                    "updated_at": now_iso(),
-                    "return_reason": None,
-                    "verify_prior_status": None,
-                }},
+                {"$set": forced_set},
                 return_document=ReturnDocument.AFTER,
                 projection={"_id": 0},
             )

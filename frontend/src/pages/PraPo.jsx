@@ -11,7 +11,6 @@ import {
   Search,
   Trash2,
   Truck,
-  UserPlus,
   X,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
@@ -41,6 +40,10 @@ import {
   praPoSalesOptionLabel,
   isPraPoStoredSalesOption,
   applyPraPoSalesChoice,
+  applyPraPoExistingCustomer,
+  applyPraPoNewCustomer,
+  emptyPraPoNewCustomerDraft,
+  praPoNewCustomerDraftFromForm,
 } from "../lib/praPoForm";
 import "./pesananPenjualan.css";
 import "./ux90SalesCreate.css";
@@ -113,6 +116,9 @@ export default function PraPoPage() {
     all: 0, draft: 0, queue: 0, returned: 0, verified: 0,
   });
   const [fieldError, setFieldError] = useState("");
+  const [newCustomerOpen, setNewCustomerOpen] = useState(false);
+  const [newCustomerDraft, setNewCustomerDraft] = useState(emptyPraPoNewCustomerDraft);
+  const [newCustomerError, setNewCustomerError] = useState("");
 
   const uid = String(user?.id || user?.user_id || "");
 
@@ -249,11 +255,30 @@ export default function PraPoPage() {
   const sellingTotal = orderSellingTotal(form.line_items);
 
   const startNewCustomer = () => {
-    handleCustomerClear();
-    window.setTimeout(() => {
-      const input = document.querySelector('[data-testid="pra-po-customer"]');
-      if (input && typeof input.focus === "function") input.focus();
-    }, 0);
+    setNewCustomerDraft(praPoNewCustomerDraftFromForm(form));
+    setNewCustomerError("");
+    setNewCustomerOpen(true);
+  };
+
+  const closeNewCustomer = () => {
+    setNewCustomerOpen(false);
+    setNewCustomerError("");
+  };
+
+  const setNewCustomerField = (key, value) => {
+    setNewCustomerDraft((prev) => ({ ...prev, [key]: value }));
+    setNewCustomerError("");
+  };
+
+  const confirmNewCustomer = () => {
+    const applied = applyPraPoNewCustomer(form, newCustomerDraft);
+    if (applied.error) {
+      setNewCustomerError(applied.error);
+      return;
+    }
+    setForm(applied.form);
+    setFieldError("");
+    setNewCustomerOpen(false);
   };
 
   const openCreate = () => {
@@ -282,14 +307,9 @@ export default function PraPoPage() {
   };
 
   const handleCustomerSelect = (customer) => {
-    if (!customer) return;
-    setForm((prev) => ({
-      ...prev,
-      customer: customer.name || "",
-      customer_id: customer.id || null,
-      customer_phone: customer.phone || prev.customer_phone || "",
-      address: customer.address || prev.address || "",
-    }));
+    if (!customer?.id) return;
+    setForm((prev) => applyPraPoExistingCustomer(prev, customer));
+    setFieldError("");
   };
 
   const handleCustomerTextChange = (text) => {
@@ -307,6 +327,9 @@ export default function PraPoPage() {
       customer_id: null,
       customer_phone: "",
       address: "",
+      customer_pic: "",
+      customer_email: "",
+      customer_city: "",
     }));
   };
 
@@ -564,7 +587,7 @@ export default function PraPoPage() {
                               disabled={busy}
                               data-testid="pra-po-new-customer"
                             >
-                              <UserPlus size={14} aria-hidden="true" /> Pelanggan Baru
+                              + Pelanggan Baru
                             </button>
                           </>
                         ) : (
@@ -598,8 +621,13 @@ export default function PraPoPage() {
                   >
                     <div className="pra-po-customer-card-main">
                       <strong data-testid="pra-po-customer-card-name">{form.customer}</strong>
-                      {form.customer_phone ? (
-                        <span data-testid="pra-po-customer-card-phone">{form.customer_phone}</span>
+                      {form.customer_phone || form.customer_city ? (
+                        <span data-testid="pra-po-customer-card-phone">
+                          {[form.customer_phone, form.customer_city].filter(Boolean).join(" · ")}
+                        </span>
+                      ) : null}
+                      {form.address ? (
+                        <span data-testid="pra-po-customer-card-address">{form.address}</span>
                       ) : null}
                     </div>
                     {form.customer_id ? (
@@ -608,7 +636,7 @@ export default function PraPoPage() {
                       </span>
                     ) : (
                       <span className="pra-po-customer-pill is-new" data-testid="pra-po-badge-customer-new">
-                        Pelanggan Baru — isi HP &amp; alamat di Pengiriman
+                        Pelanggan Baru
                       </span>
                     )}
                   </div>
@@ -1227,6 +1255,96 @@ export default function PraPoPage() {
       </div>
       {canViewAll ? <span hidden data-testid="pra-po-queue" /> : null}
       <span hidden>{NAV_KEYS.praPo}</span>
+      {newCustomerOpen ? (
+        <div
+          className="modal pra-po-new-customer-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pra-po-new-customer-title"
+          data-testid="pra-po-new-customer-modal"
+          onClick={closeNewCustomer}
+        >
+          <div className="modal-inner pra-po-new-customer-inner" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h3 id="pra-po-new-customer-title">Pelanggan Baru</h3>
+              <button type="button" className="ghost sm" onClick={closeNewCustomer} aria-label="Tutup" data-testid="pra-po-new-customer-close">
+                <X size={16} />
+              </button>
+            </div>
+            <form
+              className="pra-po-new-customer-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                confirmNewCustomer();
+              }}
+            >
+              <PraField label="Nama pelanggan" required error={/Nama pelanggan/i.test(newCustomerError)}>
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.name}
+                  onChange={(event) => setNewCustomerField("name", event.target.value)}
+                  data-testid="pra-po-new-customer-name"
+                  autoFocus
+                />
+              </PraField>
+              <PraField label="HP / WhatsApp" required error={/HP|WhatsApp/i.test(newCustomerError)}>
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.phone}
+                  onChange={(event) => setNewCustomerField("phone", event.target.value)}
+                  data-testid="pra-po-new-customer-phone"
+                />
+              </PraField>
+              <PraField label="Alamat lengkap" required error={/Alamat/i.test(newCustomerError)}>
+                <textarea
+                  className="so-line-input"
+                  rows={3}
+                  value={newCustomerDraft.address}
+                  onChange={(event) => setNewCustomerField("address", event.target.value)}
+                  data-testid="pra-po-new-customer-address"
+                />
+              </PraField>
+              <PraField label="PIC">
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.pic}
+                  onChange={(event) => setNewCustomerField("pic", event.target.value)}
+                  data-testid="pra-po-new-customer-pic"
+                />
+              </PraField>
+              <PraField label="Email">
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.email}
+                  onChange={(event) => setNewCustomerField("email", event.target.value)}
+                  data-testid="pra-po-new-customer-email"
+                />
+              </PraField>
+              <PraField label="Kota">
+                <input
+                  className="so-line-input"
+                  value={newCustomerDraft.city}
+                  onChange={(event) => setNewCustomerField("city", event.target.value)}
+                  data-testid="pra-po-new-customer-city"
+                />
+              </PraField>
+              {newCustomerError ? (
+                <p className="pra-po-sales-note is-error" data-testid="pra-po-new-customer-error" role="alert">
+                  {newCustomerError}
+                </p>
+              ) : null}
+              <div className="pra-po-new-customer-actions">
+                <button type="button" className="ghost" onClick={closeNewCustomer} data-testid="pra-po-new-customer-cancel">
+                  Batal
+                </button>
+                <button type="submit" className="primary" data-testid="pra-po-new-customer-use">
+                  Gunakan Pelanggan
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
