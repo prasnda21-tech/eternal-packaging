@@ -4,6 +4,106 @@
   --pra-po-green: #0f766e;
 }
 
+/* Compact list: SO refresh is icon-only (34×34). Pra PO keeps a nowrap label. */
+.pra-po-page.so-list-workspace .so-list-refresh.pra-po-refresh {
+  width: auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pra-po-page.so-list-workspace .pra-po-refresh-label {
+  white-space: nowrap;
+  font: 600 13px/1 "IBM Plex Sans", sans-serif;
+}
+
+.pra-po-page.so-list-workspace .so-list-heading {
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.pra-po-page.so-list-workspace .so-list-tabs {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.pra-po-page.so-list-workspace .so-list-toolbar {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+/* Table region fills remaining viewport; only this pane scrolls. */
+.pra-po-page.so-list-workspace .so-list-table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pra-po-page.so-list-workspace .so-list-table-scroll:has(.pra-po-list-empty) .so-list-table,
+.pra-po-page.so-list-workspace .so-list-table-scroll:has(.pra-po-list-empty) tbody,
+.pra-po-page.so-list-workspace .so-list-table-scroll:has(.pra-po-list-empty) tr {
+  height: 100%;
+}
+
+.pra-po-page.so-list-workspace .pra-po-refresh .spin {
+  animation: pra-po-spin 0.8s linear infinite;
+}
+
+@keyframes pra-po-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pra-po-page.so-list-workspace .so-list-table {
+  table-layout: auto;
+}
+
+.pra-po-page.so-list-workspace .so-list-table th,
+.pra-po-page.so-list-workspace .so-list-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--so-line, #e2e8e6);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.pra-po-page.so-list-workspace .so-list-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Centered empty state inside the flex-filled table scroll region */
+.pra-po-page.so-list-workspace .pra-po-list-empty {
+  height: 100%;
+  vertical-align: middle;
+  border-bottom: 0;
+  padding: 0;
+}
+
+.pra-po-page.so-list-workspace .pra-po-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: min(280px, 42vh);
+  padding: 24px 12px;
+  color: var(--so-muted, #64748b);
+}
+
+.pra-po-page.so-list-workspace .pra-po-empty-inner p {
+  margin: 0;
+  font-size: 14px;
+}
+
 .pra-po-status-badge {
   display: inline-flex;
   align-items: center;
@@ -55,29 +155,334 @@
   overflow-x: auto;
 }
 
-.pra-po-page .so-list-table-wrap {
-  overflow-x: auto;
+/* ---------- Create form: pane visibility (so-create-extra must not beat [hidden]) ---------- */
+.pra-po-page.so-create-workspace .ux90-so-pane-panel[hidden],
+.pra-po-page.so-create-workspace .so-create-extra[hidden],
+.pra-po-page.so-create-workspace .so-ship-panel[hidden],
+.pra-po-page.so-create-workspace .ux90-so-pane-panel[aria-hidden="true"] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
-.pra-po-page .so-list-table {
+.pra-po-page.so-create-workspace .ux90-so-vtabs {
+  gap: 4px;
+}
+
+.pra-po-page.so-create-workspace .ux90-so-vtabs button {
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.pra-po-page.so-create-workspace .ux90-so-vtabs button > span:not(.ux90-req) {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.pra-po-page.so-create-workspace .ux90-so-vtabs button.is-active {
+  font-weight: 700;
+}
+
+/* Customer picker: full chip width, dropdown above chrome */
+.pra-po-page.so-create-workspace .so-sum-chip.is-customer .mis-root,
+.pra-po-page.so-create-workspace .so-sum-chip.is-customer .so-sum-editor {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+  min-width: 0;
 }
 
-.pra-po-page .so-list-table th,
-.pra-po-page .so-list-table td {
+.pra-po-page.so-create-workspace .pra-po-customer-editor {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  height: auto;
+}
+
+/* flex-basis must be width-oriented; 220px in a column stack became empty height */
+.pra-po-page.so-create-workspace .pra-po-customer-editor .mis-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  height: auto !important;
+  min-height: 0 !important;
+  align-self: center;
+}
+
+.pra-po-page.so-create-workspace .pra-po-new-customer-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #86efac;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #166534;
+  font: 600 12px/1 "IBM Plex Sans", sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pra-po-page.so-create-workspace .pra-po-new-customer-btn:hover {
+  background: #dcfce7;
+}
+
+.pra-po-page.so-create-workspace .so-sum-chip.is-customer .mis-list {
+  z-index: 120;
+  max-height: min(280px, 42vh);
+  overflow: auto;
+}
+
+/* Desktop: keep customer + date chips aligned; date label never wraps */
+.pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip.is-customer,
+.pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip-date {
+  align-items: center !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+.pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip-date {
+  grid-template-columns: max-content minmax(0, 1fr) !important;
+}
+
+.pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip-date .so-create-field > span,
+.pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip-date.ux90-txn-field > span {
+  white-space: nowrap !important;
+  line-height: 1.2 !important;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin: 0 0 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--line, #e2e8f0);
-  text-align: left;
-  vertical-align: middle;
+  border: 1px solid #dbe4ee;
+  border-radius: 10px;
+  background: #f8fafc;
 }
 
-.pra-po-page .so-list-table th {
+.pra-po-page.so-create-workspace .pra-po-customer-card.is-registered {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-card.is-new {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-card-main strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-card-main span {
   font-size: 12px;
   color: #64748b;
-  font-weight: 600;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font: 650 11px/1.3 "IBM Plex Sans", sans-serif;
   white-space: nowrap;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-pill.is-registered {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.pra-po-page.so-create-workspace .pra-po-customer-pill.is-new {
+  background: #fef3c7;
+  color: #92400e;
+  white-space: normal;
+  max-width: 100%;
+}
+
+.pra-po-page.so-create-workspace .pra-po-money {
+  font-weight: 700;
+  color: #166534;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pra-po-page.so-create-workspace .pra-po-lines-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 4px 2px;
+  border-top: 1px solid #e2e8e6;
+}
+
+.pra-po-page.so-create-workspace .pra-po-lines-total span {
+  font: 600 13px/1 "IBM Plex Sans", sans-serif;
+  color: #64748b;
+}
+
+.pra-po-page.so-create-workspace .pra-po-lines-total strong {
+  font: 750 18px/1 "IBM Plex Sans", sans-serif;
+  color: #166534;
+  font-variant-numeric: tabular-nums;
+}
+
+.pra-po-page.so-create-workspace .pra-po-line-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff;
+  color: #dc2626;
+  cursor: pointer;
+}
+
+.pra-po-page.so-create-workspace .pra-po-line-remove:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pra-po-page.so-create-workspace .pra-po-line-remove-label {
+  font: 600 12px/1 "IBM Plex Sans", sans-serif;
+}
+
+/* Date: one visible text field + icon-only native picker (SO parity belt) */
+.pra-po-page.so-create-workspace .fp-invoice-date {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  max-width: 280px;
+}
+
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
+}
+
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"] {
+  position: relative;
+  box-sizing: border-box;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  height: 34px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--so-line, #e2e8e6);
+  border-radius: 6px;
+  background: #fff;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-datetime-edit,
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-datetime-edit-fields-wrapper,
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-datetime-edit-text,
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-datetime-edit-month-field,
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-datetime-edit-day-field,
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-datetime-edit-year-field {
+  display: none;
+  width: 0;
+  max-width: 0;
+  padding: 0;
+  margin: 0;
+  color: transparent;
+}
+
+.pra-po-page.so-create-workspace .fp-invoice-date input[type="date"]::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  opacity: 1;
+  background-position: center;
+}
+
+/* Desktop lines: prefer product column width */
+.pra-po-page.so-create-workspace .so-create-lines-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-no { width: 40px; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-name { width: 28%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-warna { width: 12%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-proses { width: 10%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-qty { width: 8%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-unit { width: 8%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-price { width: 12%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-sub { width: 12%; }
+.pra-po-page.so-create-workspace .so-create-lines-table .so-col-action { width: 72px; }
+
+.pra-po-page.so-create-workspace .so-create-lines-table .mis-root,
+.pra-po-page.so-create-workspace .so-create-lines-table .mis-list {
+  z-index: 90;
+}
+
+/* Create shell fills viewport so action bar stays pinned; stage scrolls */
+.pra-po-page.so-create-workspace {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+.pra-po-page.so-create-workspace .so-create-form {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+.pra-po-page.so-create-workspace .so-create-stage {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  padding-bottom: 12px !important;
+}
+
+.pra-po-page.so-create-workspace .so-create-actionbar {
+  flex: 0 0 auto !important;
+  position: relative;
+  z-index: 45;
+  gap: 12px;
+  background: #fff;
+  border-top: 1px solid #e2e8e6;
+  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.06);
 }
 
 @media (max-width: 900px) {
@@ -96,14 +501,301 @@
     flex-wrap: wrap;
     gap: 8px;
   }
+
+  .pra-po-page.so-list-workspace .so-list-pager {
+    flex-wrap: wrap;
+  }
+
+  .pra-po-page.so-create-workspace .fp-invoice-date {
+    max-width: none;
+  }
+
+  /* SO desktop vtabs use width:100%; on stacked mobile row that makes each tab full-bleed */
+  .pra-po-page.so-create-workspace .ux90-so-vtabs {
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    gap: 6px !important;
+  }
+
+  .pra-po-page.so-create-workspace .ux90-so-vtabs button {
+    width: auto !important;
+    flex: 0 0 auto !important;
+    min-width: max-content !important;
+    padding: 6px 10px !important;
+  }
+}
+
+/*
+ * Mobile shell: shared SO rule sets .app-main { height:100vh } while the main
+ * pane starts below the top chrome (~56px), so the list overflows and clips the
+ * pager. Constrain only when Pra PO list is mounted.
+ */
+@media (max-width: 900px) {
+  .app-main:has(.pra-po-page.so-list-workspace),
+  .app-main:has(.pra-po-page.so-create-workspace) {
+    height: auto;
+    max-height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .content:has(.pra-po-page.so-list-workspace),
+  .content:has(.pra-po-page.so-create-workspace) {
+    max-height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
 }
 
 @media (max-width: 700px) {
-  .pra-po-page .ux90-so-vtabs {
+  .pra-po-page.so-create-workspace .ux90-so-vtabs {
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
-  .pra-po-page .so-create-lines-table {
-    min-width: 720px;
+  .pra-po-page.so-create-workspace .ux90-so-vtabs button {
+    flex: 0 0 auto;
+  }
+
+  /* Compact product cards — do not force wide table (would cause page overflow) */
+  .pra-po-page.so-create-workspace .so-create-lines-scroll {
+    overflow-x: hidden !important;
+    max-width: 100%;
+  }
+
+  .pra-po-page.so-create-workspace .so-create-lines-table {
+    min-width: 0 !important;
+    width: 100%;
+    table-layout: auto;
+  }
+
+  .pra-po-page.so-create-workspace .so-create-lines-table thead {
+    display: none;
+  }
+
+  .pra-po-page.so-create-workspace .so-create-lines-table tbody tr.so-line-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 8px;
+    align-items: start;
+    background: #fff;
+    border: 1px solid #e2e8e6;
+    border-radius: 10px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+
+  .pra-po-page.so-create-workspace .so-create-lines-table tbody tr.so-line-main td {
+    display: block;
+    border: 0 !important;
+    padding: 0 !important;
+    min-width: 0;
+    width: auto !important;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-no {
+    display: none !important;
+  }
+
+  /* SO create CSS hides .so-col-unit on mobile; Pra PO cards need Satuan accessible */
+  .pra-po-page.so-create-workspace .so-col-unit {
+    display: block !important;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-name {
+    grid-column: 1 / -1;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-warna {
+    grid-column: 1 / 2;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-proses {
+    grid-column: 2 / -1;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-qty::before,
+  .pra-po-page.so-create-workspace .so-col-unit::before,
+  .pra-po-page.so-create-workspace .so-col-price::before,
+  .pra-po-page.so-create-workspace .so-col-sub::before {
+    display: block;
+    font: 650 10px/1.2 "IBM Plex Sans", sans-serif;
+    color: #64748b;
+    margin-bottom: 2px;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-qty::before { content: "Qty"; }
+  .pra-po-page.so-create-workspace .so-col-unit::before { content: "Satuan"; }
+  .pra-po-page.so-create-workspace .so-col-price::before { content: "Harga"; }
+  .pra-po-page.so-create-workspace .so-col-sub::before { content: "Subtotal"; }
+
+  .pra-po-page.so-create-workspace .so-col-sub {
+    grid-column: 1 / 3;
+    align-self: end;
+  }
+
+  .pra-po-page.so-create-workspace .so-col-action {
+    grid-column: 3 / 4;
+    align-self: end;
+    display: flex !important;
+    justify-content: flex-end;
+  }
+
+  .pra-po-page.so-create-workspace .so-create-line-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .pra-po-page.so-create-workspace .ux90-so-txn-header.ux90-txn-header {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+    padding: 8px 10px !important;
+  }
+
+  .pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip.is-customer,
+  .pra-po-page.so-create-workspace .ux90-so-txn-header .so-sum-chip-date {
+    grid-template-columns: 1fr !important;
+    gap: 4px !important;
+    align-items: stretch !important;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-customer-editor {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-customer-editor .mis-root {
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    height: auto !important;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-new-customer-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-customer-card {
+    margin: 0 0 6px;
+    padding: 8px 10px;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-lines-total {
+    justify-content: space-between;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-line-remove-label {
+    display: none;
+  }
+
+  /* Compact sticky footer: Kembali row + Draft/Ajukan side-by-side */
+  .pra-po-page.so-create-workspace .so-create-actionbar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: stretch;
+    gap: 8px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .pra-po-page.so-create-workspace .so-create-actionbar > .so-create-back,
+  .pra-po-page.so-create-workspace .so-create-actionbar > [data-testid="pra-po-cancel"] {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-actionbar-right {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .pra-po-page.so-create-workspace .pra-po-actionbar-right .so-create-auto,
+  .pra-po-page.so-create-workspace .pra-po-actionbar-right .so-create-save {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .pra-po-page.so-create-workspace .so-create-stage {
+    padding-bottom: 16px !important;
+  }
+
+  .pra-po-page.so-create-workspace .ux90-so-pane-panel {
+    padding-bottom: 8px !important;
+  }
+
+  .pra-po-page.so-create-workspace .ux90-so-pane,
+  .pra-po-page.so-create-workspace .so-create-main {
+    min-height: 0 !important;
+  }
+
+  /* Keep toolbar single-row where possible so pager stays in 390×844 viewport */
+  .pra-po-page.so-list-workspace .so-list-header {
+    flex-wrap: nowrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-heading {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-header-actions {
+    flex: 0 0 auto;
+    width: auto;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-create {
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-pager {
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    min-height: 32px;
+    max-height: none;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-pager label {
+    font-size: 12px;
+  }
+
+  .pra-po-page.so-list-workspace .pra-po-empty-inner {
+    min-height: min(180px, 28vh);
+    padding: 16px 12px;
+  }
+}
+
+@media (max-width: 420px) {
+  .pra-po-page.so-list-workspace .pra-po-refresh-label {
+    /* Still no wrap; shorten via clip only if viewport is extremely narrow */
+    max-width: 5.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .pra-po-page.so-list-workspace .so-list-summary span {
+    display: none;
   }
 }
