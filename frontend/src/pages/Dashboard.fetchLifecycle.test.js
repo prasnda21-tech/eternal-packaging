@@ -149,6 +149,32 @@ describe("Dashboard fetch lifecycle (runtime)", () => {
     expect(api.dashboardToday).toHaveBeenCalledTimes(1);
   });
 
+  test("incomplete reminders show the read cap and hide the matched population", async () => {
+    api.reminders.mockResolvedValue({
+      reminders: [],
+      counts: { overdue: 0, warn_6h: 0, warn_h1: 0 },
+      completeness: "incomplete",
+      read_limit: 1000,
+      matched_count: 1800,
+    });
+    await act(async () => {
+      root.render(<Dashboard />);
+    });
+    await flush();
+    const note = container.querySelector("[data-testid='reminder-incomplete']");
+    expect(note.textContent).toContain("Reminder belum lengkap");
+    expect(note.textContent).toContain("1000");
+    expect(note.textContent).not.toContain("1800");
+  });
+
+  test("complete reminders omit the incomplete note", async () => {
+    await act(async () => {
+      root.render(<Dashboard />);
+    });
+    await flush();
+    expect(container.querySelector("[data-testid='reminder-incomplete']")).toBeNull();
+  });
+
   test("manual refresh refetches orders, reminders, and dashboardToday", async () => {
     await act(async () => {
       root.render(<Dashboard />);

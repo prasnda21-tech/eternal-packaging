@@ -288,6 +288,34 @@ test("analytics widgets fetch only the endpoints they are allowed to read", asyn
   view.unmount();
 });
 
+function httpStatus(status) {
+  const error = new Error(`http ${status}`);
+  error.response = { status };
+  return error;
+}
+
+test("snapshot, plant, and operator map 403 to forbidden and other failures to error", async () => {
+  const denied = apisFor(layout([widget("po_aktif", 0, 0, 3, 2), widget("tren_output", 3, 0, 6, 3)]));
+  denied.snapshotApi = jest.fn(async () => { throw httpStatus(403); });
+  denied.analyticsApi = jest.fn(async () => { throw httpStatus(403); });
+  const forbiddenView = await renderPage((key) => key === "dashboard.production.view", denied);
+  expect(forbiddenView.host.querySelector("[data-testid='produksi-widget-po_aktif']").textContent).toContain("Tidak ada izin");
+  expect(forbiddenView.host.querySelector("[data-testid='produksi-widget-tren_output']").textContent).toContain("Tidak ada izin");
+  forbiddenView.unmount();
+
+  const operatorDenied = apisFor(layout([widget("output_operator", 0, 0, 6, 3)]));
+  operatorDenied.operatorAnalyticsApi = jest.fn(async () => { throw httpStatus(403); });
+  const operatorView = await renderPage((key) => key === "dashboard.production.operator_analytics", operatorDenied);
+  expect(operatorView.host.querySelector("[data-testid='produksi-widget-output_operator']").textContent).toContain("Tidak ada izin");
+  operatorView.unmount();
+
+  const failed = apisFor(layout([widget("po_aktif", 0, 0, 3, 2)]));
+  failed.snapshotApi = jest.fn(async () => { throw new Error("down"); });
+  const errorView = await renderPage((key) => key === "dashboard.production.view", failed);
+  expect(errorView.host.querySelector("[data-testid='produksi-widget-po_aktif']").textContent).toContain("Gagal memuat");
+  errorView.unmount();
+});
+
 test("incomplete, empty, and failed analytics stay distinct", async () => {
   const incomplete = {
     today: { status: "incomplete", by_unit: {}, note: "Histori konfirmasi tidak tersedia.", updated_at: "" },

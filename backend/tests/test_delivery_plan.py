@@ -448,15 +448,17 @@ def test_buffer_included_in_rows_not_terlambat():
 
 
 def test_rbac_endpoint_wiring_scope_before_paginate():
-    """Contract: perm gate + sales_owner_match merged into mongo_match before build/paginate."""
+    """Contract: perm gate + order_access_scope merged into mongo_match before build/paginate."""
     import inspect
+    from services.production_dashboard_http import order_access_scope
     from services.sales_user_mapping import sales_owner_match
 
     server = _import_server()
     src = inspect.getsource(server.list_delivery_plan)
     assert "_require_any_perm" in src
     assert "delivery.schedule.view" in src
-    assert "sales_owner_match" in src
+    assert "order_access_scope" in src
+    assert "sales_owner_match" in inspect.getsource(order_access_scope)
     assert "_delivery_plan_mongo_match" in src or "mongo_match" in src
     assert "_build_delivery_plan_rows" in src or "build_plan_rows" in src
     assert "_paginate_delivery_plan_rows" in src or "paginate_rows" in src

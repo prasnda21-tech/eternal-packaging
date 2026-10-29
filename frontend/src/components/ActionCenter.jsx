@@ -56,10 +56,16 @@ export default function ActionCenter() {
 
   if (err) return <div className="panel" data-testid="action-center-error"><p style={{ color: "#8f1f1f" }}>{err}</p></div>;
   if (!data) return null;
+  const incomplete = data.completeness === "incomplete" ? (
+    <p className="muted small" data-testid="ac-incomplete" role="status">
+      Tugas belum lengkap. Batas baca {data.read_limit}.
+    </p>
+  ) : null;
   if (nonEmpty.length === 0) {
     return (
       <section className="panel" data-testid="action-center">
         <header className="panel-head"><h3><ListChecks size={14}/> Tugas Saya</h3></header>
+        {incomplete}
         <p className="muted small">Tidak ada tugas untuk Anda saat ini.</p>
       </section>
     );
@@ -69,6 +75,7 @@ export default function ActionCenter() {
     <section className="panel" data-testid="action-center">
       <header className="panel-head" style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <h3><ListChecks size={14}/> Tugas Saya</h3>
+        {incomplete}
         {selected && (
           <button className="ghost sm" onClick={() => setSelectedKey(null)} data-testid="ac-clear-filter">
             Hapus Filter

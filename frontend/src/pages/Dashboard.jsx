@@ -30,6 +30,8 @@ export default function Dashboard() {
   const [orders, setOrders] = useState([]);
   const [counts, setCounts] = useState({ aktif: 0, selesai: 0, cancelled: 0 });
   const [stageCounts, setStageCounts] = useState({});
+  const [listRead, setListRead] = useState(null);
+  const [stageRead, setStageRead] = useState(null);
   const [reminders, setReminders] = useState(null);
   const [todayActivity, setTodayActivity] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -70,6 +72,8 @@ export default function Dashboard() {
     setOrders(d.orders || []);
     setCounts(d.counts || {});
     setStageCounts(d.stage_counts || {});
+    setListRead(d.list_read || null);
+    setStageRead(d.stage_read || null);
     setSelected(new Set());
   };
 
@@ -196,6 +200,17 @@ export default function Dashboard() {
         <div className="dash-kpi"><span>Ditampilkan</span><strong>{list.length}</strong></div>
       </section>
 
+      {listRead?.completeness === "incomplete" && (
+        <p className="subhead" data-testid="orders-list-incomplete" role="status">
+          Daftar PO belum lengkap. Batas baca {listRead.read_limit}.
+        </p>
+      )}
+      {stageRead?.completeness === "incomplete" && (
+        <p className="subhead" data-testid="stage-count-incomplete" role="status">
+          Antrean tahap belum lengkap. Batas baca {stageRead.read_limit}.
+        </p>
+      )}
+
       {view === "today" && !stageIsValid && (
         <TodayActivityCards data={todayActivity} />
       )}
@@ -220,6 +235,12 @@ export default function Dashboard() {
           <div><CircleAlert size={20} /><strong>{urgentCount} pekerjaan urgent</strong><span>perlu perhatian sebelum akhir shift</span></div>
           <span className="strip-time">Sinkron: baru saja</span>
         </section>
+      )}
+
+      {view === "today" && !stageIsValid && reminders?.completeness === "incomplete" && (
+        <p className="subhead" data-testid="reminder-incomplete" role="status">
+          Reminder belum lengkap. Batas baca {reminders.read_limit}.
+        </p>
       )}
 
       {view === "today" && !stageIsValid && reminders && reminders.reminders.length > 0 && (

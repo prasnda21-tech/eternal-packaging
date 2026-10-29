@@ -309,17 +309,18 @@ export function ProductionDashboardView({
     let live = true;
     const jobs = [];
     if (needSnapshot) {
-      jobs.push(snapshotApi().then((body) => ({ kind: "snapshot", body })).catch(() => ({ kind: "snapshot", error: true })));
+      jobs.push(snapshotApi().then((body) => ({ kind: "snapshot", body }))
+        .catch((error) => ({ kind: "snapshot", error: true, forbidden: error?.response?.status === 403 })));
     }
     if (needPlant) {
       jobs.push((analyticsApi ? analyticsApi(days) : Promise.reject(new Error("missing")))
         .then((body) => ({ kind: "plant", body }))
-        .catch(() => ({ kind: "plant", error: true })));
+        .catch((error) => ({ kind: "plant", error: true, forbidden: error?.response?.status === 403 })));
     }
     if (needOperator) {
       jobs.push((operatorAnalyticsApi ? operatorAnalyticsApi(days) : Promise.reject(new Error("missing")))
         .then((body) => ({ kind: "operator", body }))
-        .catch(() => ({ kind: "operator", error: true })));
+        .catch((error) => ({ kind: "operator", error: true, forbidden: error?.response?.status === 403 })));
     }
     if (needBranch) {
       jobs.push((branchOutputApi ? branchOutputApi(days) : Promise.reject(new Error("missing")))
@@ -357,12 +358,14 @@ export function ProductionDashboardView({
         widgets.forEach((widget) => {
           if (!productionWidgetAllowed(widget.widget_id, hasPerm)) return;
           if (SNAPSHOT_IDS.includes(widget.widget_id)) {
-            patch[widget.widget_id] = mapped ? (mapped[widget.widget_id] || { status: "incomplete" }) : { status: "error" };
+            patch[widget.widget_id] = mapped
+              ? (mapped[widget.widget_id] || { status: "incomplete" })
+              : { status: snapshot && snapshot.forbidden ? "forbidden" : "error" };
           }
           if (PLANT_IDS.includes(widget.widget_id)) {
             patch[widget.widget_id] = plantResult && !plantResult.error
               ? (widget.widget_id === "komposisi" ? { status: "ready", ...(plantResult.body.composition || {}) } : { status: "ready" })
-              : { status: "error" };
+              : { status: plantResult && plantResult.forbidden ? "forbidden" : "error" };
           }
           if (BRANCH_IDS.includes(widget.widget_id)) {
             patch[widget.widget_id] = branchResult && !branchResult.error
@@ -370,7 +373,9 @@ export function ProductionDashboardView({
               : { status: branchResult && branchResult.forbidden ? "forbidden" : "error" };
           }
           if (OPERATOR_IDS.includes(widget.widget_id)) {
-            patch[widget.widget_id] = operatorResult && !operatorResult.error ? { status: "ready" } : { status: "error" };
+            patch[widget.widget_id] = operatorResult && !operatorResult.error
+              ? { status: "ready" }
+              : { status: operatorResult && operatorResult.forbidden ? "forbidden" : "error" };
           }
           if (DELIVERY_QTY_IDS.includes(widget.widget_id)) {
             patch[widget.widget_id] = deliveryResult && !deliveryResult.error

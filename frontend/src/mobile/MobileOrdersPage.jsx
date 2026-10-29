@@ -29,6 +29,7 @@ export function ordersLoadErrorMessage(err) {
 export default function MobileOrdersPage() {
   const [params, setParams] = useSearchParams();
   const [orders, setOrders] = useState([]);
+  const [listRead, setListRead] = useState(null);
   const [q, setQ] = useState(() => params.get("q") || "");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -52,9 +53,11 @@ export default function MobileOrdersPage() {
         const payload = await withTimeout(api.listOrders("aktif", { view: "summary" }), MOBILE_LOAD_TIMEOUT_MS);
         if (cancelled) return;
         setOrders(ordersFromListResponse(payload));
+        setListRead(payload?.list_read || null);
       } catch (e) {
         if (cancelled) return;
         setOrders([]);
+        setListRead(null);
         setErr(ordersLoadErrorMessage(e));
       } finally {
         if (!cancelled) setLoading(false);
@@ -89,6 +92,11 @@ export default function MobileOrdersPage() {
         </label>
         {loading && (
           <p className="mop-empty" data-testid="mobile-orders-loading">Memuat pesanan...</p>
+        )}
+        {!loading && !err && listRead?.completeness === "incomplete" && (
+          <p className="mop-empty" data-testid="mobile-orders-incomplete" role="status">
+            Daftar PO belum lengkap. Batas baca {listRead.read_limit}.
+          </p>
         )}
         {!loading && err && (
           <div className="mop-error" data-testid="mobile-orders-error">
