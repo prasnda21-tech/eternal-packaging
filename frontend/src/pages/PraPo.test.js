@@ -4,6 +4,14 @@ import path from "path";
 const src = fs.readFileSync(path.join(__dirname, "PraPo.jsx"), "utf8");
 
 describe("Pra PO page source contract — SO parity", () => {
+  test("sales field uses the master catalog lookup, not free text", () => {
+    expect(src).toMatch(/LookupSearchSelect/);
+    expect(src).toMatch(/api\.salesMasterCatalog/);
+    expect(src).toMatch(/applyPraPoSalesChoice/);
+    expect(src).toMatch(/data-testid="pra-po-sales-error"/);
+    expect(src).not.toMatch(/setForm\(\(p\) => \(\{ \.\.\.p, sales: e\.target\.value \}\)\)/);
+  });
+
   test("uses CustomerSearchSelect and MasterItemSearchSelect", () => {
     expect(src).toMatch(/CustomerSearchSelect/);
     expect(src).toMatch(/MasterItemSearchSelect/);

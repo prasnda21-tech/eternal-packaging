@@ -308,6 +308,50 @@ async def _validate_for_submit(db, doc: dict) -> None:
             )
 
 
+async def _coerce_sales_payload(db, payload: dict, user: dict, existing: Optional[dict] = None) -> None:
+    """Keep stored Sales unchanged. A new choice must be an active catalog row.
+
+    Omitting both keys leaves the document alone. Resending the stored id and
+    label, including an inactive or free-text historical value, does not
+    revalidate or rename it. A different master id is checked against the
+    caller's active branch catalog and stored with the canonical sales_name.
+    """
+    if "sales" not in payload and "sales_master_id" not in payload:
+        return
+    existing = existing or {}
+    stored_id = str(existing.get("sales_master_id") or "").strip()
+    stored_label = str(existing.get("sales") or "").strip()
+
+    if "sales_master_id" in payload:
+        raw_id = payload.get("sales_master_id")
+        sent_id = "" if raw_id is None else str(raw_id).strip()
+    else:
+        sent_id = stored_id
+    if "sales" in payload:
+        raw_label = payload.get("sales")
+        sent_label = "" if raw_label is None else str(raw_label).strip()
+    else:
+        sent_label = stored_label
+
+    if sent_id == stored_id and sent_label == stored_label:
+        return
+    if not sent_id and not sent_label:
+        payload["sales"] = None
+        payload["sales_master_id"] = None
+        return
+    if sent_id and sent_id == stored_id:
+        payload["sales"] = stored_label or None
+        payload["sales_master_id"] = stored_id
+        return
+    if sent_id:
+        from services.sales_master import require_active_sales
+        master = await require_active_sales(db, sent_id, user=user)
+        payload["sales_master_id"] = master["id"]
+        payload["sales"] = str(master.get("sales_name") or "").strip() or None
+        return
+    raise HTTPException(400, "Sales harus dipilih dari Master Sales.")
+
+
 def _apply_payload(doc: dict, payload: dict) -> None:
     if "customer" in payload:
         cust = str(payload.get("customer") or "").strip()
@@ -359,7 +403,9 @@ async def create_draft(db, payload: dict, user: dict) -> dict:
         "created_at": now,
         "updated_at": now,
     }
-    _apply_payload(doc, payload or {})
+    payload = dict(payload or {})
+    await _coerce_sales_payload(db, payload, user)
+    _apply_payload(doc, payload)
     if not doc.get("customer"):
         raise HTTPException(400, "Customer wajib diisi.")
     if not doc.get("line_items"):
@@ -526,7 +572,9 @@ async def update_draft(db, pra_po_id: str, payload: dict, user: dict, perms: set
     if doc.get("status") not in EDITABLE_STATUSES:
         raise HTTPException(400, "Pra PO hanya dapat diubah saat Draft atau Dikembalikan.")
     before = {"status": doc.get("status"), "customer": doc.get("customer")}
-    _apply_payload(doc, payload or {})
+    payload = dict(payload or {})
+    await _coerce_sales_payload(db, payload, user, existing=doc)
+    _apply_payload(doc, payload)
     doc["updated_at"] = now_iso()
     doc[VERSION_FIELD] = int(doc.get(VERSION_FIELD) or 1) + 1
     await db[COLLECTION].replace_one({"id": pra_po_id}, doc)

@@ -18,6 +18,7 @@ import { useAuth } from "../lib/auth";
 import api from "../lib/api";
 import { NAV_KEYS } from "../lib/navAccess";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import LookupSearchSelect from "../components/LookupSearchSelect";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import {
@@ -35,6 +36,11 @@ import {
   validatePraPoDraft,
   validatePraPoSubmit,
   praPoLineQtyLabel,
+  praPoSalesOptions,
+  praPoSalesSelectValue,
+  praPoSalesOptionLabel,
+  isPraPoStoredSalesOption,
+  applyPraPoSalesChoice,
 } from "../lib/praPoForm";
 import "./pesananPenjualan.css";
 import "./ux90SalesCreate.css";
@@ -95,6 +101,8 @@ export default function PraPoPage() {
   const [createTab, setCreateTab] = useState("items");
   const [returnReason, setReturnReason] = useState("");
   const [masterCustomers, setMasterCustomers] = useState([]);
+  const [salesCatalog, setSalesCatalog] = useState([]);
+  const [salesCatalogState, setSalesCatalogState] = useState("loading");
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
   const [statusFilter, setStatusFilter] = useState(canViewAll ? "queue" : "all");
@@ -145,6 +153,17 @@ export default function PraPoPage() {
     }
   }, []);
 
+  const loadSalesCatalog = useCallback(async () => {
+    setSalesCatalogState("loading");
+    try {
+      const data = await api.salesMasterCatalog();
+      setSalesCatalog(Array.isArray(data?.items) ? data.items : []);
+      setSalesCatalogState("ready");
+    } catch {
+      setSalesCatalogState("error");
+    }
+  }, []);
+
   useEffect(() => {
     if (viewMode !== "list") return undefined;
     reload();
@@ -153,7 +172,8 @@ export default function PraPoPage() {
 
   useEffect(() => {
     loadOptions();
-  }, [loadOptions]);
+    loadSalesCatalog();
+  }, [loadOptions, loadSalesCatalog]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -829,13 +849,40 @@ export default function PraPoPage() {
                         />
                       </PraField>
                       <PraField label="Tenaga Penjual (Sales)">
-                        <input
-                          className="so-line-input"
-                          value={form.sales || ""}
-                          onChange={(e) => setForm((p) => ({ ...p, sales: e.target.value }))}
+                        <LookupSearchSelect
+                          options={praPoSalesOptions(salesCatalog, form)}
+                          value={praPoSalesSelectValue(form)}
+                          onChange={(sid, hit) => {
+                            setForm((prev) => applyPraPoSalesChoice(prev, sid, hit));
+                          }}
+                          getOptionValue={(row) => row.id}
+                          getOptionLabel={(row) => praPoSalesOptionLabel(row, form)}
+                          getSearchText={(row) => row.sales_name || ""}
+                          isOptionDisabled={isPraPoStoredSalesOption}
+                          getOptionDisabledReason={() => "Nilai tersimpan, tidak ada di daftar aktif"}
+                          placeholder="Ketik nama Sales…"
+                          noResultLabel="Tidak ada Sales aktif yang cocok"
                           disabled={!canEditForm}
-                          data-testid="pra-po-sales"
+                          testId="pra-po-sales"
                         />
+                        {salesCatalogState === "loading" ? (
+                          <p className="pra-po-sales-note" data-testid="pra-po-sales-loading">Memuat daftar Sales…</p>
+                        ) : null}
+                        {salesCatalogState === "error" ? (
+                          <p className="pra-po-sales-note is-error" data-testid="pra-po-sales-error">
+                            Daftar Sales gagal dimuat. Nilai tersimpan tidak diubah.
+                          </p>
+                        ) : null}
+                        {salesCatalogState === "ready" && salesCatalog.length === 0 ? (
+                          <p className="pra-po-sales-note" data-testid="pra-po-sales-empty">
+                            Tidak ada Sales aktif untuk cabang Anda.
+                          </p>
+                        ) : null}
+                        {salesCatalogState === "ready" && praPoSalesOptions(salesCatalog, form).some(isPraPoStoredSalesOption) ? (
+                          <p className="pra-po-sales-note" data-testid="pra-po-sales-stored">
+                            Sales tersimpan tetap ditampilkan dan tidak diganti otomatis.
+                          </p>
+                        ) : null}
                       </PraField>
                       <PraField label="Termin Pembayaran">
                         <input

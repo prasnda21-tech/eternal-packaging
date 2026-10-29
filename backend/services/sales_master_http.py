@@ -77,6 +77,11 @@ def register_sales_master_routes(
             "crm.daily_report.edit_own",
             "crm.daily_report.view_own",
             "crm.daily_report.view_all",
+            "pra_po.create",
+            "pra_po.edit_own",
+            "pra_po.view_own",
+            "pra_po.view_all",
+            "pra_po.verify",
             svc.PERM_VIEW,
             svc.PERM_MANAGE,
         )
