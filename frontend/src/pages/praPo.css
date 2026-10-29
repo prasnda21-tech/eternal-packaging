@@ -4,6 +4,16 @@
   --pra-po-green: #0f766e;
 }
 
+.pra-po-sales-note {
+  margin: 6px 0 0;
+  color: var(--text-secondary, #667085);
+  font: 400 12px/1.4 "IBM Plex Sans", sans-serif;
+}
+
+.pra-po-sales-note.is-error {
+  color: #b45309;
+}
+
 /* Compact list: SO refresh is icon-only (34×34). Pra PO keeps a nowrap label. */
 .pra-po-page.so-list-workspace .so-list-refresh.pra-po-refresh {
   width: auto;

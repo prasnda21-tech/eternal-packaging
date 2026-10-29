@@ -1,10 +1,15 @@
 import {
+  applyPraPoSalesChoice,
   buildPraPoPayload,
   emptyPraPoForm,
   emptyPraPoLine,
   filterPraPoRows,
+  isPraPoStoredSalesOption,
   praPoDocToForm,
   praPoLineQtyLabel,
+  praPoSalesOptionLabel,
+  praPoSalesOptions,
+  praPoSalesSelectValue,
   validatePraPoDraft,
   validatePraPoSubmit,
 } from "./praPoForm";
@@ -119,6 +124,97 @@ describe("Pra PO validation helpers", () => {
       ...form,
       customer_id: "cust-1",
     })).toBe("");
+  });
+});
+
+describe("Pra PO sales master payload", () => {
+  const catalog = [
+    { id: "sm-euis", sales_name: "Euis Risnawati", active: true },
+    { id: "sm-ayub", sales_name: "Sholahudin Al - Ayubi", active: true },
+  ];
+
+  test("active catalog rows are the selectable choices", () => {
+    const options = praPoSalesOptions(catalog, emptyPraPoForm());
+    expect(options.map((row) => row.id)).toEqual(["sm-euis", "sm-ayub"]);
+    expect(options.some(isPraPoStoredSalesOption)).toBe(false);
+  });
+
+  test("new choice stores master id and canonical sales_name", () => {
+    const form = applyPraPoSalesChoice(emptyPraPoForm(), "sm-euis", catalog[0]);
+    const payload = buildPraPoPayload(form);
+    expect(payload.sales_master_id).toBe("sm-euis");
+    expect(payload.sales).toBe("Euis Risnawati");
+    expect(praPoSalesSelectValue(form)).toBe("sm-euis");
+  });
+
+  test("empty sales stays allowed and does not send a null master id", () => {
+    const payload = buildPraPoPayload(emptyPraPoForm());
+    expect(payload.sales).toBeNull();
+    expect(payload).not.toHaveProperty("sales_master_id");
+    expect(validatePraPoSubmit({
+      ...emptyPraPoForm(),
+      customer: "Toko",
+      customer_id: "cust-1",
+      line_items: [{
+        ...emptyPraPoLine(),
+        name: "Box",
+        master_item_id: "m1",
+        unit_price: "1000",
+        quantity: 1,
+        unit: "pcs",
+      }],
+    })).toBe("");
+  });
+
+  test("reopen keeps stored id and label, including a renamed catalog row", () => {
+    const form = praPoDocToForm({
+      customer: "Toko",
+      sales: "Euis Lama",
+      sales_master_id: "sm-euis",
+      line_items: [],
+    });
+    expect(form.sales).toBe("Euis Lama");
+    expect(form.sales_master_id).toBe("sm-euis");
+    expect(praPoSalesOptionLabel(catalog[0], form)).toBe("Euis Lama");
+    const payload = buildPraPoPayload(form);
+    expect(payload.sales).toBe("Euis Lama");
+    expect(payload.sales_master_id).toBe("sm-euis");
+  });
+
+  test("historical free text and inactive id stay visible and are not auto-replaced", () => {
+    const legacy = praPoDocToForm({ customer: "Toko", sales: "Sales Catatan Lama", line_items: [] });
+    const options = praPoSalesOptions(catalog, legacy);
+    expect(options[0].stored).toBe(true);
+    expect(options[0].sales_name).toBe("Sales Catatan Lama");
+    expect(isPraPoStoredSalesOption(options[0])).toBe(true);
+    expect(praPoSalesSelectValue(legacy)).not.toBe("sm-euis");
+    expect(applyPraPoSalesChoice(legacy, options[0].id, options[0])).toBe(legacy);
+    const payload = buildPraPoPayload(legacy);
+    expect(payload.sales).toBe("Sales Catatan Lama");
+    expect(payload).not.toHaveProperty("sales_master_id");
+
+    const inactive = praPoDocToForm({
+      customer: "Toko",
+      sales: "Vira",
+      sales_master_id: "sm-inactive",
+      line_items: [],
+    });
+    const inactiveOptions = praPoSalesOptions(catalog, inactive);
+    expect(inactiveOptions.some((row) => row.id === "sm-inactive" && row.stored)).toBe(true);
+    expect(inactiveOptions.filter((row) => !row.stored).map((row) => row.id)).toEqual(["sm-euis", "sm-ayub"]);
+  });
+
+  test("explicit clear sends null master id; catalog failure does not", () => {
+    const saved = praPoDocToForm({
+      customer: "Toko",
+      sales: "Euis Risnawati",
+      sales_master_id: "sm-euis",
+      line_items: [],
+    });
+    const cleared = applyPraPoSalesChoice(saved, "", null);
+    expect(buildPraPoPayload(cleared).sales).toBeNull();
+    expect(buildPraPoPayload(cleared).sales_master_id).toBeNull();
+    expect(buildPraPoPayload(saved).sales_master_id).toBe("sm-euis");
   });
 });
 
