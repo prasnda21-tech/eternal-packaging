@@ -59,6 +59,10 @@ describe("Pra PO page source contract — SO parity", () => {
     expect(src).toMatch(/orderSellingTotal/);
     expect(src).toMatch(/pra-po-order-total/);
     expect(src).toMatch(/pra-po-new-customer/);
+    expect(src).toMatch(/\+ Pelanggan Baru/);
+    expect(src).toMatch(/pra-po-new-customer-modal/);
+    expect(src).toMatch(/Gunakan Pelanggan/);
+    expect(src).toMatch(/applyPraPoNewCustomer/);
     expect(src).toMatch(/pra-po-customer-card/);
     expect(src).toMatch(/Rincian Barang/);
   });

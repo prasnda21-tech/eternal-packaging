@@ -44,11 +44,76 @@ export function emptyPraPoLine() {
   };
 }
 
+export function emptyPraPoNewCustomerDraft() {
+  return {
+    name: "",
+    phone: "",
+    address: "",
+    pic: "",
+    email: "",
+    city: "",
+  };
+}
+
+/** Prefill the new-customer dialog from an untied draft. A linked master starts blank. */
+export function praPoNewCustomerDraftFromForm(form) {
+  if (form?.customer_id) return emptyPraPoNewCustomerDraft();
+  return {
+    name: form?.customer || "",
+    phone: form?.customer_phone || "",
+    address: form?.address || "",
+    pic: form?.customer_pic || "",
+    email: form?.customer_email || "",
+    city: form?.customer_city || "",
+  };
+}
+
+/** Put a new-customer identity on the Pra-PO draft. Master is not written. */
+export function applyPraPoNewCustomer(form, draft) {
+  const name = String(draft?.name || "").trim();
+  const phone = String(draft?.phone || "").trim();
+  const address = String(draft?.address || "").trim();
+  if (!name) return { form, error: "Nama pelanggan wajib diisi." };
+  if (!phone) return { form, error: "No. HP / WhatsApp wajib diisi." };
+  if (!address) return { form, error: "Alamat lengkap wajib diisi." };
+  return {
+    error: "",
+    form: {
+      ...form,
+      customer: name,
+      customer_id: null,
+      customer_phone: phone,
+      address,
+      customer_pic: String(draft?.pic || "").trim(),
+      customer_email: String(draft?.email || "").trim(),
+      customer_city: String(draft?.city || "").trim(),
+    },
+  };
+}
+
+/** Replace the transaction identity with one explicit master row. Profile fields come from that row only. */
+export function applyPraPoExistingCustomer(form, customer) {
+  if (!customer?.id) return form;
+  return {
+    ...form,
+    customer: customer.name || "",
+    customer_id: customer.id,
+    customer_phone: customer.phone || "",
+    address: customer.address || "",
+    customer_pic: customer.pic || "",
+    customer_email: customer.email || "",
+    customer_city: customer.city || "",
+  };
+}
+
 export function emptyPraPoForm() {
   return {
     customer: "",
     customer_id: null,
     customer_phone: "",
+    customer_pic: "",
+    customer_email: "",
+    customer_city: "",
     address: "",
     order_date: getWibTodayString(),
     notes: "",
@@ -140,6 +205,9 @@ export function praPoDocToForm(doc) {
     customer: doc.customer || "",
     customer_id: doc.customer_id || null,
     customer_phone: doc.customer_phone || "",
+    customer_pic: doc.customer_pic || "",
+    customer_email: doc.customer_email || "",
+    customer_city: doc.customer_city || "",
     address: doc.address || "",
     order_date: doc.order_date || getWibTodayString(),
     notes: doc.notes || "",
@@ -173,6 +241,9 @@ export function buildPraPoPayload(form) {
     customer: String(form.customer || "").trim(),
     customer_id: form.customer_id || null,
     customer_phone: String(form.customer_phone || "").trim() || null,
+    customer_pic: String(form.customer_pic || "").trim() || null,
+    customer_email: String(form.customer_email || "").trim() || null,
+    customer_city: String(form.customer_city || "").trim() || null,
     address: String(form.address || "").trim() || null,
     order_date: String(form.order_date || "").trim() || null,
     notes: String(form.notes || "").trim() || "",
