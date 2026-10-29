@@ -21,7 +21,7 @@ import server
 from permissions import ALL_PERMISSIONS, OPT_IN_ONLY_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
 from services.accounting_periods import close_period, ensure_indexes as ensure_periods
 from services.cash_bank_master import create_cash_bank, ensure_indexes as ensure_cb
-from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa
+from services.chart_of_accounts import create_account, ensure_indexes as ensure_coa, validate_payload
 from services.financial_journal_foundation import ALLOWLIST_KEY, FLAG_KEY as JOURNAL_FLAG
 from services.journal_core import ensure_indexes as ensure_journal
 from services.sales_accounting_settings import SETTINGS_KEY
@@ -51,6 +51,35 @@ from services.sales_receipt_posting import (
     select_sales_receipt_primary,
 )
 from services.sales_receipts import create_sales_receipt
+
+# create_account writes ledger_accounts. cash_bank_master writes cash_bank_accounts.
+# Wiping the old names left every seeded code in place for the rest of the process.
+_ISOLATED_COLLECTIONS = (
+    "sales_invoices",
+    "sales_receipts",
+    "journal_entries",
+    "journal_lines",
+    "orders",
+    "sales_customer_credit_applications",
+    COLLECTION,
+    "accounting_periods",
+    "cash_bank_accounts",
+    "ledger_accounts",
+)
+_ACCOUNT_SEQ = 0
+
+
+def _account_code(prefix: str) -> str:
+    """Process-local account code. Non-empty trimmed string, accepted by validate_payload."""
+    global _ACCOUNT_SEQ
+    _ACCOUNT_SEQ += 1
+    return f"{prefix}{_ACCOUNT_SEQ:06d}"
+
+
+async def _wipe_isolated(db):
+    for name in _ISOLATED_COLLECTIONS:
+        await db[name].delete_many({})
+
 
 ADMIN = {"id": "admin-rcpt-edit", "email": "admin@eternalpackaging.com", "name": "Admin", "role": "admin"}
 EDITOR = {
@@ -89,13 +118,9 @@ async def indexes(bind_motor):
         name=REQUIRED_INTENT_INDEX_NAME,
     )
     await db.app_settings.delete_many({"key": {"$in": [SETTINGS_KEY, JOURNAL_FLAG, ALLOWLIST_KEY, EDIT_FLAG]}})
+    await _wipe_isolated(db)
     yield
-    for name in (
-        "sales_invoices", "sales_receipts", "journal_entries", "journal_lines",
-        "orders", "sales_customer_credit_applications", COLLECTION,
-        "accounting_periods", "cash_banks", "chart_of_accounts",
-    ):
-        await db[name].delete_many({})
+    await _wipe_isolated(db)
 
 
 async def _enable_posted(db):
@@ -143,9 +168,9 @@ async def _seed_invoice(db, *, grand=10_000, invoice_date="2026-09-01"):
         "notes": "",
         "created_at": "2026-09-01T00:00:00+00:00",
     })
-    rec = await create_account(db, {"code": f"11{uuid.uuid4().hex[:4]}", "name": "Piutang", "account_type": "AREC"}, user=ADMIN)
-    rev = await create_account(db, {"code": f"41{uuid.uuid4().hex[:4]}", "name": "Pendapatan", "account_type": "REVE"}, user=ADMIN)
-    tax = await create_account(db, {"code": f"21{uuid.uuid4().hex[:4]}", "name": "PPN", "account_type": "OCLY"}, user=ADMIN)
+    rec = await create_account(db, {"code": _account_code("11"), "name": "Piutang", "account_type": "AREC"}, user=ADMIN)
+    rev = await create_account(db, {"code": _account_code("41"), "name": "Pendapatan", "account_type": "REVE"}, user=ADMIN)
+    tax = await create_account(db, {"code": _account_code("21"), "name": "PPN", "account_type": "OCLY"}, user=ADMIN)
     await db.app_settings.update_one(
         {"key": SETTINGS_KEY},
         {"$set": {
@@ -162,7 +187,7 @@ async def _seed_invoice(db, *, grand=10_000, invoice_date="2026-09-01"):
 
 async def _cash_bank(db, name="BCA Edit"):
     coa = await create_account(
-        db, {"code": f"12{uuid.uuid4().hex[:4]}", "name": name, "account_type": "BANK"}, user=ADMIN
+        db, {"code": _account_code("12"), "name": name, "account_type": "BANK"}, user=ADMIN
     )
     return await create_cash_bank(db, {"name": name, "account_id": coa["id"], "active": True}, user=ADMIN)
 
@@ -759,3 +784,45 @@ async def test_gate5_allowlist_empty_invalid_bank_flag_index(indexes):
         }, EDITOR)
     assert "intent_index_not_ready" in no_idx.value.detail.get("blockers", [])
     assert await _journal_snapshot(db, receipt["id"]) == before
+
+
+def test_generated_account_codes_are_unique_and_valid():
+    seen = set()
+    samples = (
+        ("11", "AREC", "Piutang"),
+        ("41", "REVE", "Pendapatan"),
+        ("21", "OCLY", "PPN"),
+        ("12", "BANK", "Bank"),
+    )
+    for _ in range(40):
+        for prefix, account_type, name in samples:
+            code = _account_code(prefix)
+            assert code not in seen
+            seen.add(code)
+            assert code == code.strip() and code
+            got_code, _, got_type = validate_payload(
+                {"code": code, "name": name, "account_type": account_type}
+            )
+            assert got_code == code
+            assert got_type == account_type
+
+
+@pytest.mark.anyio
+async def test_repeated_seed_does_not_reuse_account_code(indexes):
+    db = server.db
+    await _seed_invoice(db)
+    await _seed_invoice(db)
+    codes = [
+        doc["code"]
+        for doc in await db.ledger_accounts.find({}, {"code": 1, "_id": 0}).to_list(20)
+    ]
+    assert len(codes) == 6
+    assert len(set(codes)) == 6
+
+
+@pytest.mark.anyio
+async def test_prior_ledger_accounts_do_not_leak(indexes):
+    assert "ledger_accounts" in _ISOLATED_COLLECTIONS
+    assert "cash_bank_accounts" in _ISOLATED_COLLECTIONS
+    assert await server.db.ledger_accounts.count_documents({}) == 0
+    assert await server.db.cash_bank_accounts.count_documents({}) == 0
