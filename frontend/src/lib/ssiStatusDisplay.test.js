@@ -1,14 +1,14 @@
 import {
-  SSI_PRESENTATION_ZERO_HINT,
   SSI_STATUS,
   exportQtyCellValue,
   isPhysicalBaselineIncomplete,
   resolveDapatDijualDisplay,
+  resolvePhysicalDisplay,
   resolvePolosDisplay,
 } from "./ssiStatusDisplay";
 
-describe("ssiStatusDisplay Jalur B Option A + ATP display", () => {
-  test("T2/T3 incomplete baseline → Dapat stays numeric negative without Indikatif label", () => {
+describe("ssiStatusDisplay simplified numeric cells", () => {
+  test("T2/T3 incomplete baseline → Dapat stays numeric negative without label", () => {
     const item = {
       stock_dapat_dijual: -159100,
       qty_siap_jual_status: "READY",
@@ -44,12 +44,26 @@ describe("ssiStatusDisplay Jalur B Option A + ATP display", () => {
     expect(disp.status).toBe(SSI_STATUS.READY);
   });
 
-  test("null ATP → unverified, not sellable zero", () => {
+  test("null ATP → presentation 0 (not sellable math)", () => {
     const item = { stock_dapat_dijual: null, qty_siap_jual_status: "UNVERIFIED" };
     const disp = resolveDapatDijualDisplay(item, { present: true, qty: 1 });
-    expect(disp.mode).toBe("unverified");
-    expect(disp.qty).toBeNull();
-    expect(disp.presentationFallback).toBe(false);
+    expect(disp.mode).toBe("presentation_zero");
+    expect(disp.qty).toBe(0);
+    expect(disp.presentationFallback).toBe(true);
+  });
+
+  test("missing physical → presentation 0; proven qty unchanged", () => {
+    expect(resolvePhysicalDisplay({ present: false, text: "Belum lengkap" })).toEqual({
+      mode: "presentation_zero",
+      qty: 0,
+      presentationFallback: true,
+      statusText: "Belum lengkap",
+    });
+    expect(resolvePhysicalDisplay({ present: true, qty: -8300 })).toMatchObject({
+      mode: "qty",
+      qty: -8300,
+      presentationFallback: false,
+    });
   });
 
   test("missing baseline with numeric ATP → qty mode keeps number", () => {
@@ -66,7 +80,7 @@ describe("ssiStatusDisplay Jalur B Option A + ATP display", () => {
     expect(disp.label).toBeNull();
   });
 
-  test("T6 Polos null/UNVERIFIED → presentation 0; T7 reason retained", () => {
+  test("T6 Polos null → presentation 0; T7 reason retained", () => {
     const item = {
       qty_polos: null,
       qty_polos_status: "UNVERIFIED",
@@ -79,7 +93,6 @@ describe("ssiStatusDisplay Jalur B Option A + ATP display", () => {
     expect(disp.presentationFallback).toBe(true);
     expect(disp.status).toBe(SSI_STATUS.UNVERIFIED);
     expect(disp.reason).toBe("WIP_COMPOSITION_UNPROVEN");
-    expect(disp.title).toContain(SSI_PRESENTATION_ZERO_HINT);
     expect(item.qty_polos).toBeNull();
   });
 
@@ -98,7 +111,7 @@ describe("ssiStatusDisplay Jalur B Option A + ATP display", () => {
     expect(disp.presentationFallback).toBe(false);
   });
 
-  test("T5 known qty_polos>0 displays exact number without Indikatif label", () => {
+  test("T5 known qty_polos>0 displays exact number", () => {
     const item = {
       qty_polos: 2000,
       qty_polos_status: "READY",

@@ -223,22 +223,24 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
     expect(container.querySelector('[data-testid="stock-aggregate-hint-m-neg"]')).toBeNull();
-    expect(container.querySelector('[data-testid="stock-flag-m-neg"]')?.textContent).toMatch(/Defisit/i);
+    expect(container.querySelector('[data-testid="stock-flag-m-neg"]')).toBeNull();
+    // Aggregate Stock is plain numeric 75; per-WH deficit (-25) remains in detail.
+    expect(container.querySelector('[data-testid="stock-physical-m-neg"]')?.textContent?.replace(/\s/g, ""))
+      .toBe("75");
     expect(container.querySelector('[data-testid="stock-physical-m-neg"]')?.textContent)
-      .not.toMatch(/Saldo awal belum direkonsiliasi|Ada gudang belum saldo|Belum lengkap/i);
+      .not.toMatch(/Belum lengkap|Belum terverifikasi|Indikatif|Defisit|tampilan/i);
     expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent)
       .toMatch(/Stock Dapat Dijual/i);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.getAttribute("data-baseline-label"))
       .toMatch(/belum direkonsiliasi|Belum valid/i);
+    expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent?.replace(/\s/g, ""))
+      .toBe("0");
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
-      .toMatch(/Belum lengkap/);
-    expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
-      .not.toMatch(/Belum tersedia|Belum terverifikasi/i);
-    // Jalur B Option A: null Polos → presentation numeric 0 (not status text in cell).
+      .not.toMatch(/Belum lengkap|Belum tersedia|Belum terverifikasi|tampilan/i);
     const polosMiss = container.querySelector('[data-testid="stock-polos-m-miss"]');
     expect(polosMiss?.getAttribute("data-presentation-fallback")).toBe("true");
     expect(polosMiss?.textContent?.replace(/\s/g, "")).toBe("0");
-    expect(polosMiss?.textContent).not.toMatch(/Belum terverifikasi/i);
+    expect(polosMiss?.textContent).not.toMatch(/Belum terverifikasi|tampilan/i);
     expect(container.querySelector('[data-testid="stock-flag-m-miss"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-legend-bar"]')).toBeTruthy();
     await act(async () => {
@@ -258,11 +260,12 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     });
     await flush();
     const missWh = container.querySelector('[data-testid="ssi-detail-wh-wh-a"]');
-    expect(missWh?.textContent).toMatch(/Belum saldo/i);
-    expect(missWh?.textContent).not.toMatch(/\b0\b/);
+    expect(missWh?.querySelector("td.num")?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(missWh?.querySelector("td.num")?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(missWh?.querySelector("td.num")?.textContent).not.toMatch(/Belum|Indikatif|tampilan/i);
     const detailTercetak = container.querySelector('[data-testid="ssi-detail-qty_tercetak"]');
     expect(detailTercetak?.textContent?.replace(/\s/g, "")).toMatch(/0/);
-    expect(detailTercetak?.textContent).not.toMatch(/Belum terverifikasi/i);
+    expect(detailTercetak?.textContent).not.toMatch(/Belum terverifikasi|tampilan/i);
     expect(detailTercetak?.querySelector('[data-presentation-fallback="true"]')).toBeTruthy();
   });
 

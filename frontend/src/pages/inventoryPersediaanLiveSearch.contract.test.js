@@ -77,7 +77,6 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/Satuan Dasar/);
     expect(stock).not.toMatch(/data-testid="stock-unit-header"/);
     expect(stock).not.toMatch(/stock-expand-m-/);
-    expect(stock).toMatch(/stock-status-badge/);
     expect(stock).toMatch(/data-baseline-label/);
     expect(stock).toMatch(/EXCEL_SSI_COLUMNS/);
     expect(stock).toMatch(/label: "Saldo Awal"/);
@@ -92,14 +91,15 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
     expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
-    // Jalur B Option A: qty cells are numeric; presentation-zero hint replaces Belum/Indikatif badges.
-    expect(stock).toMatch(/SSI_PRESENTATION_ZERO_HINT|0 tampilan; jumlah sebenarnya belum diketahui/);
+    // Simplified numeric cells: presentation fallback attrs; no tampilan / Belum labels in qty path.
+    expect(stock).toMatch(/resolvePhysicalDisplay/);
     expect(stock).toMatch(/data-presentation-fallback/);
     expect(stock).toMatch(/exportQtyCellValue/);
-    expect(stock).toMatch(/Belum saldo/);
+    expect(stock).not.toMatch(/0 tampilan/);
     expect(stock).not.toMatch(/Belum tersedia/);
-    expect(detail).toMatch(/SSI_PRESENTATION_ZERO_HINT|0 tampilan; jumlah sebenarnya belum diketahui/);
+    expect(detail).toMatch(/resolvePhysicalDisplay/);
     expect(detail).toMatch(/data-presentation-fallback/);
+    expect(detail).not.toMatch(/0 tampilan/);
     expect(detail).toMatch(/centered-modal/);
     expect(detail).toMatch(/ssi-detail-modal-panel/);
     expect(detail).toMatch(/ssi-detail-backdrop/);
@@ -163,7 +163,7 @@ describe("Persediaan live search inventory scope", () => {
     expect(ssiStatus).toMatch(/WIP_COMPOSITION_UNPROVEN/);
     expect(ssiStatus).toMatch(/presentation_zero/);
     expect(ssiStatus).toMatch(/exportQtyCellValue/);
-    expect(ssiStatus).toMatch(/SSI_PRESENTATION_ZERO_HINT/);
+    expect(ssiStatus).toMatch(/resolvePhysicalDisplay/);
     expect(stock).toMatch(/resolveDapatDijualDisplay/);
     expect(stock).toMatch(/resolvePolosDisplay/);
     expect(stock).toMatch(/presentationFallback|data-presentation-fallback/);

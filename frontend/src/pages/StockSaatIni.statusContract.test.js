@@ -78,7 +78,7 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     container.remove();
   });
 
-  test("Belum lengkap → Dapat numeric (no Indikatif text); Polos null → presentation 0", async () => {
+  test("incomplete physical → Stock/Polos/ATP plain numbers; no status labels in cells", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "warehouse_standalone",
       r2_authority_active: false,
@@ -114,20 +114,19 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     });
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
-    expect(container.querySelector('[data-testid="stock-physical-m-partial"]')?.textContent)
-      .toMatch(/Belum lengkap/);
+    const physical = container.querySelector('[data-testid="stock-physical-m-partial"]');
+    expect(physical?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(physical?.textContent).not.toMatch(/Belum lengkap|Belum terverifikasi|Indikatif|tampilan/i);
     const dapat = container.querySelector('[data-testid="stock-siap-jual-m-partial"]');
     expect(dapat?.getAttribute("data-condition-status")).toBe("INDICATIVE");
     expect(dapat?.textContent).toMatch(/8/);
-    expect(dapat?.textContent).not.toMatch(/Indikatif/i);
-    expect(dapat?.textContent).not.toMatch(/Belum terverifikasi/i);
+    expect(dapat?.textContent).not.toMatch(/Indikatif|Belum|tampilan/i);
     const polos = container.querySelector('[data-testid="stock-polos-m-partial"]');
     expect(polos?.getAttribute("data-condition-status")).toBe("UNVERIFIED");
     expect(polos?.getAttribute("data-presentation-fallback")).toBe("true");
     expect(polos?.getAttribute("data-unverified-reason")).toBe("WIP_COMPOSITION_UNPROVEN");
     expect(polos?.textContent?.replace(/\s/g, "")).toBe("0");
-    expect(polos?.textContent).not.toMatch(/Belum terverifikasi/i);
-    expect(polos?.getAttribute("title") || "").toMatch(/0 tampilan; jumlah sebenarnya belum diketahui/);
+    expect(polos?.textContent).not.toMatch(/Belum terverifikasi|tampilan/i);
   });
 
   test("complete baseline negative SO → Dapat/Polos numbers only; detail keeps presentation contract", async () => {
@@ -215,9 +214,10 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     expect(container.querySelector('[data-testid="stock-table"]')).toBeTruthy();
   });
 
-  test("null ATP shows em dash (not sellable 0); CSV export keeps null Polos empty", async () => {
+  test("null ATP/Polos show plain 0 in UI; CSV export keeps null empty", async () => {
     const { exportQtyCellValue } = require("../lib/ssiStatusDisplay");
     expect(exportQtyCellValue({ qty_polos: null, qty_polos_status: "UNVERIFIED" }, "qty_polos")).toBe("");
+    expect(exportQtyCellValue({ stock_dapat_dijual: null }, "stock_dapat_dijual")).toBe("");
     expect(exportQtyCellValue({ qty_polos: 0 }, "qty_polos")).toBe(0);
 
     api.physicalStockCatalog.mockResolvedValue({
@@ -254,13 +254,13 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
     const dapat = container.querySelector('[data-testid="stock-siap-jual-m-atp-null"]');
-    expect(dapat?.textContent?.trim()).toBe("—");
-    expect(dapat?.textContent).not.toMatch(/^0$/);
+    expect(dapat?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(dapat?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(dapat?.textContent).not.toMatch(/tampilan|Belum|Indikatif/i);
     const polos = container.querySelector('[data-testid="stock-polos-m-atp-null"]');
     expect(polos?.getAttribute("data-presentation-fallback")).toBe("true");
     expect(polos?.textContent?.replace(/\s/g, "")).toBe("0");
-    expect(container.querySelector('[data-testid="stock-presentation-zero-legend"]')?.textContent)
-      .toMatch(/0 tampilan; jumlah sebenarnya belum diketahui/);
+    expect(container.querySelector('[data-testid="stock-presentation-zero-legend"]')).toBeNull();
   });
 
   test("Enter key on row opens detail; adjust control does not", async () => {

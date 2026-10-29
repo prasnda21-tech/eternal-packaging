@@ -10,9 +10,9 @@ import { formatDate, formatTrackingPageDateTime } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { warehouseLocationLabel } from "../lib/physicalStockView";
 import {
-  SSI_PRESENTATION_ZERO_HINT,
   SSI_REASON_LABEL,
   resolveDapatDijualDisplay,
+  resolvePhysicalDisplay,
   resolvePolosDisplay,
 } from "../lib/ssiStatusDisplay";
 import "./StockSaatIni.status.css";
@@ -97,30 +97,15 @@ function fieldReason(row, field) {
 
 function DetailCell({ row, field, physicalPrimary }) {
   if (field.physical) {
-    const present = physicalPrimary?.present;
-    const qty = present ? physicalPrimary.qty : null;
-    if (!present) {
-      const text = physicalPrimary?.text || "Belum saldo";
-      return {
-        qtyNode: (
-          <span
-            className={`stock-status-badge ${text === "Belum lengkap" ? "stock-status-badge--incomplete" : "stock-status-badge--missing"}`}
-          >
-            {text}
-          </span>
-        ),
-        note: text === "Belum lengkap"
-          ? "Ada gudang operasional yang belum saldo / belum valid."
-          : "Belum ada saldo fisik untuk gudang/lingkup ini.",
-        neg: false,
-      };
-    }
-    const neg = Number(qty) < 0;
+    const phys = resolvePhysicalDisplay(physicalPrimary);
+    const neg = Number(phys.qty) < 0;
     return {
       qtyNode: (
-        <span className={`mono${neg ? " stock-book-negative" : ""}`}>
-          {fmtQty(qty)}
-          {physicalPrimary?.flag ? ` · ${physicalPrimary.flag}` : ""}
+        <span
+          className={`mono${neg ? " stock-book-negative" : ""}`}
+          data-presentation-fallback={phys.presentationFallback ? "true" : undefined}
+        >
+          {fmtQty(phys.qty)}
         </span>
       ),
       note: "PCS",
@@ -129,23 +114,19 @@ function DetailCell({ row, field, physicalPrimary }) {
   }
   if (field.contract === "dapat") {
     const disp = resolveDapatDijualDisplay(row, physicalPrimary);
-    if (disp.mode === "unverified" || disp.qty == null) {
-      return {
-        qtyNode: <span className="mono">—</span>,
-        note: disp.title,
-        neg: false,
-      };
-    }
     const neg = Number(disp.qty) < 0;
     return {
       qtyNode: (
-        <span className={`ssi-doc-qty${neg ? " is-neg" : ""}`}>
+        <span
+          className={`ssi-doc-qty${neg ? " is-neg" : ""}`}
+          data-presentation-fallback={disp.presentationFallback ? "true" : undefined}
+        >
           <span className={`mono${neg ? " stock-book-negative" : ""}`}>
             {fmtQty(disp.qty)}
           </span>
         </span>
       ),
-      note: disp.title,
+      note: disp.title || "PCS",
       neg,
     };
   }
@@ -161,7 +142,7 @@ function DetailCell({ row, field, physicalPrimary }) {
           <span className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(disp.qty)}</span>
         </span>
       ),
-      note: disp.title,
+      note: disp.title || "PCS",
       neg,
     };
   }
@@ -172,7 +153,7 @@ function DetailCell({ row, field, physicalPrimary }) {
       qtyNode: (
         <span className="mono" data-presentation-fallback="true">{fmtQty(0)}</span>
       ),
-      note: fieldReason(row, field) || SSI_PRESENTATION_ZERO_HINT,
+      note: fieldReason(row, field) || "PCS",
       neg: false,
     };
   }
@@ -184,7 +165,7 @@ function DetailCell({ row, field, physicalPrimary }) {
           <span className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(qty)}</span>
         </span>
       ),
-      note: fieldReason(row, field),
+      note: fieldReason(row, field) || "PCS",
       neg,
     };
   }
@@ -446,11 +427,18 @@ export default function StockSaatIniDetailDrawer({
                     {whBalances.map((wb) => (
                       <tr key={wb.warehouse_id} data-testid={`ssi-detail-wh-${wb.warehouse_id}`}>
                         <td className="mono">{wb.warehouse_code || wb.warehouse_name || wb.warehouse_id}</td>
-                        <td className={`num mono${wb.saldo_buku_negatif ? " stock-book-negative" : ""}`}>
-                          {(wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity) ? (
-                            fmtQty(wb.physical_qty ?? 0)
-                          ) : (
-                            <span className="stock-status-badge stock-status-badge--missing">Belum saldo</span>
+                        <td
+                          className={`num mono${wb.saldo_buku_negatif ? " stock-book-negative" : ""}`}
+                          data-presentation-fallback={
+                            !(wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity)
+                              ? "true"
+                              : undefined
+                          }
+                        >
+                          {fmtQty(
+                            (wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity)
+                              ? (wb.physical_qty ?? 0)
+                              : 0,
                           )}
                         </td>
                         <td className="small">
