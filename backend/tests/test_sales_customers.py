@@ -46,6 +46,37 @@ def bind_motor():
     server.db = server.client[os.environ['DB_NAME']]
 
 
+async def _seed_master(name: str) -> dict:
+    """Dummy Master Produk so PO create fixtures meet the current line contract."""
+    import server
+    mid = f"mst-{uuid.uuid4().hex[:10]}"
+    doc = {
+        "id": mid,
+        "master_item_id": mid,
+        "accurate_item_id": f"aid-{uuid.uuid4().hex[:10]}",
+        "item_code": f"SKU-{uuid.uuid4().hex[:6].upper()}",
+        "item_name": name,
+        "name": name,
+        "unit": "pcs",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    }
+    await server.db.master_items.insert_one(dict(doc))
+    return doc
+
+
+def _line(master: dict, **extra) -> dict:
+    row = {
+        "name": master["item_name"],
+        "quantity": 10,
+        "unit": "pcs",
+        "master_item_id": master["id"],
+        "accurate_item_id": master.get("accurate_item_id"),
+    }
+    row.update(extra)
+    return row
+
+
 def test_customer_name_normalization():
     assert normalize_customer_name("  PT   Eternal   Packaging  ") == "pt eternal packaging"
     assert normalize_customer_name("pt eternal packaging") == "pt eternal packaging"
@@ -173,6 +204,7 @@ async def test_po_creation_auto_persists_new_customer_and_prevents_duplicate():
             assert len(r_check_before.json()["customers"]) == 0
 
             # 1. Create PO with new customer
+            master = await _seed_master(f"Box Custom {unique}")
             po_num_1 = f"PO-CUST-TEST-1-{unique.upper()}"
             po_payload_1 = {
                 "po_number": po_num_1,
@@ -182,7 +214,7 @@ async def test_po_creation_auto_persists_new_customer_and_prevents_duplicate():
                 "customer_pic": "Pak Anton",
                 "customer_email": "anton@autocust.com",
                 "customer_city": "Tangerang",
-                "line_items": [{"name": "Box Custom", "quantity": 500}],
+                "line_items": [_line(master, quantity=500)],
             }
             r_po1 = await client.post("/api/sales-orders", json=po_payload_1)
             assert r_po1.status_code == 200, r_po1.text
@@ -207,7 +239,7 @@ async def test_po_creation_auto_persists_new_customer_and_prevents_duplicate():
             po_payload_2 = {
                 "po_number": po_num_2,
                 "customer": f"  pt   auto   customer   {unique.upper()}  ",
-                "line_items": [{"name": "Box Custom 2", "quantity": 1000}],
+                "line_items": [_line(master, name="Box Custom 2", quantity=1000)],
             }
             r_po2 = await client.post("/api/sales-orders", json=po_payload_2)
             assert r_po2.status_code == 200, r_po2.text
@@ -328,13 +360,14 @@ async def test_customer_persistence_failure_rolls_back_exact_po(monkeypatch):
             monkeypatch.setattr(AsyncIOMotorCollection, "insert_one", failing_customer_insert)
 
             target_po = f"PO-FAIL-CUST-{unique.upper()}"
+            master = await _seed_master(f"Box Fail {unique}")
             with pytest.raises(Exception):
                 await client.post("/api/sales-orders", json={
                     "po_number": target_po,
                     "customer": new_cust_name,
                     "customer_phone": "0812345678",
                     "customer_address": "Jl. Cust Fail",
-                    "line_items": [{"name": "Box Fail", "quantity": 10}],
+                    "line_items": [_line(master)],
                 })
 
             # Exact task-created PO is rolled back
@@ -395,12 +428,13 @@ async def test_duplicate_normalized_customer_race_reuses_winner(monkeypatch):
             monkeypatch.setattr(AsyncIOMotorCollection, "insert_one", race_simulating_insert)
 
             po_num = f"PO-RACE-{unique.upper()}"
+            master = await _seed_master(f"Item A {unique}")
             r = await client.post("/api/sales-orders", json={
                 "po_number": po_num,
                 "customer": race_cust_name,
                 "customer_phone": "089999",
                 "customer_address": "Jl. Race",
-                "line_items": [{"name": "Item A", "quantity": 10}],
+                "line_items": [_line(master)],
             })
             assert r.status_code == 200, r.text
             assert race_triggered[0] is True
@@ -453,10 +487,11 @@ async def test_existing_customer_po_failure_preserves_customer():
             })
 
             # 3. Attempt to create PO with same duplicate po_number using existing customer
+            master = await _seed_master(f"Box {unique}")
             r = await client.post("/api/sales-orders", json={
                 "po_number": conflict_po_number,
                 "customer": existing_name,
-                "line_items": [{"name": "Box", "quantity": 10}],
+                "line_items": [_line(master)],
             })
             assert r.status_code == 409
 
