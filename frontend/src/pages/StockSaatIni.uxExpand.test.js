@@ -234,8 +234,11 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
       .toMatch(/Belum lengkap/);
     expect(container.querySelector('[data-testid="stock-physical-m-miss"]')?.textContent)
       .not.toMatch(/Belum tersedia|Belum terverifikasi/i);
-    expect(container.querySelector('[data-testid="stock-polos-m-miss"]')?.textContent)
-      .toMatch(/Belum terverifikasi/i);
+    // Jalur B Option A: null Polos → presentation numeric 0 (not status text in cell).
+    const polosMiss = container.querySelector('[data-testid="stock-polos-m-miss"]');
+    expect(polosMiss?.getAttribute("data-presentation-fallback")).toBe("true");
+    expect(polosMiss?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(polosMiss?.textContent).not.toMatch(/Belum terverifikasi/i);
     expect(container.querySelector('[data-testid="stock-flag-m-miss"]')).toBeNull();
     expect(container.querySelector('[data-testid="stock-legend-bar"]')).toBeTruthy();
     await act(async () => {
@@ -257,8 +260,10 @@ describe("Stock Saat Ini UX — compact list + detail drawer", () => {
     const missWh = container.querySelector('[data-testid="ssi-detail-wh-wh-a"]');
     expect(missWh?.textContent).toMatch(/Belum saldo/i);
     expect(missWh?.textContent).not.toMatch(/\b0\b/);
-    expect(container.querySelector('[data-testid="ssi-detail-qty_tercetak"]')?.textContent)
-      .toMatch(/Belum terverifikasi/i);
+    const detailTercetak = container.querySelector('[data-testid="ssi-detail-qty_tercetak"]');
+    expect(detailTercetak?.textContent?.replace(/\s/g, "")).toMatch(/0/);
+    expect(detailTercetak?.textContent).not.toMatch(/Belum terverifikasi/i);
+    expect(detailTercetak?.querySelector('[data-presentation-fallback="true"]')).toBeTruthy();
   });
 
   test("compatibility mode keeps blocked actions and contextual engine notes", async () => {

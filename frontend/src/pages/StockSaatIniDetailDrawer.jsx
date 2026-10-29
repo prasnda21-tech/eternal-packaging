@@ -10,6 +10,7 @@ import { formatDate, formatTrackingPageDateTime } from "../lib/constants";
 import { fmtQty } from "../components/qtyUi";
 import { warehouseLocationLabel } from "../lib/physicalStockView";
 import {
+  SSI_PRESENTATION_ZERO_HINT,
   SSI_REASON_LABEL,
   resolveDapatDijualDisplay,
   resolvePolosDisplay,
@@ -128,9 +129,9 @@ function DetailCell({ row, field, physicalPrimary }) {
   }
   if (field.contract === "dapat") {
     const disp = resolveDapatDijualDisplay(row, physicalPrimary);
-    if (disp.mode === "unverified") {
+    if (disp.mode === "unverified" || disp.qty == null) {
       return {
-        qtyNode: <span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span>,
+        qtyNode: <span className="mono">—</span>,
         note: disp.title,
         neg: false,
       };
@@ -140,11 +141,8 @@ function DetailCell({ row, field, physicalPrimary }) {
       qtyNode: (
         <span className={`ssi-doc-qty${neg ? " is-neg" : ""}`}>
           <span className={`mono${neg ? " stock-book-negative" : ""}`}>
-            {disp.qty == null ? "—" : fmtQty(disp.qty)}
+            {fmtQty(disp.qty)}
           </span>
-          {disp.mode === "indicative" ? (
-            <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
-          ) : null}
         </span>
       ),
       note: disp.title,
@@ -153,19 +151,14 @@ function DetailCell({ row, field, physicalPrimary }) {
   }
   if (field.contract === "polos") {
     const disp = resolvePolosDisplay(row, physicalPrimary);
-    if (disp.mode === "unverified") {
-      return {
-        qtyNode: <span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span>,
-        note: disp.title,
-        neg: false,
-      };
-    }
     const neg = Number(disp.qty) < 0;
     return {
       qtyNode: (
-        <span className={`ssi-doc-qty${neg ? " is-neg" : ""}`}>
+        <span
+          className={`ssi-doc-qty${neg ? " is-neg" : ""}`}
+          data-presentation-fallback={disp.presentationFallback ? "true" : undefined}
+        >
           <span className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(disp.qty)}</span>
-          <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
         </span>
       ),
       note: disp.title,
@@ -176,8 +169,10 @@ function DetailCell({ row, field, physicalPrimary }) {
   const status = fieldStatus(row, field);
   if (qty == null || status === "BELUM_TERSEDIA" || status === "UNVERIFIED") {
     return {
-      qtyNode: <span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span>,
-      note: fieldReason(row, field),
+      qtyNode: (
+        <span className="mono" data-presentation-fallback="true">{fmtQty(0)}</span>
+      ),
+      note: fieldReason(row, field) || SSI_PRESENTATION_ZERO_HINT,
       neg: false,
     };
   }
@@ -187,7 +182,6 @@ function DetailCell({ row, field, physicalPrimary }) {
       qtyNode: (
         <span className="ssi-doc-qty">
           <span className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(qty)}</span>
-          <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
         </span>
       ),
       note: fieldReason(row, field),

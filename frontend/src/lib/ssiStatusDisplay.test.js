@@ -1,12 +1,14 @@
 import {
+  SSI_PRESENTATION_ZERO_HINT,
   SSI_STATUS,
+  exportQtyCellValue,
   isPhysicalBaselineIncomplete,
   resolveDapatDijualDisplay,
   resolvePolosDisplay,
 } from "./ssiStatusDisplay";
 
-describe("ssiStatusDisplay P0-B1 UI-only contract", () => {
-  test("incomplete Stock cell → Dapat Dijual Indikatif keeps negative", () => {
+describe("ssiStatusDisplay Jalur B Option A + ATP display", () => {
+  test("T2/T3 incomplete baseline → Dapat stays numeric negative without Indikatif label", () => {
     const item = {
       stock_dapat_dijual: -159100,
       qty_siap_jual_status: "READY",
@@ -18,9 +20,10 @@ describe("ssiStatusDisplay P0-B1 UI-only contract", () => {
     };
     const primary = { present: false, text: "Belum lengkap" };
     const disp = resolveDapatDijualDisplay(item, primary);
-    expect(disp.mode).toBe("indicative");
+    expect(disp.mode).toBe("qty");
     expect(disp.qty).toBe(-159100);
-    expect(disp.label).toBe("Indikatif");
+    expect(disp.label).toBeNull();
+    expect(disp.presentationFallback).toBe(false);
     expect(disp.status).toBe(SSI_STATUS.INDICATIVE);
   });
 
@@ -41,7 +44,15 @@ describe("ssiStatusDisplay P0-B1 UI-only contract", () => {
     expect(disp.status).toBe(SSI_STATUS.READY);
   });
 
-  test("missing baseline Belum saldo → Dapat Indikatif", () => {
+  test("null ATP → unverified, not sellable zero", () => {
+    const item = { stock_dapat_dijual: null, qty_siap_jual_status: "UNVERIFIED" };
+    const disp = resolveDapatDijualDisplay(item, { present: true, qty: 1 });
+    expect(disp.mode).toBe("unverified");
+    expect(disp.qty).toBeNull();
+    expect(disp.presentationFallback).toBe(false);
+  });
+
+  test("missing baseline with numeric ATP → qty mode keeps number", () => {
     const item = {
       stock_dapat_dijual: 100,
       qty_siap_jual_status: "BELUM_TERSEDIA",
@@ -49,23 +60,45 @@ describe("ssiStatusDisplay P0-B1 UI-only contract", () => {
     };
     const primary = { present: false, text: "Belum saldo" };
     expect(isPhysicalBaselineIncomplete(item, primary)).toBe(true);
-    expect(resolveDapatDijualDisplay(item, primary).mode).toBe("indicative");
-    expect(resolveDapatDijualDisplay(item, primary).qty).toBe(100);
+    const disp = resolveDapatDijualDisplay(item, primary);
+    expect(disp.mode).toBe("qty");
+    expect(disp.qty).toBe(100);
+    expect(disp.label).toBeNull();
   });
 
-  test("Polos UNVERIFIED when no calc — not fake zero", () => {
+  test("T6 Polos null/UNVERIFIED → presentation 0; T7 reason retained", () => {
     const item = {
       qty_polos: null,
       qty_polos_status: "UNVERIFIED",
-      qty_polos_reason: "DEPENDENT_UNKNOWN",
+      qty_polos_reason: "WIP_COMPOSITION_UNPROVEN",
       baseline_status: "reconciled",
     };
     const disp = resolvePolosDisplay(item, { present: true, qty: 1000 });
-    expect(disp.mode).toBe("unverified");
-    expect(disp.label).toBe("Belum terverifikasi");
+    expect(disp.mode).toBe("presentation_zero");
+    expect(disp.qty).toBe(0);
+    expect(disp.presentationFallback).toBe(true);
+    expect(disp.status).toBe(SSI_STATUS.UNVERIFIED);
+    expect(disp.reason).toBe("WIP_COMPOSITION_UNPROVEN");
+    expect(disp.title).toContain(SSI_PRESENTATION_ZERO_HINT);
+    expect(item.qty_polos).toBeNull();
   });
 
-  test("Polos READY from API still displays as Indikatif (no WIP coverage)", () => {
+  test("T4 known qty_polos=0 displays exact 0", () => {
+    const item = {
+      qty_polos: 0,
+      qty_polos_status: "READY",
+      baseline_status: "reconciled",
+      warehouse_balances: [
+        { warehouse_id: "a", balance_present: true, baseline_status: "reconciled" },
+      ],
+    };
+    const disp = resolvePolosDisplay(item, { present: true, qty: 0 });
+    expect(disp.mode).toBe("qty");
+    expect(disp.qty).toBe(0);
+    expect(disp.presentationFallback).toBe(false);
+  });
+
+  test("T5 known qty_polos>0 displays exact number without Indikatif label", () => {
     const item = {
       qty_polos: 2000,
       qty_polos_status: "READY",
@@ -75,21 +108,15 @@ describe("ssiStatusDisplay P0-B1 UI-only contract", () => {
       ],
     };
     const disp = resolvePolosDisplay(item, { present: true, qty: 6000 });
-    expect(disp.mode).toBe("indicative");
+    expect(disp.mode).toBe("qty");
     expect(disp.qty).toBe(2000);
-    expect(disp.status).toBe(SSI_STATUS.INDICATIVE);
+    expect(disp.label).toBeNull();
+    expect(disp.presentationFallback).toBe(false);
   });
 
-  test("precedence: incomplete FE primary overrides API READY for Dapat", () => {
-    const item = {
-      stock_dapat_dijual: -8000,
-      qty_siap_jual_status: "READY",
-    };
-    const disp = resolveDapatDijualDisplay(item, {
-      present: false,
-      text: "Belum lengkap",
-    });
-    expect(disp.mode).toBe("indicative");
-    expect(disp.qty).toBe(-8000);
+  test("T13 export never converts unknown Polos into confirmed 0", () => {
+    expect(exportQtyCellValue({ qty_polos: null }, "qty_polos")).toBe("");
+    expect(exportQtyCellValue({ qty_polos: 0 }, "qty_polos")).toBe(0);
+    expect(exportQtyCellValue({ qty_polos: 1500 }, "qty_polos")).toBe(1500);
   });
 });

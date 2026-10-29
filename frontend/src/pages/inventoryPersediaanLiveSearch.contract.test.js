@@ -92,10 +92,14 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/stock-polos-header|testId: "stock-polos"/);
     expect(stock).toMatch(/stock-siap-jual-header|testId: "stock-siap-jual"/);
     expect(stock).toMatch(/BELUM_TERSEDIA/);
-    expect(stock).toMatch(/Belum terverifikasi/);
+    // Jalur B Option A: qty cells are numeric; presentation-zero hint replaces Belum/Indikatif badges.
+    expect(stock).toMatch(/SSI_PRESENTATION_ZERO_HINT|0 tampilan; jumlah sebenarnya belum diketahui/);
+    expect(stock).toMatch(/data-presentation-fallback/);
+    expect(stock).toMatch(/exportQtyCellValue/);
     expect(stock).toMatch(/Belum saldo/);
     expect(stock).not.toMatch(/Belum tersedia/);
-    expect(detail).toMatch(/Belum terverifikasi/);
+    expect(detail).toMatch(/SSI_PRESENTATION_ZERO_HINT|0 tampilan; jumlah sebenarnya belum diketahui/);
+    expect(detail).toMatch(/data-presentation-fallback/);
     expect(detail).toMatch(/centered-modal/);
     expect(detail).toMatch(/ssi-detail-modal-panel/);
     expect(detail).toMatch(/ssi-detail-backdrop/);
@@ -152,13 +156,17 @@ describe("Persediaan live search inventory scope", () => {
     expect(stock).toMatch(/qty_polos/);
     expect(stock).toMatch(/tercetak_belum_kirim/);
     expect(stock).toMatch(/cetak_sudah_dikirim/);
-    // Reason codes live in shared status contract helper (P0-B1).
+    // Reason codes live in shared status contract helper (P0-B1 + Jalur B Option A).
     expect(ssiStatus).toMatch(/NO_OPERATOR_EVIDENCE/);
     expect(ssiStatus).toMatch(/INDICATIVE/);
     expect(ssiStatus).toMatch(/BASELINE_INCOMPLETE/);
+    expect(ssiStatus).toMatch(/WIP_COMPOSITION_UNPROVEN/);
+    expect(ssiStatus).toMatch(/presentation_zero/);
+    expect(ssiStatus).toMatch(/exportQtyCellValue/);
+    expect(ssiStatus).toMatch(/SSI_PRESENTATION_ZERO_HINT/);
     expect(stock).toMatch(/resolveDapatDijualDisplay/);
     expect(stock).toMatch(/resolvePolosDisplay/);
-    expect(stock).toMatch(/Indikatif/);
+    expect(stock).toMatch(/presentationFallback|data-presentation-fallback/);
     expect(stock).toMatch(/MANUAL_ADJUSTMENT/);
   });
 

@@ -19,7 +19,9 @@ import {
   warehouseLocationLabel,
 } from "../lib/physicalStockView";
 import {
+  SSI_PRESENTATION_ZERO_HINT,
   SSI_REASON_LABEL,
+  exportQtyCellValue,
   resolveDapatDijualDisplay,
   resolvePolosDisplay,
 } from "../lib/ssiStatusDisplay";
@@ -84,7 +86,7 @@ const EXCEL_SSI_COLUMNS = [
     key: "stock_dapat_dijual",
     label: "Stock Dapat Dijual",
     testId: "stock-siap-jual",
-    note: "Stock − (PO aktif − qty sudah dikirim); boleh negatif; Indikatif bila stok belum lengkap",
+    note: "Stock − (PO aktif − qty sudah dikirim); boleh negatif",
     statusKey: "qty_siap_jual_status",
     reasonKey: "qty_siap_jual_reason",
     noteKey: "qty_siap_jual_note",
@@ -101,7 +103,7 @@ const EXCEL_SSI_COLUMNS = [
     key: "qty_polos",
     label: "Qty Polos",
     testId: "stock-polos",
-    note: "Stock − Barang Tercetak Belum Kirim (PCS); Belum terverifikasi bila bukti cetak/kirim/WIP/rusak tidak cukup",
+    note: "Stock − Barang Tercetak Belum Kirim (PCS); 0 tampilan bila belum diketahui (bukan stok polos terkonfirmasi)",
     statusKey: "qty_polos_status",
     legacyStatusKey: "qty_polos_gudang_status",
     reasonKey: "qty_polos_reason",
@@ -166,64 +168,47 @@ function excelCellTitle(col, row, status) {
   ).trim();
   const reasonLabel = SSI_REASON_LABEL[reasonCode] || reasonCode;
   if (status === "BELUM_TERSEDIA" || status === "UNVERIFIED") {
-    return [note || "Belum terverifikasi", reasonLabel, col.note].filter(Boolean).join(" — ");
+    return [SSI_PRESENTATION_ZERO_HINT, reasonLabel, note, col.note].filter(Boolean).join(" — ");
   }
   if (status === "INDICATIVE") {
-    return [note || "Indikatif", reasonLabel, col.note].filter(Boolean).join(" — ");
+    return [reasonLabel, note, col.note].filter(Boolean).join(" — ");
   }
   return col.note;
 }
 
 function excelQtyCell(col, row, key, physicalPrimary) {
   const masterItemId = row?.master_item_id;
-  // P0-B1 status contract for Dapat Dijual / Polos
+  // Jalur B Option A: numeric cells; presentation-zero for unknown Polos / print cols.
   if (col.key === "qty_polos") {
     const disp = resolvePolosDisplay(row, physicalPrimary);
-    if (disp.mode === "unverified") {
-      return (
-        <td
-          key={key || col.key}
-          className="col-fit num"
-          data-testid={`${col.testId}-${masterItemId}`}
-          data-condition-status="UNVERIFIED"
-          data-unverified-reason={disp.reason || undefined}
-          title={disp.title}
-        >
-          <span className="stock-status-badge stock-status-badge--unverified" title={disp.title}>
-            Belum terverifikasi
-          </span>
-        </td>
-      );
-    }
     const neg = Number(disp.qty) < 0;
     return (
       <td
         key={key || col.key}
         className={`col-fit num mono${neg ? " stock-book-negative" : ""}`}
         data-testid={`${col.testId}-${masterItemId}`}
-        data-condition-status="INDICATIVE"
-        data-status-reason={disp.reason || undefined}
+        data-condition-status={disp.status}
+        data-presentation-fallback={disp.presentationFallback ? "true" : undefined}
+        data-unverified-reason={disp.presentationFallback ? (disp.reason || undefined) : undefined}
+        data-status-reason={!disp.presentationFallback ? (disp.reason || undefined) : undefined}
         title={disp.title}
       >
-        <span className="stock-indicative-cell">
-          <span className="mono">{fmtQty(disp.qty)}</span>
-          <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
-        </span>
+        {fmtQty(disp.qty)}
       </td>
     );
   }
   if (col.key === "stock_dapat_dijual") {
     const disp = resolveDapatDijualDisplay(row, physicalPrimary);
-    if (disp.mode === "unverified") {
+    if (disp.mode === "unverified" || disp.qty == null) {
       return (
         <td
           key={key || col.key}
-          className="col-fit num"
+          className="col-fit num mono"
           data-testid={`${col.testId}-${masterItemId}`}
           data-condition-status="UNVERIFIED"
           title={disp.title}
         >
-          <span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span>
+          —
         </td>
       );
     }
@@ -238,14 +223,7 @@ function excelQtyCell(col, row, key, physicalPrimary) {
         data-status-reason={disp.reason || undefined}
         title={disp.title}
       >
-        {disp.mode === "indicative" ? (
-          <span className="stock-indicative-cell">
-            <span className="mono">{disp.qty == null ? "—" : fmtQty(disp.qty)}</span>
-            <span className="stock-status-badge stock-status-badge--indicative">Indikatif</span>
-          </span>
-        ) : (
-          fmtQty(disp.qty)
-        )}
+        {fmtQty(disp.qty)}
       </td>
     );
   }
@@ -261,9 +239,10 @@ function excelQtyCell(col, row, key, physicalPrimary) {
     return (
       <td
         key={key || col.key}
-        className="col-fit num"
+        className="col-fit num mono"
         data-testid={`${col.testId}-${masterItemId}`}
-        data-condition-status="BELUM_TERSEDIA"
+        data-condition-status={status || "UNVERIFIED"}
+        data-presentation-fallback="true"
         data-unverified-reason={String(
           (col.reasonKey && row?.[col.reasonKey])
           || (col.legacyReasonKey && row?.[col.legacyReasonKey])
@@ -271,9 +250,7 @@ function excelQtyCell(col, row, key, physicalPrimary) {
         ) || undefined}
         title={title}
       >
-        <span className="stock-status-badge stock-status-badge--unverified" title={title}>
-          Belum terverifikasi
-        </span>
+        {fmtQty(0)}
       </td>
     );
   }
@@ -688,10 +665,7 @@ export default function StockSaatIni() {
       "Terakhir Update",
     ];
     const lines = [header.join(",")];
-    const excelCsvValue = (row, key) => {
-      const v = row?.[key];
-      return v == null ? "" : v;
-    };
+    // Export keeps API nulls empty — never write presentation-fallback 0 as confirmed qty.
     items.forEach((row) => {
       const location = selectedFilterWarehouse
         ? warehouseLocationLabel(selectedFilterWarehouse, branches)
@@ -699,8 +673,8 @@ export default function StockSaatIni() {
       const book = bookPhysicalDisplay(row, { warehouseId: selectedFilterWarehouse?.id || "" });
       const excelVals = EXCEL_SSI_COLUMNS.map((c) => (
         c.usePhysicalDisplay
-          ? (book.present ? book.qty : excelCsvValue(row, c.key))
-          : excelCsvValue(row, c.key)
+          ? (book.present ? book.qty : exportQtyCellValue(row, c.key))
+          : exportQtyCellValue(row, c.key)
       ));
       const cells = [
         row.item_code,
@@ -1139,19 +1113,21 @@ export default function StockSaatIni() {
             >
               <p className="stock-legend-detail-title">Penjelasan status stok</p>
               <div className="stock-legend-detail-list">
-                <p><span className="stock-qty-chip">1.500</span> Stok fisik tersedia dan valid.</p>
+                <p><span className="stock-qty-chip">1.500</span> Stok fisik tersedia dan valid (format angka Indonesia).</p>
                 <p><span className="stock-status-badge stock-status-badge--missing">Belum saldo</span> Ada history/aktivitas tetapi saldo gudang belum ada — bukan stok 0 terbukti.</p>
-                <p><span className="stock-status-badge stock-status-badge--unverified">Belum terverifikasi</span> Bukti transaksi aktivitas (cetak/kirim) belum cukup.</p>
                 <p><span className="stock-status-badge stock-status-badge--incomplete">Belum lengkap</span> Ada satu atau lebih gudang yang belum valid.</p>
-                <p><span className="stock-status-badge stock-status-badge--indicative">Indikatif</span> Angka dihitung, tetapi baseline stok belum lengkap atau bukti WIP/rusak/polos belum tercakup — bukan status terverifikasi.</p>
-                <p><span className="stock-status-badge stock-status-badge--deficit">Defisit</span> Saldo fisik kurang dari 0.</p>
-                <p><span className="stock-legend-invalid">Belum valid</span> Qty tersedia tidak dapat dihitung karena data tidak lengkap.</p>
+                <p><span className="mono">0</span> pada Qty Polos / kolom aktivitas: {SSI_PRESENTATION_ZERO_HINT} — bukan stok terkonfirmasi; status internal tetap di API.</p>
+                <p><span className="stock-status-badge stock-status-badge--deficit">Defisit</span> Saldo fisik atau ATP kurang dari 0 (ditampilkan apa adanya).</p>
+                <p>Ekspor CSV menyimpan nilai API apa adanya; kolom kosong = belum diketahui (bukan 0 terkonfirmasi).</p>
               </div>
               <p className="muted small" data-testid="stock-read-mode">{modeFullLabel}</p>
               <p className="muted small" data-testid="stock-excel-formula-note">
                 Rumus Excel Owner (PCS): Stock Dapat Dijual = Stock − (PO aktif − qty dikirim);
                 Qty Polos = Stock − Tercetak Belum Kirim; Tercetak Belum Kirim = Qty Tercetak − Cetak Sudah Dikirim.
                 Nilai negatif = defisit (tidak memblokir SO).
+              </p>
+              <p className="muted small" data-testid="stock-presentation-zero-legend">
+                {SSI_PRESENTATION_ZERO_HINT}
               </p>
               {!warehouseActive && (
                 <p className="muted small" data-testid="stock-compat-branch-note">
@@ -1167,7 +1143,7 @@ export default function StockSaatIni() {
               )}
               {warehouseActive && (
                 <p className="muted small" data-testid="stock-book-vs-count-note">
-                  Kolom Excel lingkup cabang (PO / tercetak / kirim). Tanpa aktivitas relevan = Stock 0; ada history tanpa saldo = Belum saldo; bukti aktivitas kurang = Belum terverifikasi.
+                  Kolom Excel lingkup cabang (PO / tercetak / kirim). Tanpa aktivitas relevan = Stock 0; ada history tanpa saldo = Belum saldo; qty aktivitas belum diketahui = 0 tampilan (bukan terkonfirmasi).
                 </p>
               )}
             </div>
@@ -1351,16 +1327,7 @@ export default function StockSaatIni() {
                         data-condition-status={dapatDisp.status}
                         title={dapatDisp.title}
                       >
-                        {dapatDisp.mode === "unverified"
-                          ? "Belum terverifikasi"
-                          : (
-                            <>
-                              {dapatDisp.qty == null ? "—" : fmtQty(dapatDisp.qty)}
-                              {dapatDisp.mode === "indicative" ? (
-                                <span className="stock-status-badge stock-status-badge--indicative"> Indikatif</span>
-                              ) : null}
-                            </>
-                          )}
+                        {dapatDisp.qty == null ? "—" : fmtQty(dapatDisp.qty)}
                       </strong>
                     </div>
                     <div>
@@ -1368,16 +1335,10 @@ export default function StockSaatIni() {
                       <strong
                         data-testid={`stock-polos-mobile-${it.master_item_id}`}
                         data-condition-status={polosDisp.status}
+                        data-presentation-fallback={polosDisp.presentationFallback ? "true" : undefined}
                         title={polosDisp.title}
                       >
-                        {polosDisp.mode === "unverified"
-                          ? "Belum terverifikasi"
-                          : (
-                            <>
-                              {fmtQty(polosDisp.qty)}
-                              <span className="stock-status-badge stock-status-badge--indicative"> Indikatif</span>
-                            </>
-                          )}
+                        {fmtQty(polosDisp.qty)}
                       </strong>
                     </div>
                   </div>
