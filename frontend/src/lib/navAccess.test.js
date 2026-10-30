@@ -82,10 +82,20 @@ describe("salesNavVisible", () => {
     expect(v.importPo).toBe(true);
   });
 
-  test("shows parent when Pesanan Penjualan is granted", () => {
+  test("hides Pesanan Penjualan when only the nav key is granted", () => {
     const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesOrder));
-    expect(v.parent).toBe(true);
-    expect(v.salesOrder).toBe(true);
+    expect(v.salesOrder).toBe(false);
+    expect(salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesOrder, NAV_KEYS.praPo)).some((item) => item.key === NAV_KEYS.salesOrder)).toBe(false);
+    expect(salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesOrder, NAV_KEYS.praPo)).parent).toBe(true);
+    expect(salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesOrder, NAV_KEYS.praPo)).praPo).toBe(true);
+  });
+
+  test("shows Pesanan Penjualan for each list-gate permission", () => {
+    for (const key of ["sales_order.view", "sales_order.create", "po.view"]) {
+      const v = salesNavVisible(has(NAV_KEYS.sales, key));
+      expect(v.parent).toBe(true);
+      expect(v.salesOrder).toBe(true);
+    }
   });
 
   test("shows parent when Faktur Penjualan is granted", () => {
@@ -121,7 +131,7 @@ describe("salesNavVisible", () => {
 
 describe("salesMenuItems", () => {
   test("builds tiles from existing Penjualan children only", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesCustomers, NAV_KEYS.salesOrder, NAV_KEYS.importPo));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesCustomers, NAV_KEYS.salesOrder, "po.view", NAV_KEYS.importPo));
     expect(items).toEqual([
       { key: NAV_KEYS.salesCustomers, label: "Data Pelanggan", to: "/penjualan/data-pelanggan", tone: "teal", testid: "top-nav-sales-customers" },
       { key: NAV_KEYS.salesOrder, label: "Pesanan Penjualan", to: "/penjualan/pesanan-penjualan", tone: "blue", testid: "top-nav-sales-order" },

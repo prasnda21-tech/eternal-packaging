@@ -350,23 +350,23 @@ describe("Pesanan Penjualan Nav Integration", () => {
     expect(SALES_TILE_TESTIDS[NAV_KEYS.salesOrder]).toBe("top-nav-sales-order");
   });
 
-  test("salesNavVisible enables parent for salesOrder", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesOrder));
+  test("salesNavVisible enables Pesanan Penjualan only from the list gate", () => {
+    const navOnly = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesOrder));
+    expect(navOnly.salesOrder).toBe(false);
+    const v = salesNavVisible(has(NAV_KEYS.sales, "po.view"));
     expect(v.parent).toBe(true);
     expect(v.salesOrder).toBe(true);
   });
 
   test("salesMenuItems renders Pesanan Penjualan tile", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesOrder));
-    expect(items).toEqual([
-      {
-        key: NAV_KEYS.salesOrder,
-        label: "Pesanan Penjualan",
-        to: "/penjualan/pesanan-penjualan",
-        tone: "blue",
-        testid: "top-nav-sales-order",
-      },
-    ]);
+    const items = salesMenuItems(has(NAV_KEYS.sales, "po.view"));
+    expect(items.find((item) => item.key === NAV_KEYS.salesOrder)).toEqual({
+      key: NAV_KEYS.salesOrder,
+      label: "Pesanan Penjualan",
+      to: "/penjualan/pesanan-penjualan",
+      tone: "blue",
+      testid: "top-nav-sales-order",
+    });
   });
 });
 

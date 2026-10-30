@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from permissions import (
     ALL_PERMISSIONS,
     NAV_ALWAYS_VISIBLE,
+    SALES_ORDER_PAGE_KEYS,
     NAV_CONFIGURED,
     NAV_MENU_ITEMS,
     NAV_PERMISSION_KEYS,
@@ -161,6 +162,7 @@ def test_sales_receipt_nav_is_registered_like_other_sales_menus():
         assert key in ALL_PERMISSIONS, key
         assert key in NAV_PERMISSION_KEYS, key
     assert "nav.sales.sales_receipt" not in NAV_ALWAYS_VISIBLE
+    assert "nav.sales.sales_order" not in NAV_ALWAYS_VISIBLE
     assert "not.a.real.permission" not in ALL_PERMISSIONS
 
 
@@ -189,6 +191,55 @@ def test_product_request_nav_visible_for_configured_custom_roles():
     assert "nav.sales" in derived_no_parent
     assert "nav.sales.sales_order" in derived_no_parent
     assert "nav.sales.sales_receipt" not in derived_no_parent
+
+
+def test_sales_order_menu_follows_list_gate_not_stored_nav_key():
+    """Pesanan Penjualan follows GET /sales-orders, not a leftover nav key."""
+    assert SALES_ORDER_PAGE_KEYS == ("sales_order.view", "sales_order.create", "po.view")
+    stored_only = {
+        "nav.configured",
+        "nav.sales",
+        "nav.sales.sales_order",
+        "nav.sales.pra_po",
+        "pra_po.view_own",
+    }
+    hidden = with_nav_defaults(stored_only)
+    assert "nav.sales.sales_order" not in hidden
+    assert "po.view" not in hidden
+    assert "sales_order.view" not in hidden
+    assert "sales_order.create" not in hidden
+    assert "nav.sales" in hidden
+    assert "nav.sales.pra_po" in hidden
+    assert "nav.sales.product_requests" in hidden
+
+    for key in SALES_ORDER_PAGE_KEYS:
+        opened = with_nav_defaults({"nav.configured", key})
+        assert "nav.sales.sales_order" in opened, key
+        assert "nav.sales" in opened, key
+        assert key in opened
+
+    revoked = effective_permissions(
+        "crm",
+        None,
+        {"crm": ["nav.sales", "nav.sales.sales_order", "pra_po.view_own", "sales.invoice.view"]},
+    )
+    assert "nav.sales.sales_order" not in revoked
+    assert "nav.sales" in revoked
+    assert "nav.sales.pra_po" in revoked
+    assert "nav.sales.sales_invoice" in revoked
+
+    restored = effective_permissions(
+        "crm",
+        {"po.view": True},
+        {"crm": ["nav.sales", "nav.sales.sales_order", "pra_po.view_own", "sales.invoice.view"]},
+    )
+    assert "po.view" in restored
+    assert "nav.sales.sales_order" in restored
+    assert "nav.sales.sales_invoice" in restored
+
+    admin = effective_permissions("admin", None)
+    assert "nav.sales.sales_order" in admin
+    assert "po.view" in admin
 
 
 def test_sales_receipt_menu_matches_role_view_permission():

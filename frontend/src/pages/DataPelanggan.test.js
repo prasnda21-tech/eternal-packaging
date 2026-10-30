@@ -167,7 +167,7 @@ describe("Data Pelanggan Navigation & Catalog Invariants", () => {
   });
 
   test("salesMenuItems renders Data Pelanggan tile before Pesanan Penjualan", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesCustomers, NAV_KEYS.salesOrder));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesCustomers, NAV_KEYS.salesOrder, "po.view"));
     expect(items.map((i) => i.key)).toEqual([NAV_KEYS.salesCustomers, NAV_KEYS.salesOrder]);
     expect(items[0]).toEqual({
       key: NAV_KEYS.salesCustomers,

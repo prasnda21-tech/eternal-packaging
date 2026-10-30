@@ -281,7 +281,12 @@ export function salesNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "pra_po.view_all")
     || canSeeNav(hasPerm, "pra_po.verify")
   );
-  const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
+  // Same any-of set as GET /sales-orders. The nav key alone does not open the list.
+  const salesOrder = parent && (
+    canSeeNav(hasPerm, "sales_order.view")
+    || canSeeNav(hasPerm, "sales_order.create")
+    || canSeeNav(hasPerm, "po.view")
+  );
   const salesDeliveryOrder = parent && canSeeNav(hasPerm, "sales.delivery.view");
   const salesInvoice = parent && canSeeNav(hasPerm, "sales.invoice.view");
   const salesReceipt = parent && canSeeNav(hasPerm, "sales.receipt.view");
