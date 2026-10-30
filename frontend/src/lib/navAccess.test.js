@@ -535,9 +535,13 @@ describe("purchasingMenuItems", () => {
     const items = purchasingMenuItems(has(
       NAV_KEYS.purchasing,
       NAV_KEYS.purchaseRequests,
+      "purchase_requests.view",
       NAV_KEYS.purchaseOrders,
+      "purchase_orders.view",
       NAV_KEYS.purchaseInvoices,
+      "purchase_invoices.view",
       NAV_KEYS.purchasePayments,
+      "purchase_payments.view",
       NAV_KEYS.purchaseReceipts,
       "purchase_receipts.view",
       NAV_KEYS.purchaseHpp,
@@ -631,7 +635,7 @@ describe("productionMenuItems", () => {
 
   test("omits Pengiriman Hari Ini without status po and does not invent Tugas Produksi tile", () => {
     const items = productionMenuItems(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.tasksOperator));
-    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi"]);
+    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi", "Rencana Jadwal Kirim"]);
     expect(items.some((item) => item.label === "Tugas Produksi")).toBe(false);
     expect(productionMenuItems(has(NAV_KEYS.statusPo))).toEqual([]);
   });
