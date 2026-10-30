@@ -2486,22 +2486,41 @@ function WorkPanelSettingsTab({ notify, canEdit, canManagePerms, canListRoles })
 }
 
 /* ---------------- Sidebar access tab ---------------- */
-function SidebarAccessTab({ permissionCatalog, canManagePerms, notify }) {
-  const { user, refresh } = useAuth();
+function SidebarAccessTab({ permissionCatalog }) {
   const [roles, setRoles] = useState([]);
+  const [error, setError] = useState("");
   useEffect(() => {
-    api.adminListRoles().then((d) => setRoles(d.roles || [])).catch(() => {});
+    api.adminListRoles().then((d) => setRoles(d.roles || []))
+      .catch(() => setError("Gagal memuat pratinjau menu"));
   }, []);
+  const menus = (permissionCatalog?.nav_menu?.length ? permissionCatalog.nav_menu : NAV_MENU_FALLBACK);
   return (
     <div data-testid="settings-sidebar-access">
-      <NavAccessMatrix
-        roles={roles}
-        permissionCatalog={permissionCatalog}
-        canManagePerms={canManagePerms}
-        notify={notify}
-        currentUserRole={user?.role}
-        onRefreshMe={refresh}
-      />
+      <div className="nav-access-head">
+        <div>
+          <h3><PanelLeft size={16} /> Pratinjau Sidebar per Role</h3>
+          <p className="hint">Menu mengikuti izin fungsional dari Role &amp; Hak Akses. Pengaturan sidebar terpisah sudah tidak diperlukan. Ini pratinjau role; override akun dapat berbeda.</p>
+        </div>
+      </div>
+      {error && <div className="error">{error}</div>}
+      <div className="nav-access-wrap">
+        <table className="nav-access-table">
+          <thead><tr><th scope="col">Menu</th>{roles.filter((r) => r.status !== "inactive").map((r) => <th scope="col" key={r.role}>{r.label || r.role}</th>)}</tr></thead>
+          <tbody>
+            {menus.filter((m) => m.key !== "nav.configured").map((m) => (
+              <tr key={m.key}>
+                <th scope="row">{m.label}</th>
+                {roles.filter((r) => r.status !== "inactive").map((r) => {
+                  const visible = (r.permissions || []).includes(m.key);
+                  return <td key={r.role} title={visible ? "Diizinkan berdasarkan role" : "Tidak diizinkan berdasarkan role"}>
+                    <span>{visible ? "✓" : "–"}</span>
+                  </td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
