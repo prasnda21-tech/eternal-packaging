@@ -488,3 +488,25 @@ def test_only_view_produces_dashboard_menu_without_granting_data():
     assert "nav.dashboard" in visible
     assert "dashboard.production.input" not in visible
     assert "dashboard.production.edit" not in visible
+
+
+def test_user_business_deny_removes_auto_generated_delivery_menu():
+    role_grants = {"crm": ["sales.delivery.view", "nav.configured"]}
+    effective = effective_permissions("crm", {"sales.delivery.view": False}, role_grants)
+    assert "sales.delivery.view" not in effective
+    assert "nav.sales.delivery_order" not in effective
+
+
+def test_user_business_allow_generates_delivery_menu_with_stored_nav_config():
+    role_grants = {"crm": ["nav.configured"]}
+    effective = effective_permissions("crm", {"sales.delivery.view": True}, role_grants)
+    assert "sales.delivery.view" in effective
+    assert "nav.sales.delivery_order" in effective
+    assert "nav.sales" in effective
+
+
+def test_user_dashboard_view_deny_removes_auto_dashboard_nav():
+    role_grants = {"crm": ["dashboard.production.view", "nav.configured"]}
+    effective = effective_permissions("crm", {"dashboard.production.view": False}, role_grants)
+    assert "dashboard.production.view" not in effective
+    assert "nav.dashboard" not in effective
