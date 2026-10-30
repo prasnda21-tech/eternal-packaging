@@ -1216,7 +1216,8 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
         base = set(role_defaults_override[role] or [])
     else:
         base = set(ROLE_DEFAULT_PERMISSIONS.get(role, []))
-    base = with_nav_defaults(base)
+    # Apply user denies to business capabilities before calculating derived menu keys.
+    # Otherwise role-level generated nav keys can survive a per-user business deny.
     base = with_loading_permission_defaults(base)
     for perm, allowed in (override or {}).items():
         if allowed:
@@ -1233,6 +1234,10 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
             for k in expanded:
                 if k not in denied:
                     base.add(k)
+    # Business permissions after overrides are authoritative for auto menus.
+    # Existing explicit nav keys remain for legacy compatibility; frontend leaf
+    # visibility must still check the effective business view grant.
+    base = with_nav_defaults(base)
     return base
 
 
