@@ -1185,7 +1185,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           setConfirmReviewKeys(preview);
           await api.adminUpdateRolePermissions(
             selected,
-            rolePermissionsPutBody(permissions, preview),
+            rolePermissionsPutBody(permissions, preview, roleDoc?.permissions || []),
           );
         } else {
           // Business-only delta: backend CAS preserves unrelated grants and nav.*
