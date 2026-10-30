@@ -19583,7 +19583,6 @@ async def seed():
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",
-            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
         ],
         "head_operations": [
             "dashboard.production.view", "dashboard.production.export", "po.cancel",
@@ -19598,14 +19597,12 @@ async def seed():
             "purchase_receipts.view", "purchase_receipts.sync", "purchase_receipts.export",
             "nav.inventory.current_stock",
             "nav.purchasing.receipts",
-            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
         ],
         # Import PO permissions: admin gets all (idempotent top-up if a custom
         # admin override was persisted before these keys existed).
         "admin": [
             "po.import.view", "accurate.import", "accurate.import.bulk",
             "po.import.pdf", "po.import.spreadsheet",
-            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
             "master_items.view", "master_items.sync",
             "nav.inventory.master_items",
             "current_stock.view", "current_stock.update", "current_stock.import", "current_stock.export",
@@ -19631,7 +19628,6 @@ async def seed():
         "crm": [
             "customer_approval.view",
             "buffer_stock.manage",
-            "sales_order.view", "sales_order.create", "nav.sales.sales_order",
         ],
     }
     for role_slug, need in PHASE_B_ROLE_TOP_UPS.items():
