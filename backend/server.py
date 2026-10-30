@@ -19630,29 +19630,39 @@ async def seed():
             "buffer_stock.manage",
         ],
     }
+    from services.purchasing_inventory_access import MANUAL_GRANT_NORMALIZED_FIELD
+
+    def _role_grant_normalized(doc) -> bool:
+        # Same marker the cutover writes: boolean True. Missing or other values stay legacy.
+        return (doc or {}).get(MANUAL_GRANT_NORMALIZED_FIELD) is True
+
     for role_slug, need in PHASE_B_ROLE_TOP_UPS.items():
         override = await db.role_permissions.find_one({"role": role_slug}, {"_id": 0})
-        if not override:
+        if not override or _role_grant_normalized(override):
             continue
         missing = [p for p in need if p not in (override.get("permissions") or [])]
         if missing:
             await db.role_permissions.update_one(
-                {"role": role_slug},
+                {"role": role_slug, MANUAL_GRANT_NORMALIZED_FIELD: {"$ne": True}},
                 {"$addToSet": {"permissions": {"$each": missing}}, "$set": {"updated_at": now_iso(), "updated_by": "system.migration.phaseB"}},
             )
             logger.info("Phase B migration: %s override topped-up with %s", role_slug, missing)
 
     # Internal Work Chat: grant use/nav to every stored role override (idempotent).
     # chat.group.manage / chat.moderate stay admin-only unless explicitly granted.
-    async for override in db.role_permissions.find({}, {"_id": 0, "role": 1, "permissions": 1}):
+    # A normalized role keeps its saved grant, including an explicit absence of chat keys.
+    async for override in db.role_permissions.find(
+        {},
+        {"_id": 0, "role": 1, "permissions": 1, MANUAL_GRANT_NORMALIZED_FIELD: 1},
+    ):
         role_slug = override.get("role")
-        if not role_slug:
+        if not role_slug or _role_grant_normalized(override):
             continue
         need = ["chat.use", "nav.chat"]
         missing = [p for p in need if p not in (override.get("permissions") or [])]
         if missing:
             await db.role_permissions.update_one(
-                {"role": role_slug},
+                {"role": role_slug, MANUAL_GRANT_NORMALIZED_FIELD: {"$ne": True}},
                 {"$addToSet": {"permissions": {"$each": missing}}, "$set": {"updated_at": now_iso(), "updated_by": "system.migration.chat_v1"}},
             )
             logger.info("Chat V1 migration: %s override topped-up with %s", role_slug, missing)
