@@ -679,3 +679,24 @@ describe("taskMenuItems", () => {
     });
   });
 });
+
+
+describe("permission-led sidebar effective deny regression", () => {
+  test("delivery menu requires business view even if legacy nav is granted", () => {
+    const permissions = has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder, "nav.configured");
+    expect(salesNavVisible(permissions).salesDeliveryOrder).toBe(false);
+    expect(salesMenuItems(permissions).some((item) => item.key === NAV_KEYS.salesDeliveryOrder)).toBe(false);
+  });
+
+  test("business delivery view opens menu even with legacy configured nav", () => {
+    const permissions = has(NAV_KEYS.sales, "sales.delivery.view", "nav.configured");
+    expect(salesNavVisible(permissions).salesDeliveryOrder).toBe(true);
+    expect(salesMenuItems(permissions).some((item) => item.key === NAV_KEYS.salesDeliveryOrder)).toBe(true);
+  });
+
+  test("production dashboard menu needs effective production view", () => {
+    const missingView = has(NAV_KEYS.dashboard, "nav.configured");
+    expect(dashboardNavVisible(missingView).production).toBe(false);
+    expect(dashboardNavVisible(has(NAV_KEYS.dashboard, "dashboard.production.view")).production).toBe(true);
+  });
+});
