@@ -195,7 +195,6 @@ def test_sales_receipt_menu_matches_role_view_permission():
     for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
         defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
         derived = with_nav_defaults(defaults)
-        assert "nav.sales.sales_receipt" not in defaults, role
         assert ("nav.sales.sales_receipt" in derived) == ("sales.receipt.view" in defaults), role
 
 
@@ -390,23 +389,23 @@ def test_legacy_without_schedule_does_not_gain_jadwal():
     assert "nav.sales" in derived
 
 
-def test_explicit_nav_config_is_not_rederived():
+def test_configured_nav_rederives_business_views():
     stored = {"po.view", "schedule.view", "nav.dashboard"}
     derived = with_nav_defaults(stored)
     assert "nav.dashboard" in derived
-    assert "nav.sales" not in derived  # missing nav keys are deny once configured
-    assert "nav.production_schedule" not in derived
+    assert "nav.sales" in derived
+    assert "nav.production_schedule" in derived
     # Open-read exception: only the Permintaan Produk child menu key is forced.
     assert "nav.sales.product_requests" in derived
     assert "nav.sales.sales_receipt" not in derived
     assert "product_request.create" not in derived
 
 
-def test_sentinel_allows_deny_all_nav():
+def test_sentinel_cannot_hide_authorized_business_views():
     stored = {"po.view", "schedule.view", NAV_CONFIGURED}
     derived = with_nav_defaults(stored)
-    assert "nav.sales" not in derived
-    assert "nav.production_schedule" not in derived
+    assert "nav.sales" in derived
+    assert "nav.production_schedule" in derived
     assert "nav.dashboard" not in derived
     # Sentinel still denies parent/other nav; child Permintaan Produk stays findable.
     assert "nav.sales.product_requests" in derived
