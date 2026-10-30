@@ -2,6 +2,10 @@
 
 Stock Buku, Qty Pesanan, and Qty Belum Terkirim are copied from the cutoff
 snapshot. Excel formulas and imported book columns are not authoritative.
+
+Target column ``Stock Fisik`` is the counted combined physical total
+(blank + printed-not-yet-shipped). Do not add those components again.
+Blank cell = missing count (not applied). Explicit 0 = counted zero.
 """
 from __future__ import annotations
 
@@ -31,6 +35,10 @@ COUNT_HEADERS = [
     "Qty Tersedia Setelah Opname",
 ]
 ID_HEADER = "ID Barang"
+
+STATUS_READY = "READY"
+STATUS_REJECTED = "REJECTED"
+STATUS_MISSING = "MISSING"  # blank Stock Fisik — not applied, not an error
 
 
 class CountImportError(Exception):
@@ -93,7 +101,40 @@ def _blank_count(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value.strip() == "")
 
 
-def parse_count_rows(data: bytes, session: dict) -> List[dict]:
+def _row_preview(
+    *,
+    line: dict,
+    qty: Optional[int],
+    status: str,
+    reason: Optional[str],
+    excel_row: int,
+) -> dict:
+    book = int(line.get("book_qty") or 0)
+    target = None if qty is None else int(qty)
+    difference = None if target is None else target - book
+    return {
+        "excel_row": excel_row,
+        "line_id": line.get("line_id"),
+        "master_item_id": line.get("master_item_id"),
+        "item_code": line.get("item_code") or "",
+        "item_name": line.get("item_name") or "",
+        "base_uom": line.get("base_uom") or "",
+        "book_qty": book,
+        "target_physical_qty": target,
+        "difference_qty": difference,
+        "status": status,
+        "reason": reason,
+        "eligible": status == STATUS_READY,
+    }
+
+
+def build_count_import_preview(data: bytes, session: dict) -> dict:
+    """Parse Excel against session lines without mutating the session.
+
+    READY = explicit numeric target (including 0).
+    MISSING = blank Stock Fisik (left uncounted).
+    REJECTED = bad match / duplicate / invalid qty — does not block other rows.
+    """
     try:
         workbook = load_workbook(BytesIO(data), data_only=False)
     except Exception as exc:
@@ -114,9 +155,10 @@ def parse_count_rows(data: bytes, session: dict) -> List[dict]:
         code = str(line.get("item_code") or "").strip()
         if code:
             by_code.setdefault(code, []).append(line)
-    seen = set()
-    counts = []
-    errors = []
+    seen: set = set()
+    ready: List[dict] = []
+    rejected: List[dict] = []
+    missing: List[dict] = []
     for offset, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
         if not row or all(value in (None, "") for value in row):
             continue
@@ -130,46 +172,134 @@ def parse_count_rows(data: bytes, session: dict) -> List[dict]:
             if len(matches) == 1:
                 line = matches[0]
             elif len(matches) > 1:
-                errors.append(f"Baris {offset}: kode {code} tidak unik.")
+                rejected.append({
+                    "excel_row": offset,
+                    "item_code": code,
+                    "item_name": "",
+                    "book_qty": None,
+                    "target_physical_qty": None,
+                    "difference_qty": None,
+                    "status": STATUS_REJECTED,
+                    "reason": f"Kode {code} tidak unik pada sesi.",
+                    "eligible": False,
+                })
                 continue
         if line is None:
             label = code or item_id or str(offset)
-            errors.append(f"Baris {offset}: barang {label} tidak ada pada sesi ini.")
+            rejected.append({
+                "excel_row": offset,
+                "item_code": code or "",
+                "item_name": "",
+                "book_qty": None,
+                "target_physical_qty": None,
+                "difference_qty": None,
+                "status": STATUS_REJECTED,
+                "reason": f"Barang {label} tidak ada pada sesi / gudang ini.",
+                "eligible": False,
+            })
             continue
         identity = str(line.get("master_item_id") or line.get("line_id"))
         if identity in seen:
-            errors.append(f"Baris {offset}: barang {code or identity} duplikat.")
+            rejected.append(_row_preview(
+                line=line, qty=None, status=STATUS_REJECTED,
+                reason=f"Barang {code or identity} duplikat di file.",
+                excel_row=offset,
+            ))
             continue
         seen.add(identity)
         raw_count = row[columns["Stock Fisik"]] if columns["Stock Fisik"] < len(row) else None
         if _blank_count(raw_count):
+            missing.append(_row_preview(
+                line=line, qty=None, status=STATUS_MISSING,
+                reason="Kosong ≠ 0 — baris belum dihitung.",
+                excel_row=offset,
+            ))
             continue
         try:
             qty = parse_count_qty(raw_count)
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
-            errors.append(f"Baris {offset}: {detail}")
+            rejected.append(_row_preview(
+                line=line, qty=None, status=STATUS_REJECTED,
+                reason=str(detail),
+                excel_row=offset,
+            ))
             continue
-        counts.append({
-            "line_id": line.get("line_id"),
-            "physical_count_qty": qty,
-        })
-    if errors:
-        raise CountImportError(" ".join(errors))
-    return counts
+        ready.append(_row_preview(
+            line=line, qty=qty, status=STATUS_READY, reason=None, excel_row=offset,
+        ))
+    return {
+        "session_id": session.get("id"),
+        "opname_number": session.get("opname_number"),
+        "warehouse_id": session.get("warehouse_id"),
+        "ready_count": len(ready),
+        "rejected_count": len(rejected),
+        "missing_count": len(missing),
+        "ready": ready,
+        "rejected": rejected,
+        "missing": missing,
+        "can_apply": bool(ready),
+        "note": (
+            "Stock Fisik = total fisik gabungan (polos + tercetak belum kirim). "
+            "Jangan jumlahkan ulang. Kosong = belum dihitung; 0 = dihitung nol."
+        ),
+    }
+
+
+def parse_count_rows(data: bytes, session: dict) -> List[dict]:
+    """Legacy helper: READY rows only as count payloads (blank skipped)."""
+    preview = build_count_import_preview(data, session)
+    return [
+        {
+            "line_id": row["line_id"],
+            "physical_count_qty": row["target_physical_qty"],
+        }
+        for row in preview.get("ready") or []
+        if row.get("line_id") is not None and row.get("target_physical_qty") is not None
+    ]
+
+
+async def preview_physical_counts(db, session_id: str, data: bytes, user: dict) -> dict:
+    session = await get_stock_opname_session(db, session_id, user=user)
+    if session.get("status") != STATUS_COUNTING:
+        raise CountImportError(
+            "Preview/import hitung fisik hanya selama status COUNTING "
+            "(jalankan cutoff dulu — draf tanpa cutoff punya 0 baris)."
+        )
+    if not (session.get("lines") or []):
+        raise CountImportError(
+            "Sesi COUNTING tanpa baris. Batalkan dan mulai cutoff ulang pada gudang yang benar."
+        )
+    return build_count_import_preview(data, session)
 
 
 async def import_physical_counts(db, session_id: str, data: bytes, user: dict) -> dict:
-    session = await get_stock_opname_session(db, session_id)
+    """Apply READY rows only. REJECTED/MISSING do not abort the batch."""
+    session = await get_stock_opname_session(db, session_id, user=user)
     if session.get("status") != STATUS_COUNTING:
         raise CountImportError("Import hitung fisik hanya dapat dilakukan selama penghitungan.")
-    counts = parse_count_rows(data, session)
+    preview = build_count_import_preview(data, session)
+    counts = [
+        {
+            "line_id": row["line_id"],
+            "physical_count_qty": row["target_physical_qty"],
+        }
+        for row in preview.get("ready") or []
+        if row.get("line_id") is not None and row.get("target_physical_qty") is not None
+    ]
     if not counts:
-        return session
-    # Import records qty + imported_at only. physical_count_at must be set explicitly.
-    return await record_stock_opname_counts(
+        return {
+            **session,
+            "import_preview": preview,
+            "import_applied_count": 0,
+        }
+    updated = await record_stock_opname_counts(
         db,
         session["id"],
         {"lines": counts, "source": "import"},
         user,
     )
+    updated = dict(updated)
+    updated["import_preview"] = preview
+    updated["import_applied_count"] = len(counts)
+    return updated

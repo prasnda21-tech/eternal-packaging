@@ -1401,12 +1401,30 @@ def register_stock_opname_routes(api_router, *, get_db, current_user, require_pe
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @api_router.post("/stock-opname-sessions/{session_id}/count-import/preview")
+    async def stock_opname_sessions_count_import_preview(
+        session_id: str,
+        file: UploadFile = File(...),
+        user=Depends(current_user),
+    ):
+        """Dry-run Excel parse: book/target/diff/eligibility per row. No ledger write."""
+        from services.stock_opname_count_import import CountImportError, preview_physical_counts
+
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "File kosong")
+        try:
+            return await preview_physical_counts(get_db(), session_id, data, user)
+        except CountImportError as exc:
+            raise HTTPException(400, exc.message) from exc
+
     @api_router.post("/stock-opname-sessions/{session_id}/count-import")
     async def stock_opname_sessions_count_import(
         session_id: str,
         file: UploadFile = File(...),
         user=Depends(current_user),
     ):
+        """Apply READY count rows only (partial OK). REJECTED/MISSING skipped."""
         from services.stock_opname_count_import import CountImportError, import_physical_counts
 
         data = await file.read()
