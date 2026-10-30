@@ -859,8 +859,8 @@ export function paintNavVisible(hasPerm) {
 export function productionNavVisible(hasPerm) {
   const schedule = canSeeNav(hasPerm, "schedule.view");
   const paintSentralisasi = paintNavVisible(hasPerm);
-  const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
-  const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
+  const deliverySchedule = canSeeNav(hasPerm, "delivery.schedule.view") || canSeeNav(hasPerm, "schedule.view");
+  const deliveryReschedule = canSeeNav(hasPerm, "delivery.reschedule") || canSeeNav(hasPerm, "delivery.reschedule.set_date");
   const deliveryToday = false; // Pengiriman Hari Ini menu removed — use Jadwal Pengiriman filter.
   const tasks = tasksNavVisible(hasPerm);
   return {
