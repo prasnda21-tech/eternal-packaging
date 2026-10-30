@@ -26,7 +26,7 @@ _SNAPSHOT_FIELDS = {
     "production_finish_target": 1,
     "created_at": 1,
 }
-_ANALYTICS_FIELDS = {"branch_id": 1}
+_ANALYTICS_FIELDS = {"branch_id": 1, "operational_branch_id": 1}
 
 
 def _snapshot_pipeline(query: dict) -> list:
@@ -47,10 +47,10 @@ async def order_branch_scope(db, user) -> dict:
     """Origin-branch fragment from the PO Late Tracking resolver.
 
     Empty for Direktur, Holding, and other global scopes. Assigned users and
-    the YGY fallback receive ``branch_id``. Role admin is not a bypass.
+    assignments use the internal operational branch. Role admin is not a bypass.
     """
-    access = await resolve_branch_access(db, user)
-    return branch_mongo_scope(access)
+    from services.operational_branch import operational_query
+    return await operational_query(db, user)
 
 
 async def order_access_scope(db, user) -> dict:
@@ -146,7 +146,8 @@ def register_production_dashboard_routes(
         raw = await db.orders.aggregate(
             _analytics_pipeline(await order_population_query(db, user))
         ).to_list(None)
-        return [order for order in raw if not order.get("cancelled")]
+        return [{**order, "branch_id": order.get("operational_branch_id") or order.get("branch_id")}
+                for order in raw if not order.get("cancelled")]
 
     def _days(days: int) -> int:
         if days not in (7, 30):

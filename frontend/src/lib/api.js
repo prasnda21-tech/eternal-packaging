@@ -218,11 +218,11 @@ export const api = {
       work_date: extra.work_date || undefined,
     }, extra.view ? { params: { view: extra.view } } : undefined).then((r) => r.data),
   accurateImportPreview: (soNumber) => client.post(`/accurate/import/preview`, { so_number: soNumber }).then((r) => r.data),
-  accurateImportConfirm: (soNumber) => client.post(`/accurate/import/confirm`, { so_number: soNumber }).then((r) => r.data),
+  accurateImportConfirm: (soNumber, operational_branch_id) => client.post(`/accurate/import/confirm`, { so_number: soNumber, operational_branch_id }).then((r) => r.data),
   accurateImportPreviewBulk: (soNumbers) =>
     client.post(`/accurate/import/preview-bulk`, { so_numbers: soNumbers }).then((r) => r.data),
-  accurateImportConfirmBulk: (soNumbers) =>
-    client.post(`/accurate/import/confirm-bulk`, { so_numbers: soNumbers }).then((r) => r.data),
+  accurateImportConfirmBulk: (soNumbers, operational_branch_id) =>
+    client.post(`/accurate/import/confirm-bulk`, { so_numbers: soNumbers, operational_branch_id }).then((r) => r.data),
   accurateImportLogs: () => client.get(`/accurate/import/logs`).then((r) => r.data),
   accurateImportAvailable: () => client.get(`/accurate/import/available`).then((r) => r.data),
   productRequestContext: () => client.get(`/product-requests/context`).then((r) => r.data),
@@ -859,6 +859,7 @@ export const api = {
       },
     }).then((r) => r.data);
   },
+  operationalBranchOptions: () => client.get(`/operational-branches/options`).then((r) => r.data),
   importFileConfirm: (preview, source = "file") => client.post(`/import/file/confirm`, { preview, source }).then((r) => r.data),
   importPdfPreview: (file, onProgress) => {
     const form = new FormData();

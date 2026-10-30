@@ -5,8 +5,10 @@ export const PACKAGE_PERMISSIONS = Object.freeze([
   "purchase_requests.create",
   "purchase_orders.view",
   "purchase_orders.create",
+  "purchase_orders.edit_branch",
   "purchase_invoices.view",
   "purchase_invoices.create",
+  "purchase_invoices.edit",
   "purchase_payments.view",
   "purchase_payments.create",
   "purchase_receipts.view",
@@ -56,13 +58,10 @@ export function isHoldingTeamRole(role) {
   return String(role || "").trim().toLowerCase() === HOLDING_TEAM_ROLE;
 }
 
-/** Roles that may hold Pembelian/Persediaan/HPP effectively (non-local production). */
+/** Roles whose stored package grants are already effective, without a separate approval. */
 export function roleMayReceivePackageAccess(role) {
   return isHoldingTeamRole(role) || isDirectorFullAccessRole(role);
 }
-
-export const PACKAGE_PRODUCTION_LOCK_HINT =
-  "Pembelian / Persediaan / HPP di production hanya untuk Holding dan Direktur. Centang tersimpan tidak menjadi akses efektif untuk role lain.";
 
 export function isPackagePermissionKey(key) {
   return PACKAGE_PERMISSION_SET.has(String(key || ""));

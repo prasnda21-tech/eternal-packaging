@@ -513,11 +513,11 @@ LOADING_DEFAULTS_FROM_UPDATE = (
 
 # Menus that were previously always visible in the sidebar. Used only to derive
 # defaults for roles that have not stored any nav.* keys yet.
+# Pesanan Penjualan is omitted: that leaf follows the list endpoint gate.
 NAV_ALWAYS_VISIBLE = (
     "nav.sales",
     "nav.sales.product_requests",
     "nav.sales.pra_po",
-    "nav.sales.sales_order",
     "nav.sales.delivery_order",
     "nav.sales.sales_invoice",
     "nav.sales.import_po",
@@ -527,6 +527,14 @@ NAV_ALWAYS_VISIBLE = (
     "nav.reports",
     "nav.reports.analytics_output",
     "nav.settings",
+)
+
+# Keys that actually open GET /sales-orders. Options allows a wider set;
+# those extras still leave the list at 403, so they do not show this menu.
+SALES_ORDER_PAGE_KEYS = (
+    "sales_order.view",
+    "sales_order.create",
+    "po.view",
 )
 
 NAV_MENU_ITEMS = (
@@ -638,7 +646,7 @@ def derived_nav_permissions(existing: set) -> set:
     # Penjualan pages: a data-view grant is sufficient for menu visibility.
     # This does not grant any create/edit/delete or data permission.
     sales_pages = (
-        ("nav.sales.sales_order", ("sales_order.view", "po.view")),
+        ("nav.sales.sales_order", SALES_ORDER_PAGE_KEYS),
         ("nav.sales.delivery_order", ("sales.delivery.view",)),
         ("nav.sales.sales_invoice", ("sales.invoice.view",)),
         ("nav.sales.sales_receipt", ("sales.receipt.view",)),
@@ -892,6 +900,11 @@ def with_nav_defaults(perms: set) -> set:
         or "pra_po.verify" in base
     ):
         base.add("nav.sales.pra_po")
+    # A stored nav.sales.sales_order must not outlive the list gate. This does
+    # not remove nav.sales or any other Penjualan child, and it does not grant
+    # a data permission so the menu can stay open.
+    if not any(key in base for key in SALES_ORDER_PAGE_KEYS):
+        base.discard("nav.sales.sales_order")
     return base
 
 # Default permission set per role. Admin gets everything except OPT_IN_ONLY.

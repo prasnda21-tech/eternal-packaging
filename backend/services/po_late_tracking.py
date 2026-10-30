@@ -57,6 +57,7 @@ LATE_PROJECTION = {
     "customer_id": 1,
     "branch": 1,
     "branch_id": 1,
+    "operational_branch_id": 1,
     "branch_name": 1,
     "cabang": 1,
     "deadline": 1,
@@ -235,7 +236,7 @@ def build_late_row(
         "customer_name": order.get("customer_name") or order.get("customer") or "",
         "customer_id": order.get("customer_id"),
         "branch": _branch_label(order),
-        "branch_id": order.get("branch_id"),
+        "branch_id": order.get("operational_branch_id") or order.get("branch_id"),
         "status_saat_ini": sales_order_process_label(order),
         "umur_po_days": fact.get("umur_po_days"),
         "tanggal_pengiriman": fact.get("tanggal_pengiriman"),
@@ -387,7 +388,7 @@ def branch_options_from_orders(docs: Sequence[dict]) -> list:
     """Branch labels from already-scoped order docs only — no master expansion."""
     seen: dict = {}
     for order in docs or []:
-        bid = str(order.get("branch_id") or "").strip()
+        bid = str(order.get("operational_branch_id") or order.get("branch_id") or "").strip()
         if not bid:
             continue
         label = (_branch_label(order) or "").strip() or bid

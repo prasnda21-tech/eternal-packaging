@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from permissions import (
     ALL_PERMISSIONS,
     NAV_ALWAYS_VISIBLE,
+    SALES_ORDER_PAGE_KEYS,
     NAV_CONFIGURED,
     NAV_MENU_ITEMS,
     NAV_PERMISSION_KEYS,
@@ -161,6 +162,7 @@ def test_sales_receipt_nav_is_registered_like_other_sales_menus():
         assert key in ALL_PERMISSIONS, key
         assert key in NAV_PERMISSION_KEYS, key
     assert "nav.sales.sales_receipt" not in NAV_ALWAYS_VISIBLE
+    assert "nav.sales.sales_order" not in NAV_ALWAYS_VISIBLE
     assert "not.a.real.permission" not in ALL_PERMISSIONS
 
 
@@ -189,6 +191,55 @@ def test_product_request_nav_visible_for_configured_custom_roles():
     assert "nav.sales" in derived_no_parent
     assert "nav.sales.sales_order" in derived_no_parent
     assert "nav.sales.sales_receipt" not in derived_no_parent
+
+
+def test_sales_order_menu_follows_list_gate_not_stored_nav_key():
+    """Pesanan Penjualan follows GET /sales-orders, not a leftover nav key."""
+    assert SALES_ORDER_PAGE_KEYS == ("sales_order.view", "sales_order.create", "po.view")
+    stored_only = {
+        "nav.configured",
+        "nav.sales",
+        "nav.sales.sales_order",
+        "nav.sales.pra_po",
+        "pra_po.view_own",
+    }
+    hidden = with_nav_defaults(stored_only)
+    assert "nav.sales.sales_order" not in hidden
+    assert "po.view" not in hidden
+    assert "sales_order.view" not in hidden
+    assert "sales_order.create" not in hidden
+    assert "nav.sales" in hidden
+    assert "nav.sales.pra_po" in hidden
+    assert "nav.sales.product_requests" in hidden
+
+    for key in SALES_ORDER_PAGE_KEYS:
+        opened = with_nav_defaults({"nav.configured", key})
+        assert "nav.sales.sales_order" in opened, key
+        assert "nav.sales" in opened, key
+        assert key in opened
+
+    revoked = effective_permissions(
+        "crm",
+        None,
+        {"crm": ["nav.sales", "nav.sales.sales_order", "pra_po.view_own", "sales.invoice.view"]},
+    )
+    assert "nav.sales.sales_order" not in revoked
+    assert "nav.sales" in revoked
+    assert "nav.sales.pra_po" in revoked
+    assert "nav.sales.sales_invoice" in revoked
+
+    restored = effective_permissions(
+        "crm",
+        {"po.view": True},
+        {"crm": ["nav.sales", "nav.sales.sales_order", "pra_po.view_own", "sales.invoice.view"]},
+    )
+    assert "po.view" in restored
+    assert "nav.sales.sales_order" in restored
+    assert "nav.sales.sales_invoice" in restored
+
+    admin = effective_permissions("admin", None)
+    assert "nav.sales.sales_order" in admin
+    assert "po.view" in admin
 
 
 def test_sales_receipt_menu_matches_role_view_permission():
@@ -527,7 +578,7 @@ def _permission_handler(name, namespace):
     return namespace[name]
 
 
-def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed=None):
+def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed=None, opt_in=()):
     import asyncio
     import copy
     from types import SimpleNamespace
@@ -570,13 +621,14 @@ def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed
     env = {
         "db": SimpleNamespace(role_permissions=collection),
         "HTTPException": HTTPException, "ALL_PERMISSIONS": ALL_PERMISSIONS,
+        "PERMISSION_CATALOG": [],
         "BUILTIN_ROLES": set(ROLE_DEFAULT_PERMISSIONS),
         "_load_role_doc": load_role, "_write_audit": audit,
         "now_iso": lambda: "dummy",
     }
     handler = _permission_handler("patch_role_business_permissions", env)
     payload = SimpleNamespace(
-        add=list(add), remove=list(remove),
+        add=list(add), remove=list(remove), confirm_opt_in_keys=list(opt_in),
         expected_permissions=sorted(with_nav_defaults(set(collection.doc["permissions"]))),
     )
     try:
@@ -595,13 +647,18 @@ def test_business_patch_shrinks_confirmation_and_preserves_other_modules():
     assert status == 200
     assert doc["permissions"] == ["purchase_receipts.view", "schedule.view"]
     assert doc["package_production_confirmed_keys"] == ["purchase_receipts.view"]
+    assert doc["manual_grant_normalized"] is True
 
 
-def test_business_patch_never_confirms_new_grants():
+def test_business_patch_activates_a_newly_checked_package_key():
     status, doc = _run_business_patch(add=["purchase_invoices.view"], confirmed=["purchase_orders.view"])
     assert status == 200
     assert "purchase_invoices.view" in doc["permissions"]
-    assert doc["package_production_confirmed_keys"] == ["purchase_orders.view"]
+    assert "purchase_orders.view" in doc["permissions"]
+    # Stored but never confirmed, and not part of this add, stays unchecked.
+    assert "purchase_receipts.view" not in doc["permissions"]
+    assert doc["package_production_confirmed_keys"] == ["purchase_invoices.view", "purchase_orders.view"]
+    assert doc["manual_grant_normalized"] is True
 
 
 def test_business_patch_rejects_concurrent_confirmation_change():
@@ -617,7 +674,10 @@ def test_business_patch_rejects_concurrent_confirmation_change():
 def test_business_patch_handles_legacy_document_without_confirmation():
     status, doc = _run_business_patch(remove=["purchase_orders.view"])
     assert status == 200
+    assert "purchase_receipts.view" not in doc["permissions"]
+    assert doc["permissions"] == ["schedule.view"]
     assert doc["package_production_confirmed_keys"] == []
+    assert doc["manual_grant_normalized"] is True
 
 
 def test_role_list_sidebar_permissions_use_runtime_effective_resolver():
@@ -687,3 +747,23 @@ def test_role_preview_effective_permissions_respect_production_package_policy():
     director = asyncio.run(handler({"role": "direktur_utama"}))
     assert "purchase_orders.view" in holding
     assert "purchase_orders.view" in director
+
+
+def test_explicit_opt_in_confirmation_saves_mixed_delta_atomically():
+    status, doc = _run_business_patch(add=["paint.view", "po.view"], opt_in=["paint.view"])
+    assert status == 200
+    assert {"paint.view", "po.view"} <= set(doc["permissions"])
+
+
+def test_opt_in_save_needs_no_extra_confirmation():
+    status, doc = _run_business_patch(add=["paint.view", "po.view"])
+    assert status == 200
+    assert {"paint.view", "po.view"} <= set(doc["permissions"])
+    assert doc["manual_grant_normalized"] is True
+
+
+def test_stale_opt_in_confirmation_is_ignored():
+    status, doc = _run_business_patch(add=["po.view"], opt_in=["paint.view"])
+    assert status == 200
+    assert "po.view" in doc["permissions"]
+    assert "paint.view" not in doc["permissions"]

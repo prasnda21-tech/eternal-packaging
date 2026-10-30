@@ -922,6 +922,12 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
     if not po_id:
         raise HTTPException(400, "ID Pesanan Penjualan (po_id) wajib diisi.")
 
+    from services.operational_branch import require_document_branch
+    branch_doc = await db.orders.find_one({"id": po_id}, {"_id": 0})
+    if not branch_doc:
+        branch_doc = await db.orders.find_one({"po_number": po_id}, {"_id": 0})
+    if branch_doc:
+        await require_document_branch(db, user, branch_doc)
     async with _get_delivery_lock():
         # 1. Fetch current PO state
         order = await db.orders.find_one({"id": po_id}, {"_id": 0})
@@ -1071,6 +1077,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "is_cancelled": False,
                 "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
+            from services.operational_branch import document_branch
+            delivery_doc["operational_branch_id"] = document_branch(order)
             order_branch_id = str(order.get("branch_id") or "").strip()
             if order_branch_id.isdigit():
                 delivery_doc["branch_id"] = order_branch_id
@@ -1137,6 +1145,7 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 }
                 if delivery_doc.get("branch_id"):
                     shipment_entry["branch_id"] = delivery_doc["branch_id"]
+                shipment_entry["operational_branch_id"] = delivery_doc["operational_branch_id"]
                 if sj_location:
                     shipment_entry["delivery_location"] = sj_location
 
@@ -1248,6 +1257,7 @@ async def list_sales_deliveries(
     created_by: Optional[str] = None,
     page: Any = 1,
     page_size: Any = DELIVERY_DEFAULT_PAGE_SIZE,
+    branch_query: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """List sales deliveries with search/filter, status counts, and server pagination.
 
@@ -1268,6 +1278,8 @@ async def list_sales_deliveries(
         raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
 
     query: dict = {"is_cancelled": {"$ne": True}}
+    if branch_query:
+        query["$and"] = [branch_query]
 
     if po_id and po_id.strip():
         query["po_id"] = po_id.strip()
@@ -1367,10 +1379,10 @@ async def list_sales_deliveries(
     }
 
 
-async def list_sales_delivery_filter_options(db) -> Dict[str, Any]:
+async def list_sales_delivery_filter_options(db, branch_query=None) -> Dict[str, Any]:
     """Global created_by options for SJ header filter (deduped by created_by)."""
     rows = await db.sales_deliveries.find(
-        {"is_cancelled": {"$ne": True}, "created_by": {"$exists": True, "$nin": [None, ""]}},
+        {"$and": [branch_query or {}, {"is_cancelled": {"$ne": True}, "created_by": {"$exists": True, "$nin": [None, ""]}}]},
         {"_id": 0, "created_by": 1, "created_by_name": 1},
     ).to_list(5000)
     by_key: Dict[str, str] = {}

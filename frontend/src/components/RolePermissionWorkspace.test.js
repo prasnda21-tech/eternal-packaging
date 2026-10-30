@@ -260,38 +260,41 @@ describe("RolePermissionWorkspace", () => {
     unmount();
   });
 
-  test("CRM shows package lock banner; confirm panel only for Holding", () => {
-    const onConfirmPackageOptInChange = jest.fn();
-    const onConfirmReviewKeysChange = jest.fn();
+  test("CRM package grants use the same checkbox as other permissions", () => {
     const crmMount = mount({
       permsDraft: new Set(["po.view", "purchase_hpp.view"]),
       initialPerms: new Set(["po.view", "purchase_hpp.view"]),
-      confirmedPackageKeys: [],
-      confirmPackageOptIn: false,
-      onConfirmPackageOptInChange,
-      confirmReviewKeys: [],
-      onConfirmReviewKeysChange,
-      // Expand matching categories so package lock badges are in the DOM.
       permQuery: "HPP",
     });
-    expect(crmMount.container.querySelector('[data-testid="role-package-lock-banner"]')).toBeTruthy();
-    expect(crmMount.container.querySelector('[data-testid="role-package-stored-ineffective"]')).toBeTruthy();
+    expect(crmMount.container.querySelector('[data-testid="role-package-lock-banner"]')).toBeNull();
+    expect(crmMount.container.querySelector('[data-testid="role-package-stored-ineffective"]')).toBeNull();
     expect(crmMount.container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeNull();
-    expect(crmMount.container.querySelector('[data-testid="role-perm-package-ineffective-purchase_hpp.view"]')).toBeTruthy();
+    expect(crmMount.container.textContent).not.toMatch(/Tinjau izin/);
+    const hpp = crmMount.container.querySelector('[data-testid="role-perm-crm-purchase_hpp.view"] input');
+    expect(hpp.disabled).toBe(false);
+    expect(hpp.checked).toBe(true);
     crmMount.unmount();
 
-    const blockedMount = mount({
+    const openMount = mount({
       permsDraft: new Set(["po.view"]),
       initialPerms: new Set(["po.view"]),
       permQuery: "Barang",
     });
-    expect(blockedMount.container.querySelector('[data-testid="role-perm-package-blocked-master_items.view"]')).toBeTruthy();
-    const blockedInput = blockedMount.container.querySelector(
-      '[data-testid="role-perm-crm-master_items.view"] input',
-    );
-    expect(blockedInput).toBeTruthy();
-    expect(blockedInput.disabled).toBe(true);
-    blockedMount.unmount();
+    const item = openMount.container.querySelector('[data-testid="role-perm-crm-master_items.view"] input');
+    expect(item).toBeTruthy();
+    expect(item.disabled).toBe(false);
+    expect(openMount.container.querySelector('[data-testid="role-perm-package-blocked-master_items.view"]')).toBeNull();
+    openMount.unmount();
+
+    const { container, unmount } = mount({
+      permsDraft: new Set(["po.view", "purchase_hpp.view"]),
+      initialPerms: new Set(["po.view"]),
+      permQuery: "HPP",
+    });
+    expect(container.querySelector('[data-testid="role-package-confirm-list"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-package-activation-preview"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-save-bar"]').classList.contains("show")).toBe(true);
+    unmount();
 
     const holdingRole = {
       role: "holding_team",
@@ -300,34 +303,19 @@ describe("RolePermissionWorkspace", () => {
       is_builtin: true,
       user_count: 1,
     };
-    const { container, rerender, unmount } = mount({
+    const holding = mount({
       currentRole: holdingRole,
       selected: "holding_team",
       labelDraft: "Holding",
       permsDraft: new Set(["po.view", "purchase_hpp.view"]),
       initialPerms: new Set(["po.view", "purchase_hpp.view"]),
       confirmedPackageKeys: [],
-      confirmPackageOptIn: false,
-      onConfirmPackageOptInChange,
-      confirmReviewKeys: [],
-      onConfirmReviewKeysChange,
+      permQuery: "HPP",
     });
-    expect(container.querySelector('[data-testid="role-package-lock-banner"]')).toBeNull();
-    expect(container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeTruthy();
-    rerender({
-      confirmPackageOptIn: true,
-      confirmReviewKeys: ["purchase_hpp.view"],
-      permsDraft: new Set(["po.view", "purchase_hpp.view"]),
-      initialPerms: new Set(["po.view", "purchase_hpp.view"]),
-      confirmedPackageKeys: [],
-      onConfirmPackageOptInChange,
-      onConfirmReviewKeysChange,
-    });
-    expect(container.querySelector('[data-testid="role-package-confirm-list"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="role-package-review-purchase_hpp.view"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="role-package-activation-preview"]').textContent).toMatch(/1 key/);
-    expect(container.querySelector('[data-testid="role-save-bar"]').classList.contains("show")).toBe(true);
-    unmount();
+    expect(holding.container.querySelector('[data-testid="role-package-lock-banner"]')).toBeNull();
+    expect(holding.container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeNull();
+    expect(holding.container.querySelector('[data-testid="role-perm-holding_team-purchase_hpp.view"] input').disabled).toBe(false);
+    holding.unmount();
   });
 
   test("Role & Hak Akses lists Lihat Proforma Invoice", () => {

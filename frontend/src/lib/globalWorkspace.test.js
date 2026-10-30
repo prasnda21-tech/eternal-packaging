@@ -175,6 +175,7 @@ describe("global workspace tabs", () => {
       "nav.sales.product_requests",
       "product_request.create",
       "product_request.read_own_draft",
+      "po.view",
       "nav.sales.sales_order",
     ].includes(key);
     const opened = openOrActivateGlobalTab([], "/penjualan/permintaan-produk/req-9", crm);

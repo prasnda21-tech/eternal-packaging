@@ -1,3 +1,4 @@
+import OperationalBranchSelect from "../components/OperationalBranchSelect";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AlertCircle, ArrowRight, CheckCircle2, Cloud, Copy, Download, FileSpreadsheet, FileText, Plus, RefreshCw, Search, Shield, Trash2, Upload, X } from "lucide-react";
@@ -83,6 +84,7 @@ export default function ImportPO() {
   const canPdf = hasPerm("po.import.pdf");
   const canSpreadsheet = hasPerm("po.import.spreadsheet");
   const initialMode = canAccurate ? "accurate" : canSpreadsheet ? "file" : canPdf ? "pdf" : "accurate";
+  const [operationalBranchId, setOperationalBranchId] = useState("");
   const [mode, setMode] = useState(initialMode);
   const [soNumber, setSoNumber] = useState("");
   const [file, setFile] = useState(null);
@@ -189,7 +191,7 @@ export default function ImportPO() {
   const doAccurateConfirm = async () => {
     setBusy(true); setErr(""); setWarn(""); setImportedMsg("");
     try {
-      const d = await api.accurateImportConfirm(preview.preview.po_number || soNumber.trim());
+      const d = await api.accurateImportConfirm(preview.preview.po_number || soNumber.trim(), operationalBranchId);
       setImportedMsg(d.message);
       if (Array.isArray(d.warnings) && d.warnings.length) {
         setWarn(d.warnings.join(" "));
@@ -248,7 +250,7 @@ export default function ImportPO() {
     setErr("");
     setWarn("");
     try {
-      const d = await api.accurateImportConfirmBulk(numbers);
+      const d = await api.accurateImportConfirmBulk(numbers, operationalBranchId);
       setBulkResult(d);
       if (Array.isArray(d.warnings) && d.warnings.length) {
         setWarn(d.warnings.join(" "));
@@ -313,7 +315,7 @@ export default function ImportPO() {
     if (!preview) return;
     setBusy(true); setErr(""); setWarn(""); setImportedMsg("");
     try {
-      const d = await api.importFileConfirm(preview.preview);
+      const d = await api.importFileConfirm({ ...preview.preview, operational_branch_id: operationalBranchId });
       setImportedMsg(d.message);
       if (Array.isArray(d.warnings) && d.warnings.length) setWarn(d.warnings.join(" "));
       setPreview(null); setFile(null);
@@ -371,7 +373,7 @@ export default function ImportPO() {
       const cleaned = { ...editable };
       delete cleaned._parse_confidence;
       cleaned.line_items = cleaned.line_items.map((li) => ({ ...li, quantity: Number(li.quantity) }));
-      const d = await api.importFileConfirm(cleaned, "pdf");
+      const d = await api.importFileConfirm({ ...cleaned, operational_branch_id: operationalBranchId }, "pdf");
       setImportedMsg(d.message);
       if (Array.isArray(d.warnings) && d.warnings.length) setWarn(d.warnings.join(" "));
       setImportedPoId(d.order.id);
@@ -441,6 +443,7 @@ export default function ImportPO() {
         </div>
       </div>
 
+      <OperationalBranchSelect value={operationalBranchId} onChange={setOperationalBranchId} disabled={busy} />
       <ol className="import-steps" data-testid="import-steps" aria-label="Alur import">
         {IMPORT_STEPS.map((label, index) => {
           const n = index + 1;

@@ -239,12 +239,11 @@ export default function CabangGudang() {
   };
 
   return (
-    <div className="prod-page" data-testid="cabang-gudang-page">
-      <div className="page-heading prod-heading">
+    <div className="prod-page cabang-gudang-page" data-testid="cabang-gudang-page">
+      <div className="page-heading prod-heading cg-heading">
         <div className="prod-heading-copy">
           <p className="eyebrow">Persediaan</p>
           <h1 data-testid="cabang-gudang-title">Cabang & Gudang</h1>
-          <p className="subhead">Master organisasi cabang dan gudang fisik</p>
         </div>
         {canManageBranch && (
           <button type="button" className="primary" onClick={openCreateBranch} data-testid="cabang-add">
@@ -264,9 +263,9 @@ export default function CabangGudang() {
         </div>
       )}
 
-      <div className="prod-split" style={{ display: "grid", gridTemplateColumns: "minmax(240px, 320px) 1fr", gap: 16 }}>
-        <section className="prod-panel" data-testid="cabang-list-panel">
-          <div className="prod-panel-head" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      <div className="prod-split cg-split">
+        <section className="prod-panel cg-panel" data-testid="cabang-list-panel">
+          <div className="prod-panel-head cg-panel-head">
             <Building2 size={16} />
             <strong>Cabang</strong>
           </div>
@@ -277,19 +276,16 @@ export default function CabangGudang() {
           ) : branches.length === 0 ? (
             <p className="muted small" data-testid="cabang-empty">Belum ada cabang.</p>
           ) : (
-            <ul style={{ listStyle: "none", margin: 0, padding: 0 }} data-testid="cabang-list">
+            <ul className="cg-branch-list" data-testid="cabang-list">
               {branches.map((b) => (
-                <li key={b.id} style={{ marginBottom: 6 }}>
+                <li key={b.id}>
                   <button
                     type="button"
-                    className={b.id === selectedBranchId ? "primary" : "ghost"}
-                    style={{ width: "100%", justifyContent: "space-between", display: "flex" }}
+                    className={"cg-branch" + (b.id === selectedBranchId ? " is-on" : "")}
                     onClick={() => setSelectedBranchId(b.id)}
                     data-testid={`cabang-row-${b.code}`}
                   >
-                    <span>
-                      <strong>{b.code}</strong> · {b.name}
-                    </span>
+                    <span><strong>{b.code}</strong> · {b.name}</span>
                     <span className="muted small">{b.active ? "Aktif" : "Nonaktif"}</span>
                   </button>
                 </li>
@@ -297,7 +293,7 @@ export default function CabangGudang() {
             </ul>
           )}
           {canManageBranch && selectedBranch && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+            <div className="cg-branch-actions">
               <button
                 type="button"
                 className="ghost"
@@ -326,15 +322,15 @@ export default function CabangGudang() {
           )}
         </section>
 
-        <section className="prod-panel" data-testid="gudang-list-panel">
-          <div className="prod-panel-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 }}>
+        <section className="prod-panel cg-panel" data-testid="gudang-list-panel">
+          <div className="prod-panel-head cg-panel-head cg-panel-head-split">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Warehouse size={16} />
               <strong>
                 Gudang{selectedBranch ? ` · ${selectedBranch.code}` : ""}
               </strong>
             </div>
-            {canManageWarehouse && selectedBranch && (
+            {canManageWarehouse && selectedBranch && warehouses.length > 0 && (
               <button type="button" className="primary" onClick={openCreateWarehouse} data-testid="gudang-add">
                 <Plus size={14} /> Tambah Gudang
               </button>
@@ -350,7 +346,12 @@ export default function CabangGudang() {
           ) : actionError && warehouses.length === 0 ? (
             <p className="muted small" data-testid="gudang-load-failed">Daftar gudang gagal dimuat.</p>
           ) : warehouses.length === 0 ? (
-            <p className="muted small" data-testid="gudang-empty">Belum ada gudang untuk cabang ini.</p>
+            <div className="cg-empty" data-testid="gudang-empty">
+              <p>Belum ada gudang untuk cabang ini.</p>
+              {canManageWarehouse && (
+                <button type="button" className="primary" onClick={openCreateWarehouse} data-testid="gudang-add">Tambah Gudang</button>
+              )}
+            </div>
           ) : (
             <table className="prod-table" data-testid="gudang-table">
               <thead>
@@ -402,7 +403,7 @@ export default function CabangGudang() {
 
       {branchFormOpen && (
         <div className="modal-backdrop" data-testid="cabang-form-modal">
-          <form className="modal-card" onSubmit={submitBranch}>
+          <form className="modal-card cg-modal" onSubmit={submitBranch}>
             <h2>{editingBranch ? "Ubah Cabang" : "Tambah Cabang"}</h2>
             <label>
               Kode
@@ -445,7 +446,7 @@ export default function CabangGudang() {
 
       {whFormOpen && (
         <div className="modal-backdrop" data-testid="gudang-form-modal">
-          <form className="modal-card" onSubmit={submitWarehouse}>
+          <form className="modal-card cg-modal" onSubmit={submitWarehouse}>
             <h2>{editingWarehouse ? "Ubah Gudang" : "Tambah Gudang"}</h2>
             <p className="muted small">Cabang: {selectedBranch?.code} · {selectedBranch?.name}</p>
             <label>

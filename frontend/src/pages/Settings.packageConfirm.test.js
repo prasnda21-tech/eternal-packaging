@@ -10,18 +10,19 @@ import {
 const settingsSrc = fs.readFileSync(path.join(__dirname, "Settings.jsx"), "utf8");
 
 describe("Settings package confirm stale-key fix", () => {
-  test("RolesTab prunes review keys and saves preview===payload", () => {
-    expect(settingsSrc).toMatch(/pruneConfirmReviewKeys\(prev, permsDraft\)/);
-    expect(settingsSrc).toMatch(/confirmPackageKeysForSave\(permissions, confirmReviewKeys/);
-    expect(settingsSrc).toMatch(/rolePermissionsPutBody\(permissions, preview\)/);
-    expect(settingsSrc).toMatch(/Re-check does not restore prior confirm/);
-    expect(settingsSrc).toMatch(/Keep draft \+ confirm UI/);
+  test("role save uses one patch and does not ask for a second approval", () => {
+    expect(settingsSrc).not.toMatch(/confirmPackageKeysForSave/);
+    expect(settingsSrc).not.toMatch(/confirm_opt_in_keys/);
+    expect(settingsSrc).not.toMatch(/confirm_package_keys/);
+    expect(settingsSrc).not.toMatch(/Tinjau izin/);
+    expect(settingsSrc).toMatch(/adminPatchRoleBusinessPermissions/);
+    expect(settingsSrc).toMatch(/Keep the draft/);
   });
 
-  test("EmployeeForm resets confirm on user change and prunes override grants", () => {
-    expect(settingsSrc).toMatch(/setUserPkgConfirmOptIn\(false\)/);
-    expect(settingsSrc).toMatch(/pruneConfirmReviewKeys\(prev, userOverridePackageKeys\)/);
-    expect(settingsSrc).toMatch(/confirmPackageKeysForSave\(\s*userOverridePackageKeys/);
+  test("employee override save does not render a package approval panel", () => {
+    expect(settingsSrc).not.toMatch(/emp-package-confirm-panel/);
+    expect(settingsSrc).not.toMatch(/userPkgConfirmOptIn/);
+    expect(settingsSrc).toMatch(/permissions_override = form\.permissions_override/);
   });
 
   test("stale A+B review with B unchecked produces successful A-only payload", () => {

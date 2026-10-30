@@ -43,11 +43,12 @@ def register_po_late_tracking_routes(
     Depends=Depends,
 ):
     async def _load_scoped_orders(db, user, branch_id: Optional[str]):
-        access = await resolve_branch_access(db, user)
+        from services.operational_branch import operational_access, scope_query
+        access = await operational_access(db, user)
         requested = str(branch_id or "").strip() or None
         if requested and not branch_id_allowed(access, requested):
             raise HTTPException(403, "Akses cabang ditolak")
-        branch_scope = branch_mongo_scope(access, requested)
+        branch_scope = scope_query({"scope": "ASSIGNED", "branch_ids": [requested]}) if requested else scope_query(access)
         sales_scope = sales_owner_match(user)
         match = mongo_match(sales_scope=sales_scope, branch_scope=branch_scope)
         docs = await db.orders.find(match, LATE_PROJECTION).to_list(None)

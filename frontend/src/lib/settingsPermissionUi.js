@@ -143,3 +143,13 @@ export function roleBusinessSavePayload(draftKeys, storedPermissions) {
   }
   return payload;
 }
+
+/** Every visible editable permission, including former opt-in and package keys. */
+export function bulkPermissionKeys(rows) {
+  return (rows || []).map((p) => p.key);
+}
+
+export function addedOptInPermissions(catalog, draft, initial) {
+  return Object.values(catalog?.modules || {}).flat()
+    .filter((p) => p.opt_in && draft.has(p.key) && !initial.has(p.key));
+}

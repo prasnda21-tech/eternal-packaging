@@ -143,6 +143,38 @@ async def test_production_head_production_loses_package_perms(bind_db, monkeypat
 
 
 @pytest.mark.anyio
+async def test_production_normalized_crm_grant_is_effective_without_old_stamp(bind_db, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MONGO_URL", "mongodb://prod-mongo.example:27017")
+    await server.db.role_permissions.insert_one({
+        "role": "crm",
+        "permissions": ["schedule.view", "purchase_orders.view", "purchase_hpp.view"],
+        "package_production_confirmed_keys": ["purchase_orders.view"],
+    })
+    legacy = await user_permissions({"role": "crm", "email": "crm-legacy@test.local"})
+    assert "purchase_orders.view" in legacy
+    assert "purchase_hpp.view" not in legacy
+    assert "schedule.view" in legacy
+
+    await server.db.role_permissions.update_one(
+        {"role": "crm"},
+        {"$set": {
+            "permissions": ["schedule.view", "purchase_orders.view"],
+            "package_production_confirmed_keys": [],
+            "manual_grant_normalized": True,
+        }},
+    )
+    normalized = await user_permissions({"role": "crm", "email": "crm-norm@test.local"})
+    assert "purchase_orders.view" in normalized
+    assert "purchase_hpp.view" not in normalized
+    assert "schedule.view" in normalized
+
+    hop = await user_permissions({"role": "head_production", "email": "hop-norm@test.local"})
+    assert "purchase_hpp.view" not in hop
+    assert "current_stock.view" not in hop
+
+
+@pytest.mark.anyio
 async def test_production_holding_team_retains_package_perms(bind_db, monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("MONGO_URL", "mongodb://prod-mongo.example:27017")
