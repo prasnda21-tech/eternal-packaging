@@ -62,6 +62,11 @@ async def operational_query(db, user):
     return scope_query(await operational_access(db, user))
 
 
+async def id_scope_query(db, user, ids):
+    """Document ids visible to this user. Out-of-scope ids are absent, not described."""
+    return {"$and": [{"id": {"$in": [str(i) for i in ids if str(i or "").strip()]}}, await operational_query(db, user)]}
+
+
 async def require_document_branch(db, user, doc):
     access = await operational_access(db, user)
     if access['scope'] != 'ALL' and document_branch(doc) not in access['branch_ids']:

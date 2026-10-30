@@ -1416,7 +1416,8 @@ async def bulk_delete_sales_receipts(
 ) -> dict:
     """Bulk delete receipts — ALL OR NOTHING, reserved before any physical delete."""
     unique_ids = list(dict.fromkeys(ids))
-    receipts = await db.sales_receipts.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    from services.operational_branch import id_scope_query
+    receipts = await db.sales_receipts.find(await id_scope_query(db, user, unique_ids), {"_id": 0}).to_list(len(unique_ids) or 1)
     by_id = {r["id"]: r for r in receipts}
 
     blockers = []

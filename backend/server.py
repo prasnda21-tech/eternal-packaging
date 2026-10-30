@@ -14843,8 +14843,9 @@ async def bulk_delete_sales_deliveries_endpoint(payload: BulkPayload, user=Depen
     if not payload.ids:
         raise HTTPException(400, "Pilih minimal 1 Pengiriman.")
     unique_ids = list(dict.fromkeys(payload.ids))
+    from services.operational_branch import id_scope_query
     deliveries = await db.sales_deliveries.find(
-        {"id": {"$in": unique_ids}}, {"_id": 0},
+        await id_scope_query(db, user, unique_ids), {"_id": 0},
     ).to_list(len(unique_ids) or 1)
     by_id = {d["id"]: d for d in deliveries}
     blockers = []

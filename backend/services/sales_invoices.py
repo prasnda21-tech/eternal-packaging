@@ -1832,9 +1832,10 @@ async def delete_sales_invoice(db, invoice_id: str, user: dict) -> dict:
 
 
 async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
-    """Bulk delete invoices â€” ALL OR NOTHING. Pre-validate all before deleting any."""
+    """Bulk delete invoices — ALL OR NOTHING. Pre-validate all before deleting any."""
     unique_ids = list(dict.fromkeys(ids))
-    invoices = await db.sales_invoices.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    from services.operational_branch import id_scope_query
+    invoices = await db.sales_invoices.find(await id_scope_query(db, user, unique_ids), {"_id": 0}).to_list(len(unique_ids) or 1)
     by_id = {inv["id"]: inv for inv in invoices}
 
     blockers = []
