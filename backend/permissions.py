@@ -1255,6 +1255,11 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
         if (override or {}).get(capability) is False:
             base.discard(nav_key)
     base = with_nav_defaults(base)
+    # NAV_ALWAYS_VISIBLE contains legacy sales leaves. An account-level deny
+    # must win even when those leaves are reintroduced by nav derivation.
+    for capability, nav_key in denied_leaf.items():
+        if (override or {}).get(capability) is False:
+            base.discard(nav_key)
     # Respect explicit per-user nav denies, including always-visible defaults.
     for nav_key, allowed in (override or {}).items():
         if nav_key.startswith("nav.") and allowed is False:
