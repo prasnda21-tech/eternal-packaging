@@ -429,7 +429,7 @@ async def test_recovery_controls_open_source_documents_not_gl_opening():
 
     assert (await rows_for(["purchase_receipts.view"]))["inventory_recovery"]["href"] == "/pembelian/penerimaan-barang"  # view automatically derives nav
     assert (await rows_for(["nav.purchasing.receipts"]))["inventory_recovery"]["href"] is None
-    assert (await rows_for(["inventory_valuation.view"]))["opening_incomplete"]["href"] is None
+    assert (await rows_for(["inventory_valuation.view"]))["opening_incomplete"]["href"] == "/persediaan/nilai-persediaan?tab=recon"  # view automatically derives nav
     assert (await rows_for(["nav.inventory.inventory_value"]))["opening_incomplete"]["href"] is None
 
     ready = [
