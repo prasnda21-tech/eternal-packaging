@@ -1216,8 +1216,9 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
         base = set(role_defaults_override[role] or [])
     else:
         base = set(ROLE_DEFAULT_PERMISSIONS.get(role, []))
-    # Apply user denies to business capabilities before calculating derived menu keys.
-    # Otherwise role-level generated nav keys can survive a per-user business deny.
+    # Capture role-level generated navigation to revoke it when the user denies
+    # the business capability. Legacy stored nav.* must not defeat an explicit deny.
+    inherited_auto_nav = derived_nav_permissions(base)
     base = with_loading_permission_defaults(base)
     for perm, allowed in (override or {}).items():
         if allowed:
@@ -1234,10 +1235,18 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
             for k in expanded:
                 if k not in denied:
                     base.add(k)
-    # Business permissions after overrides are authoritative for auto menus.
-    # Existing explicit nav keys remain for legacy compatibility; frontend leaf
-    # visibility must still check the effective business view grant.
+    # Remove nav keys no longer justified after user-specific denials, even if
+    # they were saved as legacy role-level nav grants.
+    current_auto_nav = derived_nav_permissions(base)
+    denied_business = any(v is False and not k.startswith("nav.") for k, v in (override or {}).items())
+    if denied_business:
+        for nav_key in inherited_auto_nav - current_auto_nav:
+            base.discard(nav_key)
     base = with_nav_defaults(base)
+    # Respect explicit per-user nav denies, including always-visible defaults.
+    for nav_key, allowed in (override or {}).items():
+        if nav_key.startswith("nav.") and allowed is False:
+            base.discard(nav_key)
     return base
 
 
