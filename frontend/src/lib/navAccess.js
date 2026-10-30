@@ -640,9 +640,9 @@ export function reportsNavVisible(hasPerm) {
     && canSeeNav(hasPerm, "reports.sales.view")
   );
   // Hub opens when at least one deep-linkable report is permitted.
-  // With nav.configured, explicit nav.reports is still required.
+  // Functional report access drives hub visibility even for legacy configured roles.
   const hasCatalog = userHasReportCatalogAccess(hasPerm);
-  const catalogList = !!(hasCatalog && (parentNav || !configured));
+  const catalogList = !!hasCatalog;
   const catalogSaved = catalogList;
   // Status PO / Prediksi Order stay under Penjualan; they do not open Laporan.
   return {
@@ -660,9 +660,7 @@ export function reportsNavVisible(hasPerm) {
 
 /** When nav is configured, module fallback must not defeat explicit nav deny. */
 function navOrModule(hasPerm, navKey, ...moduleKeys) {
-  const configured = canSeeNav(hasPerm, "nav.configured");
   if (canSeeNav(hasPerm, navKey)) return true;
-  if (configured) return false;
   return moduleKeys.some((k) => canSeeNav(hasPerm, k));
 }
 
@@ -675,12 +673,12 @@ export function purchasingNavVisible(hasPerm) {
   const receipts = parent && navOrModule(hasPerm, NAV_KEYS.purchaseReceipts, "purchase_receipts.view");
   const advances = parent && (
     canSeeNav(hasPerm, NAV_KEYS.purchaseAdvances)
-    || (!canSeeNav(hasPerm, "nav.configured") && (orders || payments))
+    || (orders || payments)
   );
   // Explicit nav deny must not be overridden by receipts/module fallback.
   const returns = parent && (
     canSeeNav(hasPerm, NAV_KEYS.purchaseReturns)
-    || (!canSeeNav(hasPerm, "nav.configured") && receipts)
+    || receipts
   );
   const hpp = parent && navOrModule(hasPerm, NAV_KEYS.purchaseHpp, "purchase_hpp.view");
   // Menu leaf requires matching read capability when module keys exist.
