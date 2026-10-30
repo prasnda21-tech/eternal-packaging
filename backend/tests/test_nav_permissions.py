@@ -190,12 +190,12 @@ def test_product_request_nav_visible_for_configured_custom_roles():
     assert "nav.sales.sales_order" not in derived_no_parent
 
 
-def test_non_admin_roles_do_not_auto_gain_sales_receipt_nav():
+def test_sales_receipt_menu_matches_role_view_permission():
     for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
         defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
         derived = with_nav_defaults(defaults)
         assert "nav.sales.sales_receipt" not in defaults, role
-        assert "nav.sales.sales_receipt" not in derived, role
+        assert ("nav.sales.sales_receipt" in derived) == ("sales.receipt.view" in defaults), role
 
 
 def test_non_admin_roles_do_not_auto_gain_sales_activity_permissions():
@@ -460,3 +460,31 @@ def test_loading_nav_derived_from_loading_update():
     assert "nav.tasks" in derived
     assert "delivery.schedule.create" not in ALL_PERMISSIONS
     assert "delivery.schedule.publish" not in ALL_PERMISSIONS
+
+
+
+def test_configured_sidebar_never_blocks_authorized_crm_sales_views():
+    grants = {
+        "nav.configured", "sales.delivery.view", "sales.invoice.view",
+        "sales.receipt.view", "schedule.view",
+    }
+    visible = with_nav_defaults(grants)
+    assert {"nav.sales", "nav.sales.delivery_order", "nav.sales.sales_invoice",
+            "nav.sales.sales_receipt", "nav.production_schedule"} <= visible
+    assert "dashboard.production.view" not in visible
+    assert "nav.dashboard" not in visible
+
+
+def test_explicit_user_business_deny_keeps_capability_denied():
+    role = {"crm": ["nav.configured", "sales.delivery.view"]}
+    result = effective_permissions("crm", {"sales.delivery.view": False}, role)
+    assert "sales.delivery.view" not in result
+    # No claim that an inherited menu can authorize the API; frontend gating
+    # must check effective business permission, not the nav key alone.
+
+
+def test_only_view_produces_dashboard_menu_without_granting_data():
+    visible = with_nav_defaults({"nav.configured", "dashboard.production.view"})
+    assert "nav.dashboard" in visible
+    assert "dashboard.production.input" not in visible
+    assert "dashboard.production.edit" not in visible
