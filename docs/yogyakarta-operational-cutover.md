@@ -20,12 +20,10 @@ Jangan jalankan skrip sebagai bagian otomatis startup atau deploy.
   cabang yang ia sendiri pegang. Pengguna tanpa izin ditolak, termasuk lewat API.
 - Izin modul tetap wajib. Aturan editor: centang, simpan, langsung berlaku;
   hapus centang, simpan, akses dicabut. Tidak ada dialog persetujuan kedua.
-  Grant package yang tersimpan tetapi belum pernah efektif tidak menyala saat
-  deploy. Skrip `backend/scripts/dry_run_manual_grant_cutover.py` (default
-  dry-run, `--apply` ditolak saat `APP_ENV=production`) menormalkan grant itu
-  agar tetap tidak tercentang, sambil mempertahankan grant yang sudah efektif.
-  Holding dan Direktur mempertahankan grant package yang sudah efektif.
-  Cakupan cabang global tidak menambah izin modul.
+  Grant package yang tersimpan tetapi tidak efektif pada evaluator produksi
+  saat ini tidak boleh menyala saat kode baru diaktifkan. Prosedur transisi
+  ada di bagian berikut. Holding dan Direktur mempertahankan grant package
+  yang sudah efektif. Cakupan cabang global tidak menambah izin modul.
 - Cabang kosong tidak memberikan akses global di produksi. Respons 403 meminta
   pengguna yang berwenang mengatur karyawan.
 - Outlet pelanggan berbeda dari cabang perusahaan.
@@ -65,6 +63,65 @@ dengan hasil migrasi. Konflik berhenti dan perlu review. Master YGY dan marker
 migrasi dipertahankan. Rollback kode tidak membatalkan transaksi baru.
 Gunakan backup MongoDB penuh untuk pemulihan bencana, bukan jurnal metadata saja.
 
+## Transisi izin produksi
+
+Evaluator yang sekarang hidup di produksi mengabaikan
+`package_production_confirmed_keys` dan menghapus seluruh kunci package untuk
+semua role selain `holding_team` dan `direktur_utama`. Evaluator baru, bila
+diaktifkan lebih dulu, menghormati stempel itu pada dokumen yang belum
+dinormalisasi. Grant package yang tersimpan tetapi tidak efektif akan menyala.
+Karena itu cutover izin dijalankan saat evaluator lama masih yang hidup,
+baru kemudian kode baru diaktifkan.
+
+Evaluator lama juga mengabaikan marker `manual_grant_normalized`. Menghapus
+kunci package yang tidak efektif dan menulis marker tidak mengubah akses
+selama kode lama masih hidup. Kunci opt-in yang memang sudah tersimpan pada
+dokumen role, atau override pengguna bernilai benar, tetap efektif dan tidak
+dihapus. Stempel konfirmasi hanya dilaporkan, tidak dijadikan dasar grant.
+Tidak ada daftar persetujuan baru.
+
+Admin dan Super Admin tidak diubah. Field cabang tidak ditulis. Backfill
+Yogyakarta (`backend/scripts/migrate_ygy_operational.py`) hanya mengisi
+assignment cabang, melewati Direktur dan Holding, dan tidak menyentuh izin.
+Jangan menulis ulang atau menjalankan ulang backfill itu bila marker
+`ygy_operational_v1` sudah ada. Kedua prosedur boleh berada dalam jendela
+yang sama karena field-nya berbeda. Cutover izin harus selesai sebelum kode
+izin baru aktif.
+
+Urutan:
+
+1. Dry-run, tanpa menulis:
+   `python3 scripts/dry_run_manual_grant_cutover.py`
+2. Review selisih: kunci package yang dihapus, yang dipertahankan, kunci
+   opt-in yang tetap, dan stempel konfirmasi yang diabaikan.
+3. Pastikan backup MongoDB penuh dapat dipulihkan. Skrip apply juga menulis
+   `manual_grant_cutover_backups` dan menghitungnya sebelum update.
+4. Hentikan perubahan izin. Pertahankan jeda ini sampai kode baru aktif.
+   Penyimpanan editor lama dapat memasukkan kembali kunci package ke dokumen
+   yang sudah ditandai normalized.
+5. Apply saat evaluator lama masih hidup. Jangan mengubah `APP_ENV`.
+   `python3 scripts/dry_run_manual_grant_cutover.py --apply --database "$DB_NAME"`
+   Nama database harus sama dengan `DB_NAME`. Dokumen yang berubah sejak
+   perencanaan tidak ditimpa; proses berhenti.
+6. Verifikasi akses efektif tidak berubah: kunci package yang tadinya tidak
+   efektif tetap mati, Holding/Direktur dan opt-in eksplisit tetap hidup.
+   Apply ulang melewati dokumen yang sudah normalized, jadi grant manual
+   yang diberikan sesudahnya tidak terhapus.
+7. Aktifkan kode izin baru. Setelah kode itu hidup, rollback skrip di bawah
+   tidak aman karena mengembalikan kunci package yang evaluator baru akan
+   anggap efektif. Pulihkan dari backup MongoDB penuh.
+
+Rollback sebelum kode baru aktif, default dry-run:
+
+`python3 scripts/rollback_manual_grant_cutover.py`
+
+`--apply --database "$DB_NAME"` memulihkan grant hanya bila dokumen masih
+sama dengan hasil migrasi. Perubahan sesudah migrasi ditolak.
+
+Prosedur ini siap dijalankan pada produksi. Jangan menjalankannya sebagai
+bagian dari deploy, dan jangan mengarahkannya ke produksi dari lingkungan
+pengembangan.
+
 ## Uji penerimaan sebelum selesai
 
 - Login nyata CRM, Kepala Produksi, Admin: izin view dan cabang YGY menghasilkan
@@ -79,13 +136,16 @@ Gunakan backup MongoDB penuh untuk pemulihan bencana, bukan jurnal metadata saja
 - Izin editor: centang izin biasa, bekas opt-in, atau bekas package lalu simpan
   membuatnya efektif tanpa dialog tambahan. Hapus centang lalu simpan mencabut
   akses, dengan override yang memang berlaku tetap dihormati. Draft bertahan
-  pada 409. Pilih semua mencakup izin yang terlihat. Cutover grant lama dijalankan
-  manual, bukan saat deploy.
+  pada 409. Pilih semua mencakup izin yang terlihat. Cutover grant lama
+  dijalankan manual saat evaluator lama masih hidup, bukan saat deploy.
 - Backfill `users` melewati `direktur_utama` dan `holding_team`: `branch_ids`,
   `primary_branch_id`, dan `branch_id` mereka tidak diubah. Ringkasan mencantumkan
   `users_global_skipped`. Karyawan lain dipetakan ke Yogyakarta.
-- Checkbox Pembelian/Persediaan/HPP yang tersimpan tetapi belum disetujui tidak
-  menjadi efektif. Editor tidak lagi mengunci package berdasarkan nama role.
+- Checkbox Pembelian/Persediaan/HPP yang tidak efektif pada baseline produksi
+  tetap tidak efektif sesudah cutover. Stempel konfirmasi tidak membuatnya
+  hidup. Holding dan Direktur mempertahankan grant package yang sudah ada.
+  Editor tidak menambah dialog persetujuan dan tidak mengunci package
+  berdasarkan nama role.
 
 ## Batas validasi saat penyusunan
 
