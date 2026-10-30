@@ -217,3 +217,139 @@ def test_r2_style_path_delivery_proven_still_unverified_on_completion_gate():
     )
     assert belum_unverified is True
     assert completion_unproven is True
+
+
+def test_po_20260915_000003_around_shipment_ui_20000_not_physical_double_count():
+    """Regression: PO/2026/09/15/000003 (AROUND) — Owner live evidence.
+
+    Cup print + 2× Warna Sablon SERVICE + LID. Shipment UI total 20.000 =
+    Σ all line qtys (5k×4). That is a display/header aggregate, not physical
+    cup demand. Post-#696 delivered credit must count cup once + lid once;
+    unlinked SERVICE skipped (no invent parent). Parent links not assumed
+    persisted — completion_unproven stays True until B31 PATCH.
+    """
+    from quantity_rules import packing_required_total, shipment_qty_total
+
+    cup = "511e1d5d-90b1-4af8-b482-5b90abaada76"
+    lid = "9d10b833-82b4-4352-9bd7-a74aeae20e4d"
+    svc = "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+    q = 5000.0
+    # Intentionally unlinked — do not invent parent_line_id
+    order = {
+        "id": "e2978ceb-1934-4c7b-8800-9b2c39482e37",
+        "po_number": "PO/2026/09/15/000003",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "L0",
+                "master_item_id": cup,
+                "quantity": q,
+                "production_process": "print",
+                "name": "12 oz PET Datar 11 gr SJP",
+            },
+            {
+                "line_id": "L1",
+                "master_item_id": svc,
+                "quantity": q,
+                "production_process": "print",
+                "item_type": ITEM_TYPE_SERVICE,
+                "name": "Warna Sablon 1",
+            },
+            {
+                "line_id": "L2",
+                "master_item_id": svc,
+                "quantity": q,
+                "production_process": "print",
+                "item_type": ITEM_TYPE_SERVICE,
+                "name": "Warna Sablon 2",
+            },
+            {
+                "line_id": "L3",
+                "master_item_id": lid,
+                "quantity": q,
+                "name": "LID",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": q},
+            {"line_idx": 1, "qty_completed": q},
+            {"line_idx": 2, "qty_completed": q},
+        ],
+        "shipments": [
+            {
+                "id": "bb1cbba3-d58b-40fb-9488-5a2c5ce114bc",
+                "delivery_status": "Terkirim",
+                "delivered_at": "2026-09-20T00:00:00+00:00",
+                "total_qty": 20000,  # UI aggregate cup+2svc+lid
+                "lines": [
+                    {"line_idx": 0, "qty": q},
+                    {"line_idx": 1, "qty": q},
+                    {"line_idx": 2, "qty": q},
+                    {"line_idx": 3, "qty": q},
+                ],
+            },
+        ],
+    }
+
+    # UI / shipment header: sum of every line including SERVICE
+    assert shipment_qty_total(order["shipments"][0]) == 20000
+    assert sum(float(li["quantity"]) for li in order["line_items"]) == 20000.0
+
+    # Physical packing target excludes process-only SERVICE (cup + lid only)
+    assert packing_required_total(order) == 10000
+
+    delivered, prov = aggregate_legacy_delivered_qty(
+        [order], [], process_master_ids={svc},
+    )
+    # Cup credited once (native physical), not 5k+5k+5k from SERVICE blast
+    assert delivered.get(cup) == 5000.0
+    assert delivered.get(lid) == 5000.0
+    assert svc not in delivered
+    assert prov.get(cup) == "confirmed_shipment"
+    assert prov.get(cup) != "unproven"
+    assert prov.get(lid) == "confirmed_shipment"
+
+    progress = aggregate_operational_orders(
+        [order], {}, exclude_master_ids={svc},
+    )
+    # Parent links not persisted → Belum UNVERIFIED residual (B31 target)
+    assert progress[cup]["completion_unproven"] is True
+    assert progress[cup]["completed_qty"] == 5000.0
+    assert _belum_status(
+        progress[cup]["completed_qty"],
+        delivered[cup],
+        prov.get(cup),
+        progress[cup]["completion_unproven"],
+    ) == BELUM_STATUS_UNVERIFIED
+
+    # After explicit B31-style links (idx 1,2 → parent 0), Belum READY numeric
+    linked = {
+        **order,
+        "line_items": [
+            order["line_items"][0],
+            {**order["line_items"][1], "parent_line_id": "L0"},
+            {**order["line_items"][2], "parent_line_id": "L0"},
+            order["line_items"][3],
+        ],
+    }
+    delivered2, prov2 = aggregate_legacy_delivered_qty(
+        [linked], [], process_master_ids={svc},
+    )
+    progress2 = aggregate_operational_orders(
+        [linked], {}, exclude_master_ids={svc},
+    )
+    assert delivered2.get(cup) == 5000.0  # still not triple-counted
+    assert progress2[cup]["completion_unproven"] is False
+    assert _belum_status(
+        progress2[cup]["completed_qty"],
+        delivered2[cup],
+        prov2.get(cup),
+        progress2[cup]["completion_unproven"],
+    ) == BELUM_STATUS_READY
+    buckets = operational_availability(
+        physical_qty=50000,
+        ordered_qty=progress2[cup]["ordered_qty"],
+        completed_qty=progress2[cup]["completed_qty"],
+        r2_delivered_qty=delivered2[cup],
+    )
+    assert buckets["qty_belum_terkirim"] == 0.0  # siap 5k − delivered 5k
