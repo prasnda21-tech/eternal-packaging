@@ -635,6 +635,19 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.dashboard.sales")
     if "dashboard.finance.view" in existing:
         nav.add("nav.dashboard.finance")
+    # Penjualan pages: a data-view grant is sufficient for menu visibility.
+    # This does not grant any create/edit/delete or data permission.
+    sales_pages = (
+        ("nav.sales.sales_order", ("sales_order.view", "po.view")),
+        ("nav.sales.delivery_order", ("sales.delivery.view",)),
+        ("nav.sales.sales_invoice", ("sales.invoice.view",)),
+        ("nav.sales.sales_receipt", ("sales.receipt.view",)),
+        ("nav.sales.customers", ("sales.customer.view", "sales_order.view")),
+    )
+    for menu_key, capability_keys in sales_pages:
+        if any(key in existing for key in capability_keys):
+            nav.add("nav.sales")
+            nav.add(menu_key)
     if "schedule.view" in existing:
         nav.add("nav.production")
         nav.add("nav.production_schedule")
