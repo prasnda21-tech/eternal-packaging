@@ -205,13 +205,13 @@ describe("desktop sidebar presentation", () => {
     expect(group(buku, "keuangan").sections.map((section) => section.heading)).toEqual(["Buku Besar"]);
     const both = modelFrom(has(NAV_KEYS.cashBankAccounts, NAV_KEYS.ledgerAccounts));
     expect(group(both, "keuangan").sections.map((section) => section.heading)).toEqual(["Kas & Bank", "Buku Besar"]);
-    expect(group(modelFrom(has(NAV_KEYS.schedule)), "produksi").sections.map((section) => section.heading)).toEqual(["Jadwal"]);
-    expect(group(modelFrom(has(NAV_KEYS.schedule)), "pengiriman")).toBeNull();
+    expect(group(modelFrom(has(NAV_KEYS.schedule, "schedule.view")), "produksi").sections.map((section) => section.heading)).toEqual(["Jadwal"]);
+    expect(group(modelFrom(has(NAV_KEYS.schedule, "schedule.view")), "pengiriman")).toBeNull();
     expect(group(modelFrom(has(NAV_KEYS.paintSentralisasi)), "produksi").sections.map((section) => section.heading)).toEqual([
       "Sentralisasi Cat",
     ]);
-    expect(group(modelFrom(has(NAV_KEYS.deliverySchedule)), "produksi")).toBeNull();
-    expect(labels(group(modelFrom(has(NAV_KEYS.deliverySchedule)), "pengiriman"))).toEqual([
+    expect(group(modelFrom(has(NAV_KEYS.deliverySchedule, "delivery.schedule.view")), "produksi")).toBeNull();
+    expect(labels(group(modelFrom(has(NAV_KEYS.deliverySchedule, "delivery.schedule.view")), "pengiriman"))).toEqual([
       "Jadwal Pengiriman",
       "Rencana Jadwal Kirim",
     ]);
@@ -302,11 +302,11 @@ describe("desktop sidebar presentation", () => {
   });
 
   test("permission-limited rails still map to the same chevron group", () => {
-    const produksiOnly = modelFrom(has(NAV_KEYS.schedule));
+    const produksiOnly = modelFrom(has(NAV_KEYS.schedule, "schedule.view"));
     expect(group(produksiOnly, "produksi")).not.toBeNull();
     expect(group(produksiOnly, "pengiriman")).toBeNull();
     expect(groupedRailForPath("/produksi")).toBe("produksi");
-    const kirimOnly = modelFrom(has(NAV_KEYS.deliverySchedule));
+    const kirimOnly = modelFrom(has(NAV_KEYS.deliverySchedule, "delivery.schedule.view"));
     expect(group(kirimOnly, "pengiriman")).not.toBeNull();
     expect(group(kirimOnly, "produksi")).toBeNull();
     expect(groupedRailForPath("/produksi/jadwal-pengiriman")).toBe("pengiriman");
