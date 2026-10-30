@@ -181,7 +181,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
     expect(app).toMatch(/<Route element=\{<Protected><RouteOptimizerLayout \/><\/Protected>\}>/);
     expect(app).toMatch(/<Route element=\{<Protected><MobileOperationalLayout \/><\/Protected>\}>/);
     expect(app).toMatch(/path="\/settings" element=\{<PermGate anyOf=\{\[NAV_KEYS\.settings\]\} alsoAnyOf=\{SETTINGS_HUB_PERMS\}><Settings \/><\/PermGate>\}/);
-    expect(app).toMatch(/path="\/penjualan\/faktur-penjualan" element=\{<PermGate anyOf=\{\[NAV_KEYS\.salesInvoice, NAV_KEYS\.sales, "sales\.invoice\.view", "sales\.invoice\.create", "sales_order\.view", "po\.view"\]\}><FakturPenjualan \/><\/PermGate>\}/);
+    expect(app).toMatch(/path="\/penjualan\/faktur-penjualan" element=\{<PermGate anyOf=\{\["sales\.invoice\.view"\]\}><FakturPenjualan \/><\/PermGate>\}/);
     expect(app).toMatch(/path="\/buku-besar\/akun-perkiraan" element=\{<PermGate anyOf=\{\[NAV_KEYS\.ledgerAccounts, NAV_KEYS\.ledger, "ledger\.accounts\.view", "ledger\.accounts\.manage"\]\}><AkunPerkiraan \/><\/PermGate>\}/);
     expect(app).toMatch(/path="\/kas-bank\/daftar" element=\{<PermGate anyOf=\{\[NAV_KEYS\.cashBankAccounts, NAV_KEYS\.cashBank, "cash_bank\.view", "cash_bank\.manage"\]\}><DaftarKasBank \/><\/PermGate>\}/);
     expect(app).toMatch(/path="\/laporan\/analitik-output" element=\{<PermGate anyOf=\{\[NAV_KEYS\.analytics\]\} alsoAnyOf=\{\["schedule\.view"\]\}><AnalitikOutput \/><\/PermGate>\}/);
@@ -189,7 +189,7 @@ describe("Phase 2A / Batch 2A route code splitting", () => {
     expect(app).toMatch(/path="\/optimasi-rute" element=\{<PermGate anyOf=\{\[NAV_KEYS\.routeOptimizer, "route_optimizer\.view", "route_optimizer\.create", "route_optimizer\.edit_own", "route_optimizer\.optimize", "route_optimizer\.manage"\]\}><OptimasiRute \/><\/PermGate>\}/);
     expect(app).toMatch(/path="\/po\/:id" element=\{<PODetail \/>\}/);
     expect(app).toMatch(/path="\/penjualan\/pesanan-penjualan" element=\{<PermGate anyOf=\{\[NAV_KEYS\.salesOrder, NAV_KEYS\.sales, "sales_order\.view", "sales_order\.create", "po\.view"\]\}><PesananPenjualan \/><\/PermGate>\}/);
-    expect(app).toMatch(/path="\/produksi" element=\{<PermGate anyOf=\{\[NAV_KEYS\.schedule\]\}><ProductionSchedule \/><\/PermGate>\}/);
+    expect(app).toMatch(/path="\/produksi" element=\{<PermGate anyOf=\{\["schedule\.view"\]\}><ProductionSchedule \/><\/PermGate>\}/);
     expect(app).toMatch(/if \(!ok \|\| !also\) return <Navigate to="\/" replace \/>/);
   });
 });
