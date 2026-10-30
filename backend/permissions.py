@@ -867,8 +867,10 @@ def with_nav_defaults(perms: set) -> set:
     nor create / feedback / update_status.
     """
     base = set(perms or [])
-    if not nav_is_configured(base):
-        base |= derived_nav_permissions(base)
+    # Business capabilities always generate matching menu visibility. Legacy
+    # nav.configured remains stored for compatibility but cannot hide a page
+    # whose functional permission was explicitly granted.
+    base |= derived_nav_permissions(base)
     base.add("nav.sales.product_requests")
     if (
         "pra_po.create" in base
