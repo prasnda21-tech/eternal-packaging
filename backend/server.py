@@ -565,8 +565,8 @@ async def user_permissions(user: dict) -> set:
     inactive = await _inactive_role_slugs()
     role_confirmed, user_confirmed = await _package_confirm_context(user)
 
-    # Super admin gets everything, always — except production package filter
-    # (Holding/Direktur unrestricted; others need explicit package confirmation).
+    # Super admin gets everything, always — except the production package filter
+    # (Holding/Direktur keep granted package keys; other roles need approval).
     # OPT_IN_ONLY keys require explicit permissions_override True for super-admin
     # unless the account role is direktur_utama (director-full includes OPT_IN,
     # except DIRECTOR_MUST_OPT_IN which stay explicit).
@@ -656,21 +656,44 @@ async def _inactive_role_slugs() -> set:
     return {d["role"] for d in docs}
 
 
+_MANAGEMENT_GRANT_KEYS = frozenset({
+    "users.manage",
+    "permissions.manage",
+    "roles.manage",
+    "org.branches.manage",
+})
+# Admin bypass is pre-existing for non-package permissions. The package key
+# still has to be in the filtered effective set.
+_ADMIN_IMPLICIT_MANAGEMENT = frozenset({
+    "users.manage",
+    "permissions.manage",
+    "roles.manage",
+})
+
+
+async def _actor_held_management(actor: dict) -> set:
+    held = set()
+    if str((actor or {}).get("role") or "").strip().lower() == "admin":
+        held.update(_ADMIN_IMPLICIT_MANAGEMENT)
+    eff = await user_permissions(actor or {})
+    held.update(key for key in _MANAGEMENT_GRANT_KEYS if key in eff)
+    return held
+
+
+async def _reject_unheld_management_grants(actor: dict, keys) -> None:
+    """Block handing out a management permission the actor does not hold."""
+    newly = {str(key) for key in (keys or []) if str(key) in _MANAGEMENT_GRANT_KEYS}
+    if not newly:
+        return
+    missing = newly - await _actor_held_management(actor)
+    if missing:
+        raise HTTPException(400, "Tidak dapat memberikan izin pengelolaan yang tidak Anda miliki.")
+
+
 def require_perm(*perms):
     """Dependency that ensures caller has ALL the given permission keys."""
     async def checker(request: Request, user=Depends(current_user)):
-        from services.purchasing_inventory_access import (
-            require_purchasing_inventory_package_access,
-            touches_package_permissions,
-        )
-
         enforce_sales_eternal_surface(request, user)
-        if touches_package_permissions(perms):
-            require_purchasing_inventory_package_access(
-                user,
-                os.environ.get("APP_ENV"),
-                os.environ.get("MONGO_URL"),
-            )
         eff = await user_permissions(user)
         for p in perms:
             if p not in eff:
@@ -2742,24 +2765,23 @@ async def _audit_po(order: dict, action: str, actor: dict, before=None, after=No
 
 
 async def _require_perm(user: dict, perm: str):
-    """Deny if the user lacks `perm` in their effective set (admin still passes locally)."""
+    """Deny if the user lacks `perm` in their effective set.
+
+    Package keys follow that filtered set for every role, including admin.
+    Admin bypass remains only for non-package, non-opt-in permissions.
+    """
     from permissions import OPT_IN_ONLY_PERMISSIONS
-    from services.purchasing_inventory_access import (
-        require_purchasing_inventory_package_access,
-        touches_package_permissions,
-    )
+    from services.purchasing_inventory_access import touches_package_permissions
 
     reject_sales_pwa_bypass(user)
     if perm in OPT_IN_ONLY_PERMISSIONS:
         await _require_opt_in_perm(user, perm)
         return
     if touches_package_permissions([perm]):
-        require_purchasing_inventory_package_access(
-            user,
-            os.environ.get("APP_ENV"),
-            os.environ.get("MONGO_URL"),
-        )
-    # Admin bypass remains for non-package / non-opt-in perms; package access already gated above.
+        eff = await user_permissions(user)
+        if perm not in eff:
+            raise HTTPException(403, f"Anda tidak punya permission '{perm}'")
+        return
     if user.get("role") == "admin":
         return
     eff = await user_permissions(user)
@@ -7790,44 +7812,23 @@ class DeliveryRescheduleSetDatePayload(BaseModel):
 async def _require_any_perm(user: dict, *perms: str):
     """Pass when the caller has any listed permission.
 
-    Mixed package + non-package any-of lists must not hard-gate solely because
-    one alternative is a package key. Non-package alternatives that the user
-    actually holds win first. Package-only satisfaction still requires the
-    Holding/Direktur (or local) package gate, then an effective package key.
+    Mixed lists still accept a non-package alternative the user holds.
+    A package alternative counts only when it is in the filtered effective set.
+    Admin bypass applies only when the list includes a non-package alternative.
     """
-    from services.purchasing_inventory_access import (
-        require_purchasing_inventory_package_access,
-        split_package_permission_args,
-    )
+    from services.purchasing_inventory_access import split_package_permission_args
 
     reject_sales_pwa_bypass(user)
     non_pkg, pkg = split_package_permission_args(perms)
 
-    if user.get("role") == "admin":
-        # Admin bypass applies to non-package alternatives. Package-only any-of
-        # still needs the production package gate (Holding/Direktur/local).
-        if non_pkg:
-            return
-        if pkg:
-            require_purchasing_inventory_package_access(
-                user,
-                os.environ.get("APP_ENV"),
-                os.environ.get("MONGO_URL"),
-            )
-            return
+    if user.get("role") == "admin" and non_pkg:
         return
 
     eff = await user_permissions(user)
     if any(p in eff for p in non_pkg):
         return
-    if pkg:
-        require_purchasing_inventory_package_access(
-            user,
-            os.environ.get("APP_ENV"),
-            os.environ.get("MONGO_URL"),
-        )
-        if any(p in eff for p in pkg):
-            return
+    if any(p in eff for p in pkg):
+        return
     raise HTTPException(403, f"Permission {' / '.join(perms)} diperlukan")
 
 
@@ -9933,6 +9934,7 @@ async def create_role(payload: RoleCreatePayload, user=Depends(require_perm("per
     invalid = [p for p in payload.permissions if p not in ALL_PERMISSIONS]
     if invalid:
         raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
+    await _reject_unheld_management_grants(user, payload.permissions)
     now = now_iso()
     doc = {
         "role": slug,
@@ -9974,6 +9976,8 @@ async def update_role(role: str, payload: RoleUpdatePayload, user=Depends(requir
         invalid = [p for p in payload.permissions if p not in ALL_PERMISSIONS]
         if invalid:
             raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
+        stored = set((perm_before or {}).get("permissions") or [])
+        await _reject_unheld_management_grants(user, set(payload.permissions) - stored)
         await db.role_permissions.update_one(
             {"role": slug},
             {"$set": {"role": slug, "permissions": sorted(set(payload.permissions)), "updated_at": now_iso(), "updated_by": user.get("email")}},
@@ -10018,6 +10022,11 @@ async def patch_role_business_permissions(
         labels = {key: label for _, key, label in PERMISSION_CATALOG}
         names = ", ".join(labels.get(k, k) for k in sorted(opt_in_added or reviewed))
         raise HTTPException(400, f"Konfirmasi izin khusus harus sesuai perubahan: {names}")
+    management_added = add & {
+        "users.manage", "permissions.manage", "roles.manage", "org.branches.manage",
+    }
+    if management_added:
+        await _reject_unheld_management_grants(user, management_added)
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
     effective = with_nav_defaults(set(raw))
@@ -10084,6 +10093,7 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     from permissions import OPT_IN_ONLY_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
     old_permissions = set((before or {}).get("permissions", ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
+    await _reject_unheld_management_grants(user, set(payload.permissions) - old_permissions)
     opt_in_added = (set(payload.permissions) - old_permissions) & set(OPT_IN_ONLY_PERMISSIONS)
     if set(getattr(payload, "confirm_opt_in_keys", []) or []) != opt_in_added:
         raise HTTPException(400, "Konfirmasi izin khusus harus sesuai perubahan: " + ", ".join(sorted(opt_in_added)))
@@ -10102,6 +10112,10 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
                 400,
                 f"confirm_package_keys harus termasuk permission yang disimpan: {not_granted}",
             )
+        await _reject_unheld_management_grants(
+            user,
+            set(normalize_package_confirmed_keys(payload.confirm_package_keys)) - set(prev_confirmed),
+        )
         confirmed = apply_explicit_package_confirmation(
             prev_confirmed, next_perms, payload.confirm_package_keys
         )
@@ -10357,8 +10371,11 @@ async def create_canonical_user(
     primary_branch_id: Optional[str] = None,
 ) -> dict:
     """Shared Settings Karyawan user provisioning. Does not create hr_employees."""
-    from services.operational_branch import validate_assignment, require_branch_manager
-    require_branch_manager(actor)
+    from services.operational_branch import validate_assignment
+    await _reject_unheld_management_grants(
+        actor,
+        [key for key, allowed in (permissions_override or {}).items() if allowed is True],
+    )
     if branch_ids is None:
         ygy = await db.branches.find_one({"code": "YGY", "active": {"$ne": False}}, {"_id": 0})
         branch_ids = [ygy["id"]] if ygy else []
@@ -10425,15 +10442,11 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
         raise HTTPException(404, "Karyawan tidak ditemukan")
     before = dict(existing)
     updates = {"updated_at": now_iso(), "updated_by": user.get("email")}
-    from services.operational_branch import validate_assignment, require_branch_manager, MANAGERS
+    from services.operational_branch import validate_assignment
     if {"branch_ids", "primary_branch_id"} & payload.model_fields_set:
         updates.update(await validate_assignment(db, user,
             payload.branch_ids if payload.branch_ids is not None else existing.get("branch_ids", []),
             payload.primary_branch_id if payload.primary_branch_id is not None else existing.get("primary_branch_id")))
-    if payload.role is not None and payload.role != existing.get("role") and (
-        payload.role in MANAGERS or existing.get("role") in MANAGERS
-    ):
-        require_branch_manager(user)
     if payload.name is not None: updates["name"] = payload.name.strip()
     if payload.nickname is not None: updates["nickname"] = payload.nickname.strip() or None
     if payload.phone is not None: updates["phone"] = payload.phone.strip() or None
@@ -10461,6 +10474,11 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
         invalid = [k for k in payload.permissions_override if k not in ALL_PERMISSIONS]
         if invalid:
             raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
+        old_override = existing.get("permissions_override") or {}
+        await _reject_unheld_management_grants(user, [
+            key for key, allowed in payload.permissions_override.items()
+            if allowed is True and old_override.get(key) is not True
+        ])
         updates["permissions_override"] = payload.permissions_override
         # User package confirmation tracks override-True package keys only.
         override_true_pkg = {
@@ -10481,6 +10499,10 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
                     400,
                     f"confirm_package_keys override harus True pada key: {not_granted}",
                 )
+            await _reject_unheld_management_grants(
+                user,
+                set(normalize_package_confirmed_keys(payload.confirm_package_keys)) - set(prev_confirmed),
+            )
             confirmed = apply_explicit_package_confirmation(
                 prev_confirmed, override_true_pkg, payload.confirm_package_keys
             )
@@ -10508,8 +10530,8 @@ async def user_permissions_effective(user_id: str, user=Depends(require_perm("us
     - `override`: user's per-permission override dict ({key: True|False});
       missing keys mean "inherit from role".
     - `effective`: same filtered set as ``GET /auth/me`` (package policy applied).
-    - `package_access`: whether this role may hold Pembelian/Persediaan/HPP
-      effectively in the current runtime (Holding/Direktur or local).
+    - `package_access`: unrestricted package holder (Holding, Direktur, or local).
+      A false value does not strip keys that Owner already approved.
     """
     from permissions import (
         director_full_permission_set,

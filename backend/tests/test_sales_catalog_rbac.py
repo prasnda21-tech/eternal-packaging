@@ -18,7 +18,6 @@ os.environ.setdefault("CORS_ORIGINS", "*")
 import server
 from server import app, current_user, user_permissions
 from services.purchasing_inventory_access import (
-    PACKAGE_DENIED_MSG,
     PACKAGE_PERMISSIONS,
     any_of_satisfied_without_package,
     filter_package_permissions,
@@ -150,7 +149,7 @@ async def test_crm_admin_master_items_list_denied(bind_db, monkeypatch):
         # Stored master_items.view is stripped from effective; full catalog denied.
         r = await client.get("/api/master-items")
         assert r.status_code == 403, r.text
-        assert PACKAGE_DENIED_MSG in (r.json().get("detail") or "")
+        assert "master_items.view" in (r.json().get("detail") or "")
 
 
 @pytest.mark.anyio
@@ -211,7 +210,7 @@ async def test_package_only_any_of_still_hard_gated(bind_db, monkeypatch):
     async with await _as("crm", ["master_items.view"]) as client:
         r = await client.get("/api/master-items")
         assert r.status_code == 403, r.text
-        assert PACKAGE_DENIED_MSG in (r.json().get("detail") or "")
+        assert "master_items.view" in (r.json().get("detail") or "")
 
 
 @pytest.mark.anyio
@@ -272,8 +271,8 @@ async def test_permissions_effective_matches_auth_me_package_policy(bind_db, mon
     }
     me_perms = await user_permissions(crm_user)
     assert "po.edit" in me_perms
-    assert "master_items.view" not in me_perms
-    assert "purchase_hpp.view" not in me_perms
+    assert "master_items.view" in me_perms
+    assert "purchase_hpp.view" in me_perms
 
     app.dependency_overrides[current_user] = lambda: {
         "id": "u-admin",
@@ -299,20 +298,27 @@ async def test_permissions_effective_matches_auth_me_package_policy(bind_db, mon
         body = eff.json()
         assert body["package_access"] is False
         assert "po.edit" in body["effective"]
-        assert "master_items.view" not in body["effective"]
-        assert "purchase_hpp.view" not in body["effective"]
+        assert "master_items.view" in body["effective"]
+        assert "purchase_hpp.view" in body["effective"]
         # Stored role defaults may still list package keys.
         assert "master_items.view" in body["default_from_role"]
         assert set(body["effective"]) == set(me_perms)
 
 
 def test_confirm_stamp_does_not_create_pseudo_access():
-    filtered = filter_package_permissions(
-        {"po.edit", "master_items.view", "purchase_hpp.view"},
+    stored = {"po.edit", "master_items.view", "purchase_hpp.view"}
+    unreviewed = filter_package_permissions(
+        stored,
         {"role": "crm", "permissions_override": {"master_items.view": True}},
         "production",
         "mongodb://prod:27017",
-        role_confirmed_keys=list(PACKAGE_PERMISSIONS),
-        user_confirmed_keys=list(PACKAGE_PERMISSIONS),
     )
-    assert filtered == {"po.edit"}
+    assert unreviewed == {"po.edit"}
+    approved = filter_package_permissions(
+        stored,
+        {"role": "crm", "permissions_override": {"master_items.view": True}},
+        "production",
+        "mongodb://prod:27017",
+        role_confirmed_keys=["master_items.view"],
+    )
+    assert approved == {"po.edit", "master_items.view"}

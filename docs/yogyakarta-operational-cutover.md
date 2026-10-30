@@ -11,14 +11,20 @@ Jangan jalankan skrip sebagai bagian otomatis startup atau deploy.
 - `branch_id` pada transaksi tetap ID sumber Accurate/legacy. Jangan menggantinya
   dengan UUID internal: desain cetak dan integrasi masih membacanya.
 - Karyawan memiliki `branch_ids` dan `primary_branch_id`. Alias
-  `users.branch_id` mengikuti cabang utama. Direktur/Holding mengelola penetapan;
-  keduanya tetap memiliki cakupan global berdasarkan role.
-- Pembuatan akun sekarang membutuhkan Direktur/Holding agar akun aktif selalu
-  mendapat cabang yang valid. Pengubahan profil biasa tetap mengikuti izin lama.
-- Izin melihat modul tetap wajib. Penetapan cabang tidak memberikan izin modul.
-  Paket Pembelian/Persediaan/HPP tetap mengikuti kebijakan produksi sebelumnya.
-- Cabang kosong tidak memberikan akses global di produksi. Respons 403 menjelaskan
-  bahwa Direktur/Holding perlu menetapkan cabang.
+  `users.branch_id` mengikuti cabang utama. Cabang utama hanya default transaksi.
+  `direktur_utama` dan `holding_team` tetap cakupan global, termasuk cabang baru,
+  tanpa assignment satu per satu. Cakupan global tidak memberi izin modul.
+- Penetapan cabang dan pembuatan akun mengikuti izin yang sudah ada:
+  `users.manage` untuk karyawan, `org.branches.manage` untuk master cabang.
+  Bukan nama role. Pemegang izin tanpa cakupan global hanya boleh menetapkan
+  cabang yang ia sendiri pegang. Pengguna tanpa izin ditolak, termasuk lewat API.
+- Izin modul tetap wajib. Grant Pembelian/Persediaan/HPP yang belum disetujui
+  tetap tidak efektif. Persetujuan eksplisit (`confirm_package_keys`) membuat
+  hanya daftar yang ditinjau menjadi efektif, untuk role apa pun. Holding dan
+  Direktur mempertahankan grant package yang sudah efektif. Simpan biasa tidak
+  menumbuhkan daftar persetujuan.
+- Cabang kosong tidak memberikan akses global di produksi. Respons 403 meminta
+  pengguna yang berwenang mengatur karyawan.
 - Outlet pelanggan berbeda dari cabang perusahaan.
 
 ## Pemetaan satu kali
@@ -60,7 +66,8 @@ Gunakan backup MongoDB penuh untuk pemulihan bencana, bukan jurnal metadata saja
 
 - Login nyata CRM, Kepala Produksi, Admin: izin view dan cabang YGY menghasilkan
   PO YGY pada daftar/detail/dashboard yang diizinkan.
-- Ubah cabang karyawan di Direktur/Holding; request dengan token lama membaca
+- Pengguna dengan `users.manage` mengubah cabang karyawan dalam cakupan yang ia
+  pegang. Pengguna tanpa izin ditolak. Request dengan token lama membaca
   assignment DB terbaru. Pengguna tanpa assignment mendapat pesan 403.
 - Dummy cabang kedua: list, detail URL, ekspor produksi, repeat order, Pra PO
   dan dokumen penjualan menolak/menyaring data cabang lain.
@@ -69,8 +76,11 @@ Gunakan backup MongoDB penuh untuk pemulihan bencana, bukan jurnal metadata saja
 - Izin khusus: memilih satu menampilkan konfirmasi daftar key saat Simpan;
   menolak konfirmasi mempertahankan draft. Pilih semua tidak mengaktifkan
   izin opt-in. PATCH tanpa konfirmasi exact ditolak; stale snapshot tetap 409.
-- Paket Pembelian/Persediaan/HPP tidak menjadi efektif untuk CRM/Kepala Produksi
-  hanya karena checkbox tersimpan.
+- Backfill `users` melewati `direktur_utama` dan `holding_team`: `branch_ids`,
+  `primary_branch_id`, dan `branch_id` mereka tidak diubah. Ringkasan mencantumkan
+  `users_global_skipped`. Karyawan lain dipetakan ke Yogyakarta.
+- Checkbox Pembelian/Persediaan/HPP yang tersimpan tetapi belum disetujui tidak
+  menjadi efektif. Editor tidak lagi mengunci package berdasarkan nama role.
 
 ## Batas validasi saat penyusunan
 

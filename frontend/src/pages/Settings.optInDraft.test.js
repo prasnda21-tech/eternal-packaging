@@ -7,6 +7,7 @@ let mockPath = "/settings/roles";
 let mockSearch = "";
 let mockUser = { id: "u-dir", role: "direktur_utama", email: "direktur@example.test" };
 let mockRoles = [];
+let mockAllowPerm = () => true;
 
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
@@ -17,7 +18,7 @@ jest.mock("react-router-dom", () => ({
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
     user: mockUser,
-    hasPerm: () => true,
+    hasPerm: (key) => mockAllowPerm(key),
     refresh: jest.fn(),
   }),
 }));
@@ -89,6 +90,7 @@ describe("Settings opt-in draft and employee branch payload", () => {
   };
 
   beforeEach(() => {
+    mockAllowPerm = () => true;
     stubApi();
     confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(false);
     container = document.createElement("div");
@@ -111,7 +113,7 @@ describe("Settings opt-in draft and employee branch payload", () => {
     container.remove();
   });
 
-  test("opt-in cancel keeps the draft, 409 keeps it, confirm saves, package stays locked", async () => {
+  test("opt-in cancel keeps the draft, 409 keeps it, and package save omits approval", async () => {
     await renderAt("/settings/roles", {
       id: "u-dir",
       role: "direktur_utama",
@@ -119,14 +121,14 @@ describe("Settings opt-in draft and employee branch payload", () => {
     });
 
     const paint = container.querySelector('[data-testid="role-perm-crm-paint.view"] input');
-    const pkg = container.querySelector('[data-testid="role-perm-package-locked-purchase_orders.view"]');
+    const pkg = container.querySelector('[data-testid="role-perm-crm-purchase_orders.view"] input');
     expect(paint).toBeTruthy();
     expect(paint.checked).toBe(false);
     expect(pkg).toBeTruthy();
-    expect(pkg.disabled).toBe(true);
-
-    await act(async () => { pkg.click(); });
+    expect(pkg.disabled).toBe(false);
     expect(pkg.checked).toBe(false);
+    expect(container.querySelector('[data-testid="role-package-lock-banner"]')).toBeNull();
+    expect(container.textContent).not.toMatch(/tidak efektif di production|Hanya Holding/);
 
     await act(async () => { paint.click(); });
     expect(container.querySelector('[data-testid="role-perm-crm-paint.view"] input').checked).toBe(true);
@@ -166,6 +168,7 @@ describe("Settings opt-in draft and employee branch payload", () => {
     expect(body.add).toEqual(["paint.view"]);
     expect(body.expected_permissions).toEqual(["po.view"]);
     expect(body.add).not.toContain("purchase_orders.view");
+    expect(body.confirm_package_keys).toBeUndefined();
   });
 
   test("Direktur employee form defaults Yogyakarta and stores the selected branches", async () => {
@@ -209,7 +212,7 @@ describe("Settings opt-in draft and employee branch payload", () => {
     expect(payload.email).toBe("sari.baru@example.test");
   });
 
-  test("Admin employee form cannot assign branches and omits them from the payload", async () => {
+  test("users.manage assigns branches for an ordinary role and omits package approval", async () => {
     mockRoles = [
       { role: "helper", label: "Helper", status: "active", permissions: [], description: "" },
     ];
@@ -222,10 +225,13 @@ describe("Settings opt-in draft and employee branch payload", () => {
       container.querySelector('[data-testid="employee-add-button"]').click();
     });
     await flush();
+    await flush();
 
-    expect(container.textContent).toMatch(/Pengaturan akses cabang dikelola Direktur\/Holding/);
-    expect(container.querySelectorAll('[data-testid="employee-form"] input[type="checkbox"]').length).toBe(0);
-    expect(api.operationalBranchOptions).not.toHaveBeenCalled();
+    expect(container.textContent).toMatch(/Yogyakarta/);
+    expect(container.textContent).not.toMatch(/Direktur\/Holding/);
+    const boxes = [...container.querySelectorAll('[data-testid="employee-form"] input[type="checkbox"]')];
+    const ygy = boxes.find((el) => el.parentElement.textContent.includes("Yogyakarta"));
+    expect(ygy.checked).toBe(true);
 
     await act(async () => {
       setInput(container.querySelector('[data-testid="emp-name"]'), "Budi Admin");
@@ -238,9 +244,21 @@ describe("Settings opt-in draft and employee branch payload", () => {
 
     expect(api.adminCreateUser).toHaveBeenCalledTimes(1);
     const payload = api.adminCreateUser.mock.calls[0][0];
-    expect(payload).not.toHaveProperty("branch_ids");
-    expect(payload).not.toHaveProperty("primary_branch_id");
+    expect(payload.branch_ids).toEqual(["branch-ygy"]);
+    expect(payload.primary_branch_id).toBe("branch-ygy");
+    expect(payload.confirm_package_keys).toBeUndefined();
     expect(payload.name).toBe("Budi Admin");
     expect(payload.role).toBe("helper");
+  });
+
+  test("without users.manage the employee form is not offered", async () => {
+    mockAllowPerm = (key) => key === "users.view";
+    await renderAt("/settings/employees", {
+      id: "u-view",
+      role: "crm",
+      email: "view@example.test",
+    });
+    expect(container.querySelector('[data-testid="employee-add-button"]')).toBeNull();
+    expect(container.querySelector('[data-testid="employee-form"]')).toBeNull();
   });
 });

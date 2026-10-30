@@ -1,14 +1,14 @@
-"""Production lock for recovered Purchasing + Inventory + HPP package.
+"""Effective Purchasing + Inventory + HPP permissions.
 
 LOCAL / preview / development / test (explicit APP_ENV only):
   Existing role permissions apply (admin keeps full package access).
 
 All other runtimes (including APP_ENV unset/unknown, and production):
-  - holding_team: package keys pass (unchanged)
-  - direktur_utama: package keys pass (Owner full-access policy)
-  - other roles: package keys are never effective, even when checked or
-    stamped via ``package_production_confirmed_keys`` in Settings.
-    Persisted grants remain stored; effective set strips them.
+  - holding_team and direktur_utama: granted package keys stay effective.
+    Global branch scope does not add module permissions.
+  - other roles: a package key is effective only after an explicit approval
+    recorded in ``package_production_confirmed_keys``. Stored grants that
+    were never reviewed stay ineffective. Ordinary saves never grow that set.
 
 Mongo on 127.0.0.1/localhost alone NEVER implies local.
 Sidebar, routes, and APIs all derive from filtered effective permissions —
@@ -210,20 +210,21 @@ def filter_package_permissions(
     role_confirmed_keys: Optional[Iterable[str]] = None,
     user_confirmed_keys: Optional[Iterable[str]] = None,
 ) -> Set[str]:
-    """Drop package keys for non-Holding/non-Direktur outside local.
+    """Keep package keys that are already effective or explicitly approved.
 
-    Owner policy: Pembelian/Persediaan/HPP is Holding/Direktur only in
-    production. Checkbox / confirmation stamps on other roles are configuration
-    records only — they never become effective access. ``role_confirmed_keys``
-    and ``user_confirmed_keys`` are retained for API compatibility but ignored
-    for effective filtering.
+    Holding and Direktur keep the package keys already in their grant: that
+    access was effective before review stamps existed. Every other production
+    role keeps a package key only when Owner confirmed it. Stored but
+    unconfirmed grants stay ineffective. Local/test runtimes are unchanged.
     """
     out = set(perms or [])
-    if can_access_purchasing_inventory_package(user, app_env, mongo_url):
+    if is_local_runtime(app_env, mongo_url) or can_access_purchasing_inventory_package(
+        user, app_env, mongo_url
+    ):
         return out
-    # Silence unused-arg warnings while preserving call-site compatibility.
-    _ = role_confirmed_keys, user_confirmed_keys
-    return {key for key in out if key not in PACKAGE_PERMISSIONS}
+    confirmed = normalize_package_confirmed_keys(role_confirmed_keys)
+    confirmed |= normalize_package_confirmed_keys(user_confirmed_keys)
+    return {key for key in out if key not in PACKAGE_PERMISSIONS or key in confirmed}
 
 
 def split_package_permission_args(perms: Iterable[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:

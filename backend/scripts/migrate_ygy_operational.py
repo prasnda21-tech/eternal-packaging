@@ -15,13 +15,15 @@ from pathlib import Path
 
 COLLECTIONS = ('users', 'orders', 'pra_pos', 'sales_invoices', 'sales_deliveries', 'sales_receipts')
 FIELD = 'operational_branch_id'
+GLOBAL_BRANCH_ROLES = frozenset({'direktur_utama', 'holding_team'})
 
 
 def changes_for(collection, doc, ygy):
     changes = {}
     if collection == 'users':
+        if str((doc or {}).get('role') or '').lower() in GLOBAL_BRANCH_ROLES:
+            return {}
         desired = {'branch_ids': [ygy], 'primary_branch_id': ygy, 'branch_id': ygy}
-        # Global authority is still derived from role, not this assignment.
         for key, value in desired.items():
             if doc.get(key) != value:
                 changes[key] = value
@@ -50,7 +52,7 @@ async def run(db, args):
         raise RuntimeError('Cutover YGY sudah selesai; jangan memetakan ulang data cabang baru.')
     rows = await db.branches.find({'code': 'YGY'}).to_list(3)
     if len(rows) > 1 or (rows and rows[0].get('active') is False):
-        raise RuntimeError('Master YGY duplikat/nonaktif; selesaikan melalui Direktur/Holding.')
+        raise RuntimeError('Master YGY duplikat/nonaktif; selesaikan master cabang sebelum apply.')
     ygy = rows[0]['id'] if rows else str(uuid.uuid5(uuid.NAMESPACE_URL, 'eternal-packaging/branch/YGY'))
     backup = None
     if args.apply:
@@ -58,7 +60,8 @@ async def run(db, args):
             raise RuntimeError('--apply memerlukan --all-existing-ygy dan --backup baru')
         fd = os.open(args.backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         backup = os.fdopen(fd, 'w')
-    summary = {'mode': 'APPLY' if args.apply else 'DRY_RUN', 'ygy_id': ygy, 'collections': {}}
+    summary = {'mode': 'APPLY' if args.apply else 'DRY_RUN', 'ygy_id': ygy, 'collections': {}, 'users_global_skipped': 0}
+    users_global_skipped = 0
     try:
         if not rows:
             summary['master'] = 'created' if args.apply else 'would_create'
@@ -72,6 +75,8 @@ async def run(db, args):
             scanned = changed = 0
             async for doc in db[name].find({}):
                 scanned += 1
+                if name == 'users' and str((doc or {}).get('role') or '').lower() in GLOBAL_BRANCH_ROLES:
+                    users_global_skipped += 1
                 changes = changes_for(name, doc, ygy)
                 if not changes:
                     continue
@@ -86,6 +91,7 @@ async def run(db, args):
                     if result.matched_count != 1:
                         raise RuntimeError(f'Konflik dokumen {name}; hentikan penulisan operasional sebelum melanjutkan.')
             summary['collections'][name] = {'scanned': scanned, 'would_change' if not args.apply else 'changed': changed}
+        summary['users_global_skipped'] = users_global_skipped
         if args.apply:
             await db.migration_status.update_one(
                 {'_id': 'ygy_operational_v1'},

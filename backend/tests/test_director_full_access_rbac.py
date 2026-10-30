@@ -103,10 +103,18 @@ def test_confirm_helpers_do_not_auto_activate_on_shrink():
     assert "purchase_orders.view" not in confirmed
 
 
-def test_filter_strips_package_even_with_confirmed_keys():
-    """Owner policy: confirm stamps never grant package access to non-Holding."""
+def test_approved_package_keys_are_effective_and_unreviewed_grants_stay_off():
+    """Stored package grants stay ineffective until the reviewed list approves them."""
     perms = PACKAGE_PERMISSIONS | {"po.view"}
-    filtered = filter_package_permissions(
+    unreviewed = filter_package_permissions(
+        perms,
+        {"role": "crm"},
+        "production",
+        "mongodb://prod:27017",
+    )
+    assert "po.view" in unreviewed
+    assert not unreviewed.intersection(PACKAGE_PERMISSIONS)
+    approved = filter_package_permissions(
         perms,
         {"role": "crm"},
         "production",
@@ -114,10 +122,12 @@ def test_filter_strips_package_even_with_confirmed_keys():
         role_confirmed_keys=["purchase_hpp.view"],
         user_confirmed_keys=["current_stock.view"],
     )
-    assert "po.view" in filtered
-    assert "purchase_hpp.view" not in filtered
-    assert not filtered.intersection(PACKAGE_PERMISSIONS)
-    filtered_user = filter_package_permissions(
+    assert "po.view" in approved
+    assert approved.intersection(PACKAGE_PERMISSIONS) == {
+        "purchase_hpp.view",
+        "current_stock.view",
+    }
+    approved_user = filter_package_permissions(
         perms | {"current_stock.view"},
         {"role": "crm", "permissions_override": {"current_stock.view": True}},
         "production",
@@ -125,9 +135,11 @@ def test_filter_strips_package_even_with_confirmed_keys():
         role_confirmed_keys=["purchase_hpp.view"],
         user_confirmed_keys=["current_stock.view"],
     )
-    assert "current_stock.view" not in filtered_user
-    assert "po.view" in filtered_user
-    assert not filtered_user.intersection(PACKAGE_PERMISSIONS)
+    assert approved_user.intersection(PACKAGE_PERMISSIONS) == {
+        "purchase_hpp.view",
+        "current_stock.view",
+    }
+    assert "po.view" in approved_user
 
 
 @pytest.mark.anyio

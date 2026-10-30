@@ -25,6 +25,25 @@ class Branches:
     def find(self, *a): return Cursor(self.rows)
 
 
+def test_assignment_scope_follows_actor_branches_not_role_name():
+    m=service(); db=SimpleNamespace(branches=Branches())
+    admin={'role':'admin','branch_ids':['ygy'],'primary_branch_id':'ygy'}
+    assert asyncio.run(m.validate_assignment(db, admin, ['ygy'], 'ygy'))['branch_id']=='ygy'
+    with pytest.raises(HTTPException, match='Akses cabang ditolak'):
+        asyncio.run(m.validate_assignment(db, admin, ['smg'], 'smg'))
+    director={'role':'direktur_utama','branch_ids':['ygy'],'primary_branch_id':'ygy'}
+    assert asyncio.run(m.validate_assignment(db, director, ['smg'], 'smg'))['primary_branch_id']=='smg'
+    holding={'role':'holding_team'}
+    opts=asyncio.run(m.options(db, holding))
+    assert opts['global_access'] is True and {b['id'] for b in opts['branches']}=={'ygy','smg'}
+    db.branches.rows.append({'id':'sby','code':'SBY','active':True})
+    again=asyncio.run(m.options(db, director))
+    assert 'sby' in {b['id'] for b in again['branches']}
+    crm={'role':'crm','branch_ids':['ygy'],'primary_branch_id':'ygy'}
+    scoped=asyncio.run(m.options(db, crm))
+    assert scoped['global_access'] is False and [b['id'] for b in scoped['branches']]==['ygy']
+
+
 def test_assignment_only_holding_director_and_primary_in_allowed_set():
     m=service(); db=SimpleNamespace(branches=Branches())
     with pytest.raises(HTTPException):
@@ -72,6 +91,9 @@ def test_cutover_preserves_external_id_and_assigns_nested_shipments():
     assert changes['shipments'][0]['branch_id']=='50'
     assert changes['shipments'][0]['operational_branch_id']=='ygy'
     assert m.changes_for('orders',{**doc,**changes},'ygy')=={}
+    assert m.changes_for('users', {'role': 'direktur_utama', 'branch_ids': ['old'], 'primary_branch_id': 'old', 'branch_id': 'old'}, 'ygy') == {}
+    assert m.changes_for('users', {'role': 'holding_team', 'branch_id': 'old'}, 'ygy') == {}
+    assert m.changes_for('users', {'role': 'crm'}, 'ygy')['branch_ids'] == ['ygy']
 
 
 @pytest.mark.anyio
@@ -390,3 +412,198 @@ async def _seed_bulk_branch_documents(db):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+def test_ygy_cutover_skips_global_users_on_local_mongo(tmp_path, capsys):
+    asyncio.run(_cutover_local_mongo(tmp_path, capsys))
+
+
+async def _cutover_local_mongo(tmp_path, capsys):
+    import importlib.util
+    import json
+    from bson import json_util
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    scripts = Path(__file__).parents[1] / "scripts"
+
+    def module(name):
+        spec = importlib.util.spec_from_file_location(name, scripts / (name + ".py"))
+        result = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(result)
+        return result
+
+    migration = module("migrate_ygy_operational")
+    client = AsyncIOMotorClient(
+        "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs",
+        serverSelectionTimeoutMS=8000,
+    )
+    name = "eternal_ygy_cutover_0e0a"
+    db = client[name]
+    try:
+        await client.drop_database(name)
+        await db.users.insert_many([
+            {"id": "dir", "role": "direktur_utama", "branch_ids": ["keep"], "primary_branch_id": "keep", "branch_id": "keep"},
+            {"id": "hold", "role": "holding_team", "branch_ids": ["keep"], "primary_branch_id": "keep", "branch_id": "keep"},
+            {"id": "crm", "role": "crm", "email": "crm@example.test"},
+        ])
+        await db.orders.insert_one({
+            "id": "po", "branch_id": "50", "accurate_id": "ACC-PO",
+            "grand_total": 1234, "total_quantity": 50,
+            "shipments": [{"id": "sj", "branch_id": "50", "qty": 20}],
+        })
+        await db.physical_stock_balances.insert_one({"id": "stk", "qty": 40, "amount": 4000, "accurate_id": "ACC-STK"})
+        await db.journal_entries.insert_one({"id": "jnl", "amount": 4000, "accurate_id": "ACC-JNL"})
+        before_order = await db.orders.find_one({"id": "po"})
+        before_dir = await db.users.find_one({"id": "dir"})
+        await migration.run(db, SimpleNamespace(apply=False, all_existing_ygy=False, backup=None))
+        dry = json.loads(capsys.readouterr().out)
+        assert dry["users_global_skipped"] == 2
+        assert await db.orders.find_one({"id": "po"}) == before_order
+        assert await db.branches.count_documents({}) == 0
+        assert await db.users.find_one({"id": "dir"}) == before_dir
+        backup = tmp_path / "before.jsonl"
+        await migration.run(db, SimpleNamespace(apply=True, all_existing_ygy=True, backup=str(backup)))
+        applied = json.loads(capsys.readouterr().out)
+        assert applied["users_global_skipped"] == 2
+        ygy = (await db.branches.find_one({"code": "YGY"}))["id"]
+        crm = await db.users.find_one({"id": "crm"})
+        assert crm["branch_ids"] == [ygy] and crm["primary_branch_id"] == ygy and crm["branch_id"] == ygy
+        assert await db.users.find_one({"id": "dir"}) == before_dir
+        assert (await db.users.find_one({"id": "hold"}))["branch_id"] == "keep"
+        order = await db.orders.find_one({"id": "po"})
+        assert order["branch_id"] == "50" and order["accurate_id"] == "ACC-PO"
+        assert order["grand_total"] == 1234 and order["total_quantity"] == 50
+        assert order["operational_branch_id"] == ygy
+        assert order["shipments"][0]["branch_id"] == "50"
+        assert order["shipments"][0]["qty"] == 20
+        assert await db.physical_stock_balances.find_one({"id": "stk"}) == {
+            "_id": (await db.physical_stock_balances.find_one({"id": "stk"}))["_id"],
+            "id": "stk", "qty": 40, "amount": 4000, "accurate_id": "ACC-STK",
+        }
+        stock = await db.physical_stock_balances.find_one({"id": "stk"})
+        journal = await db.journal_entries.find_one({"id": "jnl"})
+        assert stock["qty"] == 40 and stock["amount"] == 4000 and stock["accurate_id"] == "ACC-STK"
+        assert journal["amount"] == 4000 and journal["accurate_id"] == "ACC-JNL"
+        records = [json_util.loads(line) for line in backup.read_text().splitlines()]
+        user_ids = [row["_id"] for row in records if row.get("collection") == "users"]
+        assert user_ids == [crm["_id"]]
+        with pytest.raises(RuntimeError, match="sudah selesai"):
+            await migration.run(db, SimpleNamespace(apply=True, all_existing_ygy=True, backup=str(tmp_path / "repeat.jsonl")))
+    finally:
+        await client.drop_database(name)
+        client.close()
+
+
+def test_management_permission_not_role_name_gates_branch_and_users():
+    asyncio.run(_permission_gate_case())
+
+
+async def _permission_gate_case():
+    import os
+    from motor.motor_asyncio import AsyncIOMotorClient
+    import httpx
+
+    keys = ("APP_ENV", "MONGO_URL", "DB_NAME", "SEED_DEMO_ORDERS")
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ["APP_ENV"] = "production"
+    os.environ["MONGO_URL"] = "mongodb://127.0.0.1:27017/?replicaSet=eternal_local_rs"
+    os.environ["DB_NAME"] = "eternal_ygy_perm_gate_0e0a"
+    os.environ["SEED_DEMO_ORDERS"] = "0"
+    import server
+    from server import app, current_user
+
+    client = AsyncIOMotorClient(os.environ["MONGO_URL"], serverSelectionTimeoutMS=8000)
+    db = client[os.environ["DB_NAME"]]
+    server.client = client
+    server.db = db
+    try:
+        await client.drop_database(db.name)
+        await db.branches.insert_many([
+            {"id": "ygy", "code": "YGY", "name": "Yogyakarta", "active": True},
+            {"id": "smg", "code": "SMG", "name": "Semarang", "active": True},
+        ])
+        await db.role_permissions.insert_one({
+            "role": "crm",
+            "permissions": ["users.manage", "org.branches.manage", "po.view"],
+            "package_production_confirmed_keys": [],
+        })
+        await db.users.insert_one({
+            "id": "u-crm", "email": "crm@test.local", "name": "CRM", "role": "crm",
+            "status": "active", "branch_ids": ["ygy"], "primary_branch_id": "ygy", "branch_id": "ygy",
+            "permissions_override": {},
+        })
+        app.dependency_overrides[current_user] = lambda: {
+            "id": "u-crm", "user_id": "u-crm", "email": "crm@test.local", "name": "CRM",
+            "role": "crm", "branch_ids": ["ygy"], "primary_branch_id": "ygy",
+            "permissions_override": {},
+        }
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+            denied = await http.post("/api/branches", json={"code": "SBY", "name": "Surabaya"})
+            assert denied.status_code == 403, denied.text
+            await db.role_permissions.update_one(
+                {"role": "crm"},
+                {"$set": {"package_production_confirmed_keys": ["org.branches.manage"]}},
+            )
+            created = await http.post("/api/branches", json={"code": "SBY", "name": "Surabaya"})
+            assert created.status_code == 201, created.text
+            viewer = {
+                "id": "u-view", "user_id": "u-view", "email": "view@test.local", "name": "View",
+                "role": "crm", "branch_ids": ["ygy"], "primary_branch_id": "ygy",
+                "permissions_override": {},
+            }
+            await db.users.insert_one({**viewer, "status": "active"})
+            await db.role_permissions.update_one(
+                {"role": "crm"},
+                {"$set": {"permissions": ["po.view"], "package_production_confirmed_keys": []}},
+            )
+            app.dependency_overrides[current_user] = lambda: viewer
+            blocked = await http.post("/api/admin/users", json={
+                "email": "new@test.local", "name": "Baru", "role": "helper",
+                "branch_ids": ["ygy"], "primary_branch_id": "ygy",
+            })
+            assert blocked.status_code == 403, blocked.text
+            await db.role_permissions.update_one(
+                {"role": "crm"},
+                {"$set": {"permissions": ["users.manage", "po.view"]}},
+            )
+            app.dependency_overrides[current_user] = lambda: {
+                **viewer, "id": "u-crm", "user_id": "u-crm", "email": "crm@test.local",
+            }
+            ok = await http.post("/api/admin/users", json={
+                "email": "new@test.local", "name": "Baru", "role": "helper",
+                "branch_ids": ["ygy"], "primary_branch_id": "ygy",
+            })
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["user"]["branch_ids"] == ["ygy"]
+            other = await http.post("/api/admin/users", json={
+                "email": "other@test.local", "name": "Lain", "role": "helper",
+                "branch_ids": ["smg"], "primary_branch_id": "smg",
+            })
+            assert other.status_code == 403, other.text
+            escalate = await http.put("/api/admin/users/u-crm", json={
+                "permissions_override": {"permissions.manage": True},
+            })
+            assert escalate.status_code == 400, escalate.text
+            assert "izin pengelolaan" in (escalate.json().get("detail") or "")
+            director = {
+                "id": "u-dir", "user_id": "u-dir", "email": "dir@test.local", "name": "Direktur",
+                "role": "direktur_utama", "permissions_override": {},
+            }
+            await db.users.insert_one({**director, "status": "active"})
+            await db.branches.insert_one({"id": "sby", "code": "SBY2", "name": "Surabaya Dua", "active": True})
+            app.dependency_overrides[current_user] = lambda: director
+            opts = await http.get("/api/operational-branches/options")
+            assert opts.status_code == 200, opts.text
+            body = opts.json()
+            assert body["global_access"] is True
+            assert {"ygy", "smg", "sby"} <= {row["id"] for row in body["branches"]}
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+        await client.drop_database(db.name)
+        client.close()
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

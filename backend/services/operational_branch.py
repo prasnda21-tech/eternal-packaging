@@ -6,13 +6,7 @@ branch_id remain readable; numeric external ids require the explicit YGY cutover
 from fastapi import HTTPException
 from services.branch_access import assigned_branch_ids, has_global_branch_scope
 
-MANAGERS = frozenset({'direktur_utama', 'holding_team'})
 FIELD = 'operational_branch_id'
-
-
-def require_branch_manager(user):
-    if str((user or {}).get('role') or '').lower() not in MANAGERS:
-        raise HTTPException(403, 'Hanya Direktur dan Holding dapat mengatur akses cabang.')
 
 
 def document_branch(doc):
@@ -27,13 +21,21 @@ async def active_branch(db, branch_id):
 
 
 async def validate_assignment(db, actor, ids, primary):
-    require_branch_manager(actor)
+    """Validate a branch list. Authority is the caller's permission, not role name.
+
+    A caller without global branch scope can assign only branches they already
+    hold. Direktur and Holding stay global, including branches added later.
+    """
     ids = assigned_branch_ids({'branch_ids': ids})
     primary = str(primary or '').strip()
     if not ids or primary not in ids:
         raise HTTPException(400, 'Pilih minimal satu cabang dan cabang utama dari pilihan tersebut.')
     for bid in ids:
         await active_branch(db, bid)
+    if not has_global_branch_scope(actor):
+        allowed = set(assigned_branch_ids(actor))
+        if not set(ids) <= allowed:
+            raise HTTPException(403, 'Akses cabang ditolak.')
     return {'branch_ids': ids, 'primary_branch_id': primary, 'branch_id': primary}
 
 
@@ -42,7 +44,7 @@ async def operational_access(db, user):
         return {'scope': 'ALL', 'branch_ids': None}
     ids = assigned_branch_ids(user)
     if not ids:
-        raise HTTPException(403, 'Akses cabang belum ditetapkan. Hubungi Direktur/Holding.')
+        raise HTTPException(403, 'Akses cabang belum ditetapkan. Hubungi pengguna yang berwenang mengatur karyawan.')
     for bid in ids:
         await active_branch(db, bid)
     return {'scope': 'ASSIGNED', 'branch_ids': ids}

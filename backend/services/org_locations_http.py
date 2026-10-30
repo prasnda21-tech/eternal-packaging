@@ -106,8 +106,6 @@ def register_org_locations_routes(
         db = get_db()
         await ensure_indexes(db)
         try:
-            from services.operational_branch import require_branch_manager
-            require_branch_manager(user)
             return await create_branch(db, _dump(payload), user=user)
         except OrgLocationValidationError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -122,8 +120,6 @@ def register_org_locations_routes(
     ):
         db = get_db()
         try:
-            from services.operational_branch import require_branch_manager
-            require_branch_manager(user)
             return await update_branch(db, branch_id, _dump(payload), user=user)
         except KeyError:
             raise HTTPException(404, "Cabang tidak ditemukan") from None
@@ -139,8 +135,6 @@ def register_org_locations_routes(
     ):
         db = get_db()
         try:
-            from services.operational_branch import require_branch_manager
-            require_branch_manager(user)
             return await delete_branch(db, branch_id, user=user)
         except KeyError:
             raise HTTPException(404, "Cabang tidak ditemukan") from None

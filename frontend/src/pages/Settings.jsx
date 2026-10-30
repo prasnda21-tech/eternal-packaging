@@ -24,7 +24,6 @@ import {
   isPackagePermissionKey,
   packageKeysFromOverride,
   packageKeysToActivate,
-  PACKAGE_PRODUCTION_LOCK_HINT,
   pruneConfirmReviewKeys,
   roleMayReceivePackageAccess,
   rolePermissionsPutBody,
@@ -100,8 +99,8 @@ function InfoBanner({ children, testid = "settings-info" }) {
 
 /* ---------------- Employee create/edit form ---------------- */
 function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, canManageRoles, canManagePerms, onResetPassword, roles = [] }) {
-  const { user: actor } = useAuth();
-  const canAssignBranches = ["direktur_utama", "holding_team"].includes(actor?.role);
+  const { hasPerm } = useAuth();
+  const canAssignBranches = hasPerm("users.manage");
   const [branchOptions, setBranchOptions] = useState([]);
   useEffect(() => {
     if (!canAssignBranches) return;
@@ -171,13 +170,9 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
     setUserPkgReviewKeys((prev) => pruneConfirmReviewKeys(prev, userOverridePackageKeys));
   }, [userOverridePackageKeys.join("|")]);
 
-  const employeePackageAccessAllowed = roleMayReceivePackageAccess(form.role);
+  const employeePackageNeedsApproval = !roleMayReceivePackageAccess(form.role);
 
   const togglePerm = (key, value) => {
-    if (isPackagePermissionKey(key) && value === "grant" && !employeePackageAccessAllowed) {
-      // Non-Holding/Direktur cannot gain effective package access via override.
-      return;
-    }
     setForm((f) => {
       const next = { ...f.permissions_override };
       if (value === "inherit") delete next[key];
@@ -291,7 +286,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                 <option value="">Pilih cabang utama</option>
                 {branchOptions.filter((b) => form.branch_ids.includes(b.id)).map((b) => <option key={b.id} value={b.id}>{b.name || b.code}</option>)}
               </select></label>
-            </> : <p>Pengaturan akses cabang dikelola Direktur/Holding.</p>}
+            </> : <p>Penetapan cabang membutuhkan izin kelola karyawan.</p>}
           </div>
           <div className="emp-grid">
             <FormField id="emp-email-field" label="Email login" isRequired={!isEdit} value={form.email}>
@@ -413,22 +408,12 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
           status="neutral"
         >
           <div className="emp-perms">
-          {!employeePackageAccessAllowed && (
-            <div className="settings-info" data-testid="emp-package-lock-banner" style={{ marginBottom: 12 }}>
-              <strong>Package Pembelian / Persediaan / HPP</strong>
-              <p className="hint" style={{ margin: "4px 0 0" }}>{PACKAGE_PRODUCTION_LOCK_HINT}</p>
-              <p className="muted small" style={{ marginTop: 6 }}>
-                Tombol Grant untuk izin package dinonaktifkan pada role ini. Kolom Efektif mengikuti backend
-                (sama dengan /auth/me).
-              </p>
-            </div>
-          )}
-          {employeePackageAccessAllowed && userOverridePackageKeys.length > 0 && (
+          {employeePackageNeedsApproval && userOverridePackageKeys.length > 0 && (
             <div className="settings-info" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
-              <strong>Package override (Holding/Direktur)</strong>
+              <strong>Pembelian / Persediaan / HPP</strong>
               <p className="hint">
-                Stamp konfirmasi opsional untuk audit override package. Akses efektif Holding/Direktur
-                tetap mengikuti kebijakan package runtime.
+                Grant tersimpan belum berlaku sampai daftar ini disetujui pada simpan ini.
+                Izin di luar daftar tetap tersimpan dan tidak efektif. Kolom Efektif mengikuti hasil backend.
               </p>
               <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 8 }}>
                 <input
@@ -445,7 +430,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                   }}
                   data-testid="emp-package-confirm-optin"
                 />
-                <span>Catat stamp konfirmasi package override untuk daftar yang ditinjau</span>
+                <span>Setujui daftar berikut agar berlaku</span>
               </label>
               {userPkgConfirmOptIn && (
                 <ul data-testid="emp-package-confirm-list" style={{ marginTop: 8, paddingLeft: 18 }}>
@@ -474,8 +459,8 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
               {userPkgConfirmOptIn && (
                 <p className="muted small" data-testid="emp-package-activation-preview">
                   {userActivationPreview.length
-                    ? `${userActivationPreview.length} key override akan dikonfirmasi.`
-                    : "Tidak ada key override yang dikonfirmasi pada simpan ini."}
+                    ? `${userActivationPreview.length} izin akan berlaku. Izin di luar daftar tetap tersimpan dan tidak efektif.`
+                    : "Tidak ada izin yang disetujui. Grant package tersimpan tidak menjadi efektif."}
                 </p>
               )}
             </div>
@@ -550,12 +535,6 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                             className={state === "grant" ? "on" : ""}
                             onClick={() => togglePerm(p.key, "grant")}
                             data-testid={`perm-grant-${p.key}`}
-                            disabled={isPackagePermissionKey(p.key) && !employeePackageAccessAllowed}
-                            title={
-                              isPackagePermissionKey(p.key) && !employeePackageAccessAllowed
-                                ? PACKAGE_PRODUCTION_LOCK_HINT
-                                : undefined
-                            }
                           >
                             Grant
                           </button>
@@ -1226,8 +1205,8 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           const preview = confirmKeys || [];
           const ok = window.confirm(
             preview.length
-              ? `Konfirmasi aktivasi ${preview.length} izin package production?\n\n${preview.join("\n")}\n\nStamp hanya berlaku untuk himpunan ini.`
-              : "Konfirmasi package tanpa key? Stamp package untuk grant saat ini akan dikosongkan."
+              ? `Setujui ${preview.length} izin Pembelian/Persediaan/HPP agar berlaku?\n\n${preview.join("\n")}\n\nIzin di luar daftar tetap tersimpan dan tidak efektif.`
+              : "Setujui tanpa izin package? Izin package tersimpan tidak menjadi efektif."
           );
           if (!ok) return;
           // UI list and request payload must be identical.
