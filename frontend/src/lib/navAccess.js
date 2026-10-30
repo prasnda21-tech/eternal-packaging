@@ -712,7 +712,7 @@ export function purchasingNavVisible(hasPerm) {
 
 export function inventoryNavVisible(hasPerm) {
   const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
-  const masterItems = parent && navOrModule(hasPerm, NAV_KEYS.masterItems, "master_items.view");
+  const masterItems = parent && canSeeNav(hasPerm, "master_items.view");
   const branchesWarehouses = parent && navOrModule(
     hasPerm,
     NAV_KEYS.branchesWarehouses,
