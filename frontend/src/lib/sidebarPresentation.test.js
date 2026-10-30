@@ -206,7 +206,7 @@ describe("desktop sidebar presentation", () => {
     const both = modelFrom(has(NAV_KEYS.cashBankAccounts, NAV_KEYS.ledgerAccounts));
     expect(group(both, "keuangan").sections.map((section) => section.heading)).toEqual(["Kas & Bank", "Buku Besar"]);
     expect(group(modelFrom(has(NAV_KEYS.schedule, "schedule.view")), "produksi").sections.map((section) => section.heading)).toEqual(["Jadwal"]);
-    expect(labels(group(modelFrom(has(NAV_KEYS.schedule, "schedule.view")), "pengiriman"))).toEqual(["Rencana Jadwal Kirim"]);
+    expect(labels(group(modelFrom(has(NAV_KEYS.schedule, "schedule.view")), "pengiriman"))).toEqual(["Jadwal Pengiriman", "Rencana Jadwal Kirim"]);
     expect(group(modelFrom(has(NAV_KEYS.paintSentralisasi)), "produksi").sections.map((section) => section.heading)).toEqual([
       "Sentralisasi Cat",
     ]);
@@ -304,7 +304,7 @@ describe("desktop sidebar presentation", () => {
   test("permission-limited rails still map to the same chevron group", () => {
     const produksiOnly = modelFrom(has(NAV_KEYS.schedule, "schedule.view"));
     expect(group(produksiOnly, "produksi")).not.toBeNull();
-    expect(labels(group(produksiOnly, "pengiriman"))).toEqual(["Rencana Jadwal Kirim"]);
+    expect(labels(group(produksiOnly, "pengiriman"))).toEqual(["Jadwal Pengiriman", "Rencana Jadwal Kirim"]);
     expect(groupedRailForPath("/produksi")).toBe("produksi");
     const kirimOnly = modelFrom(has(NAV_KEYS.deliverySchedule, "delivery.schedule.view"));
     expect(group(kirimOnly, "pengiriman")).not.toBeNull();
@@ -315,3 +315,4 @@ describe("desktop sidebar presentation", () => {
     expect(groupedRailForPath("/kas-bank/daftar")).toBe("keuangan");
   });
 });
+

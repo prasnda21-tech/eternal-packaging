@@ -469,11 +469,11 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
 });
 
 describe("productionNavVisible", () => {
-  test("shows parent when only jadwal produksi is granted", () => {
-    const v = productionNavVisible(has(NAV_KEYS.schedule, "schedule.view"));
+  test("schedule.view shows production and delivery schedules without nav configuration", () => {
+    const v = productionNavVisible(has("schedule.view"));
     expect(v.parent).toBe(true);
     expect(v.schedule).toBe(true);
-    expect(v.deliverySchedule).toBe(false);
+    expect(v.deliverySchedule).toBe(true);
     expect(v.tasks.parent).toBe(false);
   });
 
@@ -635,7 +635,7 @@ describe("productionMenuItems", () => {
 
   test("omits Pengiriman Hari Ini without status po and does not invent Tugas Produksi tile", () => {
     const items = productionMenuItems(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.tasksOperator));
-    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi", "Rencana Jadwal Kirim"]);
+    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi", "Jadwal Pengiriman", "Rencana Jadwal Kirim"]);
     expect(items.some((item) => item.label === "Tugas Produksi")).toBe(false);
     expect(productionMenuItems(has(NAV_KEYS.statusPo))).toEqual([]);
   });
@@ -747,4 +747,22 @@ describe("CRM production schedule permission parity", () => {
   test("schedule.work_date.view alone does not grant production schedule", () => {
     expect(productionNavVisible(has("schedule.work_date.view")).schedule).toBe(false);
   });
+});
+
+
+
+describe("delivery schedule business permission regression", () => {
+  test.each([[], [NAV_KEYS.deliverySchedule, "nav.configured"], ["schedule.work_date.view"]])(
+    "does not show delivery schedule for insufficient permissions %j", (...keys) => {
+      const permissions = has(...keys);
+      expect(productionNavVisible(permissions).deliverySchedule).toBe(false);
+      expect(productionMenuItems(permissions).some((item) => item.to === "/produksi/jadwal-pengiriman")).toBe(false);
+    },
+  );
+  test.each(["schedule.view", "delivery.schedule.view"])(
+    "%s shows delivery schedule without legacy nav", (permission) => {
+      expect(productionNavVisible(has(permission)).deliverySchedule).toBe(true);
+      expect(productionMenuItems(has(permission)).some((item) => item.to === "/produksi/jadwal-pengiriman")).toBe(true);
+    },
+  );
 });
