@@ -1,4 +1,4 @@
-import { dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
+import { productionNavVisible, productionMenuItems, dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 
 const has = (...keys) => (k) => keys.includes(k);
@@ -716,5 +716,24 @@ describe("automatic purchasing navigation enforces effective business permission
     const visible = purchasingNavVisible(perms);
     expect(visible.orders).toBe(true);
     expect(visible.invoices).toBe(false);
+  });
+});
+
+
+describe("CRM production schedule permission parity", () => {
+  test("schedule.view alone displays Jadwal Produksi without sidebar configuration", () => {
+    const access = productionNavVisible(has("schedule.view", "nav.configured"));
+    expect(access.schedule).toBe(true);
+    expect(productionMenuItems(has("schedule.view", "nav.configured")).some((m) => m.to === "/produksi")).toBe(true);
+  });
+
+  test("legacy sidebar key cannot override denied schedule.view", () => {
+    const access = productionNavVisible(has(NAV_KEYS.production, NAV_KEYS.schedule, "nav.configured"));
+    expect(access.schedule).toBe(false);
+    expect(productionMenuItems(has(NAV_KEYS.production, NAV_KEYS.schedule, "nav.configured")).some((m) => m.to === "/produksi")).toBe(false);
+  });
+
+  test("schedule.work_date.view alone does not grant production schedule", () => {
+    expect(productionNavVisible(has("schedule.work_date.view")).schedule).toBe(false);
   });
 });
