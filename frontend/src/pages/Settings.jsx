@@ -2537,12 +2537,16 @@ function SidebarAccessTab({ permissionCatalog }) {
                     : (granted.has(m.key) ? m.key : null);
                   // Preview is capability-led, not a second editable nav ACL.
                   // Legacy nav-only grants are not proof that a page is accessible.
-                  const visible = Boolean(reason && (!String(reason).startsWith("nav.") || m.key === "nav.sales.product_requests"));
+                  const visible = Boolean(reason);
+                  const verified = Boolean(reason && !String(reason).startsWith("nav."));
+                  const explanation = !visible
+                    ? "Tidak ada izin role untuk menu ini."
+                    : verified
+                      ? `Izin fungsional: ${reason}. Override akun dapat berbeda.`
+                      : `Navigasi legacy: ${reason}. Akses halaman belum terverifikasi; cek permission view.`;
 
-                  return <td key={r.role} title={visible
-                    ? `Role grant: ${reason}. Akun dengan override dapat berbeda.`
-                    : `Tidak ada izin role yang sesuai untuk menu ini; periksa Hak Akses.`}>
-                    <span>{visible ? "✓" : "–"}</span>
+                  return <td key={r.role} title={explanation}>
+                    <span>{verified ? "✓" : visible ? "?" : "–"}</span>
                   </td>;
                 })}
               </tr>
