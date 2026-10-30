@@ -2535,7 +2535,10 @@ function SidebarAccessTab({ permissionCatalog }) {
                   const reason = functional
                     ? functional.find((key) => granted.has(key))
                     : (granted.has(m.key) ? m.key : null);
-                  const visible = Boolean(reason);
+                  // Preview is capability-led, not a second editable nav ACL.
+                  // Legacy nav-only grants are not proof that a page is accessible.
+                  const visible = Boolean(reason && (!String(reason).startsWith("nav.") || m.key === "nav.sales.product_requests"));
+
                   return <td key={r.role} title={visible
                     ? `Role grant: ${reason}. Akun dengan override dapat berbeda.`
                     : `Tidak ada izin role yang sesuai untuk menu ini; periksa Hak Akses.`}>
