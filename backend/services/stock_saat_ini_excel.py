@@ -946,17 +946,21 @@ def aggregate_proven_print_delivered_qty(
                 # Only print SO lines count as Cetak Sudah Dikirim.
                 if not is_print_line(line):
                     continue
+                line_mid = _line_master_id(line, owners)
                 parent_mid = _physical_delivery_master_id(
                     order_lines, idx, owners, process_ids,
                 )
                 if not parent_mid:
+                    # Unlinked SERVICE: skip line only — do not blast sibling print
+                    # masters on this shipment (parity with aggregate_legacy_delivered_qty).
+                    if line_mid and line_mid in process_ids:
+                        continue
                     _mark_physical_masters_unproven(
                         order_lines, owners, process_ids, unproven_masters,
                     )
                     continue
                 # Collapse SERVICE process onto parent once (max already handled
                 # upstream for multi-warna); credit native print parent qty only.
-                line_mid = _line_master_id(line, owners)
                 if line_mid in process_ids:
                     # Process/SERVICE print line — credit parent once via max later.
                     # For print-delivery column, use physical parent credit only when

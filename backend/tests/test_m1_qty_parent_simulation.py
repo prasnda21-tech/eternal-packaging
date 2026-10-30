@@ -197,10 +197,12 @@ def test_single_physical_plus_service_before_after():
     assert phys_sj == 1000.0
     assert svc_sj == 1000.0
 
-    # Before: unlinked SERVICE poisons provenance; physical line may still accumulate.
-    assert before_p.get(MASTER_A) == "unproven"
+    # Before (narrow skip): unlinked SERVICE does not blast-unproven sibling physical.
+    # Native physical SJ credits; SERVICE line skipped (no invent parent).
+    assert before_p.get(MASTER_A) == "confirmed_shipment"
     assert MASTER_SVC not in before_d  # process mid never accumulates
     attr_before = float(before_d.get(MASTER_A, 0.0))
+    assert attr_before == phys_sj == 1000.0
 
     sim, status = _simulate_parent_links(order, plan)
     assert status == "SIMULATED"
@@ -238,7 +240,7 @@ def test_dual_service_colors_remap_once_to_parent():
     assert svc_sj == 2000.0
 
     before_d, before_p = _attribute(order)
-    assert before_p.get(MASTER_A) == "unproven"
+    assert before_p.get(MASTER_A) == "confirmed_shipment"
 
     sim, status = _simulate_parent_links(order, plan)
     assert status == "SIMULATED"
@@ -274,7 +276,7 @@ def test_pf_true_dual_service_flag_unchanged_and_remap():
     phys_sj, svc_sj = _sj_qty_by_role(order, PROCESS_IDS)
 
     before_d, before_p = _attribute(order)
-    assert before_p.get(MASTER_A) == "unproven"
+    assert before_p.get(MASTER_A) == "confirmed_shipment"
 
     sim, status = _simulate_parent_links(order, plan)
     assert status == "SIMULATED"
@@ -310,10 +312,13 @@ def test_multi_phys_blocked_without_exclusive_parent():
     # No parent applied
     assert sim["line_items"][1].get("parent_line_id") in (None, "")
     after_d, after_p = _attribute(sim)
-    assert after_p.get(MASTER_A) == "unproven"
+    # Parent-link plan stays BLOCKED (ambiguous candidates), but delivery
+    # attribution no longer blast-unproven: native physical SJ lines credit.
+    assert after_p.get(MASTER_A) == "confirmed_shipment"
     assert after_d.get(MASTER_A) == before_d.get(MASTER_A)
+    assert float(after_d.get(MASTER_A, 0.0)) == 1000.0
     print(
-        "multi_phys BLOCKED",
+        "multi_phys BLOCKED_LINK_but_SJ_ok",
         {
             "candidates": plan.get("candidate_parent_accurate_line_ids"),
             "attr_A": after_d.get(MASTER_A),

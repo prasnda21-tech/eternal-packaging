@@ -60,8 +60,9 @@ def _physical_delivery_master_id(
 
     Process / jasa Add On (SERVICE) is work qty — never holds physical delivery
     demand. Linked SERVICE lines remap to their explicit parent inventory master.
-    Unlinked SERVICE returns empty so callers fail-closed (unproven), never
-    invent a parent link from names.
+    Unlinked SERVICE returns empty so callers **skip that line only** (never
+    invent a parent from names). Sibling physical lines on the same shipment
+    keep independent attribution — do not blast-unproven the whole PO.
     """
     from services.order_line_addon import resolve_parent_idx
 
@@ -110,18 +111,21 @@ def aggregate_legacy_delivered_qty(
 
     process_master_ids: SERVICE / process Add On masters. Proven shipment qty on
     those lines remaps to the explicit parent inventory master when linked;
-    unlinked SERVICE never invents parent demand (fail-closed unproven).
+    unlinked SERVICE never invents parent demand — that line is skipped only
+    (sibling physical lines on the same SJ keep their own credit).
 
     Per proven shipment identity, physical delivery for one parent mid is collapsed:
     - if any native physical line qty exists for that parent, credit that sum only;
     - else credit max(linked process/SERVICE line qtys) (SERVICE-only SJ path).
     Distinct shipment identities are never merged. Printing colors must not multiply
-    physical delivered qty. Ambiguous identity/grouping fails closed (unproven).
+    physical delivered qty. Ambiguous identity/grouping (bad line_idx, missing mid)
+    fails closed (unproven). Unlinked SERVICE alone is not shipment-wide ambiguity.
 
     Returns (delivered_by_master, provenance_by_master) where provenance is:
     - "confirmed_shipment" when order.shipment has delivery confirmation / Terkirim
     - "order_qty_delivered" when single physical-master order falls back to
-      order.qty_delivered (SERVICE process lines do not block this fallback)
+      order.qty_delivered (blocked when any SERVICE/process line is on the PO —
+      header totals may mix jasa volume)
     - "unproven" when confirmation exists but line attribution is unsafe
     """
     from services.r2_go_live import (
@@ -242,17 +246,21 @@ def aggregate_legacy_delivered_qty(
             for idx, qty in attributed.items():
                 if idx < 0 or idx >= len(order_lines):
                     continue
+                line_mid = _line_master_id(order_lines[idx], owners)
                 parent_mid = _physical_delivery_master_id(
                     order_lines, idx, owners, process_ids,
                 )
                 if not parent_mid:
-                    # SERVICE/process without valid parent — fail-closed.
+                    # Unlinked SERVICE/process: skip line only — never invent parent,
+                    # never blast-invalidate sibling physical masters on this SJ.
+                    if line_mid and line_mid in process_ids:
+                        continue
+                    # Missing/orphan mid or non-process empty remap → fail-closed.
                     _mark_physical_masters_unproven(
                         order_lines, owners, process_ids, unproven_masters,
                     )
                     group_ambiguous = True
                     break
-                line_mid = _line_master_id(order_lines[idx], owners)
                 if not line_mid:
                     _mark_physical_masters_unproven(
                         order_lines, owners, process_ids, unproven_masters,
@@ -284,12 +292,14 @@ def aggregate_legacy_delivered_qty(
                     confirmed_order_masters.add((order_id, parent_mid))
 
     # Physical-master qty_delivered fallback when THIS PO has no confirmed
-    # shipment attribution for that master. SERVICE process lines do not block
-    # the fallback (parent + Add On is still one physical demand identity).
+    # shipment attribution for that master. Blocked when any SERVICE/process
+    # line is on the PO — header qty_delivered may mix jasa volume.
     for order in order_by_id.values():
         order_id = str(order.get("id") or "").strip()
         order_lines = list(order.get("line_items") or [])
         master_ids = [_line_master_id(li, owners) for li in order_lines]
+        if any(m and m in process_ids for m in master_ids):
+            continue
         physical_ids = [
             m for m in master_ids if m and m not in process_ids
         ]
