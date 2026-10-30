@@ -1242,6 +1242,18 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
     if denied_business:
         for nav_key in inherited_auto_nav - current_auto_nav:
             base.discard(nav_key)
+    # Do not let old role-level nav settings resurrect a denied business leaf.
+    # Keep parent navigation when other authorized children still need it.
+    denied_leaf = {
+        "sales.delivery.view": "nav.sales.delivery_order",
+        "sales.invoice.view": "nav.sales.sales_invoice",
+        "sales.receipt.view": "nav.sales.sales_receipt",
+        "dashboard.production.view": "nav.dashboard",
+        "schedule.view": "nav.production_schedule",
+    }
+    for capability, nav_key in denied_leaf.items():
+        if (override or {}).get(capability) is False:
+            base.discard(nav_key)
     base = with_nav_defaults(base)
     # Respect explicit per-user nav denies, including always-visible defaults.
     for nav_key, allowed in (override or {}).items():
