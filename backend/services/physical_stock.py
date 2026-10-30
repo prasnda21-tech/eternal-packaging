@@ -3658,9 +3658,11 @@ def collect_blank_open_commitment_by_master(
           "sisa_belum_cetak": {master_id: {qty, status, reason}},
         }
 
-    Sisa Belum Cetak reuses print-parent completion evidence
-    (ordered − proven completed) — never a second formula, never subtracts
-    shipment again. SERVICE/process masters in exclude_master_ids never contribute.
+    Sisa Belum Cetak uses print-parent ``operator_splits.qty_completed`` for
+    that ``line_idx`` (ordered − proven completed) — never a second formula,
+    never subtracts shipment again, never invents qty when ops evidence is
+    absent. Order-wide process_gate does not discard per-line ops evidence for
+    sisa. SERVICE/process masters in exclude_master_ids never contribute.
     """
     from quantity_rules import is_print_line
     from services.order_line_addon import (
@@ -3887,12 +3889,25 @@ def collect_blank_open_commitment_by_master(
                 "status": need["status"],
                 "reason": need.get("reason"),
             })
-            # Same print completion evidence — do not invent a second formula.
-            sisa = sisa_belum_cetak_for_print_line(
-                ordered_qty=ordered,
-                print_completed_qty=print_completed,
-                print_completion_proven=proven,
-            )
+            # Sisa Belum Cetak (#683 formula unchanged):
+            #   max(0, print_ordered − proven_completed)
+            # Authoritative proven_completed = sum(operator_splits.qty_completed)
+            # for this print parent line_idx. Order-wide process_gate_unproven
+            # (unlinked SERVICE Add On / orphan print sibling / ambiguous
+            # unassigned splits) must not discard that line evidence, and must
+            # not invent a number when the line has no operator_splits at all.
+            if ops_evidence:
+                sisa = sisa_belum_cetak_for_print_line(
+                    ordered_qty=ordered,
+                    print_completed_qty=float(parent_completed),
+                    print_completion_proven=True,
+                )
+            else:
+                sisa = sisa_belum_cetak_for_print_line(
+                    ordered_qty=ordered,
+                    print_completed_qty=None,
+                    print_completion_proven=False,
+                )
             sisa_needs.append({
                 "master_item_id": mid,
                 "qty": sisa["qty"],

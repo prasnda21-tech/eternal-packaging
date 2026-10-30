@@ -233,3 +233,363 @@ def test_apply_excel_exposes_sisa_with_provenance():
     assert out["stock"] == 1500
     assert out["stock_dapat_dijual"] == 500
     assert out["qty_polos"] == 1500
+
+
+# ---------------------------------------------------------------------------
+# Owner PO fixtures (PR #683 recon samples) + reconstruction cases 1–8
+# ---------------------------------------------------------------------------
+
+SVC_EXCLUDE = {"m-svc-warna-a", "m-svc-warna-b", "m-svc-orphan"}
+
+
+def _owner_po_100089_full():
+    """100089 · PO/08/10/2026/000001 — ordered 500 / completed 500."""
+    return {
+        "id": "PO/08/10/2026/000001",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-100089",
+                "master_item_id": "100089",
+                "quantity": 500,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-svc-a",
+                "master_item_id": "m-svc-warna-a",
+                "quantity": 500,
+                "production_process": "print",
+                "item_type": "SERVICE",
+                "parent_line_id": "ln-100089",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 500},
+            {"line_idx": 1, "qty_completed": 500},
+        ],
+    }
+
+
+def _owner_po_100032_full():
+    """100032 · PO/27/10/2026/000015 — ordered 10000 / completed 10000."""
+    return {
+        "id": "PO/27/10/2026/000015",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-100032-a",
+            "master_item_id": "100032",
+            "quantity": 10000,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 10000}],
+    }
+
+
+def _owner_po_100032_two_lines():
+    """100032 · PO/13/10/2026/000019 — 2×2000 fully completed."""
+    return {
+        "id": "PO/13/10/2026/000019",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-100032-b1",
+                "master_item_id": "100032",
+                "quantity": 2000,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-100032-b2",
+                "master_item_id": "100032",
+                "quantity": 2000,
+                "production_process": "print",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 2000},
+            {"line_idx": 1, "qty_completed": 2000},
+        ],
+    }
+
+
+def _owner_po_100397_full():
+    """100397 · PO/19/10/2026/000008 — ordered 1000 / completed 1000."""
+    return {
+        "id": "PO/19/10/2026/000008",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-100397",
+            "master_item_id": "100397",
+            "quantity": 1000,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 1000}],
+    }
+
+
+def test_owner_four_po_samples_sisa_zero_ready():
+    """Owner verified samples: all print progress complete → sisa 0 READY."""
+    orders = [
+        _owner_po_100089_full(),
+        _owner_po_100032_full(),
+        _owner_po_100032_two_lines(),
+        _owner_po_100397_full(),
+    ]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=SVC_EXCLUDE, attributed_deliveries=[],
+    )
+    assert pack["sisa_belum_cetak"]["100089"] == {
+        "qty": 0.0, "status": STATUS_READY, "reason": None,
+    }
+    assert pack["sisa_belum_cetak"]["100032"] == {
+        "qty": 0.0, "status": STATUS_READY, "reason": None,
+    }
+    assert pack["sisa_belum_cetak"]["100397"] == {
+        "qty": 0.0, "status": STATUS_READY, "reason": None,
+    }
+
+
+def test_case1_one_line_fully_completed():
+    orders = [_owner_po_100397_full()]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert pack["sisa_belum_cetak"]["100397"]["qty"] == 0.0
+    assert pack["sisa_belum_cetak"]["100397"]["status"] == STATUS_READY
+
+
+def test_case2_one_line_incomplete():
+    orders = [{
+        "id": "so-incomplete",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-p",
+            "master_item_id": "100397",
+            "quantity": 1000,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 400}],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert pack["sisa_belum_cetak"]["100397"]["qty"] == 600.0
+    assert pack["sisa_belum_cetak"]["100397"]["status"] == STATUS_READY
+
+
+def test_case3_one_line_multi_operator():
+    orders = [{
+        "id": "so-multi-op",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-p",
+            "master_item_id": "100089",
+            "quantity": 500,
+            "production_process": "print",
+        }],
+        "operator_splits": [
+            {"line_idx": 0, "operator_id": "op-a", "qty_completed": 200},
+            {"line_idx": 0, "operator_id": "op-b", "qty_completed": 250},
+        ],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    # 500 − (200+250) = 50
+    assert pack["sisa_belum_cetak"]["100089"]["qty"] == 50.0
+    assert pack["sisa_belum_cetak"]["100089"]["status"] == STATUS_READY
+
+
+def test_case4_two_same_sku_lines_in_one_po():
+    orders = [_owner_po_100032_two_lines()]
+    # mutate second line incomplete
+    orders[0]["operator_splits"][1]["qty_completed"] = 500
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    # line0: 2000−2000=0; line1: 2000−500=1500 → aggregate 1500
+    assert pack["sisa_belum_cetak"]["100032"]["qty"] == 1500.0
+    assert pack["sisa_belum_cetak"]["100032"]["status"] == STATUS_READY
+
+
+def test_case5_addon_service_multi_warna_excluded_parent_ops_drive_sisa():
+    """Multi-warna SERVICE excluded; parent ops drive sisa even if child incomplete."""
+    orders = [{
+        "id": "so-multi-warna",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-p",
+                "master_item_id": "100089",
+                "quantity": 500,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-warna-a",
+                "master_item_id": "m-svc-warna-a",
+                "quantity": 500,
+                "production_process": "print",
+                "item_type": "SERVICE",
+                "parent_line_id": "ln-p",
+            },
+            {
+                "line_id": "ln-warna-b",
+                "master_item_id": "m-svc-warna-b",
+                "quantity": 500,
+                "production_process": "print",
+                "item_type": "SERVICE",
+                "parent_line_id": "ln-p",
+            },
+        ],
+        "operator_splits": [
+            {"line_idx": 0, "qty_completed": 500},
+            # warna incomplete — must not invent parent unfinished print
+        ],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=SVC_EXCLUDE, attributed_deliveries=[],
+    )
+    assert "m-svc-warna-a" not in pack["sisa_belum_cetak"]
+    assert "m-svc-warna-b" not in pack["sisa_belum_cetak"]
+    assert pack["sisa_belum_cetak"]["100089"]["qty"] == 0.0
+    assert pack["sisa_belum_cetak"]["100089"]["status"] == STATUS_READY
+
+
+def test_case6_active_so_partial_progress():
+    orders = [{
+        "id": "so-partial-active",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-p",
+            "master_item_id": "100032",
+            "quantity": 10000,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 3500}],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert pack["sisa_belum_cetak"]["100032"]["qty"] == 6500.0
+    assert pack["sisa_belum_cetak"]["100032"]["status"] == STATUS_READY
+
+
+def test_case7_so_without_operator_results_fail_closed():
+    """No operator_splits → do not invent 0 completed; UNVERIFIED."""
+    orders = [{
+        "id": "so-no-ops",
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-p",
+            "master_item_id": "100397",
+            "quantity": 1000,
+            "production_process": "print",
+        }],
+        "operator_splits": [],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    sisa = pack["sisa_belum_cetak"]["100397"]
+    assert sisa["qty"] is None
+    assert sisa["status"] == STATUS_UNVERIFIED
+    assert sisa["reason"] == REASON_BLANK_PRINT_COMPLETION_UNPROVEN
+
+
+def test_case8_unlinked_service_or_orphan_must_not_discard_parent_ops():
+    """Root-cause regression: order-wide process_gate must not nullify line ops."""
+    # 8a — unlinked SERVICE Add On + full parent ops (was UNVERIFIED before fix)
+    orders_unlinked = [{
+        "id": "PO/08/10/2026/000001-unlinked",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-100089",
+                "master_item_id": "100089",
+                "quantity": 500,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-svc-orphan",
+                "master_item_id": "m-svc-orphan",
+                "quantity": 500,
+                "production_process": "print",
+                "item_type": "SERVICE",
+                # no parent_line_id → order_unlinked_process
+            },
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 500}],
+    }]
+    pack_u = collect_blank_open_commitment_by_master(
+        orders_unlinked, {}, exclude_master_ids=SVC_EXCLUDE, attributed_deliveries=[],
+    )
+    assert pack_u["sisa_belum_cetak"]["100089"]["qty"] == 0.0
+    assert pack_u["sisa_belum_cetak"]["100089"]["status"] == STATUS_READY
+
+    # 8b — orphan print sibling (missing master) + full ops on real parent
+    orders_orphan = [{
+        "id": "PO/27/10/2026/000015-orphan",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-ok",
+                "master_item_id": "100032",
+                "quantity": 10000,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-orphan-print",
+                "quantity": 1,
+                "production_process": "print",
+                # missing master_item_id → has_orphan_print
+            },
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 10000}],
+    }]
+    pack_o = collect_blank_open_commitment_by_master(
+        orders_orphan, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert pack_o["sisa_belum_cetak"]["100032"]["qty"] == 0.0
+    assert pack_o["sisa_belum_cetak"]["100032"]["status"] == STATUS_READY
+
+    # 8c — pagination/branch filter: SO not in the orders iterable → not counted
+    # (collector only sees what catalog query hands it; missing SO ≠ invent 0)
+    pack_missing = collect_blank_open_commitment_by_master(
+        [], {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert "100089" not in pack_missing["sisa_belum_cetak"]
+    # Catalog default for absent slot remains READY 0 at list_physical_stock_catalog
+    # — documented separately; collector itself does not invent a master row.
+
+
+def test_root_cause_gate_before_ops_before_after_contract():
+    """Before: process_gate + ops → UNVERIFIED. After: numeric from ops."""
+    orders = [{
+        "id": "so-gate",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-p",
+                "master_item_id": "100089",
+                "quantity": 500,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-svc",
+                "master_item_id": "m-svc-orphan",
+                "quantity": 500,
+                "production_process": "print",
+                "item_type": "SERVICE",
+            },
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 200}],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=SVC_EXCLUDE, attributed_deliveries=[],
+    )
+    sisa = pack["sisa_belum_cetak"]["100089"]
+    assert sisa["status"] == STATUS_READY
+    assert sisa["qty"] == 300.0  # 500 − 200; not null UNVERIFIED
+    # Blank may still fail-closed under order-wide gate — sisa is independent.
+    blank = pack["blank_open_commitment"]["100089"]
+    assert blank["status"] == STATUS_UNVERIFIED
+    assert blank["qty"] is None
