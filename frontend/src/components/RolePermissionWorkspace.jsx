@@ -338,7 +338,7 @@ export default function RolePermissionWorkspace({
       {err && <div className="error" data-testid="role-error">{typeof err === "object" ? err.message : err}</div>}
 
       {canEdit && !packageAlreadyEffective && draftPackageKeys.length > 0 && (
-        <div className="settings-info" data-testid="role-package-confirm-panel" style={{ marginBottom: 12 }}>
+        <div className="settings-info settings-info-stack" data-testid="role-package-confirm-panel" style={{ marginBottom: 12 }}>
           <div style={{ marginBottom: 8 }}>
             <strong>Pembelian / Persediaan / HPP</strong>
             <p className="hint" style={{ margin: "4px 0 0" }}>

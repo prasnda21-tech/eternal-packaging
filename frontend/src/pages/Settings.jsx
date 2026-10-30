@@ -271,9 +271,10 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
             { value: form.role, isRequired: true },
           ])}
         >
-          <div>
+          <div className="emp-branch-access" data-testid="employee-branch-access">
             <strong>Akses Cabang</strong>
             {canAssignBranches ? <>
+              <div className="emp-branch-options">
               {branchOptions.map((b) => <label key={b.id}>
                 <input type="checkbox" checked={form.branch_ids.includes(b.id)} disabled={busy}
                   onChange={(e) => setForm((f) => {
@@ -281,7 +282,8 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                     return {...f, branch_ids: ids, primary_branch_id: ids.includes(f.primary_branch_id) ? f.primary_branch_id : ids[0] || ""};
                   })} />{b.name || b.code}
               </label>)}
-              <label>Cabang utama<select value={form.primary_branch_id} disabled={busy}
+              </div>
+              <label className="emp-branch-primary">Cabang utama<select value={form.primary_branch_id} disabled={busy}
                 onChange={(e) => setForm((f) => ({...f, primary_branch_id: e.target.value}))}>
                 <option value="">Pilih cabang utama</option>
                 {branchOptions.filter((b) => form.branch_ids.includes(b.id)).map((b) => <option key={b.id} value={b.id}>{b.name || b.code}</option>)}
@@ -409,7 +411,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
         >
           <div className="emp-perms">
           {employeePackageNeedsApproval && userOverridePackageKeys.length > 0 && (
-            <div className="settings-info" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
+            <div className="settings-info settings-info-stack" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
               <strong>Pembelian / Persediaan / HPP</strong>
               <p className="hint">
                 Grant tersimpan belum berlaku sampai daftar ini disetujui pada simpan ini.

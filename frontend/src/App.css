@@ -1015,6 +1015,11 @@
 
 /* -------- Settings page (Karyawan, Role & Hak Akses, Audit) -------- */
 .settings-info{display:flex;gap:12px;align-items:flex-start;background:#EFF6FF;border:1px solid #93C5FD;padding:14px 18px;color:var(--ink);font-size:14px;line-height:1.55;margin:6px 0 22px;border-radius:16px}
+.settings-info.settings-info-stack{flex-direction:column;align-items:stretch}
+.emp-branch-access{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:0 0 14px}
+.emp-branch-options{display:flex;flex-wrap:wrap;gap:8px 18px}
+.emp-branch-options label{display:inline-flex;align-items:center;gap:6px}
+.emp-branch-primary{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:220px}
 .settings-info.warn{background:#fdf3e6;border-color:#e9c58a}
 .settings-info svg{flex:0 0 auto;margin-top:2px;color:var(--blue)}
 .settings-info.warn svg{color:#b96f16}
