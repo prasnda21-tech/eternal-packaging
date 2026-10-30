@@ -5,6 +5,7 @@ import { nextSidebarMenu } from "../lib/sidebarFlyout";
 describe("sidebar flyout interaction", () => {
   const shell = fs.readFileSync(path.join(__dirname, "AppShell.jsx"), "utf8");
   const grid = fs.readFileSync(path.join(__dirname, "SidebarFlyoutGrid.jsx"), "utf8");
+  const resolver = fs.readFileSync(path.join(__dirname, "../lib/desktopSidebarModel.js"), "utf8");
   const nav = fs.readFileSync(path.join(__dirname, "../lib/navAccess.js"), "utf8");
   const presentation = fs.readFileSync(path.join(__dirname, "../lib/sidebarPresentation.js"), "utf8");
   const flyout = fs.readFileSync(path.join(__dirname, "../lib/sidebarFlyout.js"), "utf8");
@@ -89,16 +90,15 @@ describe("sidebar flyout interaction", () => {
     expect(shell).not.toMatch(/Rute Saya/);
     expect(shell).not.toMatch(/rute-saya/);
     expect(shell).toMatch(/Tugas Produksi/);
-    expect(shell).toMatch(/productionNavVisible\(hasPerm\)/);
-    expect(shell).toMatch(/productionMenuItems\(hasPerm\)/);
-    expect(shell).toMatch(/taskMenuItems\(hasPerm\)/);
-    expect(shell).toMatch(/salesNavVisible\(hasPerm\)/);
-    expect(shell).toMatch(/hasPerm\(NAV_KEYS\.dashboard\)/);
-    expect(shell).toMatch(/dashboardNavVisible\(hasPerm, user\)/);
-    expect(shell).toMatch(/dashboardMenuItems\(hasPerm, user\)/);
-    expect(shell).toMatch(/TASK_NAV_ORDER/);
+    expect(shell).toMatch(/resolveDesktopSidebar\(hasPerm, user\)/);
+
+    expect(resolver).toMatch(/productionMenuItems\(hasPerm\)/);
+    expect(resolver).toMatch(/taskMenuItems\(hasPerm\)/);
+
+    expect(resolver).toMatch(/dashboardMenuItems\(hasPerm, user\)/);
+    expect(resolver).toMatch(/TASK_NAV_ORDER/);
     expect(shell).not.toMatch(/Tugas per Divisi/);
-    expect(shell).toMatch(/productionNav\.deliveryToday/);
+
     expect(shell).not.toMatch(/Pengiriman Hari Ini/);
     expect(shell).not.toMatch(/nav\.keuangan/);
     expect(presentation).toMatch(/Dashboard Bisnis/);
@@ -106,8 +106,8 @@ describe("sidebar flyout interaction", () => {
   });
 
   test("submenu is a compact list instead of the tile grid", () => {
-    expect(shell).toMatch(/salesMenuItems\(hasPerm\)/);
-    expect(shell).toMatch(/settingsMenuItems\(hasPerm\)/);
+    expect(resolver).toMatch(/salesMenuItems\(hasPerm\)/);
+    expect(resolver).toMatch(/settingsMenuItems\(hasPerm\)/);
     expect(grid).toMatch(/className="sidebar-flyout is-menu-list"/);
     expect(grid).toMatch(/sidebar-menu-list/);
     expect(grid).toMatch(/sidebar-menu-link/);
@@ -141,7 +141,7 @@ describe("sidebar flyout interaction", () => {
     expect(presentation).toMatch(/id: "settings"/);
     expect(shell.match(/<SidebarFlyoutGrid/g).length).toBe(1);
     expect(shell).toMatch(/openSections\.length > 0/);
-    expect(shell).toMatch(/showSettings = settingsItems\.length > 0/);
+    expect(resolver).toMatch(/settingsItems: settingsMenuItems\(hasPerm\)/);
     expect(grid).toMatch(/if \(!blocks\.length\) return null/);
   });
 
@@ -201,7 +201,7 @@ describe("sidebar flyout interaction", () => {
   test("Pengaturan rail opens the shared list flyout without navigating", () => {
     expect(presentation).toMatch(/testid: "top-nav-settings"/);
     expect(shell).toMatch(/settings: "Pengaturan"/);
-    expect(shell).toMatch(/settingsMenuItems\(hasPerm\)/);
+    expect(resolver).toMatch(/settingsMenuItems\(hasPerm\)/);
     expect(presentation).toMatch(/flyoutId: "sidebar-flyout-settings"/);
     expect(shell).not.toMatch(/to="\/settings"/);
     expect(shell).not.toMatch(/Pengaturan Hub/);

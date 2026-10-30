@@ -766,3 +766,24 @@ describe("delivery schedule business permission regression", () => {
     },
   );
 });
+
+describe("business permission does not require legacy parent navigation", () => {
+  test.each(["sales.delivery.view", "sales.invoice.view", "sales.receipt.view"])(
+    "%s opens its sales menu with nav.configured only", (permission) => {
+      const keys = {
+        "sales.delivery.view": NAV_KEYS.salesDeliveryOrder,
+        "sales.invoice.view": NAV_KEYS.salesInvoice,
+        "sales.receipt.view": NAV_KEYS.salesReceipt,
+      };
+      expect(salesMenuItems(has(permission, "nav.configured")).some((item) => item.key === keys[permission])).toBe(true);
+    },
+  );
+  test("purchasing view works without its parent; nav-only cannot grant access", () => {
+    expect(purchasingNavVisible(has("purchase_orders.view", "nav.configured")).orders).toBe(true);
+    expect(purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseOrders, "nav.configured")).orders).toBe(false);
+  });
+  test("inventory view works without its parent", () => {
+    expect(inventoryNavVisible(has("master_items.view", "nav.configured")).masterItems).toBe(true);
+    expect(inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.masterItems)).masterItems).toBe(false);
+  });
+});

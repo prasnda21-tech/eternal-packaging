@@ -9866,6 +9866,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
             "is_builtin": bool(d.get("is_builtin")),
             "status": d.get("status", "active"),
             "permissions": base,
+            "sidebar_permissions": sorted(await user_permissions({"role": slug})),
             "is_customized": slug in overrides,
             "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
@@ -9881,7 +9882,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
         out.append({
             "role": slug, "label": ROLE_LABELS.get(slug, slug), "description": "",
             "is_builtin": True, "status": "active",
-            "permissions": base, "is_customized": slug in overrides,
+            "permissions": base, "sidebar_permissions": sorted(await user_permissions({"role": slug})), "is_customized": slug in overrides,
             "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
             PACKAGE_CONFIRMED_KEYS_FIELD: conf.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
@@ -9966,6 +9967,9 @@ async def patch_role_business_permissions(
 ):
     """Compare-and-swap role grants; only changed business keys are written."""
     from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults, is_director_full_access_role
+    from services.purchasing_inventory_access import (
+        PACKAGE_CONFIRMED_KEYS_FIELD, shrink_package_confirmed_keys,
+    )
     slug = role.strip().lower()
     if slug == "admin" or is_director_full_access_role(slug):
         raise HTTPException(400, "Permission role ini tidak dapat diubah")
@@ -9987,19 +9991,28 @@ async def patch_role_business_permissions(
     if set(payload.expected_permissions) != effective:
         raise HTTPException(409, "Permission role telah berubah. Muat ulang sebelum menyimpan.")
     next_perms = sorted((set(raw) | add) - remove)
+    confirmed = shrink_package_confirmed_keys(
+        (before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD), next_perms,
+    )
     if before is None:
         try:
             await db.role_permissions.insert_one({
                 "role": slug, "permissions": next_perms,
+                PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
                 "updated_at": now_iso(), "updated_by": user.get("email"),
             })
         except Exception:
             raise HTTPException(409, "Role berubah bersamaan. Muat ulang sebelum menyimpan.")
     else:
         result = await db.role_permissions.update_one(
-            {"role": slug, "permissions": before.get("permissions", [])},
+            {
+                "role": slug, "permissions": before.get("permissions", []),
+                PACKAGE_CONFIRMED_KEYS_FIELD: before[PACKAGE_CONFIRMED_KEYS_FIELD]
+                if PACKAGE_CONFIRMED_KEYS_FIELD in before else {"$exists": False},
+            },
             {"$set": {
                 "permissions": next_perms, "updated_at": now_iso(),
+                PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
                 "updated_by": user.get("email"),
             }},
         )

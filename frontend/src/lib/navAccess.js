@@ -257,7 +257,12 @@ export function dashboardMenuItems(hasPerm, user) {
 
 /** Parent that is not a page itself is hidden when no child is visible. */
 export function salesNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
+  const parent = canSeeNav(hasPerm, NAV_KEYS.sales) || [
+    "sales.customer.view", "sales.customer.manage", "sales_order.view", "sales_order.create",
+    "po.view", "sales.delivery.view", "sales.invoice.view", "sales.receipt.view",
+    "pra_po.create", "pra_po.view_own", "pra_po.view_all", "pra_po.verify",
+    "po.import.view", "sales.activity.view", "sales.activity.create", "sales.outlet.create",
+  ].some((key) => canSeeNav(hasPerm, key));
   const salesCustomers = parent && (canSeeNav(hasPerm, NAV_KEYS.salesCustomers) || canSeeNav(hasPerm, "sales.customer.view") || canSeeNav(hasPerm, "sales.customer.manage") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   // Permintaan Produk is the open-read exception: child nav (or capability) is
   // enough. Do not require parent nav.sales — that would force granting the
@@ -666,7 +671,12 @@ function navOrModule(hasPerm, navKey, ...moduleKeys) {
 }
 
 export function purchasingNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.purchasing);
+  const parent = [
+    "purchase_requests.view", "purchase_requests.create", "purchase_orders.view",
+    "purchase_orders.create", "purchase_invoices.view", "purchase_invoices.create",
+    "purchase_payments.view", "purchase_payments.create", "purchase_receipts.view",
+    "purchase_hpp.view",
+  ].some((key) => canSeeNav(hasPerm, key));
   const requests = parent && navOrModule(hasPerm, NAV_KEYS.purchaseRequests, "purchase_requests.view", "purchase_requests.create");
   const orders = parent && navOrModule(hasPerm, NAV_KEYS.purchaseOrders, "purchase_orders.view", "purchase_orders.create");
   const invoices = parent && navOrModule(hasPerm, NAV_KEYS.purchaseInvoices, "purchase_invoices.view", "purchase_invoices.create");
@@ -711,7 +721,8 @@ export function purchasingNavVisible(hasPerm) {
 }
 
 export function inventoryNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
+  const parent = ["master_items.view", "org.branches.view", "org.warehouses.view",
+    "current_stock.view", "inventory_valuation.view"].some((key) => canSeeNav(hasPerm, key));
   const masterItems = parent && canSeeNav(hasPerm, "master_items.view");
   const branchesWarehouses = parent && navOrModule(
     hasPerm,

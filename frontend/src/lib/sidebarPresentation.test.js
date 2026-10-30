@@ -1,3 +1,4 @@
+import { resolveDesktopSidebar, roleSidebarPreview } from "./desktopSidebarModel";
 import { NAV_KEYS, SETTINGS_TAB_IDS, SETTINGS_TILE_LABELS, cashBankMenuItems, dashboardMenuItems, employeeAdminMenuItems, hrPayrollMenuItems, inventoryMenuItems, ledgerMenuItems, productionMenuItems, purchasingMenuItems, reportsMenuItems, salesMenuItems, settingsMenuItems, taskMenuItems } from "./navAccess";
 import {
   SIDEBAR_EXPANDED_WIDTH,
@@ -316,3 +317,32 @@ describe("desktop sidebar presentation", () => {
   });
 });
 
+
+describe("role preview uses the live desktop resolver", () => {
+  const destinations = (rails) => rails.flatMap((rail) => rail.to
+    ? [rail.to] : rail.sections.flatMap((section) => section.items.map((item) => item.to)));
+  test.each(["crm", "holding_team", "direktur_utama", "operator", "custom_role"])(
+    "preview matches live sidebar destinations for %s", (role) => {
+      const sidebar_permissions = ["schedule.view", "sales.delivery.view", "purchase_orders.view", "nav.configured"];
+      const preview = roleSidebarPreview([{ role, sidebar_permissions }]);
+      const live = resolveDesktopSidebar((key) => sidebar_permissions.includes(key), { role });
+      expect([...preview.columns[0].paths]).toEqual([...new Set(destinations(live))]);
+    },
+  );
+  test("uses filtered permissions, never raw production package grants", () => {
+    const preview = roleSidebarPreview([{
+      role: "crm", permissions: ["purchase_orders.view", "nav.purchasing"],
+      sidebar_permissions: ["schedule.view"],
+    }]);
+    expect([...preview.columns[0].paths]).toContain("/produksi");
+    expect([...preview.columns[0].paths].some((path) => path.startsWith("/pembelian"))).toBe(false);
+  });
+  test("missing effective permissions are unknown, not an optimistic preview", () => {
+    const preview = roleSidebarPreview([{ role: "crm", permissions: ["schedule.view"] }]);
+    expect(preview.columns[0].known).toBe(false);
+    expect(preview.rows).toEqual([]);
+  });
+  test("inactive roles are omitted", () => {
+    expect(roleSidebarPreview([{ role: "crm", status: "inactive", sidebar_permissions: ["schedule.view"] }]).columns).toEqual([]);
+  });
+});

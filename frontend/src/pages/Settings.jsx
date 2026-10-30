@@ -12,6 +12,7 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
+import { roleSidebarPreview } from "../lib/desktopSidebarModel";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsAliasFromPath, settingsTabFromPath } from "../lib/navAccess";
@@ -2497,67 +2498,47 @@ function WorkPanelSettingsTab({ notify, canEdit, canManagePerms, canListRoles })
 }
 
 /* ---------------- Sidebar access tab ---------------- */
-function SidebarAccessTab({ permissionCatalog }) {
+function SidebarAccessTab() {
   const [roles, setRoles] = useState([]);
   const [error, setError] = useState("");
   useEffect(() => {
     api.adminListRoles().then((d) => setRoles(d.roles || []))
       .catch(() => setError("Gagal memuat pratinjau menu"));
   }, []);
-  const menus = (permissionCatalog?.nav_menu?.length ? permissionCatalog.nav_menu : NAV_MENU_FALLBACK);
+  const { columns, rows } = useMemo(() => roleSidebarPreview(roles), [roles]);
   return (
     <div data-testid="settings-sidebar-access">
       <div className="nav-access-head">
         <div>
           <h3><PanelLeft size={16} /> Pratinjau Sidebar per Role</h3>
-          <p className="hint">Menu mengikuti izin fungsional dari Role &amp; Hak Akses. Pengaturan sidebar terpisah sudah tidak diperlukan. Ini pratinjau role; override akun dapat berbeda.</p>
+          <p className="hint">Menu mengikuti izin efektif role. Override akun dan status Super Admin dapat berbeda. Ubah izin melalui Role &amp; Hak Akses.</p>
         </div>
       </div>
       {error && <div className="error">{error}</div>}
+      {columns.some((role) => !role.known) && <div className="error">Pratinjau izin efektif belum tersedia. Muat ulang halaman.</div>}
       <div className="nav-access-wrap">
         <table className="nav-access-table">
-          <thead><tr><th scope="col">Menu</th>{roles.filter((r) => r.status !== "inactive").map((r) => <th scope="col" key={r.role}>{r.label || r.role}</th>)}</tr></thead>
+          <thead><tr><th scope="col">Menu</th>{columns.map((role) => <th scope="col" key={role.role}>{role.label || role.role}</th>)}</tr></thead>
           <tbody>
-            {menus.filter((m) => m.key !== "nav.configured").map((m) => (
-              <tr key={m.key}>
-                <th scope="row">{m.label}</th>
-                {roles.filter((r) => r.status !== "inactive").map((r) => {
-                  const granted = new Set(r.permissions || []);
-                  const functional = {
-                    "nav.dashboard": ["dashboard.production.view"],
-                    "nav.sales.sales_order": ["sales_order.view", "po.view"],
-                    "nav.sales.delivery_order": ["sales.delivery.view"],
-                    "nav.sales.sales_invoice": ["sales.invoice.view"],
-                    "nav.sales.sales_receipt": ["sales.receipt.view"],
-                    "nav.production_schedule": ["schedule.view"],
-                    "nav.delivery_schedule": ["delivery.schedule.view", "schedule.view"],
-                  }[m.key];
-                  const reason = functional
-                    ? functional.find((key) => granted.has(key))
-                    : (granted.has(m.key) ? m.key : null);
-                  // Preview is capability-led, not a second editable nav ACL.
-                  // Legacy nav-only grants are not proof that a page is accessible.
-                  const visible = Boolean(reason);
-                  const verified = Boolean(reason && !String(reason).startsWith("nav."));
-                  const explanation = !visible
-                    ? "Tidak ada izin role untuk menu ini."
-                    : verified
-                      ? `Izin fungsional: ${reason}. Override akun dapat berbeda.`
-                      : `Navigasi legacy: ${reason}. Akses halaman belum terverifikasi; cek permission view.`;
-
-                  return <td key={r.role} title={explanation}>
-                    <span>{verified ? "✓" : visible ? "?" : "–"}</span>
-                  </td>;
-                })}
+            {rows.map((menu) => (
+              <tr key={menu.to}>
+                <th scope="row">{menu.group} · {menu.label}</th>
+                {columns.map((role) => (
+                  <td key={role.role} title={!role.known ? "Izin efektif belum tersedia." : role.paths.has(menu.to) ? "Tampil pada sidebar role ini." : "Tidak tampil pada sidebar role ini."}>
+                    <span>{!role.known ? "?" : role.paths.has(menu.to) ? "✓" : "–"}</span>
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>
         </table>
+        {!error && columns.length > 0 && rows.length === 0 && <p className="hint">Tidak ada menu yang tersedia pada izin efektif role.</p>}
       </div>
     </div>
   );
 }
 
+/* ---------------- Operator Wage settings ---------------- */
 function OperatorWageTab(props) {
   return <OperatorWageSettings {...props} />;
 }
