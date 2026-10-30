@@ -700,3 +700,21 @@ describe("permission-led sidebar effective deny regression", () => {
     expect(dashboardNavVisible(has(NAV_KEYS.dashboard, "dashboard.production.view")).production).toBe(true);
   });
 });
+
+
+describe("automatic purchasing navigation enforces effective business permissions", () => {
+  test("legacy nav only cannot display purchasing grants", () => {
+    const perms = has(NAV_KEYS.purchasing, NAV_KEYS.purchaseOrders, NAV_KEYS.purchaseInvoices, "nav.configured");
+    const visible = purchasingNavVisible(perms);
+    expect(visible.orders).toBe(false);
+    expect(visible.invoices).toBe(false);
+    expect(visible.parent).toBe(false);
+  });
+
+  test("view permission displays purchasing child without manual nav configuration", () => {
+    const perms = has(NAV_KEYS.purchasing, "purchase_orders.view", "nav.configured");
+    const visible = purchasingNavVisible(perms);
+    expect(visible.orders).toBe(true);
+    expect(visible.invoices).toBe(false);
+  });
+});
