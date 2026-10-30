@@ -509,45 +509,47 @@ async def test_role_permissions_api_confirm_and_director_lock(bind_db, monkeypat
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        # Ordinary save (revoke C) must NOT activate A+B
+        from permissions import with_nav_defaults
+
+        stored = [
+            "purchase_requests.view",
+            "purchase_orders.view",
+            "purchase_hpp.view",
+            "po.view",
+        ]
+        # Missing snapshot is still rejected. confirm_package_keys is not an activation gate.
         r = await client.put(
             "/api/admin/roles/crm/permissions",
+            json={"permissions": stored, "confirm_package_keys": ["purchase_requests.view"]},
+        )
+        assert r.status_code == 409, r.text
+
+        # Resending the stored list does not turn the unconfirmed package keys on.
+        r_keep = await client.put(
+            "/api/admin/roles/crm/permissions",
             json={
-                "permissions": [
-                    "purchase_requests.view",
-                    "purchase_orders.view",
-                    "po.view",
-                ]
+                "permissions": stored,
+                "expected_permissions": sorted(with_nav_defaults(set(stored))),
             },
         )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body[PACKAGE_CONFIRMED_KEYS_FIELD] == []
+        assert r_keep.status_code == 200, r_keep.text
+        assert r_keep.json()[PACKAGE_CONFIRMED_KEYS_FIELD] == []
+        assert "purchase_requests.view" not in r_keep.json()["permissions"]
+        assert "po.view" in r_keep.json()["permissions"]
+        assert r_keep.json()["manual_grant_normalized"] is True
 
-        # Confirm only A
+        baseline = r_keep.json()["permissions"]
         r2 = await client.put(
             "/api/admin/roles/crm/permissions",
             json={
-                "permissions": [
-                    "purchase_requests.view",
-                    "purchase_orders.view",
-                    "po.view",
-                ],
-                "confirm_package_keys": ["purchase_requests.view"],
+                "permissions": ["purchase_requests.view", "po.view"],
+                "expected_permissions": sorted(with_nav_defaults(set(baseline))),
+                "confirm_package_keys": ["purchase_hpp.view"],
             },
         )
         assert r2.status_code == 200, r2.text
         assert r2.json()[PACKAGE_CONFIRMED_KEYS_FIELD] == ["purchase_requests.view"]
-
-        # Confirm list must be granted
-        r3 = await client.put(
-            "/api/admin/roles/crm/permissions",
-            json={
-                "permissions": ["po.view"],
-                "confirm_package_keys": ["purchase_hpp.view"],
-            },
-        )
-        assert r3.status_code == 400
+        assert "purchase_hpp.view" not in r2.json()["permissions"]
 
         # Direktur permissions locked
         r4 = await client.put(
@@ -557,7 +559,25 @@ async def test_role_permissions_api_confirm_and_director_lock(bind_db, monkeypat
         assert r4.status_code == 400
         assert "Direktur" in str(r4.json().get("detail", ""))
 
-        # list roles exposes confirmed stamp
+        outsider = {
+            "id": "crm-1",
+            "email": "crm-no-manage@test.local",
+            "role": "crm",
+            "permissions_override": {},
+        }
+        app.dependency_overrides[current_user] = lambda: outsider
+        denied = await client.put(
+            "/api/admin/roles/crm/permissions",
+            json={"permissions": ["po.view"], "expected_permissions": ["po.view"]},
+        )
+        assert denied.status_code == 403
+
+        app.dependency_overrides[current_user] = lambda: {
+            "id": "admin-1",
+            "email": "admin@test.local",
+            "role": "admin",
+            "permissions_override": {},
+        }
         listing = await client.get("/api/admin/roles")
         assert listing.status_code == 200
         crm = next(x for x in listing.json()["roles"] if x["role"] == "crm")

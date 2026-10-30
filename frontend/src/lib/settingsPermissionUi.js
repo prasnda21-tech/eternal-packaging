@@ -144,9 +144,9 @@ export function roleBusinessSavePayload(draftKeys, storedPermissions) {
   return payload;
 }
 
-/** Bulk selection never silently opts in; individual picks are reviewed on save. */
+/** Every visible editable permission, including former opt-in and package keys. */
 export function bulkPermissionKeys(rows) {
-  return (rows || []).filter((p) => !p.opt_in).map((p) => p.key);
+  return (rows || []).map((p) => p.key);
 }
 
 export function addedOptInPermissions(catalog, draft, initial) {

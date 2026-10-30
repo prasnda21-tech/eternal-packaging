@@ -6,9 +6,12 @@ LOCAL / preview / development / test (explicit APP_ENV only):
 All other runtimes (including APP_ENV unset/unknown, and production):
   - holding_team and direktur_utama: granted package keys stay effective.
     Global branch scope does not add module permissions.
-  - other roles: a package key is effective only after an explicit approval
-    recorded in ``package_production_confirmed_keys``. Stored grants that
-    were never reviewed stay ineffective. Ordinary saves never grow that set.
+  - other roles, before one-time normalization: a package key is effective
+    only when it is already in ``package_production_confirmed_keys``.
+    Stored grants that were never effective stay ineffective on deploy.
+  - after ``manual_grant_normalized`` (editor save or the one-time cutover):
+    a package key is effective when it is in the saved role grant or an
+    explicit user override True. No separate approval list is required.
 
 Mongo on 127.0.0.1/localhost alone NEVER implies local.
 Sidebar, routes, and APIs all derive from filtered effective permissions —
@@ -87,6 +90,9 @@ PACKAGE_PERMISSIONS: frozenset[str] = frozenset({
 PACKAGE_CONFIRMED_KEYS_FIELD = "package_production_confirmed_keys"
 PACKAGE_CONFIRMED_AT_FIELD = "package_production_confirmed_at"
 PACKAGE_CONFIRMED_BY_FIELD = "package_production_confirmed_by"
+# One-time marker. Unnormalized documents keep the old confirmation filter.
+# It is not an approval dialog and it does not grant keys by itself.
+MANUAL_GRANT_NORMALIZED_FIELD = "manual_grant_normalized"
 
 # Builtin defaults granted to holding_team so production Holding can operate
 # the recovered package without relying on Mongo role document edits yet.
@@ -201,6 +207,76 @@ def can_access_purchasing_inventory_package(
     return role in {HOLDING_TEAM_ROLE, DIRECTOR_FULL_ACCESS_ROLE}
 
 
+def legacy_effective_package_keys(
+    granted,
+    confirmed,
+    *,
+    unrestricted: bool = False,
+    already_normalized: bool = False,
+) -> Set[str]:
+    """Package keys that were effective before a manual save or cutover."""
+    granted_pkg = PACKAGE_PERMISSIONS.intersection(granted or [])
+    if unrestricted or already_normalized:
+        return set(granted_pkg)
+    return granted_pkg & normalize_package_confirmed_keys(confirmed)
+
+
+def reconcile_manual_package_grant(
+    stored_permissions,
+    next_permissions,
+    previously_confirmed,
+    *,
+    already_normalized: bool = False,
+    unrestricted: bool = False,
+) -> tuple[list, list]:
+    """Return ``(cleaned_permissions, effective_package_keys)``.
+
+    A normalized grant keeps every package key in the saved list.
+    An unnormalized grant keeps keys that were already effective, activates
+    keys newly added by this save, and drops stored package keys that were
+    never effective so a deploy or an unrelated save cannot turn them on.
+    """
+    stored = set(stored_permissions or [])
+    nxt = set(next_permissions or [])
+    if already_normalized or unrestricted:
+        effective = PACKAGE_PERMISSIONS.intersection(nxt)
+    else:
+        previously = legacy_effective_package_keys(
+            stored, previously_confirmed, unrestricted=False, already_normalized=False,
+        )
+        newly = PACKAGE_PERMISSIONS.intersection(nxt - stored)
+        effective = (previously & nxt) | newly
+    cleaned = (nxt - PACKAGE_PERMISSIONS) | effective
+    return sorted(cleaned), sorted(effective)
+
+
+def reconcile_manual_user_override(
+    old_override,
+    new_override,
+    previously_confirmed,
+    *,
+    already_normalized: bool = False,
+    unrestricted: bool = False,
+) -> tuple[dict, list]:
+    """Drop override-True package keys that were stored but never effective."""
+    old = old_override or {}
+    new = dict(new_override or {})
+    old_true = {key for key, allowed in old.items() if allowed is True}
+    new_true = {key for key, allowed in new.items() if allowed is True}
+    if already_normalized or unrestricted:
+        effective = new_true & PACKAGE_PERMISSIONS
+    else:
+        previously = legacy_effective_package_keys(
+            old_true, previously_confirmed, unrestricted=False, already_normalized=False,
+        )
+        newly = (new_true - old_true) & PACKAGE_PERMISSIONS
+        effective = (previously & new_true) | newly
+    for key in list(new):
+        if key in PACKAGE_PERMISSIONS and new.get(key) is True and key not in effective:
+            del new[key]
+    return new, sorted(effective)
+
+
 def filter_package_permissions(
     perms: Iterable[str],
     user: Optional[Dict[str, Any]],
@@ -209,22 +285,43 @@ def filter_package_permissions(
     *,
     role_confirmed_keys: Optional[Iterable[str]] = None,
     user_confirmed_keys: Optional[Iterable[str]] = None,
+    role_normalized: bool = False,
+    user_normalized: bool = False,
+    role_permission_keys: Optional[Iterable[str]] = None,
+    user_override: Optional[Dict[str, Any]] = None,
 ) -> Set[str]:
-    """Keep package keys that are already effective or explicitly approved.
+    """Keep package keys that are already effective under the active rule.
 
-    Holding and Direktur keep the package keys already in their grant: that
-    access was effective before review stamps existed. Every other production
-    role keeps a package key only when Owner confirmed it. Stored but
-    unconfirmed grants stay ineffective. Local/test runtimes are unchanged.
+    Holding and Direktur keep the package keys already in their grant.
+    Local/test runtimes are unchanged. Every other production account:
+
+    - unnormalized: a package key survives only when it is in the old
+      confirmation stamp (role stamp or user stamp);
+    - normalized role: only package keys present in the stored role grant;
+    - normalized user: only package keys with an explicit override True.
+
+    A normalized flag does not bless a super-admin wildcard. Package keys
+    that are neither a stored role grant nor an explicit override stay off.
     """
     out = set(perms or [])
     if is_local_runtime(app_env, mongo_url) or can_access_purchasing_inventory_package(
         user, app_env, mongo_url
     ):
         return out
-    confirmed = normalize_package_confirmed_keys(role_confirmed_keys)
-    confirmed |= normalize_package_confirmed_keys(user_confirmed_keys)
-    return {key for key in out if key not in PACKAGE_PERMISSIONS or key in confirmed}
+    if role_normalized:
+        role_keep = PACKAGE_PERMISSIONS.intersection(role_permission_keys or [])
+    else:
+        role_keep = normalize_package_confirmed_keys(role_confirmed_keys)
+    if user_normalized:
+        override = user_override if isinstance(user_override, dict) else ((user or {}).get("permissions_override") or {})
+        user_keep = {
+            key for key, allowed in override.items()
+            if allowed is True and key in PACKAGE_PERMISSIONS
+        }
+    else:
+        user_keep = normalize_package_confirmed_keys(user_confirmed_keys)
+    keep = role_keep | user_keep
+    return {key for key in out if key not in PACKAGE_PERMISSIONS or key in keep}
 
 
 def split_package_permission_args(perms: Iterable[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:

@@ -113,7 +113,7 @@ describe("Settings opt-in draft and employee branch payload", () => {
     container.remove();
   });
 
-  test("opt-in cancel keeps the draft, 409 keeps it, and package save omits approval", async () => {
+  test("ordinary, opt-in, and package checks save without a confirm dialog", async () => {
     await renderAt("/settings/roles", {
       id: "u-dir",
       role: "direktur_utama",
@@ -131,18 +131,12 @@ describe("Settings opt-in draft and employee branch payload", () => {
     expect(container.textContent).not.toMatch(/tidak efektif di production|Hanya Holding/);
 
     await act(async () => { paint.click(); });
+    await act(async () => { pkg.click(); });
     expect(container.querySelector('[data-testid="role-perm-crm-paint.view"] input').checked).toBe(true);
+    expect(container.querySelector('[data-testid="role-perm-crm-purchase_orders.view"] input').checked).toBe(true);
+    expect(container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeNull();
+    expect(container.textContent).not.toMatch(/Tinjau izin/);
 
-    await act(async () => {
-      container.querySelector('[data-testid="role-save-permissions"]').click();
-    });
-    await flush();
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(String(confirmSpy.mock.calls[0][0])).toMatch(/paint\.view/);
-    expect(api.adminPatchRoleBusinessPermissions).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="role-perm-crm-paint.view"] input').checked).toBe(true);
-
-    confirmSpy.mockReturnValue(true);
     api.adminPatchRoleBusinessPermissions.mockRejectedValueOnce({
       response: { data: { detail: "Permission role telah berubah. Muat ulang sebelum menyimpan." } },
     });
@@ -154,6 +148,8 @@ describe("Settings opt-in draft and employee branch payload", () => {
     expect(container.querySelector('[data-testid="role-error"]').textContent)
       .toMatch(/Permission role telah berubah/);
     expect(container.querySelector('[data-testid="role-perm-crm-paint.view"] input').checked).toBe(true);
+    expect(container.querySelector('[data-testid="role-perm-crm-purchase_orders.view"] input').checked).toBe(true);
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(api.adminPatchRoleBusinessPermissions).toHaveBeenCalledTimes(1);
 
     api.adminPatchRoleBusinessPermissions.mockResolvedValueOnce({ ok: true });
@@ -163,11 +159,11 @@ describe("Settings opt-in draft and employee branch payload", () => {
     await flush();
     await flush();
     expect(api.adminPatchRoleBusinessPermissions).toHaveBeenCalledTimes(2);
-    const [, body] = api.adminPatchRoleBusinessPermissions.mock.calls[1];
-    expect(body.confirm_opt_in_keys).toEqual(["paint.view"]);
-    expect(body.add).toEqual(["paint.view"]);
+    const [, body] = api.adminPatchRoleBusinessPermissions.mock.calls[0];
+    expect(body.add).toEqual(expect.arrayContaining(["paint.view", "purchase_orders.view"]));
+    expect(body.add).toHaveLength(2);
     expect(body.expected_permissions).toEqual(["po.view"]);
-    expect(body.add).not.toContain("purchase_orders.view");
+    expect(body.confirm_opt_in_keys).toBeUndefined();
     expect(body.confirm_package_keys).toBeUndefined();
   });
 

@@ -260,22 +260,16 @@ describe("RolePermissionWorkspace", () => {
     unmount();
   });
 
-  test("CRM package grants stay editable and need explicit approval", () => {
-    const onConfirmPackageOptInChange = jest.fn();
-    const onConfirmReviewKeysChange = jest.fn();
+  test("CRM package grants use the same checkbox as other permissions", () => {
     const crmMount = mount({
       permsDraft: new Set(["po.view", "purchase_hpp.view"]),
       initialPerms: new Set(["po.view", "purchase_hpp.view"]),
-      confirmedPackageKeys: [],
-      confirmPackageOptIn: false,
-      onConfirmPackageOptInChange,
-      confirmReviewKeys: [],
-      onConfirmReviewKeysChange,
       permQuery: "HPP",
     });
     expect(crmMount.container.querySelector('[data-testid="role-package-lock-banner"]')).toBeNull();
     expect(crmMount.container.querySelector('[data-testid="role-package-stored-ineffective"]')).toBeNull();
-    expect(crmMount.container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeTruthy();
+    expect(crmMount.container.querySelector('[data-testid="role-package-confirm-panel"]')).toBeNull();
+    expect(crmMount.container.textContent).not.toMatch(/Tinjau izin/);
     const hpp = crmMount.container.querySelector('[data-testid="role-perm-crm-purchase_hpp.view"] input');
     expect(hpp.disabled).toBe(false);
     expect(hpp.checked).toBe(true);
@@ -292,24 +286,13 @@ describe("RolePermissionWorkspace", () => {
     expect(openMount.container.querySelector('[data-testid="role-perm-package-blocked-master_items.view"]')).toBeNull();
     openMount.unmount();
 
-    const { container, rerender, unmount } = mount({
+    const { container, unmount } = mount({
       permsDraft: new Set(["po.view", "purchase_hpp.view"]),
-      initialPerms: new Set(["po.view", "purchase_hpp.view"]),
-      confirmedPackageKeys: [],
-      confirmPackageOptIn: true,
-      onConfirmPackageOptInChange,
-      confirmReviewKeys: ["purchase_hpp.view"],
-      onConfirmReviewKeysChange,
+      initialPerms: new Set(["po.view"]),
       permQuery: "HPP",
     });
-    expect(container.querySelector('[data-testid="role-package-confirm-list"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="role-package-review-purchase_hpp.view"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="role-package-activation-preview"]').textContent).toMatch(/1 izin/);
-    expect(container.textContent).not.toMatch(/stamp/i);
-    rerender({
-      confirmPackageOptIn: true,
-      confirmReviewKeys: ["purchase_hpp.view"],
-    });
+    expect(container.querySelector('[data-testid="role-package-confirm-list"]')).toBeNull();
+    expect(container.querySelector('[data-testid="role-package-activation-preview"]')).toBeNull();
     expect(container.querySelector('[data-testid="role-save-bar"]').classList.contains("show")).toBe(true);
     unmount();
 

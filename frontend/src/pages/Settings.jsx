@@ -17,18 +17,11 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsAliasFromPath, settingsTabFromPath } from "../lib/navAccess";
 import PricingCatalogSettings from "./PricingCatalogSettings";
-import { addedOptInPermissions, businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
+import { businessPermissionModules, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
 import {
-  confirmPackageKeysForSave,
   isDirectorFullAccessRole,
   isPackagePermissionKey,
-  packageKeysFromOverride,
-  packageKeysToActivate,
-  pruneConfirmReviewKeys,
   roleMayReceivePackageAccess,
-  rolePermissionsPutBody,
-  unconfirmedPackageKeys,
-  userOverridePutBody,
 } from "../lib/packagePermissions";
 import RolePermissionWorkspace from "../components/RolePermissionWorkspace";
 import OperatorWageSettings from "./OperatorWageSettings";
@@ -139,12 +132,6 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   const [err, setErr] = useState("");
   const [permQuery, setPermQuery] = useState("");
   const [effective, setEffective] = useState(null); // {default_from_role, effective}
-  const [userPkgConfirmOptIn, setUserPkgConfirmOptIn] = useState(false);
-  const [userPkgReviewKeys, setUserPkgReviewKeys] = useState([]);
-  const userConfirmedPackageKeys = initial?.package_production_confirmed_keys || [];
-  const userOverridePackageKeys = packageKeysFromOverride(form.permissions_override);
-  const userPendingPackage = unconfirmedPackageKeys(userOverridePackageKeys, userConfirmedPackageKeys);
-  const userActivationPreview = packageKeysToActivate(userOverridePackageKeys, userPkgReviewKeys);
   const isDirectorEmployee = isDirectorFullAccessRole(form.role);
 
   // Req 15: fetch effective breakdown (default_from_role + effective) so UI
@@ -160,19 +147,6 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   const roleDefaultSet = new Set(effective?.default_from_role || []);
   const effectiveSet = new Set(effective?.effective || []);
 
-  // Drop carried confirm state when switching employee/target.
-  useEffect(() => {
-    setUserPkgConfirmOptIn(false);
-    setUserPkgReviewKeys([]);
-  }, [initial?.id]);
-
-  // Unchecked / non-grant package overrides leave the reviewed confirm set.
-  useEffect(() => {
-    setUserPkgReviewKeys((prev) => pruneConfirmReviewKeys(prev, userOverridePackageKeys));
-  }, [userOverridePackageKeys.join("|")]);
-
-  const employeePackageNeedsApproval = !roleMayReceivePackageAccess(form.role);
-
   const togglePerm = (key, value) => {
     setForm((f) => {
       const next = { ...f.permissions_override };
@@ -180,11 +154,6 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
       else next[key] = value === "grant";
       return { ...f, permissions_override: next };
     });
-    // Uncheck / deny / inherit cancels confirm for that package key.
-    // Re-grant does NOT restore a previous confirm — must re-review.
-    if (isPackagePermissionKey(key) && value !== "grant") {
-      setUserPkgReviewKeys((prev) => prev.filter((k) => k !== key));
-    }
   };
 
   const submit = async (e) => {
@@ -222,17 +191,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
         }
       }
       if (showPerms) {
-        const confirmKeys = confirmPackageKeysForSave(
-          userOverridePackageKeys,
-          userPkgReviewKeys,
-          { optIn: userPkgConfirmOptIn },
-        );
-        // Keep UI state aligned with payload before request.
-        if (confirmKeys) setUserPkgReviewKeys(confirmKeys);
-        const overrideBody = confirmKeys !== undefined
-          ? userOverridePutBody(form.permissions_override, confirmKeys)
-          : userOverridePutBody(form.permissions_override);
-        Object.assign(payload, overrideBody);
+        payload.permissions_override = form.permissions_override;
       }
       if (!isEdit) {
         payload.email = form.email.trim().toLowerCase();
@@ -392,59 +351,10 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
       {showPerms && (
         <section className="emp-section emp-perms">
           <h4>Hak akses khusus</h4>
-          {employeePackageNeedsApproval && userOverridePackageKeys.length > 0 && (
-            <div className="settings-info settings-info-stack" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
-              <strong>Pembelian / Persediaan / HPP</strong>
-              <p className="hint">
-                Grant tersimpan belum berlaku sampai daftar ini disetujui pada simpan ini.
-                Izin di luar daftar tetap tersimpan dan tidak efektif. Kolom Efektif mengikuti hasil backend.
-              </p>
-              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={userPkgConfirmOptIn}
-                  onChange={(e) => setUserPkgConfirmOptIn(e.target.checked)}
-                  data-testid="emp-package-confirm-optin"
-                />
-                <span>Setujui daftar berikut agar berlaku</span>
-              </label>
-              {userPkgConfirmOptIn && (
-                <ul data-testid="emp-package-confirm-list" style={{ marginTop: 8, paddingLeft: 18 }}>
-                  {userOverridePackageKeys.map((key) => (
-                    <li key={key}>
-                      <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <input
-                          type="checkbox"
-                          checked={userPkgReviewKeys.includes(key)}
-                          onChange={() => {
-                            setUserPkgReviewKeys((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(key)) next.delete(key);
-                              else next.add(key);
-                              return [...next].sort();
-                            });
-                          }}
-                          data-testid={`emp-package-review-check-${key}`}
-                        />
-                        <code>{key}</code>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {userPkgConfirmOptIn && (
-                <p className="muted small" data-testid="emp-package-activation-preview">
-                  {userActivationPreview.length
-                    ? `${userActivationPreview.length} izin akan berlaku. Izin di luar daftar tetap tersimpan dan tidak efektif.`
-                    : "Tidak ada izin yang disetujui. Grant package tersimpan tidak menjadi efektif."}
-                </p>
-              )}
-            </div>
-          )}
           <div className="emp-perms-head">
             <div>
               <h4>Hak akses khusus (override)</h4>
-              <p className="hint">Default = ikut role. Grant menambah, Deny menghilangkan untuk user ini saja. Kolom <strong>Efektif</strong> menunjukkan hasil akhir (termasuk filter package production).</p>
+              <p className="hint">Default = ikut role. Grant menambah, Deny menghilangkan untuk user ini saja. Kolom <strong>Efektif</strong> mengikuti izin yang sudah disimpan.</p>
             </div>
             <div className="perm-search">
               <Search size={14}/>
@@ -984,7 +894,7 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
       for (const r of changed) {
         const nonNav = (r.permissions || []).filter((p) => !String(p).startsWith("nav."));
         const nav = [...(draft[r.role] || [])];
-        // Sidebar-only save: omit confirm_package_keys (never activates legacy package grants).
+        // Menu-only save keeps the stored non-menu grants and writes the checked menus.
         await api.adminUpdateRolePermissions(r.role, [...nonNav, ...nav, "nav.configured"]);
       }
       setInitial(draft);
@@ -1063,6 +973,18 @@ function NavAccessMatrix({ roles, permissionCatalog, canManagePerms, notify, onS
   );
 }
 
+function roleEditorPermissionSet(roleDoc) {
+  const draft = expandLoadingDraftForEdit(roleDoc?.permissions);
+  if (!roleDoc || roleDoc.manual_grant_normalized || roleMayReceivePackageAccess(roleDoc.role)) {
+    return draft;
+  }
+  const confirmed = new Set(roleDoc.package_production_confirmed_keys || []);
+  for (const key of [...draft]) {
+    if (isPackagePermissionKey(key) && !confirmed.has(key)) draft.delete(key);
+  }
+  return draft;
+}
+
 /* ---------------- Roles tab ---------------- */
 function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const { user, refresh } = useAuth();
@@ -1079,16 +1001,9 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const [permStateFilter, setPermStateFilter] = useState("all");
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({ role: "", label: "", description: "" });
-  const [confirmPackageOptIn, setConfirmPackageOptIn] = useState(false);
-  const [confirmReviewKeys, setConfirmReviewKeys] = useState([]);
 
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
-
-  const resetPackageConfirmUi = () => {
-    setConfirmPackageOptIn(false);
-    setConfirmReviewKeys([]);
-  };
 
   const load = useCallback(async (keepSelected = true) => {
     setBusy(true);
@@ -1098,21 +1013,21 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
       const current = selectedRef.current;
       const target = keepSelected && current ? d.roles.find((r) => r.role === current) : null;
       if (target) {
-        setPermsDraft(expandLoadingDraftForEdit(target.permissions));
-        setInitial(expandLoadingDraftForEdit(target.permissions));
+        const editorSet = roleEditorPermissionSet(target);
+        setPermsDraft(editorSet);
+        setInitial(new Set(editorSet));
         setLabelDraft(target.label || "");
         setDescDraft(target.description || "");
         setMetaInitial({ label: target.label || "", description: target.description || "" });
-        resetPackageConfirmUi();
       } else if (d.roles?.length) {
         const first = d.roles.find((r) => r.role !== "admin" && !isDirectorFullAccessRole(r.role)) || d.roles.find((r) => r.role !== "admin") || d.roles[0];
         setSelected(first.role);
-        setPermsDraft(expandLoadingDraftForEdit(first.permissions));
-        setInitial(expandLoadingDraftForEdit(first.permissions));
+        const editorSet = roleEditorPermissionSet(first);
+        setPermsDraft(editorSet);
+        setInitial(new Set(editorSet));
         setLabelDraft(first.label || "");
         setDescDraft(first.description || "");
         setMetaInitial({ label: first.label || "", description: first.description || "" });
-        resetPackageConfirmUi();
       }
     } catch (e) { setErr(e.response?.data?.detail || "Gagal memuat"); }
     finally { setBusy(false); }
@@ -1120,35 +1035,23 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   useEffect(() => { load(false); }, [load]);
 
   const selectRole = (r) => {
+    const editorSet = roleEditorPermissionSet(r);
     setSelected(r.role);
-    setPermsDraft(expandLoadingDraftForEdit(r.permissions));
-    setInitial(expandLoadingDraftForEdit(r.permissions));
+    setPermsDraft(editorSet);
+    setInitial(new Set(editorSet));
     setLabelDraft(r.label || "");
     setDescDraft(r.description || "");
     setMetaInitial({ label: r.label || "", description: r.description || "" });
     setPermQuery("");
     setPermStateFilter("all");
     setErr("");
-    resetPackageConfirmUi();
   };
-
-  // Keep reviewed confirm keys ⊆ current draft grants (stale keys cannot be sent).
-  useEffect(() => {
-    setConfirmReviewKeys((prev) => pruneConfirmReviewKeys(prev, permsDraft));
-  }, [permsDraft]);
 
   const togglePerm = (key) => {
     setPermsDraft((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-        if (isPackagePermissionKey(key)) {
-          setConfirmReviewKeys((rev) => rev.filter((k) => k !== key));
-        }
-      } else {
-        next.add(key);
-        // Re-check does not restore prior confirm — must review again.
-      }
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -1156,17 +1059,9 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
   const toggleCategoryKeys = (keys, enable) => {
     setPermsDraft((prev) => {
       const next = new Set(prev);
-      const touchedPkg = [];
       for (const key of keys || []) {
         if (enable) next.add(key);
-        else {
-          next.delete(key);
-          if (isPackagePermissionKey(key)) touchedPkg.push(key);
-        }
-      }
-      if (!enable && touchedPkg.length) {
-        const drop = new Set(touchedPkg);
-        setConfirmReviewKeys((rev) => rev.filter((k) => !drop.has(k)));
+        else next.delete(key);
       }
       return next;
     });
@@ -1180,66 +1075,38 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
         setErr("Permission role Direktur tidak dapat diubah (akses penuh sistem)");
         return;
       }
-      const optInRows = addedOptInPermissions(permissionCatalog, permsDraft, initial);
-      if (optInRows.length && !window.confirm(
-        `Aktifkan ${optInRows.length} izin khusus berikut?\n\n${optInRows.map((p) => `${p.label} (${p.key})`).join("\n")}`
-      )) return;
-      const confirmOptInKeys = optInRows.map((p) => p.key);
       // Save label/description if changed and non-admin
       if (selected !== "admin" && (labelDraft !== metaInitial.label || descDraft !== metaInitial.description)) {
         await api.adminUpdateRole(selected, { label: labelDraft, description: descDraft });
       }
       if (selected !== "admin") {
         const roleDoc = roles.find((r) => r.role === selected);
-        const permissions = roleBusinessSavePayload(permsDraft, roleDoc?.permissions);
-        const confirmKeys = confirmPackageKeysForSave(permissions, confirmReviewKeys, {
-          optIn: confirmPackageOptIn,
-        });
-        if (confirmPackageOptIn) {
-          const preview = confirmKeys || [];
-          const ok = window.confirm(
-            preview.length
-              ? `Setujui ${preview.length} izin Pembelian/Persediaan/HPP agar berlaku?\n\n${preview.join("\n")}\n\nIzin di luar daftar tetap tersimpan dan tidak efektif.`
-              : "Setujui tanpa izin package? Izin package tersimpan tidak menjadi efektif."
-          );
-          if (!ok) return;
-          // UI list and request payload must be identical.
-          setConfirmReviewKeys(preview);
-          await api.adminUpdateRolePermissions(
-            selected,
-            { ...rolePermissionsPutBody(permissions, preview, roleDoc?.permissions || []), confirm_opt_in_keys: confirmOptInKeys },
-          );
-        } else {
-          // Business-only delta: backend CAS preserves unrelated grants and nav.*
-          // from concurrent edits, rejecting stale role snapshots with HTTP 409.
-          const baseline = new Set(initial);
-          const current = new Set(permsDraft);
-          const add = [...current].filter((k) => !baseline.has(k) && !k.startsWith("nav."));
-          const remove = [...baseline].filter((k) => !current.has(k) && !k.startsWith("nav."));
-          if (add.length || remove.length) {
-            await api.adminPatchRoleBusinessPermissions(selected, {
-              expected_permissions: roleDoc?.permissions || [],
-              add,
-              remove,
-              confirm_opt_in_keys: confirmOptInKeys,
-            });
-          }
+        // One save path for every checkbox. Stale snapshots stay 409 and keep the draft.
+        const baseline = new Set(initial);
+        const current = new Set(permsDraft);
+        const add = [...current].filter((k) => !baseline.has(k) && !k.startsWith("nav."));
+        const remove = [...baseline].filter((k) => !current.has(k) && !k.startsWith("nav."));
+        if (add.length || remove.length) {
+          await api.adminPatchRoleBusinessPermissions(selected, {
+            expected_permissions: roleDoc?.permissions || [],
+            add,
+            remove,
+          });
         }
       }
       setInitial(new Set(permsDraft));
       setMetaInitial({ label: labelDraft, description: descDraft });
-      // Refresh own session so sidebar/API.me reflect the new effective set immediately.
       if (selected === user?.role) {
         await refresh();
-        notify("Perubahan role disimpan. Sesi Anda sudah disegarkan.");
+        notify("Perubahan role disimpan. Menu Anda sudah diperbarui.");
       } else {
         notify(
-          "Perubahan role disimpan. Pengguna dengan role ini perlu refresh halaman atau login ulang agar hak akses baru berlaku.",
+          "Perubahan role disimpan. Request berikutnya memakai izin terbaru. Menu pengguna lain diperbarui saat jendela mereka kembali fokus.",
         );
       }
       await load(true);
     } catch (e) {
-      // Keep draft + confirm UI; do not notify success or reload-away the draft.
+      // Keep the draft; do not notify success or reload over a failed save.
       setErr(e.response?.data?.detail?.message || e.response?.data?.detail || "Gagal menyimpan");
     }
     finally { setBusy(false); }
@@ -1343,11 +1210,6 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           permissionCatalog={permissionCatalog}
           permsDraft={permsDraft}
           initialPerms={initial}
-          confirmedPackageKeys={currentRole?.package_production_confirmed_keys || []}
-          confirmPackageOptIn={confirmPackageOptIn}
-          onConfirmPackageOptInChange={setConfirmPackageOptIn}
-          confirmReviewKeys={confirmReviewKeys}
-          onConfirmReviewKeysChange={setConfirmReviewKeys}
           labelDraft={labelDraft}
           descDraft={descDraft}
           onLabelChange={setLabelDraft}
@@ -1366,7 +1228,6 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
             setPermsDraft(new Set(initial));
             setLabelDraft(metaInitial.label);
             setDescDraft(metaInitial.description);
-            resetPackageConfirmUi();
           }}
           onToggleActive={doToggleActive}
           onDelete={doDelete}

@@ -596,13 +596,18 @@ def test_business_patch_shrinks_confirmation_and_preserves_other_modules():
     assert status == 200
     assert doc["permissions"] == ["purchase_receipts.view", "schedule.view"]
     assert doc["package_production_confirmed_keys"] == ["purchase_receipts.view"]
+    assert doc["manual_grant_normalized"] is True
 
 
-def test_business_patch_never_confirms_new_grants():
+def test_business_patch_activates_a_newly_checked_package_key():
     status, doc = _run_business_patch(add=["purchase_invoices.view"], confirmed=["purchase_orders.view"])
     assert status == 200
     assert "purchase_invoices.view" in doc["permissions"]
-    assert doc["package_production_confirmed_keys"] == ["purchase_orders.view"]
+    assert "purchase_orders.view" in doc["permissions"]
+    # Stored but never confirmed, and not part of this add, stays unchecked.
+    assert "purchase_receipts.view" not in doc["permissions"]
+    assert doc["package_production_confirmed_keys"] == ["purchase_invoices.view", "purchase_orders.view"]
+    assert doc["manual_grant_normalized"] is True
 
 
 def test_business_patch_rejects_concurrent_confirmation_change():
@@ -618,7 +623,10 @@ def test_business_patch_rejects_concurrent_confirmation_change():
 def test_business_patch_handles_legacy_document_without_confirmation():
     status, doc = _run_business_patch(remove=["purchase_orders.view"])
     assert status == 200
+    assert "purchase_receipts.view" not in doc["permissions"]
+    assert doc["permissions"] == ["schedule.view"]
     assert doc["package_production_confirmed_keys"] == []
+    assert doc["manual_grant_normalized"] is True
 
 
 def test_role_list_sidebar_permissions_use_runtime_effective_resolver():
@@ -696,13 +704,15 @@ def test_explicit_opt_in_confirmation_saves_mixed_delta_atomically():
     assert {"paint.view", "po.view"} <= set(doc["permissions"])
 
 
-def test_unconfirmed_opt_in_leaves_all_permissions_unchanged():
+def test_opt_in_save_needs_no_extra_confirmation():
     status, doc = _run_business_patch(add=["paint.view", "po.view"])
-    assert status == 400
-    assert "po.view" not in doc["permissions"]
+    assert status == 200
+    assert {"paint.view", "po.view"} <= set(doc["permissions"])
+    assert doc["manual_grant_normalized"] is True
 
 
-def test_stale_opt_in_confirmation_is_rejected():
+def test_stale_opt_in_confirmation_is_ignored():
     status, doc = _run_business_patch(add=["po.view"], opt_in=["paint.view"])
-    assert status == 400
-    assert "po.view" not in doc["permissions"]
+    assert status == 200
+    assert "po.view" in doc["permissions"]
+    assert "paint.view" not in doc["permissions"]

@@ -18,11 +18,14 @@ Jangan jalankan skrip sebagai bagian otomatis startup atau deploy.
   `users.manage` untuk karyawan, `org.branches.manage` untuk master cabang.
   Bukan nama role. Pemegang izin tanpa cakupan global hanya boleh menetapkan
   cabang yang ia sendiri pegang. Pengguna tanpa izin ditolak, termasuk lewat API.
-- Izin modul tetap wajib. Grant Pembelian/Persediaan/HPP yang belum disetujui
-  tetap tidak efektif. Persetujuan eksplisit (`confirm_package_keys`) membuat
-  hanya daftar yang ditinjau menjadi efektif, untuk role apa pun. Holding dan
-  Direktur mempertahankan grant package yang sudah efektif. Simpan biasa tidak
-  menumbuhkan daftar persetujuan.
+- Izin modul tetap wajib. Aturan editor: centang, simpan, langsung berlaku;
+  hapus centang, simpan, akses dicabut. Tidak ada dialog persetujuan kedua.
+  Grant package yang tersimpan tetapi belum pernah efektif tidak menyala saat
+  deploy. Skrip `backend/scripts/dry_run_manual_grant_cutover.py` (default
+  dry-run, `--apply` ditolak saat `APP_ENV=production`) menormalkan grant itu
+  agar tetap tidak tercentang, sambil mempertahankan grant yang sudah efektif.
+  Holding dan Direktur mempertahankan grant package yang sudah efektif.
+  Cakupan cabang global tidak menambah izin modul.
 - Cabang kosong tidak memberikan akses global di produksi. Respons 403 meminta
   pengguna yang berwenang mengatur karyawan.
 - Outlet pelanggan berbeda dari cabang perusahaan.
@@ -73,9 +76,11 @@ Gunakan backup MongoDB penuh untuk pemulihan bencana, bukan jurnal metadata saja
   dan dokumen penjualan menolak/menyaring data cabang lain.
 - PO manual dan impor: pilih cabang; default memakai cabang utama. ID Accurate
   tetap utuh; dokumen turunan mewarisi cabang operasional.
-- Izin khusus: memilih satu menampilkan konfirmasi daftar key saat Simpan;
-  menolak konfirmasi mempertahankan draft. Pilih semua tidak mengaktifkan
-  izin opt-in. PATCH tanpa konfirmasi exact ditolak; stale snapshot tetap 409.
+- Izin editor: centang izin biasa, bekas opt-in, atau bekas package lalu simpan
+  membuatnya efektif tanpa dialog tambahan. Hapus centang lalu simpan mencabut
+  akses, dengan override yang memang berlaku tetap dihormati. Draft bertahan
+  pada 409. Pilih semua mencakup izin yang terlihat. Cutover grant lama dijalankan
+  manual, bukan saat deploy.
 - Backfill `users` melewati `direktur_utama` dan `holding_team`: `branch_ids`,
   `primary_branch_id`, dan `branch_id` mereka tidak diubah. Ringkasan mencantumkan
   `users_global_skipped`. Karyawan lain dipetakan ke Yogyakarta.

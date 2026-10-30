@@ -21,13 +21,6 @@ import {
   filterRolePermissionModules,
   isSensitivePermissionKey,
 } from "../lib/settingsPermissionUi";
-import {
-  isPackagePermissionKey,
-  packageKeysInGrant,
-  packageKeysToActivate,
-  roleMayReceivePackageAccess,
-  unconfirmedPackageKeys,
-} from "../lib/packagePermissions";
 
 const DEFAULT_OPEN_COUNT = 2;
 
@@ -47,11 +40,6 @@ export default function RolePermissionWorkspace({
   permissionCatalog,
   permsDraft,
   initialPerms,
-  confirmedPackageKeys = [],
-  confirmPackageOptIn = false,
-  onConfirmPackageOptInChange,
-  confirmReviewKeys = [],
-  onConfirmReviewKeysChange,
   labelDraft,
   descDraft,
   onLabelChange,
@@ -86,21 +74,18 @@ export default function RolePermissionWorkspace({
     () => countRolePermissionDirty(permsDraft, initialPerms),
     [permsDraft, initialPerms]
   );
-  const packageConfirmDirty = confirmPackageOptIn ? 1 : 0;
-  const dirtyCount = permDirtyCount + (metaDirty ? 1 : 0) + packageConfirmDirty;
+  const dirtyCount = permDirtyCount + (metaDirty ? 1 : 0);
   const dirty = dirtyCount > 0;
   const filtering = Boolean(String(permQuery || "").trim()) || stateFilter !== "all";
 
   const [openMods, setOpenMods] = useState(() => new Set());
   const [menuOpen, setMenuOpen] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(!!confirmPackageOptIn);
   const [descEditing, setDescEditing] = useState(false);
 
   useEffect(() => {
     const defaults = allModules.slice(0, DEFAULT_OPEN_COUNT).map(([mod]) => mod);
     setOpenMods(new Set(defaults));
     setMenuOpen(false);
-    setReviewOpen(false);
     setDescEditing(false);
   }, [selected, allModules]);
 
@@ -126,42 +111,12 @@ export default function RolePermissionWorkspace({
     setOpenMods(new Set());
   };
 
-  const packageAlreadyEffective = roleMayReceivePackageAccess(selected);
-
   const toggleCategoryAll = (mod, perms) => {
-    // Package keys are chosen one by one, then approved. Select-all must not queue them.
-    const keys = bulkPermissionKeys(perms).filter((k) => !isPackagePermissionKey(k));
+    const keys = bulkPermissionKeys(perms);
     if (!keys.length) return;
     const allOn = keys.every((k) => permsDraft.has(k));
     onToggleCategoryKeys(keys, !allOn);
   };
-
-  const draftPackageKeys = useMemo(() => packageKeysInGrant(permsDraft), [permsDraft]);
-  const confirmedSet = useMemo(
-    () => new Set(packageKeysInGrant(confirmedPackageKeys)),
-    [confirmedPackageKeys]
-  );
-  const pendingUnconfirmed = useMemo(
-    () => unconfirmedPackageKeys(permsDraft, confirmedPackageKeys),
-    [permsDraft, confirmedPackageKeys]
-  );
-  const activationPreview = useMemo(
-    () => packageKeysToActivate(permsDraft, confirmReviewKeys),
-    [permsDraft, confirmReviewKeys]
-  );
-  const labelByKey = useMemo(() => {
-    const map = new Map();
-    for (const rows of Object.values(permissionCatalog?.modules || {})) {
-      for (const row of rows || []) {
-        if (row?.key) map.set(row.key, row.label || row.key);
-      }
-    }
-    return map;
-  }, [permissionCatalog]);
-
-  useEffect(() => {
-    if (confirmPackageOptIn) setReviewOpen(true);
-  }, [confirmPackageOptIn, selected]);
 
   if (!currentRole) {
     return (
@@ -174,14 +129,6 @@ export default function RolePermissionWorkspace({
   const statusActive = currentRole.status !== "inactive";
   const lockedFullAccess = isAdminRole || isDirectorRole;
   const canEdit = canManagePerms && !lockedFullAccess;
-
-  const toggleReviewKey = (key) => {
-    if (!onConfirmReviewKeysChange || !isPackagePermissionKey(key)) return;
-    const next = new Set(confirmReviewKeys || []);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    onConfirmReviewKeysChange([...next].sort());
-  };
 
   return (
     <div className="role-detail role-workspace" data-testid="role-detail">
@@ -331,8 +278,8 @@ export default function RolePermissionWorkspace({
                 Tutup semua
               </button>
             </div>
-            <p className="role-perm-search-hint" data-testid="role-perm-search-hint" title="Izin khusus dan Pembelian/Persediaan/HPP dipilih satu per satu. Pilih semua tidak mengaktifkannya.">
-              Izin khusus dan package dipilih satu per satu. Pilih semua tidak mengaktifkannya.
+            <p className="role-perm-search-hint" data-testid="role-perm-search-hint" title="Centang izin yang terlihat, lalu simpan. Izin berlaku setelah disimpan.">
+              Centang lalu simpan. Izin yang dicentang berlaku setelah disimpan.
             </p>
           </div>
         )}
@@ -356,77 +303,6 @@ export default function RolePermissionWorkspace({
 
       {err && <div className="error" data-testid="role-error">{typeof err === "object" ? err.message : err}</div>}
 
-      {canEdit && !packageAlreadyEffective && draftPackageKeys.length > 0 && (
-        <div className="role-package-summary" data-testid="role-package-confirm-panel">
-          <strong>Pembelian / Persediaan / HPP</strong>
-          <span className="role-package-summary-count" data-testid="role-package-confirm-meta">
-            Berlaku {confirmedSet.size} · Menunggu {pendingUnconfirmed.length}
-          </span>
-          <button
-            type="button"
-            className="ghost sm"
-            onClick={() => setReviewOpen(true)}
-            data-testid="role-package-review-open"
-          >
-            Tinjau izin
-          </button>
-        </div>
-      )}
-      {canEdit && !packageAlreadyEffective && draftPackageKeys.length > 0 && reviewOpen && (
-        <div className="role-review-backdrop" data-testid="role-package-review-dialog">
-          <div className="role-review-dialog" role="dialog" aria-modal="true" aria-labelledby="role-package-review-title">
-            <header className="role-review-head">
-              <h3 id="role-package-review-title">Tinjau Pembelian / Persediaan / HPP</h3>
-              <button type="button" className="icon-button" aria-label="Tutup" onClick={() => setReviewOpen(false)}>
-                <X size={16}/>
-              </button>
-            </header>
-            <p className="role-review-lead">
-              Centang izin yang akan berlaku. Yang tidak dicentang tetap tersimpan dan tidak efektif. Tidak ada izin yang disetujui otomatis.
-            </p>
-            <div className="role-review-list" data-testid="role-package-confirm-list">
-              {draftPackageKeys.map((key) => {
-                const reviewed = (confirmReviewKeys || []).includes(key);
-                const menuKey = String(key).startsWith("nav.");
-                return (
-                  <label key={key} className="role-review-row" data-testid={`role-package-review-${key}`}>
-                    <input
-                      type="checkbox"
-                      checked={reviewed}
-                      onChange={() => toggleReviewKey(key)}
-                      data-testid={`role-package-review-check-${key}`}
-                    />
-                    <span className="role-review-copy">
-                      <span className="role-review-label">{labelByKey.get(key) || key}</span>
-                      <span className="role-perm-key">{key}</span>
-                    </span>
-                    <span className={"role-review-kind" + (menuKey ? " is-menu" : "")}>{menuKey ? "Menu" : "Tindakan"}</span>
-                    <span className="role-review-effect">{reviewed ? "Akan berlaku" : "Tetap tersimpan, tidak efektif"}</span>
-                  </label>
-                );
-              })}
-            </div>
-            <p className="role-review-preview" data-testid="role-package-activation-preview">
-              {activationPreview.length
-                ? `${activationPreview.length} izin akan berlaku. Izin di luar daftar tetap tersimpan dan tidak efektif.`
-                : "Tidak ada izin yang disetujui. Izin package tersimpan tidak menjadi efektif."}
-            </p>
-            <label className="role-package-confirm-optin">
-              <input
-                type="checkbox"
-                checked={!!confirmPackageOptIn}
-                onChange={(e) => onConfirmPackageOptInChange?.(e.target.checked)}
-                data-testid="role-package-confirm-optin"
-              />
-              <span>Setujui hanya izin yang dicentang pada simpan ini</span>
-            </label>
-            <div className="role-review-actions">
-              <button type="button" className="ghost" onClick={() => setReviewOpen(false)}>Tutup</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="role-perm-flow" data-testid={`role-perms-${selected}`}>
         {lockedFullAccess ? (
           <p className="muted" data-testid="role-full-access-notice">
@@ -441,7 +317,7 @@ export default function RolePermissionWorkspace({
               const catTotals = countRolePermissionTotals([[mod, catalogPerms]], permsDraft);
               const open = openMods.has(mod);
               const slug = moduleSlug(mod);
-              const visibleKeys = perms.filter((p) => !p.opt_in && !isPackagePermissionKey(p.key)).map((p) => p.key);
+              const visibleKeys = bulkPermissionKeys(perms);
               const allVisibleOn = visibleKeys.length > 0 && visibleKeys.every((k) => permsDraft.has(k));
               return (
                 <section
@@ -499,7 +375,6 @@ export default function RolePermissionWorkspace({
                             <span className="role-perm-copy" title={p.key}>
                               <span className="role-perm-label">
                                 {p.label}
-                                {p.opt_in && <span className="role-perm-sensitive">KHUSUS</span>}
                                 {sensitive && (
                                   <span className="role-perm-sensitive" data-testid={`role-perm-sensitive-${p.key}`}>
                                     <AlertTriangle size={10}/> Sensitif

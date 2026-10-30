@@ -519,8 +519,12 @@ async def current_user(request: Request):
     payload["branch_id"] = payload["primary_branch_id"]
     payload["user_id"] = u.get("id")
     payload["email"] = u.get("email") or email
-    from services.purchasing_inventory_access import PACKAGE_CONFIRMED_KEYS_FIELD
+    from services.purchasing_inventory_access import (
+        MANUAL_GRANT_NORMALIZED_FIELD,
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+    )
     payload["_package_confirmed_keys"] = list(u.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
+    payload[MANUAL_GRANT_NORMALIZED_FIELD] = bool(u.get(MANUAL_GRANT_NORMALIZED_FIELD))
     enforce_sales_eternal_surface(request, payload)
     from services.operational_branch import guard_document_request
     await guard_document_request(db, request, payload)
@@ -534,20 +538,48 @@ async def _role_defaults_override():
 
 
 async def _package_confirm_context(user: dict):
-    """Load role + user package confirmation stamps (independent of each other)."""
-    from services.purchasing_inventory_access import PACKAGE_CONFIRMED_KEYS_FIELD
+    """Load role and user grant state used by the package filter.
+
+    A 2-tuple is still accepted by ``user_permissions`` so older tests can
+    stub this helper. The live path returns a dict.
+    """
+    from services.purchasing_inventory_access import (
+        MANUAL_GRANT_NORMALIZED_FIELD,
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+    )
 
     role = str(user.get("role") or "").strip().lower()
-    role_doc = await db.role_permissions.find_one({"role": role}, {"_id": 0, PACKAGE_CONFIRMED_KEYS_FIELD: 1}) if role else None
-    role_confirmed = list((role_doc or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
-    user_confirmed = list(user.get("_package_confirmed_keys") or [])
-    if not user_confirmed and user.get("email"):
-        u = await db.users.find_one(
+    role_fields = {"_id": 0, PACKAGE_CONFIRMED_KEYS_FIELD: 1, MANUAL_GRANT_NORMALIZED_FIELD: 1, "permissions": 1}
+    role_doc = await db.role_permissions.find_one({"role": role}, role_fields) if role else None
+    user_row = None
+    if user.get("email"):
+        user_row = await db.users.find_one(
             {"email": user["email"]},
-            {"_id": 0, PACKAGE_CONFIRMED_KEYS_FIELD: 1},
+            {
+                "_id": 0,
+                PACKAGE_CONFIRMED_KEYS_FIELD: 1,
+                MANUAL_GRANT_NORMALIZED_FIELD: 1,
+                "permissions_override": 1,
+            },
         )
-        user_confirmed = list((u or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
-    return role_confirmed, user_confirmed
+    user_confirmed = list(user.get("_package_confirmed_keys") or [])
+    if user_row is not None:
+        user_confirmed = list(user_row.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
+    override = user.get("permissions_override")
+    if not isinstance(override, dict) and user_row is not None:
+        override = user_row.get("permissions_override") or {}
+    if user_row is not None:
+        user_normalized = bool(user_row.get(MANUAL_GRANT_NORMALIZED_FIELD))
+    else:
+        user_normalized = bool(user.get(MANUAL_GRANT_NORMALIZED_FIELD))
+    return {
+        "role_confirmed": list((role_doc or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or []),
+        "user_confirmed": user_confirmed,
+        "role_normalized": bool((role_doc or {}).get(MANUAL_GRANT_NORMALIZED_FIELD)),
+        "user_normalized": user_normalized,
+        "role_permission_keys": list((role_doc or {}).get("permissions") or []),
+        "user_override": override if isinstance(override, dict) else {},
+    }
 
 
 async def user_permissions(user: dict) -> set:
@@ -563,10 +595,33 @@ async def user_permissions(user: dict) -> set:
 
     role = str(user.get("role") or "").strip().lower()
     inactive = await _inactive_role_slugs()
-    role_confirmed, user_confirmed = await _package_confirm_context(user)
+    ctx = await _package_confirm_context(user)
 
-    # Super admin gets everything, always — except the production package filter
-    # (Holding/Direktur keep granted package keys; other roles need approval).
+    def _filter(base):
+        if isinstance(ctx, dict):
+            kwargs = {
+                "role_confirmed_keys": ctx.get("role_confirmed"),
+                "user_confirmed_keys": ctx.get("user_confirmed"),
+                "role_normalized": bool(ctx.get("role_normalized")),
+                "user_normalized": bool(ctx.get("user_normalized")),
+                "role_permission_keys": ctx.get("role_permission_keys"),
+                "user_override": ctx.get("user_override"),
+            }
+        else:
+            role_confirmed, user_confirmed = ctx
+            kwargs = {
+                "role_confirmed_keys": role_confirmed,
+                "user_confirmed_keys": user_confirmed,
+            }
+        return filter_package_permissions(
+            base,
+            user,
+            os.environ.get("APP_ENV"),
+            os.environ.get("MONGO_URL"),
+            **kwargs,
+        )
+
+    # Super admin gets everything, always — except the production package filter.
     # OPT_IN_ONLY keys require explicit permissions_override True for super-admin
     # unless the account role is direktur_utama (director-full includes OPT_IN,
     # except DIRECTOR_MUST_OPT_IN which stay explicit).
@@ -582,28 +637,14 @@ async def user_permissions(user: dict) -> set:
                     user.get("permissions_override"),
                     role_override,
                 )
-                return filter_package_permissions(
-                    base,
-                    user,
-                    os.environ.get("APP_ENV"),
-                    os.environ.get("MONGO_URL"),
-                    role_confirmed_keys=role_confirmed,
-                    user_confirmed_keys=user_confirmed,
-                )
+                return _filter(base)
             base = strip_opt_in_permissions(ALL_PERMISSIONS)
             for perm, allowed in (user.get("permissions_override") or {}).items():
                 if allowed is True and perm in OPT_IN_ONLY_PERMISSIONS:
                     base.add(perm)
                 elif allowed is False:
                     base.discard(perm)
-            return filter_package_permissions(
-                base,
-                user,
-                os.environ.get("APP_ENV"),
-                os.environ.get("MONGO_URL"),
-                role_confirmed_keys=role_confirmed,
-                user_confirmed_keys=user_confirmed,
-            )
+            return _filter(base)
 
     # Inactive roles: empty defaults (still keeps overrides); no director bypass.
     if role in inactive:
@@ -611,14 +652,7 @@ async def user_permissions(user: dict) -> set:
         for perm, allowed in (user.get("permissions_override") or {}).items():
             if allowed:
                 base.add(perm)
-        return filter_package_permissions(
-            base,
-            user,
-            os.environ.get("APP_ENV"),
-            os.environ.get("MONGO_URL"),
-            role_confirmed_keys=role_confirmed,
-            user_confirmed_keys=user_confirmed,
-        )
+        return _filter(base)
 
     # Direktur: full registered permission set minus DIRECTOR_MUST_OPT_IN
     # (all Phase A urgent.* keys). Short role_permissions / deny
@@ -631,23 +665,11 @@ async def user_permissions(user: dict) -> set:
             user.get("permissions_override"),
             role_override,
         )
-        return filter_package_permissions(
-            base,
-            user,
-            os.environ.get("APP_ENV"),
-            os.environ.get("MONGO_URL"),
-            role_confirmed_keys=role_confirmed,
-            user_confirmed_keys=user_confirmed,
-        )
+        return _filter(base)
 
     role_override = await _role_defaults_override()
-    return filter_package_permissions(
+    return _filter(
         effective_permissions(user.get("role"), user.get("permissions_override"), role_override),
-        user,
-        os.environ.get("APP_ENV"),
-        os.environ.get("MONGO_URL"),
-        role_confirmed_keys=role_confirmed,
-        user_confirmed_keys=user_confirmed,
     )
 
 
@@ -9863,6 +9885,7 @@ async def _role_slug_is_valid(slug: str) -> bool:
 @api_router.get("/admin/roles")
 async def list_roles(user=Depends(require_perm("users.view"))):
     from services.purchasing_inventory_access import (
+        MANUAL_GRANT_NORMALIZED_FIELD,
         PACKAGE_CONFIRMED_AT_FIELD,
         PACKAGE_CONFIRMED_BY_FIELD,
         PACKAGE_CONFIRMED_KEYS_FIELD,
@@ -9876,6 +9899,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
             PACKAGE_CONFIRMED_KEYS_FIELD: list(d.get(PACKAGE_CONFIRMED_KEYS_FIELD) or []),
             PACKAGE_CONFIRMED_AT_FIELD: d.get(PACKAGE_CONFIRMED_AT_FIELD),
             PACKAGE_CONFIRMED_BY_FIELD: d.get(PACKAGE_CONFIRMED_BY_FIELD),
+            MANUAL_GRANT_NORMALIZED_FIELD: bool(d.get(MANUAL_GRANT_NORMALIZED_FIELD)),
         }
         for d in perm_docs
         if d.get("role")
@@ -9903,6 +9927,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
             PACKAGE_CONFIRMED_KEYS_FIELD: conf.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
             PACKAGE_CONFIRMED_AT_FIELD: conf.get(PACKAGE_CONFIRMED_AT_FIELD),
             PACKAGE_CONFIRMED_BY_FIELD: conf.get(PACKAGE_CONFIRMED_BY_FIELD),
+            MANUAL_GRANT_NORMALIZED_FIELD: bool(conf.get(MANUAL_GRANT_NORMALIZED_FIELD)),
         })
     # Include any built-in that isn't in the collection yet (safety)
     for slug in BUILTIN_ROLES - slugs_seen:
@@ -9918,6 +9943,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
             PACKAGE_CONFIRMED_KEYS_FIELD: conf.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
             PACKAGE_CONFIRMED_AT_FIELD: conf.get(PACKAGE_CONFIRMED_AT_FIELD),
             PACKAGE_CONFIRMED_BY_FIELD: conf.get(PACKAGE_CONFIRMED_BY_FIELD),
+            MANUAL_GRANT_NORMALIZED_FIELD: bool(conf.get(MANUAL_GRANT_NORMALIZED_FIELD)),
         })
     return {"roles": out}
 
@@ -10001,7 +10027,11 @@ async def patch_role_business_permissions(
     """Compare-and-swap role grants; only changed business keys are written."""
     from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults, is_director_full_access_role
     from services.purchasing_inventory_access import (
-        PACKAGE_CONFIRMED_KEYS_FIELD, shrink_package_confirmed_keys,
+        DIRECTOR_FULL_ACCESS_ROLE,
+        HOLDING_TEAM_ROLE,
+        MANUAL_GRANT_NORMALIZED_FIELD,
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+        reconcile_manual_package_grant,
     )
     slug = role.strip().lower()
     if slug == "admin" or is_director_full_access_role(slug):
@@ -10015,13 +10045,6 @@ async def patch_role_business_permissions(
         raise HTTPException(400, "Permission tidak boleh ditambah dan dicabut bersamaan")
     if any(k not in ALL_PERMISSIONS or k.startswith("nav.") for k in add | remove):
         raise HTTPException(400, "Hanya permission bisnis yang terdaftar boleh diubah")
-    from permissions import OPT_IN_ONLY_PERMISSIONS
-    opt_in_added = add & set(OPT_IN_ONLY_PERMISSIONS)
-    reviewed = set(getattr(payload, "confirm_opt_in_keys", []) or [])
-    if reviewed != opt_in_added:
-        labels = {key: label for _, key, label in PERMISSION_CATALOG}
-        names = ", ".join(labels.get(k, k) for k in sorted(opt_in_added or reviewed))
-        raise HTTPException(400, f"Konfirmasi izin khusus harus sesuai perubahan: {names}")
     management_added = add & {
         "users.manage", "permissions.manage", "roles.manage", "org.branches.manage",
     }
@@ -10032,15 +10055,20 @@ async def patch_role_business_permissions(
     effective = with_nav_defaults(set(raw))
     if set(payload.expected_permissions) != effective:
         raise HTTPException(409, "Permission role telah berubah. Muat ulang sebelum menyimpan.")
-    next_perms = sorted((set(raw) | add) - remove)
-    confirmed = shrink_package_confirmed_keys(
-        (before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD), next_perms,
+    requested = (set(raw) | add) - remove
+    next_perms, confirmed = reconcile_manual_package_grant(
+        raw,
+        requested,
+        (before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD),
+        already_normalized=bool((before or {}).get(MANUAL_GRANT_NORMALIZED_FIELD)),
+        unrestricted=slug in {HOLDING_TEAM_ROLE, DIRECTOR_FULL_ACCESS_ROLE},
     )
     if before is None:
         try:
             await db.role_permissions.insert_one({
                 "role": slug, "permissions": next_perms,
                 PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
+                MANUAL_GRANT_NORMALIZED_FIELD: True,
                 "updated_at": now_iso(), "updated_by": user.get("email"),
             })
         except Exception:
@@ -10055,6 +10083,7 @@ async def patch_role_business_permissions(
             {"$set": {
                 "permissions": next_perms, "updated_at": now_iso(),
                 PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
+                MANUAL_GRANT_NORMALIZED_FIELD: True,
                 "updated_by": user.get("email"),
             }},
         )
@@ -10070,13 +10099,13 @@ async def patch_role_business_permissions(
 async def update_role_permissions(role: str, payload: RolePermissionsPayload, user=Depends(require_perm("permissions.manage"))):
     from permissions import is_director_full_access_role
     from services.purchasing_inventory_access import (
+        DIRECTOR_FULL_ACCESS_ROLE,
+        HOLDING_TEAM_ROLE,
+        MANUAL_GRANT_NORMALIZED_FIELD,
         PACKAGE_CONFIRMED_AT_FIELD,
         PACKAGE_CONFIRMED_BY_FIELD,
         PACKAGE_CONFIRMED_KEYS_FIELD,
-        PACKAGE_PERMISSIONS,
-        apply_explicit_package_confirmation,
-        normalize_package_confirmed_keys,
-        shrink_package_confirmed_keys,
+        reconcile_manual_package_grant,
     )
 
     slug = role.strip().lower()
@@ -10091,49 +10120,25 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
     if invalid:
         raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
-    from permissions import OPT_IN_ONLY_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
+    from permissions import ROLE_DEFAULT_PERMISSIONS
     old_permissions = set((before or {}).get("permissions", ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
-    await _reject_unheld_management_grants(user, set(payload.permissions) - old_permissions)
-    opt_in_added = (set(payload.permissions) - old_permissions) & set(OPT_IN_ONLY_PERMISSIONS)
-    if set(getattr(payload, "confirm_opt_in_keys", []) or []) != opt_in_added:
-        raise HTTPException(400, "Konfirmasi izin khusus harus sesuai perubahan: " + ", ".join(sorted(opt_in_added)))
-    prev_confirmed = list((before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
-    next_perms = sorted(set(payload.permissions))
-    if payload.confirm_package_keys is not None:
-        unknown = [k for k in payload.confirm_package_keys if str(k) not in PACKAGE_PERMISSIONS]
-        if unknown:
-            raise HTTPException(400, f"confirm_package_keys tidak valid: {unknown}")
-        not_granted = [
-            k for k in normalize_package_confirmed_keys(payload.confirm_package_keys)
-            if k not in next_perms
-        ]
-        if not_granted:
-            raise HTTPException(
-                400,
-                f"confirm_package_keys harus termasuk permission yang disimpan: {not_granted}",
-            )
-        await _reject_unheld_management_grants(
-            user,
-            set(normalize_package_confirmed_keys(payload.confirm_package_keys)) - set(prev_confirmed),
-        )
-        confirmed = apply_explicit_package_confirmation(
-            prev_confirmed, next_perms, payload.confirm_package_keys
-        )
-        confirm_meta = {
-            PACKAGE_CONFIRMED_AT_FIELD: now_iso(),
-            PACKAGE_CONFIRMED_BY_FIELD: user.get("email"),
-        }
-    else:
-        # Legacy editor / ordinary save: shrink only — never activate legacy grants.
-        confirmed = shrink_package_confirmed_keys(prev_confirmed, next_perms)
-        confirm_meta = {}
+    next_perms, confirmed = reconcile_manual_package_grant(
+        old_permissions,
+        payload.permissions,
+        (before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD),
+        already_normalized=bool((before or {}).get(MANUAL_GRANT_NORMALIZED_FIELD)),
+        unrestricted=slug in {HOLDING_TEAM_ROLE, DIRECTOR_FULL_ACCESS_ROLE},
+    )
+    await _reject_unheld_management_grants(user, set(next_perms) - old_permissions)
     set_doc = {
         "role": slug,
         "permissions": next_perms,
         PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
+        MANUAL_GRANT_NORMALIZED_FIELD: True,
+        PACKAGE_CONFIRMED_AT_FIELD: now_iso(),
+        PACKAGE_CONFIRMED_BY_FIELD: user.get("email"),
         "updated_at": now_iso(),
         "updated_by": user.get("email"),
-        **confirm_meta,
     }
     if payload.expected_permissions is not None:
         from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults
@@ -10162,6 +10167,7 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
         "role": slug,
         "permissions": after.get("permissions", []),
         PACKAGE_CONFIRMED_KEYS_FIELD: after.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
+        MANUAL_GRANT_NORMALIZED_FIELD: bool(after.get(MANUAL_GRANT_NORMALIZED_FIELD)),
         PACKAGE_CONFIRMED_AT_FIELD: after.get(PACKAGE_CONFIRMED_AT_FIELD),
         PACKAGE_CONFIRMED_BY_FIELD: after.get(PACKAGE_CONFIRMED_BY_FIELD),
     }
@@ -10400,7 +10406,17 @@ async def create_canonical_user(
     else:
         # Settings existing behavior: optional password falls back to trial default.
         raw_password = password or os.environ.get("TRIAL_DEFAULT_PASSWORD", "Eternal123!")
+    from services.purchasing_inventory_access import (
+        MANUAL_GRANT_NORMALIZED_FIELD,
+        PACKAGE_CONFIRMED_KEYS_FIELD,
+        PACKAGE_PERMISSIONS,
+    )
     now = now_iso()
+    override_doc = dict(permissions_override or {})
+    granted_package = sorted(
+        key for key, allowed in override_doc.items()
+        if allowed is True and key in PACKAGE_PERMISSIONS
+    )
     doc = {
         "id": str(uuid.uuid4()),
         "employee_id": await _next_employee_id(),
@@ -10415,7 +10431,9 @@ async def create_canonical_user(
         "joined_at": joined_at,
         "deactivated_at": None,
         "notes": notes,
-        "permissions_override": permissions_override or {},
+        "permissions_override": override_doc,
+        MANUAL_GRANT_NORMALIZED_FIELD: True,
+        PACKAGE_CONFIRMED_KEYS_FIELD: granted_package,
         "password_hash": hash_password(raw_password),
         "created_at": now,
         "updated_at": now,
@@ -10461,13 +10479,13 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
         updates["role"] = payload.role
     if payload.permissions_override is not None:
         from services.purchasing_inventory_access import (
+            DIRECTOR_FULL_ACCESS_ROLE,
+            HOLDING_TEAM_ROLE,
+            MANUAL_GRANT_NORMALIZED_FIELD,
             PACKAGE_CONFIRMED_AT_FIELD,
             PACKAGE_CONFIRMED_BY_FIELD,
             PACKAGE_CONFIRMED_KEYS_FIELD,
-            PACKAGE_PERMISSIONS,
-            apply_explicit_package_confirmation,
-            normalize_package_confirmed_keys,
-            shrink_package_confirmed_keys,
+            reconcile_manual_user_override,
         )
 
         # Reject unknown permission keys
@@ -10475,44 +10493,23 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
         if invalid:
             raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
         old_override = existing.get("permissions_override") or {}
+        target_role = str(payload.role or existing.get("role") or "").strip().lower()
+        cleaned_override, confirmed = reconcile_manual_user_override(
+            old_override,
+            payload.permissions_override,
+            existing.get(PACKAGE_CONFIRMED_KEYS_FIELD),
+            already_normalized=bool(existing.get(MANUAL_GRANT_NORMALIZED_FIELD)),
+            unrestricted=target_role in {HOLDING_TEAM_ROLE, DIRECTOR_FULL_ACCESS_ROLE},
+        )
         await _reject_unheld_management_grants(user, [
-            key for key, allowed in payload.permissions_override.items()
+            key for key, allowed in cleaned_override.items()
             if allowed is True and old_override.get(key) is not True
         ])
-        updates["permissions_override"] = payload.permissions_override
-        # User package confirmation tracks override-True package keys only.
-        override_true_pkg = {
-            k for k, v in payload.permissions_override.items()
-            if v is True and k in PACKAGE_PERMISSIONS
-        }
-        prev_confirmed = list(existing.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
-        if payload.confirm_package_keys is not None:
-            unknown = [k for k in payload.confirm_package_keys if str(k) not in PACKAGE_PERMISSIONS]
-            if unknown:
-                raise HTTPException(400, f"confirm_package_keys tidak valid: {unknown}")
-            not_granted = [
-                k for k in normalize_package_confirmed_keys(payload.confirm_package_keys)
-                if k not in override_true_pkg
-            ]
-            if not_granted:
-                raise HTTPException(
-                    400,
-                    f"confirm_package_keys override harus True pada key: {not_granted}",
-                )
-            await _reject_unheld_management_grants(
-                user,
-                set(normalize_package_confirmed_keys(payload.confirm_package_keys)) - set(prev_confirmed),
-            )
-            confirmed = apply_explicit_package_confirmation(
-                prev_confirmed, override_true_pkg, payload.confirm_package_keys
-            )
-            updates[PACKAGE_CONFIRMED_KEYS_FIELD] = confirmed
-            updates[PACKAGE_CONFIRMED_AT_FIELD] = now_iso()
-            updates[PACKAGE_CONFIRMED_BY_FIELD] = user.get("email")
-        else:
-            updates[PACKAGE_CONFIRMED_KEYS_FIELD] = shrink_package_confirmed_keys(
-                prev_confirmed, override_true_pkg
-            )
+        updates["permissions_override"] = cleaned_override
+        updates[PACKAGE_CONFIRMED_KEYS_FIELD] = confirmed
+        updates[MANUAL_GRANT_NORMALIZED_FIELD] = True
+        updates[PACKAGE_CONFIRMED_AT_FIELD] = now_iso()
+        updates[PACKAGE_CONFIRMED_BY_FIELD] = user.get("email")
     await db.users.update_one({"id": user_id}, {"$set": updates})
     after = await db.users.find_one({"id": user_id}, {"password_hash": 0, "_id": 0})
     await _write_audit("user.update", user, target_email=existing.get("email"), before=before, after=after, note=f"Update karyawan {existing.get('email')}")

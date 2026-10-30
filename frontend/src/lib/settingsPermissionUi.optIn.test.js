@@ -1,7 +1,7 @@
 import { bulkPermissionKeys, addedOptInPermissions } from "./settingsPermissionUi";
 
-test("select all excludes opt-in while retaining ordinary view grants", () => {
-  expect(bulkPermissionKeys([{key:"po.view"}, {key:"paint.view",opt_in:true}])).toEqual(["po.view"]);
+test("select all includes former opt-in keys with ordinary grants", () => {
+  expect(bulkPermissionKeys([{key:"po.view"}, {key:"paint.view",opt_in:true}, {key:"purchase_orders.view"}])).toEqual(["po.view", "paint.view", "purchase_orders.view"]);
 });
 test("confirmation names only newly added special permissions", () => {
   const catalog={modules:{PO:[{key:"po.view",label:"PO"}],Cat:[{key:"paint.view",label:"Cat",opt_in:true}]}};
