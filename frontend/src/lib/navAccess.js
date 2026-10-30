@@ -660,7 +660,8 @@ export function reportsNavVisible(hasPerm) {
 
 /** When nav is configured, module fallback must not defeat explicit nav deny. */
 function navOrModule(hasPerm, navKey, ...moduleKeys) {
-  if (canSeeNav(hasPerm, navKey)) return true;
+  // The view grant is authoritative; legacy nav.* alone never grants access.
+  // Create-only access is included only on workspaces with a usable create flow.
   return moduleKeys.some((k) => canSeeNav(hasPerm, k));
 }
 
@@ -682,12 +683,12 @@ export function purchasingNavVisible(hasPerm) {
   );
   const hpp = parent && navOrModule(hasPerm, NAV_KEYS.purchaseHpp, "purchase_hpp.view");
   // Menu leaf requires matching read capability when module keys exist.
-  const reqRead = !requests || canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseRequests);
-  const ordRead = !orders || canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseOrders);
-  const invRead = !invoices || canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseInvoices);
-  const payRead = !payments || canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create") || canSeeNav(hasPerm, NAV_KEYS.purchasePayments);
-  const rcpRead = !receipts || canSeeNav(hasPerm, "purchase_receipts.view") || canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
-  const hppRead = !hpp || canSeeNav(hasPerm, "purchase_hpp.view") || canSeeNav(hasPerm, NAV_KEYS.purchaseHpp);
+  const reqRead = canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create");
+  const ordRead = canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create");
+  const invRead = canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create");
+  const payRead = canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create");
+  const rcpRead = canSeeNav(hasPerm, "purchase_receipts.view");
+  const hppRead = canSeeNav(hasPerm, "purchase_hpp.view");
   const showRequests = !!(requests && reqRead);
   const showOrders = !!(orders && ordRead);
   const showInvoices = !!(invoices && invRead);
