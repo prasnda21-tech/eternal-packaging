@@ -368,7 +368,7 @@ export default function App() {
             <Route path="/produksi/pengiriman-hari-ini" element={<Navigate to="/produksi/jadwal-pengiriman?status=hari_ini" replace />} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
             <Route path="/produksi/sentralisasi-cat" element={<PermGate anyOf={[NAV_KEYS.paintSentralisasi, "paint.view", "paint.stock.view", "paint.report.view", "paint.settings.manage"]}><SentralisasiCat /></PermGate>} />
-            <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
+            <Route path="/produksi" element={<PermGate anyOf={["schedule.view"]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
             <Route path="/penjualan/data-pelanggan" element={<PermGate anyOf={[NAV_KEYS.salesCustomers, NAV_KEYS.sales, "sales.customer.view", "sales.customer.manage", "sales_order.view", "sales_order.create", "po.view"]}><DataPelanggan /></PermGate>} />
