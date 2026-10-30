@@ -10088,8 +10088,9 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
             if updated.matched_count != 1:
                 raise HTTPException(409, "Permission role berubah bersamaan. Muat ulang.")
     else:
-        # Backward-compatible legacy PUT; new editor always sends expected_permissions.
-        await db.role_permissions.update_one({"role": slug}, {"$set": set_doc}, upsert=True)
+        # Legacy full-replacement saves are unsafe: refuse stale or partial lists.
+        # Clients must use the version-checked PUT or business-key PATCH.
+        raise HTTPException(409, "Penyimpanan izin memerlukan expected_permissions. Muat ulang pengaturan.")
     after = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     await _write_audit("role.permissions.update", user, target_email=None, before=before, after=after, note=f"Role {slug} permissions")
     return {
