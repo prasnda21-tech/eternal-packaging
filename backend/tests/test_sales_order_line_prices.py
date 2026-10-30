@@ -43,6 +43,7 @@ def _user(role):
 
 async def _seed_master(db, *, accurate_item_id: str, name: str, unit: str = "pcs") -> dict:
     """Preview-only Master Produk row so P1 create PO resolver can resolve the line."""
+    await db.branches.update_one({"code": "YGY"}, {"$setOnInsert": {"id": "test-ygy", "name": "Yogyakarta", "active": True}}, upsert=True)
     mid = f"mst-{uuid.uuid4().hex[:10]}"
     doc = {
         "id": mid,

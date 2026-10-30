@@ -160,6 +160,7 @@ async def test_pwa_scope_and_spoof_ignored():
 async def test_create_and_reassign_use_explicit_mapping():
     import server
     db = server.db
+    await db.branches.update_one({"code": "YGY"}, {"$setOnInsert": {"id": "test-ygy", "name": "Yogyakarta", "active": True}}, upsert=True)
     await _seed_users(db)
     await db.app_settings.delete_many({"key": SETTINGS_KEY})
     await db.app_settings.insert_one({

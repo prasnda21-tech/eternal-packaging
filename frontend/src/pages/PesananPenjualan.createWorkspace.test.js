@@ -81,6 +81,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    api.operationalBranchOptions.mockResolvedValue({branches:[{id:"ygy", name:"Yogyakarta"}], primary_branch_id:"ygy"});
     api.listSalesOrders.mockReset();
     api.listSalesOrders.mockResolvedValue({ orders: [] });
     api.salesOrderOptions.mockReset();
