@@ -53,6 +53,10 @@ REASON_NO_OPERATOR_EVIDENCE = "NO_OPERATOR_EVIDENCE"
 REASON_WIP_COMPOSITION_UNPROVEN = "WIP_COMPOSITION_UNPROVEN"
 REASON_BLANK_PRINT_COMPLETION_UNPROVEN = "BLANK_PRINT_COMPLETION_UNPROVEN"
 REASON_BRANCH_DEMAND_WAREHOUSE_SCOPE = "BRANCH_DEMAND_WAREHOUSE_SCOPE"
+REASON_ORDERS_FETCH_CAP_REACHED = "ORDERS_FETCH_CAP_REACHED"
+# Catalog orders.find(...).to_list(N) hard cap in list_physical_stock_catalog.
+# Hitting the cap means the SO walk may be incomplete — never invent READY 0.
+ORDERS_FETCH_LIMIT = 20000
 
 SOURCE_SALDO_AWAL = "physical_stock_ledger.OPENING_BALANCE"
 SOURCE_PEMBELIAN = "physical_stock_ledger.PURCHASE_RECEIPT"
@@ -254,6 +258,40 @@ def sisa_belum_cetak_for_print_line(
         print_completion_proven=print_completion_proven,
         delivered_qty=0,
     )
+
+
+def resolve_sisa_belum_cetak_catalog_slot(
+    pack_by_master: Optional[Dict[str, Dict[str, Any]]],
+    master_item_id: Any,
+    *,
+    proven_no_activity: bool = False,
+    orders_fetch_capped: bool = False,
+) -> Dict[str, Any]:
+    """Catalog-row slot for Sisa Belum Cetak after the SO walk.
+
+    - Fetch cap hit → UNVERIFIED (incomplete scan; do not invent READY 0).
+    - proven_no_activity → READY 0.
+    - Master present in pack → use pack slot.
+    - Master absent after a complete walk → READY 0 (no print demand seen).
+    """
+    if orders_fetch_capped:
+        return {
+            "qty": None,
+            "status": STATUS_UNVERIFIED,
+            "reason": REASON_ORDERS_FETCH_CAP_REACHED,
+        }
+    if proven_no_activity:
+        return {"qty": 0.0, "status": STATUS_READY, "reason": None}
+    mid = str(master_item_id or "").strip()
+    pack = pack_by_master or {}
+    slot = pack.get(mid) if mid else None
+    if isinstance(slot, dict):
+        return {
+            "qty": slot.get("qty"),
+            "status": slot.get("status") or STATUS_READY,
+            "reason": slot.get("reason"),
+        }
+    return {"qty": 0.0, "status": STATUS_READY, "reason": None}
 
 
 def aggregate_blank_open_commitment(

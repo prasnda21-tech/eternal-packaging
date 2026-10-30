@@ -1,15 +1,24 @@
 """Sisa Belum Cetak — reuse print blank_need; never subtract shipment again."""
 from __future__ import annotations
 
+from services.mode_b_legacy_demand import (
+    filter_orders_for_branch,
+    mongo_order_branch_clauses,
+    order_attributed_to_branch,
+    sanitize_settings,
+)
 from services.physical_stock import collect_blank_open_commitment_by_master
 from services.stock_saat_ini_excel import (
+    ORDERS_FETCH_LIMIT,
     STATUS_READY,
     STATUS_UNVERIFIED,
     REASON_BLANK_PRINT_COMPLETION_UNPROVEN,
+    REASON_ORDERS_FETCH_CAP_REACHED,
     SOURCE_SISA_BELUM_CETAK,
     apply_excel_fields_to_catalog_row,
     aggregate_ledger_components,
     compute_excel_columns,
+    resolve_sisa_belum_cetak_catalog_slot,
     sisa_belum_cetak_for_print_line,
 )
 
@@ -593,3 +602,206 @@ def test_root_cause_gate_before_ops_before_after_contract():
     blank = pack["blank_open_commitment"]["100089"]
     assert blank["status"] == STATUS_UNVERIFIED
     assert blank["qty"] is None
+
+
+# ---------------------------------------------------------------------------
+# Completeness gate — Mode B branch coverage + fetch-cap READY 0 defect
+# ---------------------------------------------------------------------------
+
+_YGY_UUID = "branch-yogyakarta-uuid"
+_HIST = "2024-01-15T00:00:00+00:00"
+_NEW = "2026-10-01T00:00:00+00:00"
+
+
+def _mode_b_ygy_settings(*, include_null=True):
+    return sanitize_settings({
+        "enabled": True,
+        "org_branch_id": _YGY_UUID,
+        "historical_cutoff_at": "2025-01-01T00:00:00+00:00",
+        "accurate_branch_ids": ["50"],
+        "include_null_branch": include_null,
+    })
+
+
+def _print_so(oid, mid, qty, completed, *, branch_id=None, created_at=_HIST, **extra):
+    order = {
+        "id": oid,
+        "cancelled": False,
+        "created_at": created_at,
+        "line_items": [{
+            "line_id": f"ln-{oid}",
+            "master_item_id": mid,
+            "quantity": qty,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": completed}],
+    }
+    if branch_id is not None:
+        order["branch_id"] = branch_id
+    order.update(extra)
+    return order
+
+
+def test_completeness_mode_b_includes_legacy_50_and_null_branch():
+    """Yogyakarta Mode B: historical Accurate '50' + missing branch_id attribute."""
+    settings = _mode_b_ygy_settings(include_null=True)
+    clauses = mongo_order_branch_clauses(_YGY_UUID, settings)
+    # Must fetch UUID, digit 50, and null-branch docs (Python filter authoritative).
+    assert {"branch_id": _YGY_UUID} in clauses
+    assert {"branch_id": "50"} in clauses
+    assert any(
+        isinstance(c, dict) and "$and" in c for c in clauses
+    ), "null-branch clause required when include_null_branch"
+
+    hist_50 = _print_so("h50", "100089", 500, 200, branch_id="50", created_at=_HIST)
+    hist_null = _print_so("hnull", "100089", 500, 100, created_at=_HIST)
+    hist_null.pop("branch_id", None)
+    new_50 = _print_so("n50", "100089", 999, 0, branch_id="50", created_at=_NEW)
+    uuid_so = _print_so("uuid", "100089", 500, 500, branch_id=_YGY_UUID, created_at=_NEW)
+
+    assert order_attributed_to_branch(hist_50, _YGY_UUID, settings) is True
+    assert order_attributed_to_branch(hist_null, _YGY_UUID, settings) is True
+    assert order_attributed_to_branch(new_50, _YGY_UUID, settings) is False
+    assert order_attributed_to_branch(uuid_so, _YGY_UUID, settings) is True
+
+    kept = filter_orders_for_branch(
+        [hist_50, hist_null, new_50, uuid_so], _YGY_UUID, settings,
+    )
+    pack = collect_blank_open_commitment_by_master(
+        kept, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    # 500-200 + 500-100 + 500-500 = 300+400+0 = 700
+    assert pack["sisa_belum_cetak"]["100089"]["status"] == STATUS_READY
+    assert pack["sisa_belum_cetak"]["100089"]["qty"] == 700.0
+
+
+def test_completeness_without_mode_b_legacy_50_excluded():
+    """Without Mode B, Accurate '50' / null are not inventably Yogyakarta."""
+    settings = sanitize_settings({"enabled": False})
+    hist_50 = _print_so("h50", "100032", 10000, 0, branch_id="50", created_at=_HIST)
+    assert order_attributed_to_branch(hist_50, _YGY_UUID, settings) is False
+    kept = filter_orders_for_branch([hist_50], _YGY_UUID, settings)
+    assert kept == []
+    pack = collect_blank_open_commitment_by_master(
+        kept, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert "100032" not in pack["sisa_belum_cetak"]
+    # Catalog default for absent master after complete walk = READY 0
+    slot = resolve_sisa_belum_cetak_catalog_slot(
+        pack["sisa_belum_cetak"], "100032", orders_fetch_capped=False,
+    )
+    assert slot == {"qty": 0.0, "status": STATUS_READY, "reason": None}
+
+
+def test_completeness_fetch_cap_must_not_invent_ready_zero():
+    """Hitting ORDERS_FETCH_LIMIT → UNVERIFIED, not false READY 0."""
+    assert ORDERS_FETCH_LIMIT == 20000
+    # Simulate: walk only saw completed SO (partial scan); real open SO omitted.
+    seen = [_print_so("seen-done", "100397", 1000, 1000, branch_id=_YGY_UUID)]
+    pack = collect_blank_open_commitment_by_master(
+        seen, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    assert pack["sisa_belum_cetak"]["100397"]["qty"] == 0.0  # from visible SO only
+
+    # Incomplete scan: catalog must NOT publish that 0 as READY.
+    capped = resolve_sisa_belum_cetak_catalog_slot(
+        pack["sisa_belum_cetak"],
+        "100397",
+        orders_fetch_capped=True,
+    )
+    assert capped["qty"] is None
+    assert capped["status"] == STATUS_UNVERIFIED
+    assert capped["reason"] == REASON_ORDERS_FETCH_CAP_REACHED
+
+    # Absent master under cap also fail-closed (not invent READY 0).
+    absent = resolve_sisa_belum_cetak_catalog_slot(
+        {}, "100089", orders_fetch_capped=True,
+    )
+    assert absent["status"] == STATUS_UNVERIFIED
+    assert absent["qty"] is None
+
+    # Complete scan + absent master → READY 0 is allowed (no print demand seen).
+    complete_absent = resolve_sisa_belum_cetak_catalog_slot(
+        {}, "100089", orders_fetch_capped=False,
+    )
+    assert complete_absent == {"qty": 0.0, "status": STATUS_READY, "reason": None}
+
+
+def test_completeness_omitted_so_ready_zero_vs_cap():
+    """SKU aggregation READY 0 only when walk is complete; omitted SO under cap → block."""
+    included = [_print_so("a", "100089", 500, 500, branch_id=_YGY_UUID)]
+    omitted = _print_so("b", "100089", 500, 0, branch_id=_YGY_UUID)  # not passed to collect
+    pack = collect_blank_open_commitment_by_master(
+        included, {}, exclude_master_ids=set(), attributed_deliveries=[],
+    )
+    # Partial visible demand looks like 0 remaining — false if omitted exists.
+    assert pack["sisa_belum_cetak"]["100089"]["qty"] == 0.0
+    # Cap flag is how catalog refuses to publish that false zero.
+    assert resolve_sisa_belum_cetak_catalog_slot(
+        pack["sisa_belum_cetak"], "100089", orders_fetch_capped=True,
+    )["status"] == STATUS_UNVERIFIED
+    # When scan complete and omitted truly not in branch query, READY 0 stands.
+    assert resolve_sisa_belum_cetak_catalog_slot(
+        pack["sisa_belum_cetak"], "100089", orders_fetch_capped=False,
+    )["qty"] == 0.0
+    del omitted  # fixture documents the omitted demand; not loaded into walk
+
+
+def test_completeness_no_shipment_or_stage_inference():
+    """Sisa ignores shipment qty and never reads current_stage."""
+    orders = [{
+        "id": "so-ship-stage",
+        "cancelled": False,
+        "current_stage": "selesai",  # must not invent completion
+        "line_items": [{
+            "line_id": "ln-p",
+            "master_item_id": "100089",
+            "quantity": 500,
+            "production_process": "print",
+        }],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 100}],
+        "shipments": [{"qty": 400}],
+    }]
+    deliveries = [{
+        "order_id": "so-ship-stage",
+        "master_item_id": "100089",
+        "line_id": "ln-p",
+        "line_idx": 0,
+        "qty": 400,
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=set(), attributed_deliveries=deliveries,
+    )
+    assert pack["sisa_belum_cetak"]["100089"]["qty"] == 400.0  # 500−100, not −ship
+    assert pack["sisa_belum_cetak"]["100089"]["status"] == STATUS_READY
+
+
+def test_completeness_blank_gate_unchanged_when_sisa_uses_ops():
+    """Blank commitment still fail-closed on order-wide gate; sisa uses ops."""
+    orders = [{
+        "id": "so-blank-gate",
+        "cancelled": False,
+        "line_items": [
+            {
+                "line_id": "ln-p",
+                "master_item_id": "100397",
+                "quantity": 1000,
+                "production_process": "print",
+            },
+            {
+                "line_id": "ln-svc",
+                "master_item_id": "m-svc-orphan",
+                "quantity": 1000,
+                "production_process": "print",
+                "item_type": "SERVICE",
+            },
+        ],
+        "operator_splits": [{"line_idx": 0, "qty_completed": 1000}],
+    }]
+    pack = collect_blank_open_commitment_by_master(
+        orders, {}, exclude_master_ids=SVC_EXCLUDE, attributed_deliveries=[],
+    )
+    assert pack["sisa_belum_cetak"]["100397"]["qty"] == 0.0
+    assert pack["sisa_belum_cetak"]["100397"]["status"] == STATUS_READY
+    assert pack["blank_open_commitment"]["100397"]["status"] == STATUS_UNVERIFIED
+    assert pack["blank_open_commitment"]["100397"]["qty"] is None
