@@ -2522,8 +2522,23 @@ function SidebarAccessTab({ permissionCatalog }) {
               <tr key={m.key}>
                 <th scope="row">{m.label}</th>
                 {roles.filter((r) => r.status !== "inactive").map((r) => {
-                  const visible = (r.permissions || []).includes(m.key);
-                  return <td key={r.role} title={visible ? "Diizinkan berdasarkan role" : "Tidak diizinkan berdasarkan role"}>
+                  const granted = new Set(r.permissions || []);
+                  const functional = {
+                    "nav.dashboard": ["dashboard.production.view"],
+                    "nav.sales.sales_order": ["sales_order.view", "po.view"],
+                    "nav.sales.delivery_order": ["sales.delivery.view"],
+                    "nav.sales.sales_invoice": ["sales.invoice.view"],
+                    "nav.sales.sales_receipt": ["sales.receipt.view"],
+                    "nav.production_schedule": ["schedule.view"],
+                    "nav.delivery_schedule": ["delivery.schedule.view", "schedule.view"],
+                  }[m.key];
+                  const reason = functional
+                    ? functional.find((key) => granted.has(key))
+                    : (granted.has(m.key) ? m.key : null);
+                  const visible = Boolean(reason);
+                  return <td key={r.role} title={visible
+                    ? `Role grant: ${reason}. Akun dengan override dapat berbeda.`
+                    : `Tidak ada izin role yang sesuai untuk menu ini; periksa Hak Akses.`}>
                     <span>{visible ? "✓" : "–"}</span>
                   </td>;
                 })}
