@@ -1,3 +1,4 @@
+import OperationalBranchSelect from "../components/OperationalBranchSelect";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -125,7 +126,7 @@ function listIdentityUserId(user) {
 }
 
 function listIdentityBranchId(user) {
-  return user?.branch_id || user?.active_branch_id || user?.branchId || "";
+  return JSON.stringify([user?.primary_branch_id || user?.branch_id || "", user?.branch_ids || []]);
 }
 
 function nextSalesOrderLineKey() {
@@ -3163,7 +3164,8 @@ export default function PesananPenjualan() {
                           )}
                         </SoField>
 
-                        <SoField field="outlet" label="Outlet / Cabang" error={fieldHasError("outlet")}>
+                        <OperationalBranchSelect value={formData.operational_branch_id} onChange={(id) => setFormData((prev) => ({ ...prev, operational_branch_id: id }))} />
+                        <SoField field="outlet" label="Outlet Pelanggan" error={fieldHasError("outlet")}>
                           {outletsForSelectedCustomer.length > 0 ? (
                             <LookupSearchSelect
                               options={[

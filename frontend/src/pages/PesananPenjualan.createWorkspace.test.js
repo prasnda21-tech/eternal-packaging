@@ -26,6 +26,7 @@ jest.mock("../lib/auth", () => ({
 jest.mock("../lib/api", () => ({
   __esModule: true,
   default: {
+    operationalBranchOptions: jest.fn().mockResolvedValue({branches:[{id:"ygy", name:"Yogyakarta"}], primary_branch_id:"ygy"}),
     listSalesOrders: jest.fn(),
     salesOrderOptions: jest.fn(),
     salesMasterCatalog: jest.fn(),

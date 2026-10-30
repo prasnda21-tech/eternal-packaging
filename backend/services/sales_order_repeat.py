@@ -171,24 +171,24 @@ def _is_unlinked_legacy(order: dict) -> bool:
     return not extract_stable_customer_id(order)
 
 
-async def find_repeat_source_by_order_id(db, order_id: str) -> Optional[dict]:
+async def find_repeat_source_by_order_id(db, order_id: str, branch_query=None) -> Optional[dict]:
     """Exact selected PO. Read-only. Skips cancelled/invalid business orders."""
     oid = _clean_str(order_id)
     if not oid:
         return None
-    row = await db.orders.find_one({"id": oid}, REPEAT_SOURCE_PROJECTION)
+    row = await db.orders.find_one({"$and": [{"id": oid}, branch_query or {}]}, REPEAT_SOURCE_PROJECTION)
     if not row or not is_valid_business_order(row):
         return None
     return row
 
 
-async def _latest_by_customer_id(db, customer_id: str) -> Optional[dict]:
+async def _latest_by_customer_id(db, customer_id: str, branch_query=None) -> Optional[dict]:
     cid = _clean_str(customer_id)
     if not cid:
         return None
     rows = await (
         db.orders.find(
-            {"customer_id": cid, "cancelled": {"$ne": True}},
+            {"$and": [{"customer_id": cid, "cancelled": {"$ne": True}}, branch_query or {}]},
             REPEAT_SOURCE_PROJECTION,
         )
         .sort([("created_at", -1), ("id", -1)])
@@ -204,7 +204,7 @@ async def _latest_by_customer_id(db, customer_id: str) -> Optional[dict]:
     return None
 
 
-async def _latest_unlinked_name_fallback(db, customer_id: str, master_name: str) -> Optional[dict]:
+async def _latest_unlinked_name_fallback(db, customer_id: str, master_name: str, branch_query=None) -> Optional[dict]:
     """Legacy rows still missing canonical customer_id. Exact normalized name only."""
     cid = _clean_str(customer_id)
     display = (master_name or "").strip()
@@ -220,7 +220,7 @@ async def _latest_unlinked_name_fallback(db, customer_id: str, master_name: str)
         ],
     }
     rows = await (
-        db.orders.find(query, REPEAT_SOURCE_PROJECTION)
+        db.orders.find({"$and": [query, branch_query or {}]}, REPEAT_SOURCE_PROJECTION)
         .sort([("created_at", -1), ("id", -1)])
         .limit(50)
         .to_list(50)
@@ -241,19 +241,19 @@ async def _latest_unlinked_name_fallback(db, customer_id: str, master_name: str)
     return None
 
 
-async def find_latest_valid_repeat_source(db, customer_id: str) -> Optional[dict]:
+async def find_latest_valid_repeat_source(db, customer_id: str, branch_query=None) -> Optional[dict]:
     """Latest valid PO for canonical customer_id, then unlinked exact-name fallback."""
     cid = _clean_str(customer_id)
     if not cid:
         return None
 
-    found = await _latest_by_customer_id(db, cid)
+    found = await _latest_by_customer_id(db, cid, branch_query)
     if found:
         return found
 
     master = await db[SALES_CUSTOMERS].find_one({"id": cid}, {"_id": 0, "id": 1, "name": 1})
     master_name = (master or {}).get("name") or ""
-    return await _latest_unlinked_name_fallback(db, cid, master_name)
+    return await _latest_unlinked_name_fallback(db, cid, master_name, branch_query)
 
 
 def stamp_canonical_customer(dto: dict, customer_id: str, customer_name: str = "") -> dict:

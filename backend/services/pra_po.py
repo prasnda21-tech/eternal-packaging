@@ -377,6 +377,8 @@ def _apply_payload(doc: dict, payload: dict) -> None:
 
 
 async def create_draft(db, payload: dict, user: dict) -> dict:
+    from services.operational_branch import resolve_write_branch
+    operational_branch_id = await resolve_write_branch(db, user, payload.get("operational_branch_id"))
     actor = actor_snapshot(user)
     uid = actor.get("id")
     if not uid:
@@ -388,6 +390,7 @@ async def create_draft(db, payload: dict, user: dict) -> dict:
         "status": STATUS_DRAFT,
         "created_by_user_id": uid,
         "created_by_snapshot": actor,
+        "operational_branch_id": operational_branch_id,
         "branch_id": str(user.get("branch_id") or user.get("cabang_id") or "").strip() or None,
         "customer": "",
         "line_items": [],
@@ -424,6 +427,8 @@ async def get_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
     doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Pra PO tidak ditemukan")
+    from services.operational_branch import require_document_branch
+    await require_document_branch(db, user, doc)
     if can_view_all(perms):
         return public_view(doc)
     if can_view_own(perms):
@@ -534,7 +539,8 @@ async def list_pra_pos(
     search = _search_clause(q)
     status_filter = _status_clause(status, view=view)
 
-    scoped = _merge_query(visibility, search)
+    from services.operational_branch import operational_query
+    scoped = _merge_query(_merge_query(visibility, search), await operational_query(db, user))
     item_query = _merge_query(scoped, status_filter)
 
     total = int(await db[COLLECTION].count_documents(item_query))
@@ -568,6 +574,8 @@ async def update_draft(db, pra_po_id: str, payload: dict, user: dict, perms: set
     doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Pra PO tidak ditemukan")
+    from services.operational_branch import require_document_branch
+    await require_document_branch(db, user, doc)
     _require_owner(doc, user)
     if doc.get("status") not in EDITABLE_STATUSES:
         raise HTTPException(400, "Pra PO hanya dapat diubah saat Draft atau Dikembalikan.")
@@ -592,6 +600,8 @@ async def submit_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
         doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
         if not doc:
             raise HTTPException(404, "Pra PO tidak ditemukan")
+        from services.operational_branch import require_document_branch
+        await require_document_branch(db, user, doc)
         _require_owner(doc, user)
         status = doc.get("status")
         if status not in SUBMITTABLE_STATUSES:
@@ -635,6 +645,8 @@ async def return_pra_po(db, pra_po_id: str, payload: dict, user: dict, perms: se
         doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
         if not doc:
             raise HTTPException(404, "Pra PO tidak ditemukan")
+        from services.operational_branch import require_document_branch
+        await require_document_branch(db, user, doc)
         status = doc.get("status")
         if status not in VERIFYABLE_STATUSES:
             raise HTTPException(400, "Hanya Pra PO yang diajukan yang dapat dikembalikan.")
@@ -819,6 +831,7 @@ async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
         "delivery_note_number": "",
         "loading_checklist": None,
         "branch_id": pra.get("branch_id"),
+        "operational_branch_id": pra.get("operational_branch_id"),
         "timeline": [{
             "stage": 0,
             "stage_label": STAGES[0] if STAGES else "Order Masuk",
@@ -1012,6 +1025,8 @@ async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
         doc = await db[COLLECTION].find_one({"id": pra_po_id}, {"_id": 0})
         if not doc:
             raise HTTPException(404, "Pra PO tidak ditemukan")
+        from services.operational_branch import require_document_branch
+        await require_document_branch(db, user, doc)
 
         # Idempotent: already verified with linked SO.
         if doc.get("status") == STATUS_VERIFIED and doc.get("sales_order_id"):

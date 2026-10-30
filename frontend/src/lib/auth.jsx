@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import api from "./api";
 import { loginThenLoadUser } from "./authSession";
 import { clearCashBankWorkspaceTabs } from "./cashBankWorkspace";
@@ -19,19 +19,34 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const accessFingerprint = useRef("");
 
   const refresh = useCallback(async () => {
     try {
       const me = await api.me();
+      const fingerprint = JSON.stringify([me.id, me.role, me.permissions, me.branch_ids, me.primary_branch_id]);
+      if (accessFingerprint.current && accessFingerprint.current !== fingerprint) {
+        clearAllSmartListCaches();
+        clearSalesInvoiceListCache();
+        clearSalesOrderListCache();
+        clearProductionSummaryCache();
+        clearStockSaatIniPageCache();
+      }
+      accessFingerprint.current = fingerprint;
       setUser(me);
-    } catch {
-      setUser(null);
+    } catch (err) {
+      if (err.response?.status === 401 || err.response?.status === 403) setUser(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+    const onFocus = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
 
   const login = async (email, password) => {
     try {

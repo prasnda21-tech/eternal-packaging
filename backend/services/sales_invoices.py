@@ -792,11 +792,18 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
     if not po_id:
         raise HTTPException(400, "ID Pesanan Penjualan (po_id) wajib diisi.")
 
+    from services.operational_branch import require_document_branch
+    branch_doc = await db.orders.find_one({"id": po_id}, {"_id": 0})
+    if not branch_doc:
+        branch_doc = await db.orders.find_one({"po_number": po_id}, {"_id": 0})
+    if branch_doc:
+        await require_document_branch(db, user, branch_doc)
     async with _get_invoice_lock():
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         if idempotency_key:
             existing_by_key = await db.sales_invoices.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
             if existing_by_key:
+                await require_document_branch(db, user, existing_by_key)
                 return existing_by_key
 
         order = await db.orders.find_one({"id": po_id}, {"_id": 0})
@@ -993,6 +1000,8 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
                 "role": str(user.get("role") or ""),
             },
         }
+        from services.operational_branch import document_branch
+        invoice_doc["operational_branch_id"] = document_branch(order)
         order_branch_id = str(order.get("branch_id") or "").strip()
         if order_branch_id.isdigit():
             invoice_doc["branch_id"] = order_branch_id
@@ -1016,9 +1025,9 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
         return invoice_doc
 
 
-async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] = None) -> List[Dict[str, Any]]:
+async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] = None, branch_query: Optional[dict] = None) -> List[Dict[str, Any]]:
     """List all sales invoices with payment derived fields."""
-    filters: Dict[str, Any] = {}
+    filters: Dict[str, Any] = {"$and": [branch_query]} if branch_query else {}
     if po_id:
         filters["po_id"] = str(po_id)
     if q and str(q).strip():
@@ -1221,6 +1230,7 @@ async def query_sales_invoices(
     payment_status: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
+    branch_query: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Paged invoice list with five-tab classification.
 
@@ -1309,7 +1319,7 @@ async def query_sales_invoices(
         "cancelled" if scope_key == TAB_CANCELLED else "active"
     )
     scope_clause = _scope_clause(mongo_scope, incomplete_cancel_ids=hold_ids)
-    clauses: List[Dict[str, Any]] = []
+    clauses: List[Dict[str, Any]] = [branch_query] if branch_query else []
     if scope_clause:
         clauses.append(scope_clause)
     if po_id:

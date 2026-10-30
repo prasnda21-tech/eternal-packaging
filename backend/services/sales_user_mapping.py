@@ -281,6 +281,11 @@ def reject_sales_pwa_bypass(user: Optional[dict]) -> None:
 
 
 async def ensure_owned_po_id(db, user: Optional[dict], po_id: Any) -> None:
+    from services.operational_branch import require_document_branch
+    doc = await db.orders.find_one({"id": str(po_id or "")}, {"_id": 0, "id": 1, "branch_id": 1, "operational_branch_id": 1})
+    if not doc:
+        raise HTTPException(404, "PO tidak ditemukan")
+    await require_document_branch(db, user, doc)
     if not is_sales_pwa_role(user):
         return
     oid = str(po_id or "").strip()

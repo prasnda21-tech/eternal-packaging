@@ -17,7 +17,7 @@ import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsAliasFromPath, settingsTabFromPath } from "../lib/navAccess";
 import PricingCatalogSettings from "./PricingCatalogSettings";
-import { businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
+import { addedOptInPermissions, businessPermissionModules, isSidebarNavPermissionKey, roleBusinessSavePayload, expandLoadingDraftForEdit } from "../lib/settingsPermissionUi";
 import {
   confirmPackageKeysForSave,
   isDirectorFullAccessRole,
@@ -100,11 +100,29 @@ function InfoBanner({ children, testid = "settings-info" }) {
 
 /* ---------------- Employee create/edit form ---------------- */
 function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, canManageRoles, canManagePerms, onResetPassword, roles = [] }) {
+  const { user: actor } = useAuth();
+  const canAssignBranches = ["direktur_utama", "holding_team"].includes(actor?.role);
+  const [branchOptions, setBranchOptions] = useState([]);
+  useEffect(() => {
+    if (!canAssignBranches) return;
+    let alive = true;
+    api.operationalBranchOptions().then((d) => {
+      if (!alive) return;
+      setBranchOptions(d.branches || []);
+      if (!initial && d.primary_branch_id) setForm((f) => ({...f,
+        branch_ids: f.branch_ids.length ? f.branch_ids : [d.primary_branch_id],
+        primary_branch_id: f.primary_branch_id || d.primary_branch_id}));
+    })
+      .catch((e) => { if (alive) setErr(e.response?.data?.detail || "Gagal memuat cabang"); });
+    return () => { alive = false; };
+  }, [canAssignBranches, initial]);
   const isEdit = !!initial;
   const showData = mode !== "perms";
   const showPerms = mode !== "edit" && !!permissionCatalog && (canManagePerms || !isEdit);
 
   const [form, setForm] = useState(() => ({
+    branch_ids: initial?.branch_ids || [],
+    primary_branch_id: initial?.primary_branch_id || initial?.branch_id || "",
     email: initial?.email || "",
     notification_email: initial?.notification_email || "",
     name: initial?.name || "",
@@ -180,6 +198,14 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
     try {
       const payload = {};
       if (showData) {
+        if (canAssignBranches) {
+          if (!form.branch_ids.length || !form.branch_ids.includes(form.primary_branch_id)) {
+            setErr("Pilih akses cabang dan cabang utama karyawan.");
+            return;
+          }
+          payload.branch_ids = form.branch_ids;
+          payload.primary_branch_id = form.primary_branch_id;
+        }
         payload.name = form.name;
         payload.nickname = form.nickname || null;
         payload.phone = form.phone || null;
@@ -250,6 +276,23 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
             { value: form.role, isRequired: true },
           ])}
         >
+          <div>
+            <strong>Akses Cabang</strong>
+            {canAssignBranches ? <>
+              {branchOptions.map((b) => <label key={b.id}>
+                <input type="checkbox" checked={form.branch_ids.includes(b.id)} disabled={busy}
+                  onChange={(e) => setForm((f) => {
+                    const ids = e.target.checked ? [...f.branch_ids, b.id] : f.branch_ids.filter((id) => id !== b.id);
+                    return {...f, branch_ids: ids, primary_branch_id: ids.includes(f.primary_branch_id) ? f.primary_branch_id : ids[0] || ""};
+                  })} />{b.name || b.code}
+              </label>)}
+              <label>Cabang utama<select value={form.primary_branch_id} disabled={busy}
+                onChange={(e) => setForm((f) => ({...f, primary_branch_id: e.target.value}))}>
+                <option value="">Pilih cabang utama</option>
+                {branchOptions.filter((b) => form.branch_ids.includes(b.id)).map((b) => <option key={b.id} value={b.id}>{b.name || b.code}</option>)}
+              </select></label>
+            </> : <p>Pengaturan akses cabang dikelola Direktur/Holding.</p>}
+          </div>
           <div className="emp-grid">
             <FormField id="emp-email-field" label="Email login" isRequired={!isEdit} value={form.email}>
               <input type="email" required disabled={isEdit || busy}
@@ -1164,6 +1207,11 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
         setErr("Permission role Direktur tidak dapat diubah (akses penuh sistem)");
         return;
       }
+      const optInRows = addedOptInPermissions(permissionCatalog, permsDraft, initial);
+      if (optInRows.length && !window.confirm(
+        `Aktifkan ${optInRows.length} izin khusus berikut?\n\n${optInRows.map((p) => `${p.label} (${p.key})`).join("\n")}`
+      )) return;
+      const confirmOptInKeys = optInRows.map((p) => p.key);
       // Save label/description if changed and non-admin
       if (selected !== "admin" && (labelDraft !== metaInitial.label || descDraft !== metaInitial.description)) {
         await api.adminUpdateRole(selected, { label: labelDraft, description: descDraft });
@@ -1186,7 +1234,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           setConfirmReviewKeys(preview);
           await api.adminUpdateRolePermissions(
             selected,
-            rolePermissionsPutBody(permissions, preview, roleDoc?.permissions || []),
+            { ...rolePermissionsPutBody(permissions, preview, roleDoc?.permissions || []), confirm_opt_in_keys: confirmOptInKeys },
           );
         } else {
           // Business-only delta: backend CAS preserves unrelated grants and nav.*
@@ -1200,6 +1248,7 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
               expected_permissions: roleDoc?.permissions || [],
               add,
               remove,
+              confirm_opt_in_keys: confirmOptInKeys,
             });
           }
         }

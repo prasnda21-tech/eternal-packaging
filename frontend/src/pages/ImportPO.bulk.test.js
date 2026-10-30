@@ -24,7 +24,7 @@ describe("Import PO Accurate multi Sales Order", () => {
 
   test("import still only sends ready non-duplicate rows", () => {
     expect(src).toMatch(/filter\(\(i\) => i\.ok && !i\.duplicate\)/);
-    expect(src).toMatch(/accurateImportConfirmBulk\(numbers\)/);
+    expect(src).toMatch(/accurateImportConfirmBulk\(numbers, operationalBranchId\)/);
   });
 
   test("Accurate preview color is per line item, not a shared PO color", () => {

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   businessPermissionModules,
+  bulkPermissionKeys,
   countRolePermissionDirty,
   countRolePermissionTotals,
   filterRolePermissionModules,
@@ -127,13 +128,14 @@ export default function RolePermissionWorkspace({
   const toggleCategoryAll = (mod, perms) => {
     // Non-Holding/Direktur: never grant package keys via "select all".
     if (!packageAccessAllowed) {
-      const nonPkg = perms.map((p) => p.key).filter((k) => !isPackagePermissionKey(k));
+      const nonPkg = bulkPermissionKeys(perms).filter((k) => !isPackagePermissionKey(k));
       if (!nonPkg.length) return;
       const allOn = nonPkg.every((k) => permsDraft.has(k));
       onToggleCategoryKeys(nonPkg, !allOn);
       return;
     }
-    const keys = perms.map((p) => p.key);
+    const keys = bulkPermissionKeys(perms);
+    if (!keys.length) return;
     const allOn = keys.every((k) => permsDraft.has(k));
     onToggleCategoryKeys(keys, !allOn);
   };
@@ -329,7 +331,7 @@ export default function RolePermissionWorkspace({
               </button>
             </div>
             <p className="role-perm-search-hint" data-testid="role-perm-search-hint">
-              Izin sensitif ditandai SENSITIF. Simpan hanya mengirim perubahan yang Anda centang.
+              Izin KHUSUS dipilih satu per satu dan dikonfirmasi saat menyimpan. Pilih semua tidak mengaktifkan izin khusus.
             </p>
           </div>
         )}
@@ -444,7 +446,7 @@ export default function RolePermissionWorkspace({
               const catTotals = countRolePermissionTotals([[mod, catalogPerms]], permsDraft);
               const open = openMods.has(mod);
               const slug = moduleSlug(mod);
-              const visibleKeys = perms.map((p) => p.key);
+              const visibleKeys = perms.filter((p) => !p.opt_in && (packageAccessAllowed || !isPackagePermissionKey(p.key))).map((p) => p.key);
               const allVisibleOn = visibleKeys.length > 0 && visibleKeys.every((k) => permsDraft.has(k));
               return (
                 <section
@@ -509,6 +511,7 @@ export default function RolePermissionWorkspace({
                             <span className="role-perm-copy">
                               <span className="role-perm-label">
                                 {p.label}
+                                {p.opt_in && <span className="role-perm-sensitive">KHUSUS</span>}
                                 {sensitive && (
                                   <span className="role-perm-sensitive" data-testid={`role-perm-sensitive-${p.key}`}>
                                     <AlertTriangle size={10}/> Sensitif

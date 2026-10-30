@@ -527,7 +527,7 @@ def _permission_handler(name, namespace):
     return namespace[name]
 
 
-def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed=None):
+def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed=None, opt_in=()):
     import asyncio
     import copy
     from types import SimpleNamespace
@@ -570,13 +570,14 @@ def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed
     env = {
         "db": SimpleNamespace(role_permissions=collection),
         "HTTPException": HTTPException, "ALL_PERMISSIONS": ALL_PERMISSIONS,
+        "PERMISSION_CATALOG": [],
         "BUILTIN_ROLES": set(ROLE_DEFAULT_PERMISSIONS),
         "_load_role_doc": load_role, "_write_audit": audit,
         "now_iso": lambda: "dummy",
     }
     handler = _permission_handler("patch_role_business_permissions", env)
     payload = SimpleNamespace(
-        add=list(add), remove=list(remove),
+        add=list(add), remove=list(remove), confirm_opt_in_keys=list(opt_in),
         expected_permissions=sorted(with_nav_defaults(set(collection.doc["permissions"]))),
     )
     try:
@@ -687,3 +688,21 @@ def test_role_preview_effective_permissions_respect_production_package_policy():
     director = asyncio.run(handler({"role": "direktur_utama"}))
     assert "purchase_orders.view" in holding
     assert "purchase_orders.view" in director
+
+
+def test_explicit_opt_in_confirmation_saves_mixed_delta_atomically():
+    status, doc = _run_business_patch(add=["paint.view", "po.view"], opt_in=["paint.view"])
+    assert status == 200
+    assert {"paint.view", "po.view"} <= set(doc["permissions"])
+
+
+def test_unconfirmed_opt_in_leaves_all_permissions_unchanged():
+    status, doc = _run_business_patch(add=["paint.view", "po.view"])
+    assert status == 400
+    assert "po.view" not in doc["permissions"]
+
+
+def test_stale_opt_in_confirmation_is_rejected():
+    status, doc = _run_business_patch(add=["po.view"], opt_in=["paint.view"])
+    assert status == 400
+    assert "po.view" not in doc["permissions"]

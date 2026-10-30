@@ -220,10 +220,9 @@ async def list_sales_receipts(
     db,
     q: Optional[str] = None,
     invoice_id: Optional[str] = None,
-    po_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    po_id: Optional[str] = None, branch_query: Optional[dict] = None) -> List[Dict[str, Any]]:
     """List sales receipts with search and relation filters."""
-    filters: Dict[str, Any] = {}
+    filters: Dict[str, Any] = {"$and": [branch_query]} if branch_query else {}
     if invoice_id:
         filters["invoice_id"] = str(invoice_id)
     if po_id:
@@ -296,6 +295,7 @@ async def query_sales_receipts(
     list_tab: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
+    branch_query: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Paged receipt list with five-tab classification.
 
@@ -351,7 +351,7 @@ async def query_sales_receipts(
         "cancelled" if scope_key == TAB_CANCELLED else "active"
     )
 
-    clauses: List[Dict[str, Any]] = []
+    clauses: List[Dict[str, Any]] = [branch_query] if branch_query else []
     scope_clause = _receipt_scope_clause(mongo_scope, incomplete_cancel_ids=hold_ids)
     if scope_clause:
         clauses.append(scope_clause)
@@ -530,11 +530,16 @@ async def create_sales_receipt(
     # Validate proof payload early so invalid files never create a receipt / payment effect.
     proof_input = parse_proof_payload(payload.get("payment_proof"))
 
+    from services.operational_branch import require_document_branch
+    branch_doc = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    if branch_doc:
+        await require_document_branch(db, user, branch_doc)
     async with _get_receipt_lock():
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         if idempotency_key:
             existing_by_key = await db.sales_receipts.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
             if existing_by_key:
+                await require_document_branch(db, user, existing_by_key)
                 # Idempotent replay: if original request included proof and receipt still lacks it, attach once.
                 if proof_input and not proof_from_receipt(existing_by_key):
                     try:
@@ -725,6 +730,7 @@ async def create_sales_receipt(
                 "customer": invoice["customer"],
                 "customer_id": customer_id,
                 "branch_id": scope.get("branch_id") or None,
+                "operational_branch_id": invoice.get("operational_branch_id") or invoice.get("branch_id"),
                 "currency": effective_currency(scope.get("currency")),
                 "receipt_date": receipt_date,
                 "amount": amount,

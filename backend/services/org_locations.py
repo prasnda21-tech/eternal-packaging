@@ -42,6 +42,9 @@ WAREHOUSE_IN_USE_MESSAGE = (
 # ledger, transfer, and opname documents. Masters themselves are not references.
 _REFERENCE_FIELDS = (
     "branch_id",
+    "operational_branch_id",
+    "branch_ids",
+    "primary_branch_id",
     "warehouse_id",
     "from_branch_id",
     "to_branch_id",

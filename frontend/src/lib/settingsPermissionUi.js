@@ -143,3 +143,13 @@ export function roleBusinessSavePayload(draftKeys, storedPermissions) {
   }
   return payload;
 }
+
+/** Bulk selection never silently opts in; individual picks are reviewed on save. */
+export function bulkPermissionKeys(rows) {
+  return (rows || []).filter((p) => !p.opt_in).map((p) => p.key);
+}
+
+export function addedOptInPermissions(catalog, draft, initial) {
+  return Object.values(catalog?.modules || {}).flat()
+    .filter((p) => p.opt_in && draft.has(p.key) && !initial.has(p.key));
+}

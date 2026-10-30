@@ -1,3 +1,4 @@
+from services.operational_branch import operational_query
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form, Header, Query, Body
 from fastapi.responses import Response as FastAPIResponse
 from dotenv import load_dotenv
@@ -512,11 +513,17 @@ async def current_user(request: Request):
     payload["role"] = u.get("role") or ""
     payload["name"] = u.get("name") or payload.get("name") or ""
     payload["permissions_override"] = u.get("permissions_override") or {}
+    from services.branch_access import assigned_branch_ids
+    payload["branch_ids"] = assigned_branch_ids(u)
+    payload["primary_branch_id"] = str(u.get("primary_branch_id") or u.get("branch_id") or "")
+    payload["branch_id"] = payload["primary_branch_id"]
     payload["user_id"] = u.get("id")
     payload["email"] = u.get("email") or email
     from services.purchasing_inventory_access import PACKAGE_CONFIRMED_KEYS_FIELD
     payload["_package_confirmed_keys"] = list(u.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
     enforce_sales_eternal_surface(request, payload)
+    from services.operational_branch import guard_document_request
+    await guard_document_request(db, request, payload)
     return payload
 
 
@@ -1110,7 +1117,16 @@ async def me(user=Depends(current_user)):
         "name": user.get("name"),
         "permissions": perms,
         "is_super_admin": is_sa,
+        "branch_ids": user.get("branch_ids", []),
+        "primary_branch_id": user.get("primary_branch_id"),
+        "branch_id": user.get("primary_branch_id"),
     }
+
+
+@api_router.get("/operational-branches/options")
+async def operational_branch_options(user=Depends(current_user)):
+    from services.operational_branch import options
+    return await options(db, user)
 
 
 # ---------- Orders ----------
@@ -1933,6 +1949,8 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
     reject_sales_pwa_bypass(user)
     query = {"id": order_id}
     query.update(sales_owner_match(user))
+    from services.operational_branch import operational_query
+    query.update(await operational_query(db, user))
     if _is_operational_view(view):
         found = await db.orders.aggregate(_operational_order_pipeline(query)).to_list(1)
         order = found[0] if found else None
@@ -2004,6 +2022,8 @@ async def get_sales_order_pdf_endpoint(order_id: str, user=Depends(current_user)
     reject_sales_pwa_bypass(user)
     query = {"id": order_id}
     query.update(sales_owner_match(user))
+    from services.operational_branch import operational_query
+    query.update(await operational_query(db, user))
     order = await db.orders.find_one(query, {"_id": 0})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -3492,7 +3512,7 @@ async def bulk_cancel(payload: BulkPayload, user=Depends(current_user)):
     if not payload.ids:
         raise HTTPException(400, "Pilih minimal 1 PO.")
     unique_ids = list(dict.fromkeys(payload.ids))
-    found = await db.orders.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    found = await db.orders.find({"$and": [{"id": {"$in": unique_ids}}, await operational_query(db, user)]}, {"_id": 0}).to_list(len(unique_ids) or 1)
     by_id = {o.get("id"): o for o in found}
     succeeded = []
     failed = []
@@ -3544,7 +3564,7 @@ async def bulk_delete(payload: BulkPayload, user=Depends(current_user)):
             "expected": "HAPUS",
         })
     unique_ids = list(dict.fromkeys(payload.ids))
-    orders = await db.orders.find({"id": {"$in": unique_ids}}, {"_id": 0}).to_list(len(unique_ids) or 1)
+    orders = await db.orders.find({"$and": [{"id": {"$in": unique_ids}}, await operational_query(db, user)]}, {"_id": 0}).to_list(len(unique_ids) or 1)
     by_id = {o.get("id"): o for o in orders}
     succeeded = []
     failed = []
@@ -5656,6 +5676,8 @@ async def get_order_attachment(order_id: str, kind: str, file_id: str, user=Depe
         raise HTTPException(400, "Jenis file tidak valid")
     query = {"id": order_id}
     query.update(sales_owner_match(user))
+    from services.operational_branch import operational_query
+    query.update(await operational_query(db, user))
     order = await db.orders.find_one(query, {"_id": 0, "id": 1, field: 1})
     if not order:
         raise HTTPException(404, "PO tidak ditemukan")
@@ -9310,7 +9332,7 @@ async def status_po_dashboard(
     view_key = (view or "").strip().lower()
     if view_key in ("semua",):
         view_key = "all"
-    clauses: List[dict] = [sales_owner_match(user)]
+    clauses: List[dict] = [sales_owner_match(user), await operational_query(db, user)]
     # Cancelled tab needs cancelled docs; other tabs stay non-cancelled unless
     # include_cancelled (legacy) is explicitly requested.
     if view_key == "cancelled":
@@ -9445,6 +9467,7 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
     else:
         if not payload.include_cancelled:
             q["cancelled"] = {"$ne": True}
+    q = {"$and": [q, sales_owner_match(user), await operational_query(db, user)]}
     orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(2000)
     for o in orders:
         _apply_hold_snapshot(o)
@@ -9662,6 +9685,8 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
 
 # ---------- Admin: Employee & Role Management ----------
 class EmployeeCreate(BaseModel):
+    branch_ids: Optional[List[str]] = None
+    primary_branch_id: Optional[str] = None
     email: str
     name: str
     role: str
@@ -9676,6 +9701,8 @@ class EmployeeCreate(BaseModel):
 
 
 class EmployeeUpdate(BaseModel):
+    branch_ids: Optional[List[str]] = None
+    primary_branch_id: Optional[str] = None
     name: Optional[str] = None
     nickname: Optional[str] = None
     phone: Optional[str] = None
@@ -9700,6 +9727,7 @@ class RolePermissionsPayload(BaseModel):
     # Absent / omitted → never grows confirmation (legacy editor safe).
     # Ordinary save shrinks confirmation to ∩ permissions only.
     confirm_package_keys: Optional[List[str]] = None
+    confirm_opt_in_keys: List[str] = []
 
 
 class RoleBusinessPermissionPatch(BaseModel):
@@ -9707,6 +9735,7 @@ class RoleBusinessPermissionPatch(BaseModel):
     expected_permissions: List[str]
     add: List[str] = []
     remove: List[str] = []
+    confirm_opt_in_keys: List[str] = []
 
 
 class RoleCreatePayload(BaseModel):
@@ -9775,11 +9804,11 @@ async def _next_employee_id() -> str:
 async def perm_catalog(user=Depends(require_perm("users.view"))):
     """List all permission keys grouped by module — for the Hak Akses matrix."""
     modules = {}
-    from permissions import PERMISSION_DESCRIPTIONS
+    from permissions import PERMISSION_DESCRIPTIONS, OPT_IN_ONLY_PERMISSIONS
     for module, key, label in PERMISSION_CATALOG:
         if key == NAV_CONFIGURED:
             continue
-        item = {"key": key, "label": label}
+        item = {"key": key, "label": label, "opt_in": key in OPT_IN_ONLY_PERMISSIONS}
         desc = PERMISSION_DESCRIPTIONS.get(key)
         if desc:
             item["description"] = desc
@@ -9983,8 +10012,12 @@ async def patch_role_business_permissions(
     if any(k not in ALL_PERMISSIONS or k.startswith("nav.") for k in add | remove):
         raise HTTPException(400, "Hanya permission bisnis yang terdaftar boleh diubah")
     from permissions import OPT_IN_ONLY_PERMISSIONS
-    if add & set(OPT_IN_ONLY_PERMISSIONS):
-        raise HTTPException(400, "Permission opt-in harus melalui konfirmasi khusus")
+    opt_in_added = add & set(OPT_IN_ONLY_PERMISSIONS)
+    reviewed = set(getattr(payload, "confirm_opt_in_keys", []) or [])
+    if reviewed != opt_in_added:
+        labels = {key: label for _, key, label in PERMISSION_CATALOG}
+        names = ", ".join(labels.get(k, k) for k in sorted(opt_in_added or reviewed))
+        raise HTTPException(400, f"Konfirmasi izin khusus harus sesuai perubahan: {names}")
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
     effective = with_nav_defaults(set(raw))
@@ -10049,6 +10082,11 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
     if invalid:
         raise HTTPException(400, f"Permission tidak dikenal: {invalid}")
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
+    from permissions import OPT_IN_ONLY_PERMISSIONS, ROLE_DEFAULT_PERMISSIONS
+    old_permissions = set((before or {}).get("permissions", ROLE_DEFAULT_PERMISSIONS.get(slug, [])))
+    opt_in_added = (set(payload.permissions) - old_permissions) & set(OPT_IN_ONLY_PERMISSIONS)
+    if set(getattr(payload, "confirm_opt_in_keys", []) or []) != opt_in_added:
+        raise HTTPException(400, "Konfirmasi izin khusus harus sesuai perubahan: " + ", ".join(sorted(opt_in_added)))
     prev_confirmed = list((before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD) or [])
     next_perms = sorted(set(payload.permissions))
     if payload.confirm_package_keys is not None:
@@ -10295,6 +10333,8 @@ async def create_user_admin(payload: EmployeeCreate, user=Depends(require_perm("
         notification_email=payload.notification_email,
         actor=user,
         require_password=False,
+        branch_ids=payload.branch_ids,
+        primary_branch_id=payload.primary_branch_id,
     )
     return {"user": saved}
 
@@ -10313,8 +10353,17 @@ async def create_canonical_user(
     notification_email: Optional[str] = None,
     actor: dict,
     require_password: bool = False,
+    branch_ids: Optional[List[str]] = None,
+    primary_branch_id: Optional[str] = None,
 ) -> dict:
     """Shared Settings Karyawan user provisioning. Does not create hr_employees."""
+    from services.operational_branch import validate_assignment, require_branch_manager
+    require_branch_manager(actor)
+    if branch_ids is None:
+        ygy = await db.branches.find_one({"code": "YGY", "active": {"$ne": False}}, {"_id": 0})
+        branch_ids = [ygy["id"]] if ygy else []
+        primary_branch_id = ygy["id"] if ygy else None
+    assignment = await validate_assignment(db, actor, branch_ids, primary_branch_id)
     email_norm = (email or "").strip().lower()
     name_clean = (name or "").strip()
     role_slug = (role or "").strip()
@@ -10338,6 +10387,7 @@ async def create_canonical_user(
     doc = {
         "id": str(uuid.uuid4()),
         "employee_id": await _next_employee_id(),
+        **assignment,
         "email": email_norm,
         "notification_email": notify_norm,
         "name": name_clean,
@@ -10375,6 +10425,15 @@ async def update_user_admin(user_id: str, payload: EmployeeUpdate, user=Depends(
         raise HTTPException(404, "Karyawan tidak ditemukan")
     before = dict(existing)
     updates = {"updated_at": now_iso(), "updated_by": user.get("email")}
+    from services.operational_branch import validate_assignment, require_branch_manager, MANAGERS
+    if {"branch_ids", "primary_branch_id"} & payload.model_fields_set:
+        updates.update(await validate_assignment(db, user,
+            payload.branch_ids if payload.branch_ids is not None else existing.get("branch_ids", []),
+            payload.primary_branch_id if payload.primary_branch_id is not None else existing.get("primary_branch_id")))
+    if payload.role is not None and payload.role != existing.get("role") and (
+        payload.role in MANAGERS or existing.get("role") in MANAGERS
+    ):
+        require_branch_manager(user)
     if payload.name is not None: updates["name"] = payload.name.strip()
     if payload.nickname is not None: updates["nickname"] = payload.nickname.strip() or None
     if payload.phone is not None: updates["phone"] = payload.phone.strip() or None
@@ -10593,6 +10652,7 @@ _accurate_client = AccurateClient()
 
 
 class ImportPreviewRequest(BaseModel):
+    operational_branch_id: Optional[str] = None
     so_number: str
 
 
@@ -10711,6 +10771,8 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
         "created_at": now,
         "updated_at": now,
     }
+    from services.operational_branch import resolve_write_branch
+    new["operational_branch_id"] = await resolve_write_branch(db, user, preview.get("operational_branch_id"))
     branch_id = str(preview.get("branch_id") or "").strip()
     if branch_id.isdigit():
         new["branch_id"] = branch_id
@@ -10857,6 +10919,7 @@ async def accurate_import_confirm(payload: ImportPreviewRequest, user=Depends(re
             "existing_po_number": existing.get("po_number"),
         })
     preview = _build_preview(so)
+    preview["operational_branch_id"] = payload.operational_branch_id
     source = "accurate_live" if _accurate_client.is_live else "accurate_mock"
     try:
         preview["line_items"] = await resolve_po_line_items(
@@ -10890,6 +10953,7 @@ async def accurate_import_confirm(payload: ImportPreviewRequest, user=Depends(re
 
 
 class BulkImportRequest(BaseModel):
+    operational_branch_id: Optional[str] = None
     so_numbers: List[str]
 
 
@@ -11033,6 +11097,7 @@ async def accurate_import_confirm_bulk(payload: BulkImportRequest, user=Depends(
             })
             continue
         preview = _build_preview(so)
+        preview["operational_branch_id"] = payload.operational_branch_id
         source = "accurate_live" if _accurate_client.is_live else "accurate_mock"
         try:
             preview["line_items"] = await resolve_po_line_items(
@@ -11322,6 +11387,7 @@ class SalesOrderDesignFileInput(BaseModel):
 
 
 class SalesOrderCreatePayload(BaseModel):
+    operational_branch_id: Optional[str] = None
     po_number: Optional[str] = None
     order_date: Optional[str] = None
     customer: str
@@ -11668,13 +11734,13 @@ async def get_sales_order_repeat_source(
         raise HTTPException(400, "order_id atau customer_id wajib diisi.")
 
     if oid:
-        source = await find_repeat_source_by_order_id(db, oid)
+        source = await find_repeat_source_by_order_id(db, oid, await operational_query(db, user))
         if not source:
             return {"found": False, "mode": "order", "order_id": oid, "source": None}
         dto = build_repeat_source_dto(source)
         return {"found": True, "mode": "order", "order_id": oid, "source": dto}
 
-    source = await find_latest_valid_repeat_source(db, cid)
+    source = await find_latest_valid_repeat_source(db, cid, await operational_query(db, user))
     if not source:
         return {"found": False, "mode": "customer", "customer_id": cid, "source": None}
 
@@ -11692,14 +11758,14 @@ async def get_sales_order_options(user=Depends(current_user)):
     """Fetch autocomplete suggestions for Customer, Outlet, Sales, Master Items, and next No PO."""
     await _require_any_perm(user, "sales_order.view", "sales_order.create", "po.view", "po.edit", "po.import.view")
     master_customers = await _list_sales_customers(db)
-    customers = await db.orders.distinct("customer", {"cancelled": {"$ne": True}})
+    customers = await db.orders.distinct("customer", {"$and": [{"cancelled": {"$ne": True}}, await operational_query(db, user)]})
     outlet_custs = await db.delivery_outlets.distinct("customer_name")
     master_cust_names = [c["name"] for c in master_customers if c.get("name")]
     all_customers = sorted({c.strip() for c in (customers + outlet_custs + master_cust_names) if c and str(c).strip()})
 
     raw_outlets = await db.delivery_outlets.find({}, {"_id": 0}).to_list(1000)
     recent_orders = await db.orders.find(
-        {"cancelled": {"$ne": True}},
+        {"$and": [{"cancelled": {"$ne": True}}, await operational_query(db, user)]},
         {"_id": 0, "customer": 1, "outlet": 1, "recipient": 1, "address": 1, "delivery_zone": 1, "sales": 1, "payment_terms": 1}
     ).sort("created_at", -1).limit(500).to_list(500)
 
@@ -11730,7 +11796,7 @@ async def get_sales_order_options(user=Depends(current_user)):
                 })
 
     owner = sales_owner_match(user)
-    scoped_order_match = dict(owner) if owner else {}
+    scoped_order_match = {"$and": [owner or {}, await operational_query(db, user)]}
     sales_from_orders = await db.orders.distinct("sales", scoped_order_match)
     creator_raw = await db.orders.distinct("created_by_user", scoped_order_match)
     from services.sales_order_list_filters import (
@@ -11822,6 +11888,8 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     from services.sales_order_create_guard import reject_crm_direct_sales_order_create
     reject_crm_direct_sales_order_create(user)
     await _require_any_perm(user, "sales_order.create", "po.edit", "po.import.view")
+    from services.operational_branch import resolve_write_branch
+    operational_branch_id = await resolve_write_branch(db, user, payload.operational_branch_id)
     
     cust = (payload.customer or "").strip()
     if not cust:
@@ -11994,6 +12062,7 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     )
 
     new_order = {
+        "operational_branch_id": operational_branch_id,
         "id": order_id,
         "po_number": po_num,
         "accurate_id": None,
@@ -13267,7 +13336,8 @@ async def list_sales_orders(
         if not can_invoice:
             raise HTTPException(403, "Tidak memiliki izin melihat status faktur.")
 
-    shared: list = []
+    from services.operational_branch import operational_query
+    shared: list = [await operational_query(db, user)]
     owner = sales_owner_match(user)
     if owner:
         shared.append(owner)
@@ -13491,6 +13561,7 @@ async def list_sales_deliveries_endpoint(
         await ensure_owned_po_id(db, user, po_id)
     return await _list_sales_deliveries(
         db,
+        branch_query=await operational_query(db, user),
         q=q,
         po_id=po_id,
         status=status,
@@ -13506,7 +13577,7 @@ async def sales_deliveries_filter_options_endpoint(user=Depends(current_user)):
     """Authoritative option lists for SJ header filters (created_by stable keys)."""
     reject_sales_pwa_bypass(user)
     await _require_any_perm(user, "sales.delivery.view", "sales_order.view", "po.view")
-    return await _list_sales_delivery_filter_options(db)
+    return await _list_sales_delivery_filter_options(db, branch_query=await operational_query(db, user))
 
 
 @api_router.get("/sales-deliveries/po/{po_id}/summary")
@@ -13605,6 +13676,7 @@ async def list_sales_invoices_endpoint(
     if paged:
         return await _query_sales_invoices(
             db,
+            branch_query=await operational_query(db, user),
             q=q,
             po_id=po_id,
             scope=scope or "active",
@@ -13623,7 +13695,7 @@ async def list_sales_invoices_endpoint(
             page=page or 1,
             page_size=page_size or 50,
         )
-    invoices = await _list_sales_invoices(db, q=q, po_id=po_id)
+    invoices = await _list_sales_invoices(db, branch_query=await operational_query(db, user), q=q, po_id=po_id)
     return {"invoices": invoices, "count": len(invoices)}
 
 
@@ -13942,6 +14014,7 @@ async def list_sales_receipts_endpoint(
     if scope is not None or list_tab is not None or page is not None or page_size is not None:
         return await _query_sales_receipts(
             db,
+            branch_query=await operational_query(db, user),
             q=q,
             invoice_id=invoice_id,
             po_id=po_id,
@@ -13950,7 +14023,7 @@ async def list_sales_receipts_endpoint(
             page=page or 1,
             page_size=page_size or 50,
         )
-    receipts = await _list_sales_receipts(db, q=q, invoice_id=invoice_id, po_id=po_id)
+    receipts = await _list_sales_receipts(db, branch_query=await operational_query(db, user), q=q, invoice_id=invoice_id, po_id=po_id)
     return {"receipts": receipts, "count": len(receipts)}
 
 
