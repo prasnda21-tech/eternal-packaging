@@ -192,7 +192,7 @@ describe("Settings opt-in draft and employee branch payload", () => {
     const smg = boxes.find((el) => el.parentElement.textContent.includes("Semarang"));
     expect(ygy.checked).toBe(true);
     expect(smg.checked).toBe(false);
-    expect(container.querySelector('[data-testid="employee-form"] select').value).toBe("branch-ygy");
+    expect(container.querySelector('[data-testid="emp-primary-branch"]').value).toBe("branch-ygy");
 
     await act(async () => { smg.click(); });
     await act(async () => {

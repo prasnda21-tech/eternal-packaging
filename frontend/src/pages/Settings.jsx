@@ -47,7 +47,6 @@ import RouteOptimizerSettings from "../components/RouteOptimizerSettings";
 import SalesUserMappingSettings from "../components/SalesUserMappingSettings";
 import SalesMasterSettings from "../components/SalesMasterSettings";
 import CrmDailyReportOptionsSettings from "../components/CrmDailyReportOptionsSettings";
-import { FormSection, FormField, FormProgress, computeStatus } from "../components/form-standard";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -85,7 +84,7 @@ const ACTION_LABELS = {
 /* ---------------- Small helpers ---------------- */
 function Toast({ msg }) {
   if (!msg) return null;
-  return <div className="toast" data-testid="settings-toast"><Check size={16} /> {msg}</div>;
+  return <div className="toast settings-toast" data-testid="settings-toast"><Check size={16} /> {msg}</div>;
 }
 
 function InfoBanner({ children, testid = "settings-info" }) {
@@ -102,12 +101,14 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   const { hasPerm } = useAuth();
   const canAssignBranches = hasPerm("users.manage");
   const [branchOptions, setBranchOptions] = useState([]);
+  const [actorGlobalBranch, setActorGlobalBranch] = useState(false);
   useEffect(() => {
     if (!canAssignBranches) return;
     let alive = true;
     api.operationalBranchOptions().then((d) => {
       if (!alive) return;
       setBranchOptions(d.branches || []);
+      setActorGlobalBranch(!!d.global_access);
       if (!initial && d.primary_branch_id) setForm((f) => ({...f,
         branch_ids: f.branch_ids.length ? f.branch_ids : [d.primary_branch_id],
         primary_branch_id: f.primary_branch_id || d.primary_branch_id}));
@@ -253,76 +254,16 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
   return (
     <form className="emp-form emp-modal-form" onSubmit={submit} data-testid="employee-form">
       <div className="emp-modal-body" data-testid="employee-modal-body">
-        <FormProgress
-        percentage={Math.round(([form.name, form.role, (isEdit ? true : form.email)].filter(Boolean).length / 3) * 100)}
-        completed={[form.name, form.role, (isEdit ? true : form.email)].filter(Boolean).length}
-        total={3}
-        className="mb-4"
-      />
-
       {showData && (
-        <FormSection
-          id="settings-emp-data"
-          title="Data Akun & Karyawan"
-          description="Informasi kredensial login dan profil pengguna."
-          status={computeStatus([
-            { value: form.email, isRequired: !isEdit },
-            { value: form.name, isRequired: true },
-            { value: form.role, isRequired: true },
-          ])}
-        >
-          <div className="emp-branch-access" data-testid="employee-branch-access">
-            <strong>Akses Cabang</strong>
-            {canAssignBranches ? <>
-              <div className="emp-branch-options">
-              {branchOptions.map((b) => <label key={b.id}>
-                <input type="checkbox" checked={form.branch_ids.includes(b.id)} disabled={busy}
-                  onChange={(e) => setForm((f) => {
-                    const ids = e.target.checked ? [...f.branch_ids, b.id] : f.branch_ids.filter((id) => id !== b.id);
-                    return {...f, branch_ids: ids, primary_branch_id: ids.includes(f.primary_branch_id) ? f.primary_branch_id : ids[0] || ""};
-                  })} />{b.name || b.code}
-              </label>)}
-              </div>
-              <label className="emp-branch-primary">Cabang utama<select value={form.primary_branch_id} disabled={busy}
-                onChange={(e) => setForm((f) => ({...f, primary_branch_id: e.target.value}))}>
-                <option value="">Pilih cabang utama</option>
-                {branchOptions.filter((b) => form.branch_ids.includes(b.id)).map((b) => <option key={b.id} value={b.id}>{b.name || b.code}</option>)}
-              </select></label>
-            </> : <p>Penetapan cabang membutuhkan izin kelola karyawan.</p>}
-          </div>
-          <div className="emp-grid">
-            <FormField id="emp-email-field" label="Email login" isRequired={!isEdit} value={form.email}>
-              <input type="email" required disabled={isEdit || busy}
-                value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
-                data-testid="emp-email"/>
-            </FormField>
-            <div className="emp-notify-email-block" data-testid="emp-notification-email-block">
-              <FormField
-                id="emp-notification-email-field"
-                label="Email Notifikasi"
-                isRequired={false}
-                value={form.notification_email}
-              >
-                <input
-                  type="text"
-                  inputMode="email"
-                  disabled={busy}
-                  value={form.notification_email}
-                  onChange={(e) => setForm((f) => ({ ...f, notification_email: e.target.value }))}
-                  placeholder="opsional — gmail / yahoo / outlook / dll"
-                  data-testid="emp-notification-email"
-                  autoComplete="off"
-                />
-              </FormField>
-              <p className="hint" style={{ margin: "2px 0 0" }} data-testid="emp-notification-email-hint">
-                Digunakan untuk menerima pemberitahuan operasional. Tidak mengubah email login.
-              </p>
-              {!String(form.notification_email || "").trim() && (
-                <p className="hint" style={{ margin: "2px 0 0" }} data-testid="emp-notification-email-empty-hint">
-                  Kosong = tidak ada notifikasi email yang dikirim ke pengguna ini.
-                </p>
-              )}
-            </div>
+        <>
+          <section className="emp-section">
+            <h4>Identitas</h4>
+            <div className="emp-grid">
+          <label>Nama lengkap
+            <input type="text" required disabled={busy}
+              value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+              data-testid="emp-name"/>
+          </label>
           <label>Role
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
               disabled={busy || !canManageRoles} data-testid="emp-role">
@@ -350,66 +291,107 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
             </select>
             {!canManageRoles && <span className="hint">Butuh permission <b>roles.manage</b> untuk mengubah role.</span>}
           </label>
-          <label>Nama lengkap
-            <input type="text" required disabled={busy}
-              value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-              data-testid="emp-name"/>
+          <label>Email login
+            <input type="email" required disabled={isEdit || busy}
+              value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
+              data-testid="emp-email"/>
           </label>
-          <label>Nama panggilan
-            <input type="text" disabled={busy}
-              value={form.nickname} onChange={(e) => setForm({ ...form, nickname: e.target.value })}
-              data-testid="emp-nickname"/>
+          <label data-testid="emp-notification-email-block">Email notifikasi
+            <input
+              type="text"
+              inputMode="email"
+              disabled={busy}
+              value={form.notification_email}
+              onChange={(e) => setForm((f) => ({ ...f, notification_email: e.target.value }))}
+              placeholder="opsional"
+              data-testid="emp-notification-email"
+              autoComplete="off"
+            />
           </label>
-          <label>Nomor HP
-            <input type="tel" disabled={busy}
-              value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              data-testid="emp-phone"/>
-          </label>
-          <label>Tanggal bergabung
-            <input type="date" disabled={busy}
-              value={(form.joined_at || "").slice(0, 10)}
-              onChange={(e) => setForm({ ...form, joined_at: e.target.value })}
-              data-testid="emp-joined"/>
-          </label>
-          {!isEdit && (
-            <label>Password awal
-              <input type="password" disabled={busy}
-                placeholder="Kosongkan untuk default"
-                value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
-                data-testid="emp-password"/>
-            </label>
+          <p className="emp-help" data-testid="emp-notification-email-hint">
+            Untuk pemberitahuan operasional. Tidak mengubah email login.
+          </p>
+          {!String(form.notification_email || "").trim() && (
+            <p className="emp-help" data-testid="emp-notification-email-empty-hint">
+              Kosong = tidak ada notifikasi email untuk pengguna ini.
+            </p>
           )}
-          <label className="emp-notes">Catatan
-            <textarea rows="2" disabled={busy}
-              value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              data-testid="emp-notes"/>
-          </label>
-          </div>
-        </FormSection>
+            </div>
+          </section>
+          <section className="emp-section">
+            <h4>Akses cabang</h4>
+            <div className="emp-branch-access" data-testid="employee-branch-access">
+              {canAssignBranches ? <>
+                <div className="emp-branch-options">
+                {branchOptions.map((b) => <label key={b.id}>
+                  <input type="checkbox" checked={form.branch_ids.includes(b.id)} disabled={busy}
+                    onChange={(e) => setForm((f) => {
+                      const ids = e.target.checked ? [...f.branch_ids, b.id] : f.branch_ids.filter((id) => id !== b.id);
+                      return {...f, branch_ids: ids, primary_branch_id: ids.includes(f.primary_branch_id) ? f.primary_branch_id : ids[0] || ""};
+                    })} />{b.name || b.code}
+                </label>)}
+                </div>
+                <label className="emp-branch-primary">Cabang utama<select value={form.primary_branch_id} disabled={busy} data-testid="emp-primary-branch"
+                  onChange={(e) => setForm((f) => ({...f, primary_branch_id: e.target.value}))}>
+                  <option value="">Pilih cabang utama</option>
+                  {branchOptions.filter((b) => form.branch_ids.includes(b.id)).map((b) => <option key={b.id} value={b.id}>{b.name || b.code}</option>)}
+                </select></label>
+              </> : <p>Penetapan cabang membutuhkan izin kelola karyawan.</p>}
+              {(actorGlobalBranch || isDirectorEmployee || form.role === "holding_team") && (
+                <p className="emp-branch-note">Direktur dan Holding mencakup semua cabang aktif. Cabang utama hanya default transaksi.</p>
+              )}
+            </div>
+          </section>
+          <section className="emp-section">
+            <h4>Informasi tambahan</h4>
+            <div className="emp-grid">
+              <label>Nama panggilan
+                <input type="text" disabled={busy}
+                  value={form.nickname} onChange={(e) => setForm({ ...form, nickname: e.target.value })}
+                  data-testid="emp-nickname"/>
+              </label>
+              <label>Nomor HP
+                <input type="tel" disabled={busy}
+                  value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  data-testid="emp-phone"/>
+              </label>
+              <label>Tanggal bergabung
+                <input type="date" disabled={busy}
+                  value={(form.joined_at || "").slice(0, 10)}
+                  onChange={(e) => setForm({ ...form, joined_at: e.target.value })}
+                  data-testid="emp-joined"/>
+              </label>
+              {!isEdit && (
+                <label>Password awal
+                  <input type="password" disabled={busy}
+                    placeholder="Kosongkan untuk default"
+                    value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    data-testid="emp-password"/>
+                </label>
+              )}
+              <label className="emp-notes">Catatan
+                <textarea rows="2" disabled={busy}
+                  value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  data-testid="emp-notes"/>
+              </label>
+            </div>
+          </section>
+        </>
       )}
 
       {showPerms && isDirectorEmployee && (
-        <FormSection
-          id="settings-emp-director-lock"
-          title="Akses penuh sistem"
-          description="Role Direktur mengabaikan override deny/grant pendek untuk akses efektif."
-          status="neutral"
-        >
-          <div className="settings-info" data-testid="emp-director-lock">
-            Karyawan dengan role <b>Direktur</b> mendapat akses penuh sistem. Override di bawah tidak mengurangi
+        <section className="emp-section">
+          <h4>Akses penuh sistem</h4>
+          <div className="emp-branch-note" data-testid="emp-director-lock">
+            Karyawan dengan role Direktur mendapat akses penuh sistem. Override di bawah tidak mengurangi
             akses efektif; simpan override tetap diperbolehkan untuk audit dokumen saja.
           </div>
-        </FormSection>
+        </section>
       )}
 
       {showPerms && (
-        <FormSection
-          id="settings-emp-perms"
-          title="Hak Akses Khusus (Override)"
-          description="Default = ikut role. Grant menambah, Deny menghilangkan untuk user ini saja."
-          status="neutral"
-        >
-          <div className="emp-perms">
+        <section className="emp-section emp-perms">
+          <h4>Hak akses khusus</h4>
           {employeePackageNeedsApproval && userOverridePackageKeys.length > 0 && (
             <div className="settings-info settings-info-stack" data-testid="emp-package-confirm-panel" style={{ marginBottom: 12 }}>
               <strong>Pembelian / Persediaan / HPP</strong>
@@ -421,15 +403,7 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
                 <input
                   type="checkbox"
                   checked={userPkgConfirmOptIn}
-                  onChange={(e) => {
-                    const on = e.target.checked;
-                    setUserPkgConfirmOptIn(on);
-                    if (on && !userPkgReviewKeys.length) {
-                      setUserPkgReviewKeys(
-                        packageKeysToActivate(userOverridePackageKeys, userConfirmedPackageKeys),
-                      );
-                    }
-                  }}
+                  onChange={(e) => setUserPkgConfirmOptIn(e.target.checked)}
                   data-testid="emp-package-confirm-optin"
                 />
                 <span>Setujui daftar berikut agar berlaku</span>
@@ -550,9 +524,8 @@ function EmployeeForm({ initial, onSubmit, onCancel, mode, permissionCatalog, ca
             ))}
             {!filteredModules.length && <p className="muted small">Tidak ada permission cocok.</p>}
           </div>
-        </div>
-      </FormSection>
-    )}
+        </section>
+      )}
 
         {err && <div className="error" data-testid="employee-form-error">{err}</div>}
       </div>
@@ -703,6 +676,13 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
 
   return (
     <div className="settings-body" data-testid="employees-tab">
+      <div className="emp-page-bar">
+        <div>
+          <strong>Karyawan</strong>
+          <span>{visible.length} ditampilkan</span>
+        </div>
+        {canManage && <button className="primary" onClick={() => setModal({ type: "create" })} data-testid="employee-add-button"><Plus size={14}/> Tambah Karyawan</button>}
+      </div>
       <div className="emp-toolbar">
         <div className="search-inline">
           <Search size={14}/>
@@ -725,7 +705,6 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
         </div>
         <span className="muted small" data-testid="super-admin-count">{superAdminCount} Super Admin aktif</span>
         <button className="icon-button" onClick={load} title="Muat ulang" data-testid="employee-refresh"><RefreshCw size={16} className={busy ? "spin" : ""}/></button>
-        {canManage && <button className="primary" onClick={() => setModal({ type: "create" })} data-testid="employee-add-button"><Plus size={14}/> Tambah Karyawan</button>}
       </div>
 
       {err && <div className="error" data-testid="employees-error">{typeof err === "object" ? err.message : err}</div>}
@@ -753,26 +732,39 @@ function EmployeesTab({ permissionCatalog, canManage, canManageRoles, canManageP
                 ? <span className="status-dot status-ok"><span/>Aktif</span>
                 : <span className="status-dot status-off"><span/>Nonaktif</span>}
             </span>
-            <span className="mono ellipsis" title={u.email}>{u.email}</span>
+            <span className="mono ellipsis emp-email-cell" tabIndex={0} title={u.email} aria-label={u.email}>{u.email}</span>
             <span className="emp-row-actions">
               {canManage && (
                 <>
                   <button className="ghost sm" onClick={() => setModal({ type: "edit", user: u })} data-testid={`employee-edit-${u.email}`}><Edit3 size={12}/> Edit</button>
-                  <button className="ghost sm" onClick={() => setModal({ type: "perms", user: u })} data-testid={`employee-perms-${u.email}`}><Shield size={12}/> Atur Hak Akses</button>
-                  {u.status === "active"
-                    ? <button className="ghost sm danger" onClick={() => doDeactivate(u)} data-testid={`employee-deactivate-${u.email}`}><PowerOff size={12}/> Nonaktifkan</button>
-                    : <button className="ghost sm" onClick={() => doActivate(u)} data-testid={`employee-activate-${u.email}`}><Power size={12}/> Aktifkan</button>
-                  }
+                  <button className="ghost sm" onClick={() => setModal({ type: "perms", user: u })} data-testid={`employee-perms-${u.email}`}><Shield size={12}/> Hak Akses</button>
+                  <details className="emp-more">
+                    <summary>Lainnya</summary>
+                    {u.status === "active"
+                      ? <button type="button" className="ghost sm danger" onClick={() => doDeactivate(u)} data-testid={`employee-deactivate-${u.email}`}>Nonaktifkan</button>
+                      : <button type="button" className="ghost sm" onClick={() => doActivate(u)} data-testid={`employee-activate-${u.email}`}>Aktifkan</button>
+                    }
+                    {isSuperAdmin && u.status === "active" && (
+                      u.is_super_admin ? (
+                        <>
+                          <button type="button" className="ghost sm" onClick={() => setModal({ type: "transfer-sa", user: u })} data-testid={`employee-transfer-sa-${u.email}`}>Transfer SA</button>
+                          <button type="button" className="ghost sm danger" onClick={() => doRevokeSA(u)} data-testid={`employee-revoke-sa-${u.email}`}>Cabut SA</button>
+                        </>
+                      ) : (
+                        <button type="button" className="ghost sm" onClick={() => doGrantSA(u)} data-testid={`employee-grant-sa-${u.email}`}>Jadikan SA</button>
+                      )
+                    )}
+                  </details>
                 </>
               )}
-              {isSuperAdmin && u.status === "active" && (
+              {!canManage && isSuperAdmin && u.status === "active" && (
                 u.is_super_admin ? (
                   <>
-                    <button className="ghost sm" onClick={() => setModal({ type: "transfer-sa", user: u })} data-testid={`employee-transfer-sa-${u.email}`}><ArrowRightLeft size={12}/> Transfer SA</button>
-                    <button className="ghost sm danger" onClick={() => doRevokeSA(u)} data-testid={`employee-revoke-sa-${u.email}`}><ShieldAlert size={12}/> Cabut SA</button>
+                    <button className="ghost sm" onClick={() => setModal({ type: "transfer-sa", user: u })} data-testid={`employee-transfer-sa-${u.email}`}>Transfer SA</button>
+                    <button className="ghost sm danger" onClick={() => doRevokeSA(u)} data-testid={`employee-revoke-sa-${u.email}`}>Cabut SA</button>
                   </>
                 ) : (
-                  <button className="ghost sm" onClick={() => doGrantSA(u)} data-testid={`employee-grant-sa-${u.email}`}><ShieldCheck size={12}/> Jadikan SA</button>
+                  <button className="ghost sm" onClick={() => doGrantSA(u)} data-testid={`employee-grant-sa-${u.email}`}>Jadikan SA</button>
                 )
               )}
               {!canManage && !isSuperAdmin && <span className="muted small">read-only</span>}
@@ -1315,7 +1307,6 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           </div>
           {roles.map((r) => {
             const active = selected === r.role;
-            const built = permissionCatalog ? Object.values(permissionCatalog.modules || {}).flat().length : 0;
             const director = isDirectorFullAccessRole(r.role);
             return (
               <button
@@ -1326,18 +1317,18 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
                 data-testid={`role-pick-${r.role}`}
               >
                 <div className="role-card-top">
-                  <span className="role-card-name">{r.label}</span>
-                  {r.status === "inactive" && <span className="pill sm" data-testid={`role-status-${r.role}`}>Nonaktif</span>}
-                  {r.is_customized && r.status === "active" && !director && <span className="pill sm">disesuaikan</span>}
-                  {r.role === "admin" && <span className="pill sm pill-lock"><Lock size={10}/> Terkunci</span>}
-                  {director && <span className="pill sm pill-lock" data-testid="role-director-badge"><Lock size={10}/> Akses penuh</span>}
-                  {!r.is_builtin && <span className="pill sm" data-testid={`role-custom-${r.role}`}>custom</span>}
+                  <span className="role-card-name" title={r.label}>{r.label}</span>
+                  <span className="role-card-meta" data-testid={`role-user-count-${r.role}`}>{r.user_count} user</span>
                 </div>
-                <div className="role-card-meta">
-                  {director
-                    ? "Akses penuh sistem"
-                    : <>{r.permissions.length} / {built || r.permissions.length} hak akses · <span data-testid={`role-user-count-${r.role}`}>{r.user_count} user</span></>}
-                </div>
+                {(r.status === "inactive" || (r.is_customized && r.status === "active" && !director) || r.role === "admin" || director || !r.is_builtin) && (
+                  <div className="role-card-pills">
+                    {r.status === "inactive" && <span className="pill sm" data-testid={`role-status-${r.role}`}>Nonaktif</span>}
+                    {r.is_customized && r.status === "active" && !director && <span className="pill sm">disesuaikan</span>}
+                    {r.role === "admin" && <span className="pill sm pill-lock"><Lock size={10}/> Terkunci</span>}
+                    {director && <span className="pill sm pill-lock" data-testid="role-director-badge"><Lock size={10}/> Akses penuh</span>}
+                    {!r.is_builtin && <span className="pill sm" data-testid={`role-custom-${r.role}`}>custom</span>}
+                  </div>
+                )}
               </button>
             );
           })}
@@ -2789,7 +2780,7 @@ export default function Settings() {
   const hideSharedSettingsHeading = designCetakanPage || pricingCatalogPage;
 
   return (
-    <div data-testid="settings-page" className="settings-page">
+    <div data-testid="settings-page" className={"settings-page" + (tab === "roles" ? " settings-fit-roles" : "") + (tab === "employees" ? " settings-fit-employees" : "")}>
       {!hideSharedSettingsHeading ? (
       <div className="page-heading">
         <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>

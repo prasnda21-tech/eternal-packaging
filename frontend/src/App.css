@@ -9426,3 +9426,168 @@ button.ghost.sm.icon{padding:4px 6px}
   .stock-opname-summary-item--wide{grid-column:span 2}
   .stock-opname-field--inline{flex-direction:column;align-items:stretch}
 }
+
+/* Settings + Cabang compact workspace. Scoped so shared banners and inputs stay unchanged. */
+.app-shell:has(.settings-fit-roles){height:100dvh;overflow:hidden}
+.app-shell:has(.settings-fit-roles) .app-main{height:100dvh;min-height:0;overflow:hidden}
+.content.content-workspace:has(.settings-fit-roles){
+  flex:1;
+  min-height:0;
+  height:auto;
+  overflow:hidden;
+  padding:8px 16px 10px;
+}
+.settings-page.settings-fit-roles{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.settings-page.settings-fit-employees .page-heading{display:none}
+.settings-page.settings-fit-roles .page-heading,
+.settings-page.settings-fit-employees .page-heading{margin:0 0 8px;align-items:center}
+.settings-page.settings-fit-roles .page-heading h1,
+.settings-page.settings-fit-employees .page-heading h1{font-size:18px}
+.settings-page.settings-fit-roles .eyebrow,
+.settings-page.settings-fit-employees .eyebrow,
+.settings-page.settings-fit-roles .page-heading-icon,
+.settings-page.settings-fit-employees .page-heading-icon{display:none}
+.settings-page.settings-fit-roles .settings-active-panel,
+.settings-page.settings-fit-roles .settings-body{flex:1;min-height:0;display:flex;flex-direction:column}
+.settings-page.settings-fit-roles .roles-layout{flex:1;min-height:0;height:auto;overflow:hidden;grid-template-columns:232px minmax(0,1fr)}
+.settings-page.settings-fit-roles .roles-layout > *{min-height:0;overflow:hidden}
+.settings-page.settings-fit-roles .roles-layout > .role-sidebar{overflow-x:hidden;overflow-y:auto}
+.settings-page.settings-fit-roles .banner{margin:0 0 6px;padding:6px 10px}
+.settings-page .role-card{padding:6px 8px;gap:2px;min-height:40px;height:auto;align-items:stretch;justify-content:center}
+.settings-page .role-card-top{gap:8px;min-width:0}
+.settings-page .role-card-name{flex:1;min-width:0;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.settings-page .role-card-meta{flex:0 0 auto;font-size:11px;white-space:nowrap;overflow:visible}
+.settings-page .role-card-pills{display:flex;flex-wrap:wrap;gap:4px}
+.settings-page .role-workspace{display:flex;flex-direction:column;min-height:0;height:100%;padding:0;background:#fff}
+.settings-page .role-workspace-head{position:static;flex:0 0 auto;padding:8px 12px}
+.settings-page .role-desc-toggle{border:0;background:transparent;color:var(--soft);text-align:left;padding:0;font-size:13px;cursor:pointer}
+.settings-page .role-workspace-controls{display:grid;grid-template-columns:minmax(160px,1fr) auto auto;gap:8px;align-items:center}
+.settings-page .role-perm-search{flex:1;min-width:0}
+.settings-page .role-perm-search-hint{grid-column:1 / -1;margin:0;font-size:12.5px;color:var(--soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.settings-page .role-workspace-body{flex:1 1 auto;min-height:0;overflow:auto;padding:0 0 16px}
+.settings-page .role-package-summary{display:flex;align-items:center;gap:12px;margin:8px 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#f7faf8}
+.settings-page .role-package-summary-count{color:var(--soft);font-size:13px}
+.settings-page .role-perm-cell{align-items:center;min-height:40px;padding:6px 10px}
+.settings-page .role-perm-cell .role-perm-key{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.settings-page .role-workspace .role-save-bar,
+.settings-page .role-workspace .role-save-bar.show{
+  position:static;
+  left:auto;
+  right:auto;
+  bottom:auto;
+  transform:none;
+  opacity:1;
+  pointer-events:auto;
+  flex:0 0 auto;
+  margin:0;
+  background:#fff;
+  border-top:1px solid var(--line);
+  box-shadow:none;
+  z-index:2;
+}
+.role-review-backdrop{position:fixed;inset:0;background:rgba(23,33,38,.42);display:grid;place-items:center;z-index:90;padding:16px}
+.role-review-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px);display:flex;flex-direction:column;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.role-review-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.role-review-head h3{margin:0;font-size:16px}
+.role-review-lead,.role-review-preview{margin:0;padding:10px 14px;color:var(--soft);font-size:13px}
+.role-review-list{overflow:auto;min-height:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.role-review-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:8px 10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
+.role-review-copy{display:flex;flex-direction:column;gap:1px;min-width:0}
+.role-review-label{font-weight:650}
+.role-review-dialog .role-perm-key{display:block;font-size:11px;line-height:1.3}
+.role-review-kind{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--soft)}
+.role-review-effect{font-size:12.5px;color:var(--soft);white-space:nowrap}
+.role-package-confirm-optin{display:flex;align-items:center;gap:8px;padding:10px 14px}
+.role-review-actions{display:flex;justify-content:flex-end;padding:10px 14px;border-top:1px solid var(--line);background:#fff}
+
+.settings-page .emp-page-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px}
+.settings-page .emp-page-bar strong{font-size:16px}
+.settings-page .emp-page-bar span{margin-left:8px;color:var(--soft);font-size:13px}
+.settings-page .emp-toolbar{flex-wrap:nowrap;padding:8px 12px;background:#fff}
+.settings-page .emp-thead,
+.settings-page .emp-trow{grid-template-columns:88px minmax(120px,1.15fr) minmax(96px,.8fr) 76px minmax(120px,1fr) max-content;gap:8px;padding:0 12px;min-height:46px}
+.settings-page .emp-trow > span:not(.emp-row-actions){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .emp-row-actions{display:flex;align-items:center;gap:6px;justify-content:flex-end;flex-wrap:nowrap;overflow:visible}
+.settings-page .emp-row-actions button,
+.settings-page .emp-row-actions summary{white-space:nowrap;flex:0 0 auto}
+.settings-page .emp-more{position:relative}
+.settings-page .emp-more summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12.5px}
+.settings-page .emp-more summary::-webkit-details-marker{display:none}
+.settings-page .emp-more[open]{position:absolute;right:0;top:32px;z-index:6;display:flex;flex-direction:column;align-items:stretch;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px;min-width:148px;box-shadow:0 8px 20px rgba(15,23,42,.08)}
+.settings-page .emp-table-wrap{overflow:visible}
+.settings-page .emp-email-cell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toast.settings-toast{top:64px;bottom:auto;right:16px;max-width:340px;padding:8px 12px;z-index:70}
+
+.settings-page .modal-inner.modal-viewport-safe{width:min(860px,calc(100vw - 32px));max-width:min(860px,calc(100vw - 32px));max-height:calc(100dvh - 32px);border-radius:12px}
+.settings-page .emp-modal-body{padding:12px 16px;gap:14px}
+.settings-page .emp-section{display:flex;flex-direction:column;gap:8px}
+.settings-page .emp-section h4{margin:0;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--soft)}
+.settings-page .emp-modal-form .emp-grid{gap:12px 16px;align-items:start}
+.settings-page .emp-modal-form .emp-grid label{font-size:12.5px}
+.settings-page .emp-modal-form :is(.emp-grid, .emp-branch-primary) :is(input:not([type="checkbox"]):not([type="radio"]):not(:disabled), select:not(:disabled), textarea:not(:disabled)){
+  background:#fff !important;
+  border:1px solid var(--line) !important;
+  border-radius:6px !important;
+  color:var(--ink) !important;
+  min-height:38px !important;
+  height:38px !important;
+  padding:0 10px !important;
+  box-shadow:none !important;
+  opacity:1;
+}
+.settings-page .emp-modal-form .emp-grid textarea{height:auto !important;min-height:64px !important;padding:8px 10px !important}
+.settings-page .emp-modal-form :is(.emp-grid, .emp-branch-primary) :is(input, select, textarea):focus{
+  outline:2px solid #2563eb;
+  outline-offset:1px;
+  box-shadow:none !important;
+  background:#fff !important;
+}
+.settings-page .emp-modal-form .emp-grid input:disabled,
+.settings-page .emp-modal-form .emp-grid select:disabled,
+.settings-page .emp-modal-form .emp-branch-primary select:disabled{
+  color:var(--ink) !important;
+  background:#f4f6f3 !important;
+  opacity:1;
+}
+.settings-page .emp-help,.settings-page .emp-branch-note{margin:0;color:var(--soft);font-size:12.5px;line-height:1.4}
+.settings-page .emp-branch-access{display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:8px 16px;margin:0}
+.settings-page .emp-branch-options{display:flex;flex-wrap:wrap;gap:8px 16px}
+.settings-page .emp-branch-options label{display:inline-flex;align-items:center;gap:6px}
+.settings-page .emp-branch-primary{display:flex;flex-direction:row;align-items:center;gap:8px;min-width:0}
+.settings-page .emp-branch-note{flex-basis:100%}
+.settings-page .emp-branch-primary select{min-width:180px;height:38px}
+.settings-page .emp-modal-form .settings-info{display:block}
+
+.cabang-gudang-page .cg-heading{margin-bottom:8px}
+.cabang-gudang-page .cg-split{display:grid;grid-template-columns:minmax(300px,340px) minmax(0,1fr);gap:12px;align-items:start}
+.cabang-gudang-page .cg-panel{padding:10px 12px}
+.cabang-gudang-page .cg-panel-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.cabang-gudang-page .cg-panel-head-split{justify-content:space-between}
+.cabang-gudang-page .cg-branch-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.cabang-gudang-page button.cg-branch{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:40px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;text-align:left;cursor:pointer}
+.cabang-gudang-page .cg-branch.is-on{border-color:#0f766e;background:#f0fdfa}
+.cabang-gudang-page .cg-branch-actions{display:flex;flex-wrap:nowrap;gap:6px;margin-top:8px}
+.cabang-gudang-page .cg-branch-actions button{white-space:nowrap}
+.cabang-gudang-page .cg-empty{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0}
+.cabang-gudang-page .cg-empty p{margin:0;color:var(--soft)}
+.cabang-gudang-page .modal-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:16px;background:rgba(23,33,38,.42)}
+.cabang-gudang-page .modal-card{width:min(480px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 24px 60px rgba(23,33,38,.25)}
+.cabang-gudang-page .cg-modal h2{margin:0 0 12px;font-size:16px}
+.cabang-gudang-page .cg-modal label{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.cabang-gudang-page .cg-modal label:has(input[type="checkbox"]){flex-direction:row;align-items:center;margin-bottom:12px}
+.cabang-gudang-page .modal-actions{display:flex;justify-content:flex-end;gap:8px}
+.cabang-gudang-page .cg-modal :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea){
+  background:#fff !important;
+  border:1px solid var(--line) !important;
+  border-radius:6px !important;
+  color:var(--ink) !important;
+  height:38px !important;
+  min-height:38px !important;
+  padding:0 10px !important;
+  box-shadow:none !important;
+}
+@media (max-width:1100px){
+  .settings-page.settings-fit-roles .role-workspace-controls{flex-wrap:wrap}
+  .cabang-gudang-page .cg-split{grid-template-columns:1fr}
+  .settings-page .emp-toolbar{flex-wrap:wrap}
+}
