@@ -9977,6 +9977,9 @@ async def patch_role_business_permissions(
         raise HTTPException(400, "Permission tidak boleh ditambah dan dicabut bersamaan")
     if any(k not in ALL_PERMISSIONS or k.startswith("nav.") for k in add | remove):
         raise HTTPException(400, "Hanya permission bisnis yang terdaftar boleh diubah")
+    from permissions import OPT_IN_ONLY_PERMISSIONS
+    if add & set(OPT_IN_ONLY_PERMISSIONS):
+        raise HTTPException(400, "Permission opt-in harus melalui konfirmasi khusus")
     before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
     effective = with_nav_defaults(set(raw))
