@@ -1,0 +1,895 @@
+{
+  "production_sha_required": "baa24a13393eedf06aea0ddf2f0793d3956955f9",
+  "write_authorized": false,
+  "owner_approval_phrase_required": "APPROVE ADDON PARENT REPAIR MANIFEST B31 EXACT \u2014 SOP-20261030-003",
+  "document_ids_allowlisted": [
+    "0b1b6099-d655-47b0-b65e-0eee72103596",
+    "2462c80a-7ff7-4fa1-95e2-8732dffba619",
+    "26ca729f-1c9b-455d-84ab-707fa85ed91c",
+    "2de792db-ae14-4199-aa9f-e3f514099e42",
+    "458699be-b644-417b-8d8d-11f84b7f40ba",
+    "556031b2-c6f6-4dd2-843b-2b80bb705243",
+    "67df0e12-13bb-4257-aa7e-442dddce27ed",
+    "78e741d0-e14b-4d9c-b4ff-e0906069ccd5",
+    "796c1445-fb7c-465d-8ce1-8459e7d36689",
+    "7e779e2e-604c-4ddc-843d-68797e22c56e",
+    "90ace392-cbca-4719-bee5-078e8173e1bf",
+    "9d248b32-8b86-4889-91bc-a7a7fd6f6fdc",
+    "aa22f8c2-f472-4596-89c1-42ffc9483aef",
+    "aeb5a6b2-9ee1-4a47-a950-d584697ea905",
+    "af07a4a6-80c5-4a39-a54c-bd117461ee14",
+    "ba5f34d7-023a-4165-95a4-35e74b955c9c",
+    "c02464c9-a5bd-485c-a101-a47fc8eb0c17",
+    "c8538899-bc2a-4d2b-bcab-7786a8805636",
+    "d1105aff-c572-4ebc-8eb2-a0e28bb3f5aa",
+    "d1ee245a-5dd2-416a-b504-456b0cf2174a",
+    "d635c882-345d-4442-87f0-4f35f1722630",
+    "e2978ceb-1934-4c7b-8800-9b2c39482e37",
+    "f04020d2-b296-47fe-b20e-96a51e373529",
+    "ffa41f61-d239-49cf-81a7-6dfd4a041bce"
+  ],
+  "order_count": 24,
+  "service_link_count": 31,
+  "forbidden_mutations": [
+    "quantity",
+    "qty_delivered",
+    "operator_splits.qty_completed",
+    "shipments",
+    "sales_deliveries",
+    "physical_stock_balances",
+    "stock_ledger",
+    "r2 movements",
+    "SOP session",
+    "Freeze",
+    "users",
+    "roles",
+    "menus",
+    "PR#692"
+  ],
+  "api": {
+    "method": "PATCH",
+    "path": "/api/orders/{order_id}/line-items/addon-parent",
+    "perm": "production.route.edit",
+    "payload": "items:[{line_idx, parent_line_id?, parent_line_idx?, clear?}]",
+    "mutates": "parent_line_id + parent_line_idx only",
+    "does_not_mutate": "qty, delivery, stock ledger, SOP, name, Accurate ids"
+  },
+  "orders": [
+    {
+      "po_number": "PO/05/10/2026/000014",
+      "order_id": "2de792db-ae14-4199-aa9f-e3f514099e42",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/05/10/2026/000034",
+      "order_id": "aa22f8c2-f472-4596-89c1-42ffc9483aef",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/08/10/2026/000004",
+      "order_id": "ffa41f61-d239-49cf-81a7-6dfd4a041bce",
+      "affects_100003": true,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/12/10/2026/000006",
+      "order_id": "d1ee245a-5dd2-416a-b504-456b0cf2174a",
+      "affects_100003": true,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/13/10/2026/000005",
+      "order_id": "af07a4a6-80c5-4a39-a54c-bd117461ee14",
+      "affects_100003": true,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/13/10/2026/000014",
+      "order_id": "2462c80a-7ff7-4fa1-95e2-8732dffba619",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/16/10/2026/000007",
+      "order_id": "d1105aff-c572-4ebc-8eb2-a0e28bb3f5aa",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/19/10/2026/000008",
+      "order_id": "796c1445-fb7c-465d-8ce1-8459e7d36689",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/20/10/2026/000028",
+      "order_id": "0b1b6099-d655-47b0-b65e-0eee72103596",
+      "affects_100003": true,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/07/000045",
+      "order_id": "9d248b32-8b86-4889-91bc-a7a7fd6f6fdc",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/09/000017",
+      "order_id": "ba5f34d7-023a-4165-95a4-35e74b955c9c",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/09/000018",
+      "order_id": "c02464c9-a5bd-485c-a101-a47fc8eb0c17",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/10/000008",
+      "order_id": "556031b2-c6f6-4dd2-843b-2b80bb705243",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/10/000010",
+      "order_id": "7e779e2e-604c-4ddc-843d-68797e22c56e",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/15/000003",
+      "order_id": "e2978ceb-1934-4c7b-8800-9b2c39482e37",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/21/000002",
+      "order_id": "d635c882-345d-4442-87f0-4f35f1722630",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/21/000031",
+      "order_id": "78e741d0-e14b-4d9c-b4ff-e0906069ccd5",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/23/000004",
+      "order_id": "67df0e12-13bb-4257-aa7e-442dddce27ed",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 0,
+            "parent_line_idx": 1
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 0,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 0,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/24/000014",
+      "order_id": "f04020d2-b296-47fe-b20e-96a51e373529",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/25/000011",
+      "order_id": "458699be-b644-417b-8d8d-11f84b7f40ba",
+      "affects_100003": true,
+      "service_lines": 2,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          },
+          {
+            "line_idx": 2,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        },
+        {
+          "line_idx": 2,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          },
+          {
+            "line_idx": 2,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/2026/09/29/000002",
+      "order_id": "26ca729f-1c9b-455d-84ab-707fa85ed91c",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/23/10/2026/000007",
+      "order_id": "aeb5a6b2-9ee1-4a47-a950-d584697ea905",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/23/10/2026/000013",
+      "order_id": "90ace392-cbca-4719-bee5-078e8173e1bf",
+      "affects_100003": false,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    },
+    {
+      "po_number": "PO/24/10/2026/000012",
+      "order_id": "c8538899-bc2a-4d2b-bcab-7786a8805636",
+      "affects_100003": true,
+      "service_lines": 1,
+      "dry_run_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "parent_line_idx": 0
+          }
+        ]
+      },
+      "before_value_checks": [
+        {
+          "line_idx": 1,
+          "require_parent_line_id_empty": true,
+          "require_parent_line_idx_null_or_empty": true,
+          "require_service_master_id": "9bfd5938-6868-4d1b-bf9b-6212225134a2"
+        }
+      ],
+      "rollback_payload": {
+        "items": [
+          {
+            "line_idx": 1,
+            "clear": true
+          }
+        ]
+      }
+    }
+  ],
+  "post_repair_validation_100003": {
+    "master_item_code": "100003",
+    "master_id": "511e1d5d-90b1-4af8-b482-5b90abaada76",
+    "checks": [
+      "RO: all 12 priority POs SERVICE parent_linked=1 to 100003 print line",
+      "aggregate_operational_orders completion_unproven for 100003 == False (YGY branch)",
+      "Opname/SSI qty_belum_terkirim is numeric (not null) for 100003",
+      "never coerce previous null to 0 without recomputing siap-delivered",
+      "delivery/stock ledger unchanged (checksum or no new movements)"
+    ]
+  },
+  "class_c_hold_order_ids": [
+    "0089e1db-4cee-484d-8270-b0c485065b39",
+    "2de4d6b5-2470-4497-9847-61079b1e2cc1",
+    "785444ca-9779-4b4b-8a53-501f4e41ff7e",
+    "b2988cad-9297-4644-8456-d984136c2cd3",
+    "bdd08fd1-820b-4016-867d-fcc077ce96ab"
+  ]
+}
