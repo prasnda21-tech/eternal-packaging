@@ -9435,8 +9435,9 @@ button.ghost.sm.icon{padding:4px 6px}
   min-height:0;
   height:auto;
   overflow:hidden;
-  padding:8px 16px 10px;
+  padding:0;
 }
+.content.content-workspace:has(.settings-fit-roles) > .kb-workspace-tabs{top:0}
 .settings-page.settings-fit-roles{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .settings-page.settings-fit-employees .page-heading{display:none}
 .settings-page.settings-fit-roles .page-heading,
@@ -9505,7 +9506,7 @@ button.ghost.sm.icon{padding:4px 6px}
 .settings-page .emp-page-bar span{margin-left:8px;color:var(--soft);font-size:13px}
 .settings-page .emp-toolbar{flex-wrap:nowrap;padding:8px 12px;background:#fff}
 .settings-page .emp-thead,
-.settings-page .emp-trow{grid-template-columns:88px minmax(120px,1.15fr) minmax(96px,.8fr) 76px minmax(120px,1fr) max-content;gap:8px;padding:0 12px;min-height:46px}
+.settings-page .emp-trow{grid-template-columns:88px minmax(120px,1.15fr) minmax(96px,.8fr) 76px minmax(120px,1fr) 248px;gap:8px;padding:0 12px;min-height:46px}
 .settings-page .emp-trow > span:not(.emp-row-actions){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .settings-page .emp-row-actions{display:flex;align-items:center;gap:6px;justify-content:flex-end;flex-wrap:nowrap;overflow:visible}
 .settings-page .emp-row-actions button,
