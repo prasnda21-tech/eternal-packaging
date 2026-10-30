@@ -59,6 +59,8 @@ export default function StockOpname() {
   const [busy, setBusy] = useState(false);
   const [confirmKey, setConfirmKey] = useState(newKey);
   const [successNote, setSuccessNote] = useState("");
+  const [importPreview, setImportPreview] = useState(null);
+  const [importFileObj, setImportFileObj] = useState(null);
   /** Sync guard: React setState(busy) is too late to stop a double-click race. */
   const confirmInFlightRef = useRef(false);
 
@@ -217,18 +219,68 @@ export default function StockOpname() {
     }
   }
 
+  async function runCutoff() {
+    if (!session?.id || session.status !== "DRAFT") return;
+    setBusy(true);
+    setError("");
+    setSuccessNote("");
+    setImportPreview(null);
+    setImportFileObj(null);
+    try {
+      const countingDoc = await api.cutoffStockOpnameSession(session.id);
+      setSession(countingDoc);
+      setSuccessNote(
+        `Cutoff selesai — ${countingDoc.item_count ?? (countingDoc.lines || []).length} barang siap dihitung. Unduh template; isi Stock Fisik (total gabungan polos+tercetak belum kirim).`,
+      );
+      await refreshList();
+    } catch (err) {
+      setError(stockOpnameErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function importFile(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file) return;
+    if (!file || !session?.id) return;
+    setBusy(true);
+    setError("");
+    setSuccessNote("");
+    setImportPreview(null);
+    setImportFileObj(null);
+    try {
+      const preview = await api.stockOpnameCountImportPreview(session.id, file);
+      setImportPreview(preview);
+      setImportFileObj(file);
+      // Preview only — never treat import time as count time.
+    } catch (err) {
+      setError(stockOpnameErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyImportPreview() {
+    if (!session?.id || !importFileObj) return;
+    if (!importPreview?.can_apply) {
+      setError("Tidak ada baris READY untuk diterapkan.");
+      return;
+    }
     setBusy(true);
     setError("");
     setSuccessNote("");
     try {
-      const imported = await api.stockOpnameCountImport(session.id, file);
+      const imported = await api.stockOpnameCountImport(session.id, importFileObj);
       setSession(imported);
-      // Import records qty + imported_at only — never treat import time as count time.
-      setSuccessNote("Impor selesai. Waktu impor tercatat terpisah; isi waktu hitung fisik (WIB) sebelum review/konfirmasi (mode operational).");
+      const applied = imported.import_applied_count ?? importPreview.ready_count ?? 0;
+      const rejected = imported.import_preview?.rejected_count ?? importPreview.rejected_count ?? 0;
+      const missing = imported.import_preview?.missing_count ?? importPreview.missing_count ?? 0;
+      setSuccessNote(
+        `Import diterapkan: ${applied} READY. Ditolak ${rejected}. Kosong (belum hitung) ${missing}. Waktu hitung fisik (WIB) diisi terpisah sebelum review (mode operational).`,
+      );
+      setImportPreview(imported.import_preview || importPreview);
+      setImportFileObj(null);
     } catch (err) {
       setError(stockOpnameErrorMessage(err));
     } finally {
@@ -312,6 +364,7 @@ export default function StockOpname() {
     }
   }
 
+  const isDraft = session?.status === "DRAFT";
   const counting = session?.status === "COUNTING";
   const reviewState = session?.status === "REVIEW";
   const editable = counting;
@@ -451,6 +504,18 @@ export default function StockOpname() {
           )}
 
           <div className="stock-opname-toolbar" data-testid="opname-toolbar">
+            {isDraft && (
+              <>
+                <p className="stock-opname-confirm-warn" data-testid="opname-draft-hint">
+                  Draf tanpa cutoff: daftar barang kosong dan Import Excel belum tersedia.
+                  Jalankan cutoff pada gudang yang benar (jangan memakai sesi Freeze usang).
+                  Saldo Awal bukan alat rekonsiliasi stok fisik.
+                </p>
+                <button type="button" className="primary" onClick={runCutoff} disabled={busy} data-testid="opname-cutoff">
+                  Mulai Cutoff
+                </button>
+              </>
+            )}
             {counting && (
               <>
                 <button type="button" className="ghost" onClick={downloadTemplate} disabled={busy} data-testid="opname-download">
@@ -486,8 +551,78 @@ export default function StockOpname() {
             {["DRAFT", "COUNTING", "REVIEW"].includes(session.status) && (
               <button type="button" className="ghost" onClick={cancel} disabled={busy} data-testid="opname-cancel">Batalkan</button>
             )}
-            <button type="button" className="ghost" onClick={() => setSession(null)} data-testid="opname-back-list">Daftar Sesi</button>
+            <button type="button" className="ghost" onClick={() => { setSession(null); setImportPreview(null); setImportFileObj(null); }} data-testid="opname-back-list">Daftar Sesi</button>
           </div>
+
+          {importPreview && counting && (
+            <section className="stock-opname-import-preview" data-testid="opname-import-preview">
+              <div className="stock-opname-summary">
+                <div className="stock-opname-summary-item">
+                  <span className="stock-opname-summary-label">READY</span>
+                  <strong data-testid="opname-import-ready-count">{importPreview.ready_count ?? 0}</strong>
+                </div>
+                <div className="stock-opname-summary-item">
+                  <span className="stock-opname-summary-label">Ditolak</span>
+                  <strong data-testid="opname-import-rejected-count">{importPreview.rejected_count ?? 0}</strong>
+                </div>
+                <div className="stock-opname-summary-item">
+                  <span className="stock-opname-summary-label">Kosong</span>
+                  <strong data-testid="opname-import-missing-count">{importPreview.missing_count ?? 0}</strong>
+                </div>
+              </div>
+              <p className="muted small" data-testid="opname-import-note">{importPreview.note}</p>
+              <div className="stock-opname-table-wrap">
+                <table className="stock-opname-table" data-testid="opname-import-preview-table">
+                  <thead>
+                    <tr>
+                      <th>Baris</th>
+                      <th>Kode</th>
+                      <th>Stock Buku</th>
+                      <th>Target Fisik</th>
+                      <th>Selisih</th>
+                      <th>Status</th>
+                      <th>Alasan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...(importPreview.ready || []), ...(importPreview.rejected || []), ...(importPreview.missing || [])]
+                      .slice(0, 200)
+                      .map((row) => (
+                        <tr key={`${row.status}-${row.excel_row}-${row.item_code}`} data-testid={`opname-import-row-${row.excel_row}`}>
+                          <td>{row.excel_row}</td>
+                          <td>{row.item_code}</td>
+                          <td className="opname-col-center">{row.book_qty == null ? "" : fmtQty(row.book_qty)}</td>
+                          <td className="opname-col-center">{row.target_physical_qty == null ? "" : fmtQty(row.target_physical_qty)}</td>
+                          <td className="opname-col-center">{row.difference_qty == null ? "" : fmtQty(row.difference_qty)}</td>
+                          <td>{row.status}</td>
+                          <td>{row.reason || ""}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="stock-opname-toolbar">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={applyImportPreview}
+                  disabled={busy || !importPreview.can_apply || !importFileObj}
+                  data-testid="opname-import-apply"
+                >
+                  Terapkan READY
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => { setImportPreview(null); setImportFileObj(null); }}
+                  disabled={busy}
+                  data-testid="opname-import-discard"
+                >
+                  Buang Preview
+                </button>
+              </div>
+            </section>
+          )}
 
           {counting && (
             <div className="stock-opname-bulk-time" data-testid="opname-bulk-time">

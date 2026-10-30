@@ -482,6 +482,13 @@ export const api = {
   confirmStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/confirm`, payload).then((r) => r.data),
   cancelStockOpnameSession: (id, payload) => client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/cancel`, payload).then((r) => r.data),
   stockOpnameCountTemplate: (id) => client.get(`/stock-opname-sessions/${encodeURIComponent(id)}/count-template`, { responseType: "blob" }).then((r) => r.data),
+  stockOpnameCountImportPreview: (id, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client.post(`/stock-opname-sessions/${encodeURIComponent(id)}/count-import/preview`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data);
+  },
   stockOpnameCountImport: (id, file) => {
     const form = new FormData();
     form.append("file", file);

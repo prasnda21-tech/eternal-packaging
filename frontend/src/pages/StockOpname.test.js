@@ -19,6 +19,12 @@ describe("Stock Opname operational workflow", () => {
     expect(src).toMatch(/Mulai Stock Opname/);
     expect(src).toMatch(/Download Excel/);
     expect(src).toMatch(/Import Excel/);
+    expect(src).toMatch(/data-testid="opname-cutoff"/);
+    expect(src).toMatch(/Mulai Cutoff/);
+    expect(src).toMatch(/stockOpnameCountImportPreview/);
+    expect(src).toMatch(/data-testid="opname-import-preview"/);
+    expect(src).toMatch(/data-testid="opname-import-apply"/);
+    expect(src).toMatch(/Terapkan READY/);
     expect(src).toMatch(/data-testid="opname-review"/);
     expect(src).toMatch(/>Review</);
     expect(src).toMatch(/Konfirmasi akan menyesuaikan Stock Fisik sesuai hasil hitung/);
