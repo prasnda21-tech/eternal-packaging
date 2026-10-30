@@ -240,7 +240,7 @@ describe("Pengiriman Pesanan Nav Integration", () => {
   });
 
   test("salesNavVisible enables parent for salesDeliveryOrder", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder));
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder, "sales.delivery.view"));
     expect(v.parent).toBe(true);
     expect(v.salesDeliveryOrder).toBe(true);
   });
