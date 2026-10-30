@@ -9701,6 +9701,13 @@ class RolePermissionsPayload(BaseModel):
     confirm_package_keys: Optional[List[str]] = None
 
 
+class RoleBusinessPermissionPatch(BaseModel):
+    """Atomic business-key delta; unlike PUT it cannot erase untouched modules."""
+    expected_permissions: List[str]
+    add: List[str] = []
+    remove: List[str] = []
+
+
 class RoleCreatePayload(BaseModel):
     role: str          # slug, lowercase, unique
     label: str
@@ -9948,6 +9955,56 @@ async def update_role(role: str, payload: RoleUpdatePayload, user=Depends(requir
                        after={**after, "permissions": (perm_after or {}).get("permissions", [])},
                        note=f"Update role {slug}")
     return {"role": after}
+
+
+@api_router.patch("/admin/roles/{role}/permissions/business")
+async def patch_role_business_permissions(
+    role: str,
+    payload: RoleBusinessPermissionPatch,
+    user=Depends(require_perm("permissions.manage")),
+):
+    """Compare-and-swap role grants; only changed business keys are written."""
+    from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults, is_director_full_access_role
+    slug = role.strip().lower()
+    if slug == "admin" or is_director_full_access_role(slug):
+        raise HTTPException(400, "Permission role ini tidak dapat diubah")
+    existing_role = await _load_role_doc(slug)
+    if not existing_role and slug not in BUILTIN_ROLES:
+        raise HTTPException(404, "Role tidak dikenal")
+    add = set(payload.add)
+    remove = set(payload.remove)
+    if add & remove:
+        raise HTTPException(400, "Permission tidak boleh ditambah dan dicabut bersamaan")
+    if any(k not in ALL_PERMISSIONS or k.startswith("nav.") for k in add | remove):
+        raise HTTPException(400, "Hanya permission bisnis yang terdaftar boleh diubah")
+    before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
+    raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
+    effective = with_nav_defaults(set(raw))
+    if set(payload.expected_permissions) != effective:
+        raise HTTPException(409, "Permission role telah berubah. Muat ulang sebelum menyimpan.")
+    next_perms = sorted((set(raw) | add) - remove)
+    if before is None:
+        try:
+            await db.role_permissions.insert_one({
+                "role": slug, "permissions": next_perms,
+                "updated_at": now_iso(), "updated_by": user.get("email"),
+            })
+        except Exception:
+            raise HTTPException(409, "Role berubah bersamaan. Muat ulang sebelum menyimpan.")
+    else:
+        result = await db.role_permissions.update_one(
+            {"role": slug, "permissions": before.get("permissions", [])},
+            {"$set": {
+                "permissions": next_perms, "updated_at": now_iso(),
+                "updated_by": user.get("email"),
+            }},
+        )
+        if result.matched_count != 1:
+            raise HTTPException(409, "Permission role berubah bersamaan. Muat ulang.")
+    after = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
+    await _write_audit("role.permissions.business_patch", user, target_email=None,
+                       before=before, after=after, note=f"Business permission patch {slug}")
+    return {"role": slug, "permissions": sorted(with_nav_defaults(set(next_perms)))}
 
 
 @api_router.put("/admin/roles/{role}/permissions")
