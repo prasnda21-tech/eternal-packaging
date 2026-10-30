@@ -192,7 +192,7 @@ export function canSeeNav(hasPerm, key) {
 
 /** Dashboard parent is hidden when no dashboard child is visible. */
 export function dashboardNavVisible(hasPerm, user) {
-  const production = canSeeNav(hasPerm, NAV_KEYS.dashboard);
+  const production = canSeeNav(hasPerm, NAV_KEYS.dashboard) && canSeeNav(hasPerm, "dashboard.production.view");
   // Owner nav requires role allowlist + permission (admin must not see it).
   const owner = canAccessOwnerDashboard(user, hasPerm);
   const sales = canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || canSeeNav(hasPerm, "dashboard.sales.view");
@@ -277,9 +277,9 @@ export function salesNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "pra_po.verify")
   );
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
-  const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
-  const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
-  const salesReceipt = parent && (canSeeNav(hasPerm, NAV_KEYS.salesReceipt) || canSeeNav(hasPerm, "sales.receipt.view") || canSeeNav(hasPerm, "sales.receipt.create") || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
+  const salesDeliveryOrder = parent && canSeeNav(hasPerm, "sales.delivery.view");
+  const salesInvoice = parent && canSeeNav(hasPerm, "sales.invoice.view");
+  const salesReceipt = parent && canSeeNav(hasPerm, "sales.receipt.view");
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
   const salesActivity = parent && (canSeeNav(hasPerm, NAV_KEYS.salesActivity) || canSeeNav(hasPerm, "sales.activity.view") || canSeeNav(hasPerm, "sales.activity.create") || canSeeNav(hasPerm, "sales.outlet.create"));
   const crmDailyReport = (
