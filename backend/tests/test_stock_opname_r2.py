@@ -43,6 +43,9 @@ from services.physical_stock import (
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.stock_opname_count_import import (
     COUNT_HEADERS,
+    STATUS_REJECTED,
+    STATUS_READY,
+    build_count_import_preview,
     build_count_template_xlsx,
     import_physical_counts,
     parse_count_rows,
@@ -746,6 +749,8 @@ async def test_count_excel_uses_cutoff_snapshot_and_recalculates(db):
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
     assert await _qty(db, item_a, branch_id, warehouse_id) == before_balance
 
+    # Soft-reject contract: per-row REJECTED (not file-level CountImportError).
+    # Hard CountImportError remains for wrong session/warehouse/unreadable file.
     duplicate = _load(BytesIO(content))
     first = [cell.value for cell in duplicate["Hitung Fisik"][2]]
     duplicate["Hitung Fisik"].append(first)
@@ -753,8 +758,18 @@ async def test_count_excel_uses_cutoff_snapshot_and_recalculates(db):
     duplicate["Hitung Fisik"].cell(duplicate["Hitung Fisik"].max_row, 7).value = 2
     bad = BytesIO()
     duplicate.save(bad)
-    with pytest.raises(CountImportError):
-        parse_count_rows(bad.getvalue(), counting)
+    dup_preview = build_count_import_preview(bad.getvalue(), counting)
+    assert dup_preview["rejected_count"] >= 1
+    assert any(
+        r.get("status") == STATUS_REJECTED and "duplikat" in (r.get("reason") or "").lower()
+        for r in dup_preview["rejected"]
+    )
+    assert all(r.get("eligible") is False for r in dup_preview["rejected"])
+    assert all(r.get("status") == STATUS_READY for r in dup_preview["ready"])
+    # First occurrence may be READY; duplicate qty 2 must never be READY / parse payload.
+    assert not any(r.get("target_physical_qty") == 2 for r in dup_preview["ready"])
+    dup_ready = parse_count_rows(bad.getvalue(), counting)
+    assert all(row.get("physical_count_qty") != 2 for row in dup_ready)
 
     foreign_book = _load(BytesIO(content))
     foreign_book["Hitung Fisik"].cell(2, 1).value = "MISSING"
@@ -762,19 +777,53 @@ async def test_count_excel_uses_cutoff_snapshot_and_recalculates(db):
     foreign_book["Hitung Fisik"].cell(2, 7).value = 3
     foreign_bytes = BytesIO()
     foreign_book.save(foreign_bytes)
-    with pytest.raises(CountImportError):
-        parse_count_rows(foreign_bytes.getvalue(), counting)
+    foreign_preview = build_count_import_preview(foreign_bytes.getvalue(), counting)
+    assert foreign_preview["rejected_count"] >= 1
+    assert any(
+        r.get("status") == STATUS_REJECTED and "tidak ada" in (r.get("reason") or "").lower()
+        for r in foreign_preview["rejected"]
+    )
+    assert parse_count_rows(foreign_bytes.getvalue(), counting) == []
+    # REJECTED unknown must not overwrite an already-applied READY count.
+    after_foreign = await import_physical_counts(db, counting["id"], foreign_bytes.getvalue(), USER)
+    assert after_foreign.get("import_applied_count") == 0
+    assert _line(after_foreign, item_a)["physical_count_qty"] == 950
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
 
     negative = _load(BytesIO(content))
     negative["Hitung Fisik"].cell(2, 7).value = -1
     negative_bytes = BytesIO()
     negative.save(negative_bytes)
-    with pytest.raises(CountImportError):
-        parse_count_rows(negative_bytes.getvalue(), counting)
+    neg_preview = build_count_import_preview(negative_bytes.getvalue(), counting)
+    assert neg_preview["rejected_count"] >= 1
+    assert any(
+        r.get("status") == STATUS_REJECTED
+        and "negatif" in (r.get("reason") or "").lower()
+        for r in neg_preview["rejected"]
+    )
+    assert all(row.get("physical_count_qty") is None or row.get("physical_count_qty") >= 0
+                for row in parse_count_rows(negative_bytes.getvalue(), counting))
+    after_neg = await import_physical_counts(db, counting["id"], negative_bytes.getvalue(), USER)
+    # Negative CUP-A is REJECTED; other blank rows are MISSING → nothing READY applied.
+    assert after_neg.get("import_applied_count") == 0
+    assert _line(after_neg, item_a)["physical_count_qty"] == 950
+    assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
+
+    wrong_wh = _load(BytesIO(content))
+    for row in wrong_wh["Sesi"].iter_rows(min_row=1, max_row=5):
+        if row[0].value == "warehouse_id":
+            row[1].value = "not-this-warehouse"
+            break
+    wrong_wh_bytes = BytesIO()
+    wrong_wh.save(wrong_wh_bytes)
+    with pytest.raises(CountImportError) as wrong_wh_err:
+        build_count_import_preview(wrong_wh_bytes.getvalue(), counting)
+    assert "gudang" in wrong_wh_err.value.message.lower()
 
     with pytest.raises(HTTPException) as incomplete:
         await submit_stock_opname_review(db, counting["id"], USER)
     assert incomplete.value.status_code == 400
+    assert "Kosong bukan nol" in str(incomplete.value.detail) or "hitung" in str(incomplete.value.detail).lower()
     assert await db[LEDGER_COLLECTION].count_documents({}) == before_ledger
 
     zero = _load(BytesIO(build_count_template_xlsx(imported)))
