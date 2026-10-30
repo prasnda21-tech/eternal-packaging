@@ -231,7 +231,7 @@ describe("desktop sidebar presentation", () => {
       "/dashboard/owner",
       "/dashboard/penjualan",
     ]);
-    expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "po.view"), { role: "sales" }).map((item) => item.label)).toEqual([
+    expect(dashboardMenuItems(has(NAV_KEYS.dashboard, "dashboard.production.view", "po.view"), { role: "sales" }).map((item) => item.label)).toEqual([
       "Dashboard Produksi",
     ]);
     expect(dashboardMenuItems(has("dashboard.finance.view", "dashboard.owner.view"), { role: "direktur_utama" }).map((item) => item.label)).toEqual([
