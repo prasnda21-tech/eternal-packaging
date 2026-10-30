@@ -394,11 +394,11 @@ describe("reportsNavVisible", () => {
     expect(reportsMenuItems(perms)).toHaveLength(2);
   });
 
-  test("nav.configured without nav.reports hides hub even with module report access", () => {
+  test("nav.configured cannot hide authorized reports", () => {
     const v = reportsNavVisible(has("nav.configured", "reports.sales.view", "profit_loss.view"));
-    expect(v.parent).toBe(false);
-    expect(v.catalogList).toBe(false);
-    expect(reportsMenuItems(has("nav.configured", "reports.sales.view"))).toEqual([]);
+    expect(v.parent).toBe(true);
+    expect(v.catalogList).toBe(true);
+    expect(reportsMenuItems(has("nav.configured", "reports.sales.view"))).toHaveLength(2);
   });
 
   test("role with no report access keeps Laporan hidden", () => {
