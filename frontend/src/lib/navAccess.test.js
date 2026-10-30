@@ -1,4 +1,4 @@
-import { productionNavVisible, productionMenuItems, dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
+import { productionNavVisible, productionMenuItems, dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 
 const has = (...keys) => (k) => keys.includes(k);
