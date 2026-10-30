@@ -182,12 +182,13 @@ def test_product_request_nav_visible_for_configured_custom_roles():
     # Does not auto-grant unrelated sales children
     assert "nav.sales.sales_receipt" not in derived
 
-    # Without parent nav.sales, child key is still forced; parent is not invented.
+    # PO view now legitimately derives its own Sales parent and sales order menu.
     no_sales_parent = {"nav.configured", "nav.dashboard", "po.view"}
     derived_no_parent = with_nav_defaults(no_sales_parent)
     assert "nav.sales.product_requests" in derived_no_parent
-    assert "nav.sales" not in derived_no_parent
-    assert "nav.sales.sales_order" not in derived_no_parent
+    assert "nav.sales" in derived_no_parent
+    assert "nav.sales.sales_order" in derived_no_parent
+    assert "nav.sales.sales_receipt" not in derived_no_parent
 
 
 def test_sales_receipt_menu_matches_role_view_permission():
