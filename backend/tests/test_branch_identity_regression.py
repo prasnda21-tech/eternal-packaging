@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import jwt
 
 
-def test_auth_uses_db_branch_assignment_not_token_snapshot():
+def test_auth_uses_db_branch_assignment_not_token_snapshot(monkeypatch):
     tree = ast.parse((Path(__file__).parents[1] / 'server.py').read_text())
     fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'current_user')
     fn.args.args[0].annotation = None
@@ -17,7 +17,7 @@ def test_auth_uses_db_branch_assignment_not_token_snapshot():
     env = {'db': SimpleNamespace(users=Users()), 'jwt': jwt, 'os': os, 'JWT_ALGORITHM': 'HS256',
            'enforce_sales_eternal_surface': lambda *a: None}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), '<auth>', 'exec'), env)
-    os.environ['JWT_SECRET'] = 'test-only-secret-with-at-least-32-characters'
+    monkeypatch.setenv('JWT_SECRET', 'test-only-secret-with-at-least-32-characters')
     token = jwt.encode({'email': 'u@test', 'branch_ids': ['smg'], 'branch_id': 'smg'}, os.environ['JWT_SECRET'], algorithm='HS256')
     request = SimpleNamespace(cookies={'access_token': token}, headers={}, query_params={}, path_params={})
     user = asyncio.run(env['current_user'](request))
@@ -55,7 +55,7 @@ def test_http_auth_branch_reads_and_assignment_changes(monkeypatch):
         await db.orders.insert_many([
             {'id':'po-ygy','branch_id':'50','operational_branch_id':'ygy'},
             {'id':'po-smg','branch_id':'50','operational_branch_id':'smg'}])
-        for role in ['crm','kepala_produksi','admin']:
+        for role in ['crm','head_production','admin']:
             email=role+'@test'
             await db.users.insert_one({'id':role,'email':email,'role':role,'branch_ids':['ygy'],'primary_branch_id':'ygy','status':'active'})
             token=jwt.encode({'email':email,'branch_ids':['smg']},os.environ['JWT_SECRET'],algorithm='HS256')
