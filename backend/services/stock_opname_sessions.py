@@ -126,14 +126,38 @@ def parse_physical_count_at(value: Any) -> Optional[str]:
 
 
 def present_opname_line(line: dict, *, mode: str = MODE_FREEZE) -> dict:
-    """Display fields. Freeze uses cutoff book; operational may carry live posting fields."""
+    """Display fields. Freeze uses cutoff book; operational may carry live posting fields.
+
+    Qty Belum Terkirim means siap-kirim belum terbukti keluar — not physical stock.
+    Selisih / adjustment stays counted physical − book physical only.
+    When Belum is BELUM_TERVERIFIKASI (None), ATP-after excludes fabricated Belum
+    (parity with Stock Saat Ini informational tersedia).
+    """
     row = dict(line or {})
     pesanan = _number(row.get("qty_pesanan"))
-    belum = _number(row.get("qty_belum_terkirim"))
     row["qty_pesanan"] = pesanan
-    row["qty_belum_terkirim"] = belum
+    raw_belum = row.get("qty_belum_terkirim")
+    status = str(row.get("belum_terkirim_status") or "").strip().upper()
+    belum_unverified = raw_belum is None and status in (
+        "BELUM_TERVERIFIKASI",
+        "UNVERIFIED",
+        "CUTOVER_PENDING",
+    )
+    if belum_unverified:
+        row["qty_belum_terkirim"] = None
+        belum_for_atp = None
+    else:
+        belum = _number(raw_belum)
+        row["qty_belum_terkirim"] = belum
+        belum_for_atp = belum
     if row.get("demand_allocation") is None:
         row["demand_allocation"] = "unallocated"
+
+    def _tersedia_after(base_qty: int) -> float:
+        if belum_for_atp is None:
+            return base_qty - pesanan
+        return base_qty - pesanan - belum_for_atp
+
     count = row.get("physical_count_qty")
     if count is None or count == "":
         row["physical_count_qty"] = None
@@ -146,18 +170,18 @@ def present_opname_line(line: dict, *, mode: str = MODE_FREEZE) -> dict:
         book = int(row.get("book_qty_at_posting") if row.get("book_qty_at_posting") is not None else row.get("book_qty") or 0)
         target = int(row.get("target_qty") or 0)
         row["difference_qty"] = target - book if row.get("difference_qty") is None else int(row.get("difference_qty"))
-        row["qty_tersedia_setelah"] = target - pesanan - belum
+        row["qty_tersedia_setelah"] = _tersedia_after(target)
         return row
     if mode == MODE_OPERATIONAL and row.get("book_qty_live") is not None and row.get("net_movement_after_count") is not None:
         target = counted + int(row.get("net_movement_after_count") or 0)
         book_live = int(row.get("book_qty_live") or 0)
         row["target_qty"] = target
         row["difference_qty"] = target - book_live
-        row["qty_tersedia_setelah"] = target - pesanan - belum
+        row["qty_tersedia_setelah"] = _tersedia_after(target)
         return row
     book = int(row.get("book_qty") or 0)
     row["difference_qty"] = counted - book
-    row["qty_tersedia_setelah"] = counted - pesanan - belum
+    row["qty_tersedia_setelah"] = _tersedia_after(counted)
     return row
 
 
@@ -191,34 +215,58 @@ async def _snapshot_order_buckets(
     attribution matches Stock Saat Ini Standalone: Mode B legacy settings via
     mongo_order_branch_clauses + _orders_for_branch (null-branch only when
     enabled + include_null_branch + historical cutoff). Never rewrites
-    orders.branch_id. Delivered qty for Belum Terkirim is further scoped to the
-    session warehouse when provided.
+    orders.branch_id.
+
+    Delivered proof matches Stock Saat Ini (not session-warehouse-limited):
+    - r2_authority_active: SALES_DELIVERY ledger at BRANCH scope, net of REVERSAL
+      (same helper as list_physical_stock_catalog).
+    - otherwise: proven order.shipments / qty_delivered via
+      aggregate_legacy_delivered_qty (standalone/compatibility parity).
+
+    warehouse_id is retained for call-site compatibility; it must not restrict
+    branch demand or Belum Terkirim delivered qty. Book physical stays
+    warehouse-scoped in _book_lines. SERVICE / process Add On masters are
+    excluded from physical demand buckets (parity with Stock Saat Ini).
     """
+    from services.inventory_accounting import ITEM_TYPE_SERVICE
     from services.mode_b_legacy_demand import (
         get_mode_b_legacy_demand_settings,
         mongo_order_branch_clauses,
     )
     from services.physical_stock import (
-        LEDGER_COLLECTION,
         MASTER_ITEMS_COLLECTION,
-        MOVEMENT_SALES_DELIVERY,
         _orders_for_branch,
         _qty_num,
+        _r2_confirmed_delivery_qty,
         aggregate_operational_orders,
         operational_availability,
     )
+    from services.r2_go_live import is_r2_authority_active
+    from services.stock_compatibility_read import (
+        BELUM_STATUS_READY,
+        BELUM_STATUS_UNVERIFIED,
+        aggregate_legacy_delivered_qty,
+    )
+
+    # warehouse_id intentionally unused for demand/delivered (branch scope).
+    _ = warehouse_id
 
     masters = await db[MASTER_ITEMS_COLLECTION].find(
         {},
-        {"_id": 0, "id": 1, "accurate_item_id": 1},
+        {"_id": 0, "id": 1, "accurate_item_id": 1, "item_type": 1},
         session=mongo_session,
     ).to_list(20000)
     counts: Dict[str, int] = {}
     owner: Dict[str, str] = {}
+    service_master_ids = set()
     for row in masters:
-        accurate_id = str(row.get("accurate_item_id") or "").strip()
         master_id = str(row.get("id") or "").strip()
-        if not accurate_id or not master_id:
+        if not master_id:
+            continue
+        if str(row.get("item_type") or "").strip().upper() == ITEM_TYPE_SERVICE:
+            service_master_ids.add(master_id)
+        accurate_id = str(row.get("accurate_item_id") or "").strip()
+        if not accurate_id:
             continue
         counts[accurate_id] = counts.get(accurate_id, 0) + 1
         owner[accurate_id] = master_id
@@ -236,42 +284,63 @@ async def _snapshot_order_buckets(
     orders = _orders_for_branch(
         orders, wanted_branch, legacy_settings=legacy_settings,
     )
-    progress = aggregate_operational_orders(orders, owners)
-    ids = [str(line.get("master_item_id") or "") for line in lines if line.get("master_item_id")]
-    movements = []
-    if ids:
-        query: Dict[str, Any] = {
-            "movement_type": MOVEMENT_SALES_DELIVERY,
-            "master_item_id": {"$in": ids},
-        }
-        if wanted_branch:
-            query["branch_id"] = wanted_branch
-        wid = str(warehouse_id or "").strip()
-        if wid:
-            query["warehouse_id"] = wid
-        movements = await db[LEDGER_COLLECTION].find(
-            query,
-            {"_id": 0, "master_item_id": 1, "qty_delta": 1},
-            session=mongo_session,
-        ).to_list(20000)
-    delivered: Dict[str, float] = {}
-    for row in movements:
-        delta = _qty_num(row.get("qty_delta"))
-        if delta >= 0:
-            continue
-        mid = str(row.get("master_item_id") or "")
-        delivered[mid] = _qty_num(delivered.get(mid, 0)) + abs(delta)
+    progress = aggregate_operational_orders(
+        orders, owners, exclude_master_ids=service_master_ids,
+    )
+    ids = [
+        str(line.get("master_item_id") or "")
+        for line in lines
+        if line.get("master_item_id")
+        and str(line.get("master_item_id") or "").strip() not in service_master_ids
+    ]
+    r2_on = await is_r2_authority_active(db)
+    delivery_provenance: Dict[str, str] = {}
+    if r2_on:
+        delivered = await _r2_confirmed_delivery_qty(
+            db, ids, branch_id=wanted_branch or None,
+        )
+        delivery_provenance = {mid: "r2_ledger" for mid in delivered}
+    else:
+        delivered, delivery_provenance = aggregate_legacy_delivered_qty(
+            orders,
+            [],
+            owners,
+            process_master_ids=service_master_ids,
+        )
     for line in lines:
         mid = str(line.get("master_item_id") or "")
-        demand = progress.get(mid) or {"ordered_qty": 0.0, "completed_qty": 0.0}
+        if mid in service_master_ids:
+            # Defense in depth: SERVICE never holds physical demand on opname lines.
+            line["qty_pesanan"] = 0.0
+            line["qty_belum_terkirim"] = 0.0
+            line["belum_terkirim_status"] = BELUM_STATUS_READY
+            line["demand_allocation"] = "unallocated"
+            continue
+        demand = progress.get(mid) or {
+            "ordered_qty": 0.0,
+            "completed_qty": 0.0,
+            "completion_unproven": False,
+        }
+        completed_for_buckets = demand["completed_qty"]
+        completion_unproven = bool(demand.get("completion_unproven"))
+        delivery_unproven = str(delivery_provenance.get(str(mid) or mid, "") or "") == "unproven"
+        belum_unverified = bool(
+            (completion_unproven and _qty_num(completed_for_buckets) > 0)
+            or (delivery_unproven and _qty_num(completed_for_buckets) > 0)
+        )
         buckets = operational_availability(
             physical_qty=line.get("book_qty") or 0,
             ordered_qty=demand["ordered_qty"],
-            completed_qty=demand["completed_qty"],
+            completed_qty=completed_for_buckets,
             r2_delivered_qty=delivered.get(mid, 0),
         )
         line["qty_pesanan"] = buckets["qty_pesanan"]
-        line["qty_belum_terkirim"] = buckets["qty_belum_terkirim"]
+        if belum_unverified:
+            line["qty_belum_terkirim"] = None
+            line["belum_terkirim_status"] = BELUM_STATUS_UNVERIFIED
+        else:
+            line["qty_belum_terkirim"] = buckets["qty_belum_terkirim"]
+            line["belum_terkirim_status"] = BELUM_STATUS_READY
         # Demand is not warehouse-assigned; keep visible as unallocated.
         line["demand_allocation"] = "unallocated"
 

@@ -659,7 +659,9 @@ export default function StockOpname() {
                   <th>Stock Buku</th>
                   {isOperational && <th>Buku Saat Review</th>}
                   <th>Qty Pesanan</th>
-                  <th>Qty Belum Terkirim</th>
+                  <th title="Barang siap kirim belum terbukti keluar — bukan stok fisik. Selisih opname = Stock Fisik − Stock Buku.">
+                    Qty Siap Belum Terkirim
+                  </th>
                   <th>Stock Fisik</th>
                   <th>Waktu Hitung ({STOCK_OPNAME_TZ_LABEL})</th>
                   <th>Waktu Impor</th>
@@ -679,9 +681,12 @@ export default function StockOpname() {
                   const previewDifference = previewCount === null || Number.isNaN(previewCount)
                     ? null
                     : previewCount - bookForFreezeDiff;
+                  const belumMissing = line.qty_belum_terkirim === null || line.qty_belum_terkirim === undefined;
                   const previewAvailable = previewCount === null || Number.isNaN(previewCount)
                     ? null
-                    : previewCount - Number(line.qty_pesanan || 0) - Number(line.qty_belum_terkirim || 0);
+                    : (belumMissing
+                      ? previewCount - Number(line.qty_pesanan || 0)
+                      : previewCount - Number(line.qty_pesanan || 0) - Number(line.qty_belum_terkirim || 0));
                   const apiDifference = line.difference_qty;
                   const difference = editable && !isOperational ? previewDifference : apiDifference;
                   const available = editable && !isOperational ? previewAvailable : line.qty_tersedia_setelah;
@@ -705,7 +710,13 @@ export default function StockOpname() {
                         </td>
                       )}
                       <td className="opname-col-center mono" data-testid={`opname-pesanan-${line.item_code}`}>{fmtQty(line.qty_pesanan)}</td>
-                      <td className="opname-col-center mono" data-testid={`opname-belum-${line.item_code}`}>{fmtQty(line.qty_belum_terkirim)}</td>
+                      <td
+                        className="opname-col-center mono"
+                        data-testid={`opname-belum-${line.item_code}`}
+                        title="Siap kirim belum terbukti keluar (bukan stok fisik)"
+                      >
+                        {belumMissing ? "Belum terverifikasi" : fmtQty(line.qty_belum_terkirim)}
+                      </td>
                       <td className="opname-col-center">
                         {editable ? (
                           <input
@@ -763,6 +774,10 @@ export default function StockOpname() {
               </tbody>
             </table>
           </div>
+          <p className="muted small" data-testid="opname-belum-note">
+            Qty Siap Belum Terkirim = barang siap kirim yang belum terbukti keluar (lingkup cabang), bukan hitungan fisik gudang.
+            Selisih / konfirmasi opname memakai Stock Fisik − Stock Buku saja.
+          </p>
           {isOperational && (counting || reviewState) && (
             <p className="muted small" data-testid="opname-api-calc-note">
               Net / target / adjustment ditampilkan dari respons backend. Waktu di form adalah {STOCK_OPNAME_TZ_LABEL}; API menerima ISO UTC.

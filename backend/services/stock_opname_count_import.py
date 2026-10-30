@@ -23,13 +23,17 @@ from services.stock_opname_sessions import (
 
 COUNT_SHEET = "Hitung Fisik"
 SESSION_SHEET = "Sesi"
+# Display name: siap-kirim belum terbukti keluar (bukan stok fisik).
+# Legacy alias kept for templates downloaded before the rename.
+BELUM_TERKIRIM_HEADER = "Qty Siap Belum Terkirim"
+BELUM_TERKIRIM_HEADER_ALIASES = (BELUM_TERKIRIM_HEADER, "Qty Belum Terkirim")
 COUNT_HEADERS = [
     "Kode Barang",
     "Nama Barang",
     "Satuan Dasar",
     "Stock Buku",
     "Qty Pesanan",
-    "Qty Belum Terkirim",
+    BELUM_TERKIRIM_HEADER,
     "Stock Fisik",
     "Selisih",
     "Qty Tersedia Setelah Opname",
@@ -70,6 +74,11 @@ def build_count_template_xlsx(session: dict) -> bytes:
     meta.append(["session_id", session.get("id") or ""])
     meta.append(["warehouse_id", session.get("warehouse_id") or ""])
     meta.append(["opname_number", session.get("opname_number") or ""])
+    meta.append([
+        "qty_belum_note",
+        "Qty Siap Belum Terkirim = barang siap kirim belum terbukti keluar (bukan stok fisik). "
+        "Selisih opname = Stock Fisik − Stock Buku saja.",
+    ])
     buffer = BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
@@ -80,6 +89,12 @@ def _header_map(sheet) -> Dict[str, int]:
     if not header:
         raise CountImportError("Kolom template hitung fisik tidak ditemukan.")
     found = {str(value).strip(): index for index, value in enumerate(header) if value not in (None, "")}
+    # Accept legacy "Qty Belum Terkirim" as the siap-belum column.
+    if BELUM_TERKIRIM_HEADER not in found:
+        for alias in BELUM_TERKIRIM_HEADER_ALIASES:
+            if alias in found:
+                found[BELUM_TERKIRIM_HEADER] = found[alias]
+                break
     missing = [name for name in COUNT_HEADERS if name not in found]
     if missing:
         raise CountImportError("Kolom template tidak lengkap: " + ", ".join(missing))

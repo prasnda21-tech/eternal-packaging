@@ -41,13 +41,16 @@ describe("Stock Opname operational workflow", () => {
       "Satuan Dasar",
       "Stock Buku",
       "Qty Pesanan",
-      "Qty Belum Terkirim",
       "Stock Fisik",
       "Qty Tersedia Setelah Opname",
       "Status Hitung",
     ]) {
       expect(src).toMatch(new RegExp(`<th>${label}</th>`));
     }
+    expect(src).toMatch(/Qty Siap Belum Terkirim/);
+    expect(src).toMatch(/opname-belum-note/);
+    expect(src).toMatch(/bukan hitungan fisik gudang/);
+    expect(src).toMatch(/Stock Fisik − Stock Buku/);
     expect(src).toMatch(/Selisih/);
     expect(src).toMatch(/Adjustment \(perkiraan\)/);
   });
