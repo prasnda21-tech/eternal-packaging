@@ -124,10 +124,13 @@ export function unconfirmedPackageKeys(grantKeys, confirmedKeys) {
  * Build PUT payload. Omitting confirmPackageKeys keeps legacy shrink-only behavior.
  * Passing an array (even empty) sends explicit confirmation of that reviewed set.
  */
-export function rolePermissionsPutBody(permissions, confirmPackageKeys) {
+export function rolePermissionsPutBody(permissions, confirmPackageKeys, expectedPermissions) {
   const body = { permissions: [...(permissions || [])] };
   if (confirmPackageKeys !== undefined && confirmPackageKeys !== null) {
     body.confirm_package_keys = [...confirmPackageKeys];
+  }
+  if (expectedPermissions !== undefined && expectedPermissions !== null) {
+    body.expected_permissions = [...expectedPermissions];
   }
   return body;
 }

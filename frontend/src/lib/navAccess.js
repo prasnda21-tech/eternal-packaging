@@ -192,7 +192,7 @@ export function canSeeNav(hasPerm, key) {
 
 /** Dashboard parent is hidden when no dashboard child is visible. */
 export function dashboardNavVisible(hasPerm, user) {
-  const production = canSeeNav(hasPerm, NAV_KEYS.dashboard);
+  const production = canSeeNav(hasPerm, NAV_KEYS.dashboard) && canSeeNav(hasPerm, "dashboard.production.view");
   // Owner nav requires role allowlist + permission (admin must not see it).
   const owner = canAccessOwnerDashboard(user, hasPerm);
   const sales = canSeeNav(hasPerm, NAV_KEYS.dashboardSales) || canSeeNav(hasPerm, "dashboard.sales.view");
@@ -257,7 +257,12 @@ export function dashboardMenuItems(hasPerm, user) {
 
 /** Parent that is not a page itself is hidden when no child is visible. */
 export function salesNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.sales);
+  const parent = canSeeNav(hasPerm, NAV_KEYS.sales) || [
+    "sales.customer.view", "sales.customer.manage", "sales_order.view", "sales_order.create",
+    "po.view", "sales.delivery.view", "sales.invoice.view", "sales.receipt.view",
+    "pra_po.create", "pra_po.view_own", "pra_po.view_all", "pra_po.verify",
+    "po.import.view", "sales.activity.view", "sales.activity.create", "sales.outlet.create",
+  ].some((key) => canSeeNav(hasPerm, key));
   const salesCustomers = parent && (canSeeNav(hasPerm, NAV_KEYS.salesCustomers) || canSeeNav(hasPerm, "sales.customer.view") || canSeeNav(hasPerm, "sales.customer.manage") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
   // Permintaan Produk is the open-read exception: child nav (or capability) is
   // enough. Do not require parent nav.sales — that would force granting the
@@ -277,9 +282,9 @@ export function salesNavVisible(hasPerm) {
     || canSeeNav(hasPerm, "pra_po.verify")
   );
   const salesOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesOrder) || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "sales_order.create") || canSeeNav(hasPerm, "po.view"));
-  const salesDeliveryOrder = parent && (canSeeNav(hasPerm, NAV_KEYS.salesDeliveryOrder) || canSeeNav(hasPerm, "sales.delivery.view") || canSeeNav(hasPerm, "sales.delivery.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
-  const salesInvoice = parent && (canSeeNav(hasPerm, NAV_KEYS.salesInvoice) || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales.invoice.create") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
-  const salesReceipt = parent && (canSeeNav(hasPerm, NAV_KEYS.salesReceipt) || canSeeNav(hasPerm, "sales.receipt.view") || canSeeNav(hasPerm, "sales.receipt.create") || canSeeNav(hasPerm, "sales.invoice.view") || canSeeNav(hasPerm, "sales_order.view") || canSeeNav(hasPerm, "po.view"));
+  const salesDeliveryOrder = parent && canSeeNav(hasPerm, "sales.delivery.view");
+  const salesInvoice = parent && canSeeNav(hasPerm, "sales.invoice.view");
+  const salesReceipt = parent && canSeeNav(hasPerm, "sales.receipt.view");
   const importPo = parent && (canSeeNav(hasPerm, NAV_KEYS.importPo) || canSeeNav(hasPerm, "po.import.view"));
   const salesActivity = parent && (canSeeNav(hasPerm, NAV_KEYS.salesActivity) || canSeeNav(hasPerm, "sales.activity.view") || canSeeNav(hasPerm, "sales.activity.create") || canSeeNav(hasPerm, "sales.outlet.create"));
   const crmDailyReport = (
@@ -640,9 +645,9 @@ export function reportsNavVisible(hasPerm) {
     && canSeeNav(hasPerm, "reports.sales.view")
   );
   // Hub opens when at least one deep-linkable report is permitted.
-  // With nav.configured, explicit nav.reports is still required.
+  // Functional report access drives hub visibility even for legacy configured roles.
   const hasCatalog = userHasReportCatalogAccess(hasPerm);
-  const catalogList = !!(hasCatalog && (parentNav || !configured));
+  const catalogList = !!hasCatalog;
   const catalogSaved = catalogList;
   // Status PO / Prediksi Order stay under Penjualan; they do not open Laporan.
   return {
@@ -660,14 +665,18 @@ export function reportsNavVisible(hasPerm) {
 
 /** When nav is configured, module fallback must not defeat explicit nav deny. */
 function navOrModule(hasPerm, navKey, ...moduleKeys) {
-  const configured = canSeeNav(hasPerm, "nav.configured");
-  if (canSeeNav(hasPerm, navKey)) return true;
-  if (configured) return false;
+  // The view grant is authoritative; legacy nav.* alone never grants access.
+  // Create-only access is included only on workspaces with a usable create flow.
   return moduleKeys.some((k) => canSeeNav(hasPerm, k));
 }
 
 export function purchasingNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.purchasing);
+  const parent = [
+    "purchase_requests.view", "purchase_requests.create", "purchase_orders.view",
+    "purchase_orders.create", "purchase_invoices.view", "purchase_invoices.create",
+    "purchase_payments.view", "purchase_payments.create", "purchase_receipts.view",
+    "purchase_hpp.view",
+  ].some((key) => canSeeNav(hasPerm, key));
   const requests = parent && navOrModule(hasPerm, NAV_KEYS.purchaseRequests, "purchase_requests.view", "purchase_requests.create");
   const orders = parent && navOrModule(hasPerm, NAV_KEYS.purchaseOrders, "purchase_orders.view", "purchase_orders.create");
   const invoices = parent && navOrModule(hasPerm, NAV_KEYS.purchaseInvoices, "purchase_invoices.view", "purchase_invoices.create");
@@ -675,21 +684,21 @@ export function purchasingNavVisible(hasPerm) {
   const receipts = parent && navOrModule(hasPerm, NAV_KEYS.purchaseReceipts, "purchase_receipts.view");
   const advances = parent && (
     canSeeNav(hasPerm, NAV_KEYS.purchaseAdvances)
-    || (!canSeeNav(hasPerm, "nav.configured") && (orders || payments))
+    || (orders || payments)
   );
   // Explicit nav deny must not be overridden by receipts/module fallback.
   const returns = parent && (
     canSeeNav(hasPerm, NAV_KEYS.purchaseReturns)
-    || (!canSeeNav(hasPerm, "nav.configured") && receipts)
+    || receipts
   );
   const hpp = parent && navOrModule(hasPerm, NAV_KEYS.purchaseHpp, "purchase_hpp.view");
   // Menu leaf requires matching read capability when module keys exist.
-  const reqRead = !requests || canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseRequests);
-  const ordRead = !orders || canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseOrders);
-  const invRead = !invoices || canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create") || canSeeNav(hasPerm, NAV_KEYS.purchaseInvoices);
-  const payRead = !payments || canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create") || canSeeNav(hasPerm, NAV_KEYS.purchasePayments);
-  const rcpRead = !receipts || canSeeNav(hasPerm, "purchase_receipts.view") || canSeeNav(hasPerm, NAV_KEYS.purchaseReceipts);
-  const hppRead = !hpp || canSeeNav(hasPerm, "purchase_hpp.view") || canSeeNav(hasPerm, NAV_KEYS.purchaseHpp);
+  const reqRead = canSeeNav(hasPerm, "purchase_requests.view") || canSeeNav(hasPerm, "purchase_requests.create");
+  const ordRead = canSeeNav(hasPerm, "purchase_orders.view") || canSeeNav(hasPerm, "purchase_orders.create");
+  const invRead = canSeeNav(hasPerm, "purchase_invoices.view") || canSeeNav(hasPerm, "purchase_invoices.create");
+  const payRead = canSeeNav(hasPerm, "purchase_payments.view") || canSeeNav(hasPerm, "purchase_payments.create");
+  const rcpRead = canSeeNav(hasPerm, "purchase_receipts.view");
+  const hppRead = canSeeNav(hasPerm, "purchase_hpp.view");
   const showRequests = !!(requests && reqRead);
   const showOrders = !!(orders && ordRead);
   const showInvoices = !!(invoices && invRead);
@@ -712,8 +721,9 @@ export function purchasingNavVisible(hasPerm) {
 }
 
 export function inventoryNavVisible(hasPerm) {
-  const parent = canSeeNav(hasPerm, NAV_KEYS.inventory);
-  const masterItems = parent && navOrModule(hasPerm, NAV_KEYS.masterItems, "master_items.view");
+  const parent = ["master_items.view", "org.branches.view", "org.warehouses.view",
+    "current_stock.view", "inventory_valuation.view"].some((key) => canSeeNav(hasPerm, key));
+  const masterItems = parent && canSeeNav(hasPerm, "master_items.view");
   const branchesWarehouses = parent && navOrModule(
     hasPerm,
     NAV_KEYS.branchesWarehouses,
@@ -858,10 +868,10 @@ export function paintNavVisible(hasPerm) {
 }
 
 export function productionNavVisible(hasPerm) {
-  const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
+  const schedule = canSeeNav(hasPerm, "schedule.view");
   const paintSentralisasi = paintNavVisible(hasPerm);
-  const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
-  const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
+  const deliverySchedule = canSeeNav(hasPerm, "delivery.schedule.view") || canSeeNav(hasPerm, "schedule.view");
+  const deliveryReschedule = canSeeNav(hasPerm, "delivery.reschedule") || canSeeNav(hasPerm, "delivery.reschedule.set_date");
   const deliveryToday = false; // Pengiriman Hari Ini menu removed — use Jadwal Pengiriman filter.
   const tasks = tasksNavVisible(hasPerm);
   return {

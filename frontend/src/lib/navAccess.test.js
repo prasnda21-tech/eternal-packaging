@@ -1,4 +1,4 @@
-import { inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, productionMenuItems, productionNavVisible, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
+import { productionNavVisible, productionMenuItems, dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 
 const has = (...keys) => (k) => keys.includes(k);
@@ -89,7 +89,7 @@ describe("salesNavVisible", () => {
   });
 
   test("shows parent when Faktur Penjualan is granted", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice));
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice, "sales.invoice.view"));
     expect(v.parent).toBe(true);
     expect(v.salesInvoice).toBe(true);
   });
@@ -101,7 +101,7 @@ describe("salesNavVisible", () => {
   });
 
   test("shows parent when Penerimaan Penjualan is granted", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt));
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt, "sales.receipt.view"));
     expect(v.parent).toBe(true);
     expect(v.salesReceipt).toBe(true);
   });
@@ -137,14 +137,14 @@ describe("salesMenuItems", () => {
   });
 
   test("builds Faktur Penjualan tile when granted", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice, "sales.invoice.view"));
     expect(items).toEqual([
       { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", to: "/penjualan/faktur-penjualan", tone: "purple", testid: "top-nav-sales-invoice" },
     ]);
   });
 
   test("builds Penerimaan Penjualan tile when granted", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt, "sales.receipt.view"));
     expect(items).toEqual([
       { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", to: "/penjualan/penerimaan-penjualan", tone: "emerald", testid: "top-nav-sales-receipt" },
     ]);
@@ -268,14 +268,14 @@ describe("inventoryNavVisible", () => {
   });
 
   test("shows parent for master items only", () => {
-    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.masterItems));
+    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.masterItems, "master_items.view"));
     expect(v.parent).toBe(true);
     expect(v.masterItems).toBe(true);
     expect(v.currentStock).toBe(false);
   });
 
   test("shows parent for current stock only", () => {
-    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.currentStock));
+    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.currentStock, "current_stock.view"));
     expect(v.parent).toBe(true);
     expect(v.masterItems).toBe(false);
     expect(v.currentStock).toBe(true);
@@ -290,12 +290,12 @@ describe("purchasingNavVisible", () => {
   });
 
   test("shows parent when receipts granted", () => {
-    const v = purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts));
+    const v = purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts, "purchase_receipts.view"));
     expect(v.parent).toBe(true);
     expect(v.receipts).toBe(true);
   });
 
-  test("explicit nav deny wins over module fallback when configured", () => {
+  test("legacy configured nav cannot hide business-authorized HPP", () => {
     const v = purchasingNavVisible(has(
       "nav.configured",
       NAV_KEYS.purchasing,
@@ -304,11 +304,11 @@ describe("purchasingNavVisible", () => {
       "purchase_hpp.view",
     ));
     expect(v.orders).toBe(true);
-    expect(v.hpp).toBe(false);
+    expect(v.hpp).toBe(true);
     expect(v.returns).toBe(false);
   });
 
-  test("module fallback works only before nav.configured", () => {
+  test("business view fallback works regardless of nav.configured", () => {
     const before = purchasingNavVisible(has(
       NAV_KEYS.purchasing,
       "purchase_hpp.view",
@@ -394,11 +394,11 @@ describe("reportsNavVisible", () => {
     expect(reportsMenuItems(perms)).toHaveLength(2);
   });
 
-  test("nav.configured without nav.reports hides hub even with module report access", () => {
+  test("nav.configured cannot hide authorized reports", () => {
     const v = reportsNavVisible(has("nav.configured", "reports.sales.view", "profit_loss.view"));
-    expect(v.parent).toBe(false);
-    expect(v.catalogList).toBe(false);
-    expect(reportsMenuItems(has("nav.configured", "reports.sales.view"))).toEqual([]);
+    expect(v.parent).toBe(true);
+    expect(v.catalogList).toBe(true);
+    expect(reportsMenuItems(has("nav.configured", "reports.sales.view"))).toHaveLength(2);
   });
 
   test("role with no report access keeps Laporan hidden", () => {
@@ -469,11 +469,11 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
 });
 
 describe("productionNavVisible", () => {
-  test("shows parent when only jadwal produksi is granted", () => {
-    const v = productionNavVisible(has(NAV_KEYS.schedule));
+  test("schedule.view shows production and delivery schedules without nav configuration", () => {
+    const v = productionNavVisible(has("schedule.view"));
     expect(v.parent).toBe(true);
     expect(v.schedule).toBe(true);
-    expect(v.deliverySchedule).toBe(false);
+    expect(v.deliverySchedule).toBe(true);
     expect(v.tasks.parent).toBe(false);
   });
 
@@ -488,17 +488,17 @@ describe("productionNavVisible", () => {
     const onlyStatus = productionNavVisible(has(NAV_KEYS.statusPo));
     expect(onlyStatus.parent).toBe(false);
     expect(onlyStatus.deliveryToday).toBe(false);
-    const both = productionNavVisible(has(NAV_KEYS.schedule, NAV_KEYS.statusPo));
+    const both = productionNavVisible(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.statusPo));
     expect(both.parent).toBe(true);
     expect(both.deliveryToday).toBe(false);
-    const prodOnly = productionNavVisible(has(NAV_KEYS.schedule));
+    const prodOnly = productionNavVisible(has(NAV_KEYS.schedule, "schedule.view"));
     expect(prodOnly.deliveryToday).toBe(false);
   });
 });
 
 describe("purchasingMenuItems", () => {
   test("builds tiles from existing Pembelian children only", () => {
-    expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts))).toEqual([
+    expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts, "purchase_receipts.view"))).toEqual([
       { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "amber", testid: "top-nav-penerimaan-barang" },
       { key: NAV_KEYS.purchaseReturns, label: "Retur Pembelian", to: "/pembelian/retur", tone: "rose", testid: "top-nav-retur-pembelian" },
     ]);
@@ -509,10 +509,15 @@ describe("purchasingMenuItems", () => {
     const items = purchasingMenuItems(has(
       NAV_KEYS.purchasing,
       NAV_KEYS.purchaseRequests,
+      "purchase_requests.view",
       NAV_KEYS.purchaseOrders,
+      "purchase_orders.view",
       NAV_KEYS.purchaseInvoices,
+      "purchase_invoices.view",
       NAV_KEYS.purchasePayments,
+      "purchase_payments.view",
       NAV_KEYS.purchaseReceipts,
+      "purchase_receipts.view",
     ));
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
@@ -530,11 +535,17 @@ describe("purchasingMenuItems", () => {
     const items = purchasingMenuItems(has(
       NAV_KEYS.purchasing,
       NAV_KEYS.purchaseRequests,
+      "purchase_requests.view",
       NAV_KEYS.purchaseOrders,
+      "purchase_orders.view",
       NAV_KEYS.purchaseInvoices,
+      "purchase_invoices.view",
       NAV_KEYS.purchasePayments,
+      "purchase_payments.view",
       NAV_KEYS.purchaseReceipts,
+      "purchase_receipts.view",
       NAV_KEYS.purchaseHpp,
+      "purchase_hpp.view",
     ));
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
@@ -552,7 +563,7 @@ describe("purchasingMenuItems", () => {
 
 describe("inventoryMenuItems", () => {
   test("shows authorized Barang/Jasa only", () => {
-    const items = inventoryMenuItems(has(NAV_KEYS.inventory, NAV_KEYS.masterItems));
+    const items = inventoryMenuItems(has(NAV_KEYS.inventory, NAV_KEYS.masterItems, "master_items.view"));
     expect(items).toEqual([
       { key: NAV_KEYS.masterItems, label: "Barang/Jasa", to: "/persediaan/master-barang-jasa", tone: "green", testid: "top-nav-master-barang-jasa" },
     ]);
@@ -612,7 +623,7 @@ describe("reportsMenuItems", () => {
 
 describe("productionMenuItems", () => {
   test("keeps Produksi children without Pengiriman Hari Ini menu", () => {
-    const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.deliverySchedule, NAV_KEYS.deliveryReschedule, NAV_KEYS.statusPo));
+    const items = productionMenuItems(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.deliverySchedule, NAV_KEYS.deliveryReschedule, "delivery.schedule.view", "delivery.reschedule", NAV_KEYS.statusPo));
     expect(items.map((item) => [item.label, item.to])).toEqual([
       ["Jadwal Produksi", "/produksi"],
       ["Jadwal Pengiriman", "/produksi/jadwal-pengiriman"],
@@ -623,8 +634,8 @@ describe("productionMenuItems", () => {
   });
 
   test("omits Pengiriman Hari Ini without status po and does not invent Tugas Produksi tile", () => {
-    const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.tasksOperator));
-    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi"]);
+    const items = productionMenuItems(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.tasksOperator));
+    expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi", "Jadwal Pengiriman", "Rencana Jadwal Kirim"]);
     expect(items.some((item) => item.label === "Tugas Produksi")).toBe(false);
     expect(productionMenuItems(has(NAV_KEYS.statusPo))).toEqual([]);
   });
@@ -677,5 +688,102 @@ describe("taskMenuItems", () => {
       tone: "green",
       testid: "top-nav-tasks-operator",
     });
+  });
+});
+
+
+describe("permission-led sidebar effective deny regression", () => {
+  test("delivery menu requires business view even if legacy nav is granted", () => {
+    const permissions = has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder, "nav.configured");
+    expect(salesNavVisible(permissions).salesDeliveryOrder).toBe(false);
+    expect(salesMenuItems(permissions).some((item) => item.key === NAV_KEYS.salesDeliveryOrder)).toBe(false);
+  });
+
+  test("business delivery view opens menu even with legacy configured nav", () => {
+    const permissions = has(NAV_KEYS.sales, "sales.delivery.view", "nav.configured");
+    expect(salesNavVisible(permissions).salesDeliveryOrder).toBe(true);
+    expect(salesMenuItems(permissions).some((item) => item.key === NAV_KEYS.salesDeliveryOrder)).toBe(true);
+  });
+
+  test("production dashboard menu needs effective production view", () => {
+    const missingView = has(NAV_KEYS.dashboard, "nav.configured");
+    expect(dashboardNavVisible(missingView).production).toBe(false);
+    expect(dashboardNavVisible(has(NAV_KEYS.dashboard, "dashboard.production.view")).production).toBe(true);
+  });
+});
+
+
+describe("automatic purchasing navigation enforces effective business permissions", () => {
+  test("legacy nav only cannot display purchasing grants", () => {
+    const perms = has(NAV_KEYS.purchasing, NAV_KEYS.purchaseOrders, NAV_KEYS.purchaseInvoices, "nav.configured");
+    const visible = purchasingNavVisible(perms);
+    expect(visible.orders).toBe(false);
+    expect(visible.invoices).toBe(false);
+    expect(visible.parent).toBe(false);
+  });
+
+  test("view permission displays purchasing child without manual nav configuration", () => {
+    const perms = has(NAV_KEYS.purchasing, "purchase_orders.view", "nav.configured");
+    const visible = purchasingNavVisible(perms);
+    expect(visible.orders).toBe(true);
+    expect(visible.invoices).toBe(false);
+  });
+});
+
+
+describe("CRM production schedule permission parity", () => {
+  test("schedule.view alone displays Jadwal Produksi without sidebar configuration", () => {
+    const access = productionNavVisible(has("schedule.view", "nav.configured"));
+    expect(access.schedule).toBe(true);
+    expect(productionMenuItems(has("schedule.view", "nav.configured")).some((m) => m.to === "/produksi")).toBe(true);
+  });
+
+  test("legacy sidebar key cannot override denied schedule.view", () => {
+    const access = productionNavVisible(has(NAV_KEYS.production, NAV_KEYS.schedule, "nav.configured"));
+    expect(access.schedule).toBe(false);
+    expect(productionMenuItems(has(NAV_KEYS.production, NAV_KEYS.schedule, "nav.configured")).some((m) => m.to === "/produksi")).toBe(false);
+  });
+
+  test("schedule.work_date.view alone does not grant production schedule", () => {
+    expect(productionNavVisible(has("schedule.work_date.view")).schedule).toBe(false);
+  });
+});
+
+
+
+describe("delivery schedule business permission regression", () => {
+  test.each([[], [NAV_KEYS.deliverySchedule, "nav.configured"], ["schedule.work_date.view"]])(
+    "does not show delivery schedule for insufficient permissions %j", (...keys) => {
+      const permissions = has(...keys);
+      expect(productionNavVisible(permissions).deliverySchedule).toBe(false);
+      expect(productionMenuItems(permissions).some((item) => item.to === "/produksi/jadwal-pengiriman")).toBe(false);
+    },
+  );
+  test.each(["schedule.view", "delivery.schedule.view"])(
+    "%s shows delivery schedule without legacy nav", (permission) => {
+      expect(productionNavVisible(has(permission)).deliverySchedule).toBe(true);
+      expect(productionMenuItems(has(permission)).some((item) => item.to === "/produksi/jadwal-pengiriman")).toBe(true);
+    },
+  );
+});
+
+describe("business permission does not require legacy parent navigation", () => {
+  test.each(["sales.delivery.view", "sales.invoice.view", "sales.receipt.view"])(
+    "%s opens its sales menu with nav.configured only", (permission) => {
+      const keys = {
+        "sales.delivery.view": NAV_KEYS.salesDeliveryOrder,
+        "sales.invoice.view": NAV_KEYS.salesInvoice,
+        "sales.receipt.view": NAV_KEYS.salesReceipt,
+      };
+      expect(salesMenuItems(has(permission, "nav.configured")).some((item) => item.key === keys[permission])).toBe(true);
+    },
+  );
+  test("purchasing view works without its parent; nav-only cannot grant access", () => {
+    expect(purchasingNavVisible(has("purchase_orders.view", "nav.configured")).orders).toBe(true);
+    expect(purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseOrders, "nav.configured")).orders).toBe(false);
+  });
+  test("inventory view works without its parent", () => {
+    expect(inventoryNavVisible(has("master_items.view", "nav.configured")).masterItems).toBe(true);
+    expect(inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.masterItems)).masterItems).toBe(false);
   });
 });

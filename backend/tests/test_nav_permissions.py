@@ -182,20 +182,20 @@ def test_product_request_nav_visible_for_configured_custom_roles():
     # Does not auto-grant unrelated sales children
     assert "nav.sales.sales_receipt" not in derived
 
-    # Without parent nav.sales, child key is still forced; parent is not invented.
+    # PO view now legitimately derives its own Sales parent and sales order menu.
     no_sales_parent = {"nav.configured", "nav.dashboard", "po.view"}
     derived_no_parent = with_nav_defaults(no_sales_parent)
     assert "nav.sales.product_requests" in derived_no_parent
-    assert "nav.sales" not in derived_no_parent
-    assert "nav.sales.sales_order" not in derived_no_parent
+    assert "nav.sales" in derived_no_parent
+    assert "nav.sales.sales_order" in derived_no_parent
+    assert "nav.sales.sales_receipt" not in derived_no_parent
 
 
-def test_non_admin_roles_do_not_auto_gain_sales_receipt_nav():
+def test_sales_receipt_menu_matches_role_view_permission():
     for role in ("helper", "operator", "screener", "designer", "driver", "crm", "head_production", "head_operations"):
         defaults = set(ROLE_DEFAULT_PERMISSIONS[role])
         derived = with_nav_defaults(defaults)
-        assert "nav.sales.sales_receipt" not in defaults, role
-        assert "nav.sales.sales_receipt" not in derived, role
+        assert ("nav.sales.sales_receipt" in derived) == ("sales.receipt.view" in defaults), role
 
 
 def test_non_admin_roles_do_not_auto_gain_sales_activity_permissions():
@@ -389,23 +389,23 @@ def test_legacy_without_schedule_does_not_gain_jadwal():
     assert "nav.sales" in derived
 
 
-def test_explicit_nav_config_is_not_rederived():
+def test_configured_nav_rederives_business_views():
     stored = {"po.view", "schedule.view", "nav.dashboard"}
     derived = with_nav_defaults(stored)
     assert "nav.dashboard" in derived
-    assert "nav.sales" not in derived  # missing nav keys are deny once configured
-    assert "nav.production_schedule" not in derived
+    assert "nav.sales" in derived
+    assert "nav.production_schedule" in derived
     # Open-read exception: only the Permintaan Produk child menu key is forced.
     assert "nav.sales.product_requests" in derived
     assert "nav.sales.sales_receipt" not in derived
     assert "product_request.create" not in derived
 
 
-def test_sentinel_allows_deny_all_nav():
+def test_sentinel_cannot_hide_authorized_business_views():
     stored = {"po.view", "schedule.view", NAV_CONFIGURED}
     derived = with_nav_defaults(stored)
-    assert "nav.sales" not in derived
-    assert "nav.production_schedule" not in derived
+    assert "nav.sales" in derived
+    assert "nav.production_schedule" in derived
     assert "nav.dashboard" not in derived
     # Sentinel still denies parent/other nav; child Permintaan Produk stays findable.
     assert "nav.sales.product_requests" in derived
@@ -460,3 +460,230 @@ def test_loading_nav_derived_from_loading_update():
     assert "nav.tasks" in derived
     assert "delivery.schedule.create" not in ALL_PERMISSIONS
     assert "delivery.schedule.publish" not in ALL_PERMISSIONS
+
+
+
+def test_configured_sidebar_never_blocks_authorized_crm_sales_views():
+    grants = {
+        "nav.configured", "sales.delivery.view", "sales.invoice.view",
+        "sales.receipt.view", "schedule.view",
+    }
+    visible = with_nav_defaults(grants)
+    assert {"nav.sales", "nav.sales.delivery_order", "nav.sales.sales_invoice",
+            "nav.sales.sales_receipt", "nav.production_schedule"} <= visible
+    assert "dashboard.production.view" not in visible
+    assert "nav.dashboard" not in visible
+
+
+def test_explicit_user_business_deny_keeps_capability_denied():
+    role = {"crm": ["nav.configured", "sales.delivery.view"]}
+    result = effective_permissions("crm", {"sales.delivery.view": False}, role)
+    assert "sales.delivery.view" not in result
+    # No claim that an inherited menu can authorize the API; frontend gating
+    # must check effective business permission, not the nav key alone.
+
+
+def test_only_view_produces_dashboard_menu_without_granting_data():
+    visible = with_nav_defaults({"nav.configured", "dashboard.production.view"})
+    assert "nav.dashboard" in visible
+    assert "dashboard.production.input" not in visible
+    assert "dashboard.production.edit" not in visible
+
+
+def test_user_business_deny_removes_auto_generated_delivery_menu():
+    role_grants = {"crm": ["sales.delivery.view", "nav.configured"]}
+    effective = effective_permissions("crm", {"sales.delivery.view": False}, role_grants)
+    assert "sales.delivery.view" not in effective
+    assert "nav.sales.delivery_order" not in effective
+
+
+def test_user_business_allow_generates_delivery_menu_with_stored_nav_config():
+    role_grants = {"crm": ["nav.configured"]}
+    effective = effective_permissions("crm", {"sales.delivery.view": True}, role_grants)
+    assert "sales.delivery.view" in effective
+    assert "nav.sales.delivery_order" in effective
+    assert "nav.sales" in effective
+
+
+def test_user_dashboard_view_deny_removes_auto_dashboard_nav():
+    role_grants = {"crm": ["dashboard.production.view", "nav.configured"]}
+    effective = effective_permissions("crm", {"dashboard.production.view": False}, role_grants)
+    assert "dashboard.production.view" not in effective
+    assert "nav.dashboard" not in effective
+
+
+# Exercise the real handlers with an isolated fake database; importing server.py
+# would initialize the entire ERP and is unnecessary for these permission cases.
+def _permission_handler(name, namespace):
+    import ast
+    source = Path(__file__).resolve().parents[1] / "server.py"
+    tree = ast.parse(source.read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+    fn.decorator_list = []
+    fn.args.defaults = []
+    for arg in fn.args.args:
+        arg.annotation = None
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(source), "exec"), namespace)
+    return namespace[name]
+
+
+def _run_business_patch(*, remove=(), add=(), race_confirmation=False, confirmed=None):
+    import asyncio
+    import copy
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from services.purchasing_inventory_access import PACKAGE_CONFIRMED_KEYS_FIELD as field
+
+    class Collection:
+        def __init__(self):
+            self.doc = {
+                "role": "crm",
+                "permissions": ["purchase_orders.view", "purchase_receipts.view", "schedule.view"],
+            }
+            if confirmed is not None:
+                self.doc[field] = list(confirmed)
+
+        async def find_one(self, *args):
+            return copy.deepcopy(self.doc)
+
+        async def update_one(self, query, update):
+            if race_confirmation:
+                self.doc[field] = ["purchase_receipts.view"]
+            matches = all(
+                (key in self.doc) == value["$exists"]
+                if isinstance(value, dict) and "$exists" in value
+                else self.doc.get(key) == value
+                for key, value in query.items()
+            )
+            if matches:
+                self.doc.update(copy.deepcopy(update["$set"]))
+            return SimpleNamespace(matched_count=int(matches))
+
+    collection = Collection()
+
+    async def load_role(_):
+        return {"role": "crm"}
+
+    async def audit(*args, **kwargs):
+        pass
+
+    env = {
+        "db": SimpleNamespace(role_permissions=collection),
+        "HTTPException": HTTPException, "ALL_PERMISSIONS": ALL_PERMISSIONS,
+        "BUILTIN_ROLES": set(ROLE_DEFAULT_PERMISSIONS),
+        "_load_role_doc": load_role, "_write_audit": audit,
+        "now_iso": lambda: "dummy",
+    }
+    handler = _permission_handler("patch_role_business_permissions", env)
+    payload = SimpleNamespace(
+        add=list(add), remove=list(remove),
+        expected_permissions=sorted(with_nav_defaults(set(collection.doc["permissions"]))),
+    )
+    try:
+        asyncio.run(handler("crm", payload, {"email": "dummy@example.test"}))
+        status = 200
+    except HTTPException as exc:
+        status = exc.status_code
+    return status, collection.doc
+
+
+def test_business_patch_shrinks_confirmation_and_preserves_other_modules():
+    status, doc = _run_business_patch(
+        remove=["purchase_orders.view"],
+        confirmed=["purchase_orders.view", "purchase_receipts.view"],
+    )
+    assert status == 200
+    assert doc["permissions"] == ["purchase_receipts.view", "schedule.view"]
+    assert doc["package_production_confirmed_keys"] == ["purchase_receipts.view"]
+
+
+def test_business_patch_never_confirms_new_grants():
+    status, doc = _run_business_patch(add=["purchase_invoices.view"], confirmed=["purchase_orders.view"])
+    assert status == 200
+    assert "purchase_invoices.view" in doc["permissions"]
+    assert doc["package_production_confirmed_keys"] == ["purchase_orders.view"]
+
+
+def test_business_patch_rejects_concurrent_confirmation_change():
+    status, doc = _run_business_patch(
+        remove=["purchase_orders.view"], confirmed=["purchase_orders.view"],
+        race_confirmation=True,
+    )
+    assert status == 409
+    assert "purchase_orders.view" in doc["permissions"]
+    assert doc["package_production_confirmed_keys"] == ["purchase_receipts.view"]
+
+
+def test_business_patch_handles_legacy_document_without_confirmation():
+    status, doc = _run_business_patch(remove=["purchase_orders.view"])
+    assert status == 200
+    assert doc["package_production_confirmed_keys"] == []
+
+
+def test_role_list_sidebar_permissions_use_runtime_effective_resolver():
+    import asyncio
+    from types import SimpleNamespace
+
+    class Cursor:
+        def __init__(self, docs): self.docs = docs
+        def sort(self, *args): return self
+        async def to_list(self, *args): return self.docs
+
+    class Collection:
+        def __init__(self, docs): self.docs = docs
+        def find(self, *args): return Cursor(self.docs)
+
+    calls = []
+
+    async def seed(): pass
+    async def overrides():
+        return {"crm": ["purchase_orders.view", "schedule.view"]}
+    async def count(_): return 0
+    async def effective(user):
+        calls.append(user)
+        return {"schedule.view"}  # package grants filtered by runtime policy
+
+    env = {
+        "db": SimpleNamespace(
+            role_permissions=Collection([]),
+            roles=Collection([{"role": "crm", "status": "active"}]),
+        ),
+        "_seed_roles_collection": seed, "_role_defaults_override": overrides,
+        "_role_user_count": count, "user_permissions": effective,
+        "ROLE_DEFAULT_PERMISSIONS": {}, "ROLE_LABELS": {}, "BUILTIN_ROLES": {"crm"},
+        "with_nav_defaults": with_nav_defaults,
+    }
+    result = asyncio.run(_permission_handler("list_roles", env)({}))
+    row = result["roles"][0]
+    assert "purchase_orders.view" in row["permissions"]  # editable stored grants
+    assert row["sidebar_permissions"] == ["schedule.view"]  # effective preview
+    assert calls == [{"role": "crm"}]  # no real account or super-admin override
+
+
+def test_role_preview_effective_permissions_respect_production_package_policy():
+    import asyncio
+    from types import SimpleNamespace
+    from services.purchasing_inventory_access import PACKAGE_PERMISSIONS
+
+    async def inactive(): return set()
+    async def confirmations(_): return [], []
+    async def overrides(): return {}
+    env = {
+        "_inactive_role_slugs": inactive,
+        "_package_confirm_context": confirmations,
+        "_role_defaults_override": overrides,
+        "effective_permissions": effective_permissions,
+        "ALL_PERMISSIONS": ALL_PERMISSIONS,
+        "os": SimpleNamespace(environ={"APP_ENV": "production"}),
+    }
+    handler = _permission_handler("user_permissions", env)
+    for role in ROLE_DEFAULT_PERMISSIONS:
+        permissions = asyncio.run(handler({"role": role}))
+        if role not in {"holding_team", "direktur_utama"}:
+            assert not (permissions & PACKAGE_PERMISSIONS), role
+        if role == "crm":
+            assert "schedule.view" in permissions
+    holding = asyncio.run(handler({"role": "holding_team"}))
+    director = asyncio.run(handler({"role": "direktur_utama"}))
+    assert "purchase_orders.view" in holding
+    assert "purchase_orders.view" in director

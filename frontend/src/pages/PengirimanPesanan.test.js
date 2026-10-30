@@ -105,7 +105,7 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
   test("registers /penjualan/pengiriman-pesanan in App.js router", () => {
     expect(appSrc).toMatch(/path="\/penjualan\/pengiriman-pesanan"/);
     expect(appSrc).toMatch(/<PengirimanPesanan \/>/);
-    expect(appSrc).toMatch(/NAV_KEYS\.salesDeliveryOrder/);
+    expect(appSrc).toMatch(/anyOf=\{\["sales\.delivery\.view"\]\}/);
   });
 
   test("SJ list has checkbox, visible-only select all, Batal Terpilih, and SJ number confirm", () => {
@@ -240,13 +240,13 @@ describe("Pengiriman Pesanan Nav Integration", () => {
   });
 
   test("salesNavVisible enables parent for salesDeliveryOrder", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder));
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder, "sales.delivery.view"));
     expect(v.parent).toBe(true);
     expect(v.salesDeliveryOrder).toBe(true);
   });
 
   test("salesMenuItems renders Pengiriman Pesanan tile", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesDeliveryOrder, "sales.delivery.view"));
     expect(items).toContainEqual({
       key: NAV_KEYS.salesDeliveryOrder,
       label: "Pengiriman Pesanan",

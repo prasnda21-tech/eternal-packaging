@@ -35,14 +35,16 @@ describe("Settings — single-source sidebar access UI", () => {
     expect(workspaceSrc).toMatch(/businessPermissionModules/);
   });
 
-  test("Akses Menu Sidebar remains the only matrix host", () => {
+  test("Akses Menu Sidebar uses the read-only shared resolver", () => {
     const sidebarTab = sliceFn("SidebarAccessTab", "OperatorWageTab");
     expect(sidebarTab).toMatch(/settings-sidebar-access/);
-    expect(sidebarTab).toMatch(/NavAccessMatrix/);
-    expect(settingsSrc).toMatch(/data-testid="nav-access-matrix"/);
-    expect(settingsSrc).toMatch(/data-testid="nav-access-save"/);
-    const matrixUsages = settingsSrc.split("<NavAccessMatrix").length - 1;
-    expect(matrixUsages).toBe(1);
+    expect(sidebarTab).toMatch(/roleSidebarPreview/);
+    expect(sidebarTab).not.toMatch(/NavAccessMatrix|adminUpdateRolePermissions|nav-access-save/);
+    const shell = fs.readFileSync(path.join(__dirname, "../components/AppShell.jsx"), "utf8");
+    expect(shell).toMatch(/resolveDesktopSidebar\(hasPerm, user\)/);
+    const resolver = fs.readFileSync(path.join(__dirname, "../lib/desktopSidebarModel.js"), "utf8");
+    expect(resolver).toMatch(/role.sidebar_permissions/);
+    expect(resolver).toMatch(/resolveDesktopSidebar/);
   });
 
   test("employee override UI hides sidebar/menu visibility module only", () => {

@@ -9695,10 +9695,18 @@ class PasswordResetPayload(BaseModel):
 
 class RolePermissionsPayload(BaseModel):
     permissions: List[str]
+    expected_permissions: Optional[List[str]] = None
     # Explicit production package confirmation: exact keys reviewed in the UI.
     # Absent / omitted → never grows confirmation (legacy editor safe).
     # Ordinary save shrinks confirmation to ∩ permissions only.
     confirm_package_keys: Optional[List[str]] = None
+
+
+class RoleBusinessPermissionPatch(BaseModel):
+    """Atomic business-key delta; unlike PUT it cannot erase untouched modules."""
+    expected_permissions: List[str]
+    add: List[str] = []
+    remove: List[str] = []
 
 
 class RoleCreatePayload(BaseModel):
@@ -9858,6 +9866,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
             "is_builtin": bool(d.get("is_builtin")),
             "status": d.get("status", "active"),
             "permissions": base,
+            "sidebar_permissions": sorted(await user_permissions({"role": slug})),
             "is_customized": slug in overrides,
             "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
@@ -9873,7 +9882,7 @@ async def list_roles(user=Depends(require_perm("users.view"))):
         out.append({
             "role": slug, "label": ROLE_LABELS.get(slug, slug), "description": "",
             "is_builtin": True, "status": "active",
-            "permissions": base, "is_customized": slug in overrides,
+            "permissions": base, "sidebar_permissions": sorted(await user_permissions({"role": slug})), "is_customized": slug in overrides,
             "builtin_permissions": sorted(with_nav_defaults(set(ROLE_DEFAULT_PERMISSIONS.get(slug, [])))),
             "user_count": await _role_user_count(slug),
             PACKAGE_CONFIRMED_KEYS_FIELD: conf.get(PACKAGE_CONFIRMED_KEYS_FIELD) or [],
@@ -9950,6 +9959,71 @@ async def update_role(role: str, payload: RoleUpdatePayload, user=Depends(requir
     return {"role": after}
 
 
+@api_router.patch("/admin/roles/{role}/permissions/business")
+async def patch_role_business_permissions(
+    role: str,
+    payload: RoleBusinessPermissionPatch,
+    user=Depends(require_perm("permissions.manage")),
+):
+    """Compare-and-swap role grants; only changed business keys are written."""
+    from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults, is_director_full_access_role
+    from services.purchasing_inventory_access import (
+        PACKAGE_CONFIRMED_KEYS_FIELD, shrink_package_confirmed_keys,
+    )
+    slug = role.strip().lower()
+    if slug == "admin" or is_director_full_access_role(slug):
+        raise HTTPException(400, "Permission role ini tidak dapat diubah")
+    existing_role = await _load_role_doc(slug)
+    if not existing_role and slug not in BUILTIN_ROLES:
+        raise HTTPException(404, "Role tidak dikenal")
+    add = set(payload.add)
+    remove = set(payload.remove)
+    if add & remove:
+        raise HTTPException(400, "Permission tidak boleh ditambah dan dicabut bersamaan")
+    if any(k not in ALL_PERMISSIONS or k.startswith("nav.") for k in add | remove):
+        raise HTTPException(400, "Hanya permission bisnis yang terdaftar boleh diubah")
+    from permissions import OPT_IN_ONLY_PERMISSIONS
+    if add & set(OPT_IN_ONLY_PERMISSIONS):
+        raise HTTPException(400, "Permission opt-in harus melalui konfirmasi khusus")
+    before = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
+    raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
+    effective = with_nav_defaults(set(raw))
+    if set(payload.expected_permissions) != effective:
+        raise HTTPException(409, "Permission role telah berubah. Muat ulang sebelum menyimpan.")
+    next_perms = sorted((set(raw) | add) - remove)
+    confirmed = shrink_package_confirmed_keys(
+        (before or {}).get(PACKAGE_CONFIRMED_KEYS_FIELD), next_perms,
+    )
+    if before is None:
+        try:
+            await db.role_permissions.insert_one({
+                "role": slug, "permissions": next_perms,
+                PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
+                "updated_at": now_iso(), "updated_by": user.get("email"),
+            })
+        except Exception:
+            raise HTTPException(409, "Role berubah bersamaan. Muat ulang sebelum menyimpan.")
+    else:
+        result = await db.role_permissions.update_one(
+            {
+                "role": slug, "permissions": before.get("permissions", []),
+                PACKAGE_CONFIRMED_KEYS_FIELD: before[PACKAGE_CONFIRMED_KEYS_FIELD]
+                if PACKAGE_CONFIRMED_KEYS_FIELD in before else {"$exists": False},
+            },
+            {"$set": {
+                "permissions": next_perms, "updated_at": now_iso(),
+                PACKAGE_CONFIRMED_KEYS_FIELD: confirmed,
+                "updated_by": user.get("email"),
+            }},
+        )
+        if result.matched_count != 1:
+            raise HTTPException(409, "Permission role berubah bersamaan. Muat ulang.")
+    after = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
+    await _write_audit("role.permissions.business_patch", user, target_email=None,
+                       before=before, after=after, note=f"Business permission patch {slug}")
+    return {"role": slug, "permissions": sorted(with_nav_defaults(set(next_perms)))}
+
+
 @api_router.put("/admin/roles/{role}/permissions")
 async def update_role_permissions(role: str, payload: RolePermissionsPayload, user=Depends(require_perm("permissions.manage"))):
     from permissions import is_director_full_access_role
@@ -10009,7 +10083,27 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
         "updated_by": user.get("email"),
         **confirm_meta,
     }
-    await db.role_permissions.update_one({"role": slug}, {"$set": set_doc}, upsert=True)
+    if payload.expected_permissions is not None:
+        from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults
+        old_raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
+        if set(payload.expected_permissions) != with_nav_defaults(set(old_raw)):
+            raise HTTPException(409, "Permission role berubah. Muat ulang sebelum menyimpan.")
+        if before is None:
+            try:
+                await db.role_permissions.insert_one(set_doc)
+            except Exception:
+                raise HTTPException(409, "Role berubah bersamaan. Muat ulang.")
+        else:
+            updated = await db.role_permissions.update_one(
+                {"role": slug, "permissions": before.get("permissions", [])},
+                {"$set": set_doc},
+            )
+            if updated.matched_count != 1:
+                raise HTTPException(409, "Permission role berubah bersamaan. Muat ulang.")
+    else:
+        # Legacy full-replacement saves are unsafe: refuse stale or partial lists.
+        # Clients must use the version-checked PUT or business-key PATCH.
+        raise HTTPException(409, "Penyimpanan izin memerlukan expected_permissions. Muat ulang pengaturan.")
     after = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     await _write_audit("role.permissions.update", user, target_email=None, before=before, after=after, note=f"Role {slug} permissions")
     return {

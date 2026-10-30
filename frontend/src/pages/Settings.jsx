@@ -12,6 +12,7 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import api from "../lib/api";
+import { roleSidebarPreview } from "../lib/desktopSidebarModel";
 import { useAuth } from "../lib/auth";
 import { formatDate } from "../lib/constants";
 import { NAV_MENU_FALLBACK, settingsAliasFromPath, settingsTabFromPath } from "../lib/navAccess";
@@ -1185,11 +1186,22 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
           setConfirmReviewKeys(preview);
           await api.adminUpdateRolePermissions(
             selected,
-            rolePermissionsPutBody(permissions, preview),
+            rolePermissionsPutBody(permissions, preview, roleDoc?.permissions || []),
           );
         } else {
-          // Ordinary save: shrink-only — never activates legacy package grants.
-          await api.adminUpdateRolePermissions(selected, permissions);
+          // Business-only delta: backend CAS preserves unrelated grants and nav.*
+          // from concurrent edits, rejecting stale role snapshots with HTTP 409.
+          const baseline = new Set(initial);
+          const current = new Set(permsDraft);
+          const add = [...current].filter((k) => !baseline.has(k) && !k.startsWith("nav."));
+          const remove = [...baseline].filter((k) => !current.has(k) && !k.startsWith("nav."));
+          if (add.length || remove.length) {
+            await api.adminPatchRoleBusinessPermissions(selected, {
+              expected_permissions: roleDoc?.permissions || [],
+              add,
+              remove,
+            });
+          }
         }
       }
       setInitial(new Set(permsDraft));
@@ -2486,26 +2498,47 @@ function WorkPanelSettingsTab({ notify, canEdit, canManagePerms, canListRoles })
 }
 
 /* ---------------- Sidebar access tab ---------------- */
-function SidebarAccessTab({ permissionCatalog, canManagePerms, notify }) {
-  const { user, refresh } = useAuth();
+function SidebarAccessTab() {
   const [roles, setRoles] = useState([]);
+  const [error, setError] = useState("");
   useEffect(() => {
-    api.adminListRoles().then((d) => setRoles(d.roles || [])).catch(() => {});
+    api.adminListRoles().then((d) => setRoles(d.roles || []))
+      .catch(() => setError("Gagal memuat pratinjau menu"));
   }, []);
+  const { columns, rows } = useMemo(() => roleSidebarPreview(roles), [roles]);
   return (
     <div data-testid="settings-sidebar-access">
-      <NavAccessMatrix
-        roles={roles}
-        permissionCatalog={permissionCatalog}
-        canManagePerms={canManagePerms}
-        notify={notify}
-        currentUserRole={user?.role}
-        onRefreshMe={refresh}
-      />
+      <div className="nav-access-head">
+        <div>
+          <h3><PanelLeft size={16} /> Pratinjau Sidebar per Role</h3>
+          <p className="hint">Menu mengikuti izin efektif role. Override akun dan status Super Admin dapat berbeda. Ubah izin melalui Role &amp; Hak Akses.</p>
+        </div>
+      </div>
+      {error && <div className="error">{error}</div>}
+      {columns.some((role) => !role.known) && <div className="error">Pratinjau izin efektif belum tersedia. Muat ulang halaman.</div>}
+      <div className="nav-access-wrap">
+        <table className="nav-access-table">
+          <thead><tr><th scope="col">Menu</th>{columns.map((role) => <th scope="col" key={role.role}>{role.label || role.role}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((menu) => (
+              <tr key={menu.to}>
+                <th scope="row">{menu.group} · {menu.label}</th>
+                {columns.map((role) => (
+                  <td key={role.role} title={!role.known ? "Izin efektif belum tersedia." : role.paths.has(menu.to) ? "Tampil pada sidebar role ini." : "Tidak tampil pada sidebar role ini."}>
+                    <span>{!role.known ? "?" : role.paths.has(menu.to) ? "✓" : "–"}</span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!error && columns.length > 0 && rows.length === 0 && <p className="hint">Tidak ada menu yang tersedia pada izin efektif role.</p>}
+      </div>
     </div>
   );
 }
 
+/* ---------------- Operator Wage settings ---------------- */
 function OperatorWageTab(props) {
   return <OperatorWageSettings {...props} />;
 }

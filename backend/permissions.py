@@ -635,6 +635,19 @@ def derived_nav_permissions(existing: set) -> set:
         nav.add("nav.dashboard.sales")
     if "dashboard.finance.view" in existing:
         nav.add("nav.dashboard.finance")
+    # Penjualan pages: a data-view grant is sufficient for menu visibility.
+    # This does not grant any create/edit/delete or data permission.
+    sales_pages = (
+        ("nav.sales.sales_order", ("sales_order.view", "po.view")),
+        ("nav.sales.delivery_order", ("sales.delivery.view",)),
+        ("nav.sales.sales_invoice", ("sales.invoice.view",)),
+        ("nav.sales.sales_receipt", ("sales.receipt.view",)),
+        ("nav.sales.customers", ("sales.customer.view", "sales_order.view")),
+    )
+    for menu_key, capability_keys in sales_pages:
+        if any(key in existing for key in capability_keys):
+            nav.add("nav.sales")
+            nav.add(menu_key)
     if "schedule.view" in existing:
         nav.add("nav.production")
         nav.add("nav.production_schedule")
@@ -867,8 +880,10 @@ def with_nav_defaults(perms: set) -> set:
     nor create / feedback / update_status.
     """
     base = set(perms or [])
-    if not nav_is_configured(base):
-        base |= derived_nav_permissions(base)
+    # Business capabilities always generate matching menu visibility. Legacy
+    # nav.configured remains stored for compatibility but cannot hide a page
+    # whose functional permission was explicitly granted.
+    base |= derived_nav_permissions(base)
     base.add("nav.sales.product_requests")
     if (
         "pra_po.create" in base
@@ -1201,7 +1216,9 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
         base = set(role_defaults_override[role] or [])
     else:
         base = set(ROLE_DEFAULT_PERMISSIONS.get(role, []))
-    base = with_nav_defaults(base)
+    # Capture role-level generated navigation to revoke it when the user denies
+    # the business capability. Legacy stored nav.* must not defeat an explicit deny.
+    inherited_auto_nav = derived_nav_permissions(base)
     base = with_loading_permission_defaults(base)
     for perm, allowed in (override or {}).items():
         if allowed:
@@ -1218,6 +1235,35 @@ def effective_permissions(role: str, override: dict | None, role_defaults_overri
             for k in expanded:
                 if k not in denied:
                     base.add(k)
+    # Remove nav keys no longer justified after user-specific denials, even if
+    # they were saved as legacy role-level nav grants.
+    current_auto_nav = derived_nav_permissions(base)
+    denied_business = any(v is False and not k.startswith("nav.") for k, v in (override or {}).items())
+    if denied_business:
+        for nav_key in inherited_auto_nav - current_auto_nav:
+            base.discard(nav_key)
+    # Do not let old role-level nav settings resurrect a denied business leaf.
+    # Keep parent navigation when other authorized children still need it.
+    denied_leaf = {
+        "sales.delivery.view": "nav.sales.delivery_order",
+        "sales.invoice.view": "nav.sales.sales_invoice",
+        "sales.receipt.view": "nav.sales.sales_receipt",
+        "dashboard.production.view": "nav.dashboard",
+        "schedule.view": "nav.production_schedule",
+    }
+    for capability, nav_key in denied_leaf.items():
+        if (override or {}).get(capability) is False:
+            base.discard(nav_key)
+    base = with_nav_defaults(base)
+    # NAV_ALWAYS_VISIBLE contains legacy sales leaves. An account-level deny
+    # must win even when those leaves are reintroduced by nav derivation.
+    for capability, nav_key in denied_leaf.items():
+        if (override or {}).get(capability) is False:
+            base.discard(nav_key)
+    # Respect explicit per-user nav denies, including always-visible defaults.
+    for nav_key, allowed in (override or {}).items():
+        if nav_key.startswith("nav.") and allowed is False:
+            base.discard(nav_key)
     return base
 
 

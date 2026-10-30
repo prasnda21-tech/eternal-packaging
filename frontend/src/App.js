@@ -345,8 +345,8 @@ export default function App() {
             <Route path="/dashboard/penjualan" element={<WidgetDashboardGate><WidgetDashboard /></WidgetDashboardGate>} />
             <Route path="/dashboard/widget" element={<WidgetDashboardAlias />} />
             <Route path="/dashboard/owner" element={<OwnerDashboardGate><OwnerDashboard /></OwnerDashboardGate>} />
-            <Route path="/dashboard/rincian" element={<PermGate anyOf={[NAV_KEYS.dashboard, "dashboard.production.view", "dashboard.sales.view", "dashboard.finance.view"]}><DashboardRincianPage /></PermGate>} />
-            <Route path="/dashboard" element={<PermGate anyOf={[NAV_KEYS.dashboard]}><ProductionDashboard /></PermGate>} />
+            <Route path="/dashboard/rincian" element={<PermGate anyOf={["dashboard.production.view", "dashboard.sales.view", "dashboard.finance.view"]}><DashboardRincianPage /></PermGate>} />
+            <Route path="/dashboard" element={<PermGate anyOf={["dashboard.production.view"]}><ProductionDashboard /></PermGate>} />
             <Route path="/tasks" element={<DivisionTaskIndex />} />
             <Route path="/tasks/designer" element={<PermGate anyOf={[NAV_KEYS.tasksDesigner, "design.upload"]}><DivisionTaskPage /></PermGate>} />
             <Route path="/tasks/kepala-produksi/prioritas/:kpi" element={<PermGate anyOf={[NAV_KEYS.tasksKepalaProduksi, "schedule.edit"]}><KepalaProduksiKpiDetailPage /></PermGate>} />
@@ -368,7 +368,7 @@ export default function App() {
             <Route path="/produksi/pengiriman-hari-ini" element={<Navigate to="/produksi/jadwal-pengiriman?status=hari_ini" replace />} />
             <Route path="/produksi/rute-saya" element={<Navigate to="/" replace />} />
             <Route path="/produksi/sentralisasi-cat" element={<PermGate anyOf={[NAV_KEYS.paintSentralisasi, "paint.view", "paint.stock.view", "paint.report.view", "paint.settings.manage"]}><SentralisasiCat /></PermGate>} />
-            <Route path="/produksi" element={<PermGate anyOf={[NAV_KEYS.schedule]}><ProductionSchedule /></PermGate>} />
+            <Route path="/produksi" element={<PermGate anyOf={["schedule.view"]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
             <Route path="/penjualan/data-pelanggan" element={<PermGate anyOf={[NAV_KEYS.salesCustomers, NAV_KEYS.sales, "sales.customer.view", "sales.customer.manage", "sales_order.view", "sales_order.create", "po.view"]}><DataPelanggan /></PermGate>} />
@@ -378,9 +378,9 @@ export default function App() {
             <Route path="/penjualan/pra-po/:id" element={<PermGate anyOf={[NAV_KEYS.praPo, "pra_po.create", "pra_po.view_own", "pra_po.view_all", "pra_po.verify"]}><PraPoPage /></PermGate>} />
             <Route path="/penjualan/pra-po" element={<PermGate anyOf={[NAV_KEYS.praPo, "pra_po.create", "pra_po.view_own", "pra_po.view_all", "pra_po.verify"]}><PraPoPage /></PermGate>} />
             <Route path="/penjualan/pesanan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesOrder, NAV_KEYS.sales, "sales_order.view", "sales_order.create", "po.view"]}><PesananPenjualan /></PermGate>} />
-            <Route path="/penjualan/pengiriman-pesanan" element={<PermGate anyOf={[NAV_KEYS.salesDeliveryOrder, NAV_KEYS.sales, "sales.delivery.view", "sales.delivery.create", "sales_order.view", "po.view"]}><PengirimanPesanan /></PermGate>} />
-            <Route path="/penjualan/faktur-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesInvoice, NAV_KEYS.sales, "sales.invoice.view", "sales.invoice.create", "sales_order.view", "po.view"]}><FakturPenjualan /></PermGate>} />
-            <Route path="/penjualan/penerimaan-penjualan" element={<PermGate anyOf={[NAV_KEYS.salesReceipt, NAV_KEYS.sales, "sales.receipt.view", "sales.receipt.create", "sales.invoice.view", "sales_order.view", "po.view"]}><PenerimaanPenjualan /></PermGate>} />
+            <Route path="/penjualan/pengiriman-pesanan" element={<PermGate anyOf={["sales.delivery.view"]}><PengirimanPesanan /></PermGate>} />
+            <Route path="/penjualan/faktur-penjualan" element={<PermGate anyOf={["sales.invoice.view"]}><FakturPenjualan /></PermGate>} />
+            <Route path="/penjualan/penerimaan-penjualan" element={<PermGate anyOf={["sales.receipt.view"]}><PenerimaanPenjualan /></PermGate>} />
             <Route path="/penjualan/aktivitas-sales/outlet/:id" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create"]}><SalesActivityOutletDetail /></PermGate>} />
             <Route path="/penjualan/aktivitas-sales" element={<PermGate anyOf={[NAV_KEYS.salesActivity, "sales.activity.view", "sales.activity.create", "sales.outlet.create"]}><SalesActivityPage /></PermGate>} />
             <Route path="/penjualan/laporan-harian-crm/baru" element={<PermGate anyOf={["crm.daily_report.create"]}><CrmDailyReportForm /></PermGate>} />

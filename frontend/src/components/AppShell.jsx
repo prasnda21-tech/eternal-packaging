@@ -4,13 +4,13 @@ import { Suspense, forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useS
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { ROLES } from "../lib/constants";
-import { canAccessRoutePage } from "../lib/independentRoute";
 import {
   isMenuSearchOpenShortcut,
   isMenuSearchShortcutBlockedTarget,
   menuSearchItemsFromRails,
 } from "../lib/menuSearch";
-import { NAV_KEYS, TASK_NAV_ORDER, cashBankMenuItems, cashBankNavVisible, dashboardMenuItems, dashboardNavVisible, employeeAdminMenuItems, employeeAdminNavVisible, hrPayrollMenuItems, hrPayrollNavVisible, inventoryMenuItems, inventoryNavVisible, ledgerMenuItems, ledgerNavVisible, productionMenuItems, productionNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, taskMenuItems } from "../lib/navAccess";
+import { NAV_KEYS, ledgerMenuItems, cashBankMenuItems } from "../lib/navAccess";
+import { resolveDesktopSidebar } from "../lib/desktopSidebarModel";
 import { nextSidebarMenu, placeSidebarFlyout } from "../lib/sidebarFlyout";
 import {
   SIDEBAR_MODE_COLLAPSED,
@@ -21,8 +21,7 @@ import {
   toggleSidebarMode,
   writeSidebarMode,
 } from "../lib/sidebarMode";
-import { buildDesktopSidebar, groupedRailForPath, isDeliveryRailActive, isFinanceRailActive, isOperationalReportRailActive, isProductionRailActive, isSalesRailActive, isSalesReportPath, nextChevronMenu, railLabel } from "../lib/sidebarPresentation";
-import { canSeeSpkNav } from "../lib/spk";
+import { groupedRailForPath, isDeliveryRailActive, isFinanceRailActive, isOperationalReportRailActive, isProductionRailActive, isSalesRailActive, isSalesReportPath, nextChevronMenu, railLabel } from "../lib/sidebarPresentation";
 import { moduleFromPath } from "../lib/uiModule";
 import { mergeWorkspaceTabsPreview } from "../lib/workspaceTabsPreview";
 import BrandMark from "./BrandMark";
@@ -462,61 +461,10 @@ export default function AppShell() {
     year: "numeric",
   });
 
-  const salesNav = salesNavVisible(hasPerm);
-  const salesItems = salesMenuItems(hasPerm);
-  const reportsNav = reportsNavVisible(hasPerm);
-  const reportsItems = reportsMenuItems(hasPerm);
-  const inventoryNav = inventoryNavVisible(hasPerm);
-  const inventoryItems = inventoryMenuItems(hasPerm);
-  const purchasingNav = purchasingNavVisible(hasPerm);
-  const purchasingItems = purchasingMenuItems(hasPerm);
-  const productionNav = productionNavVisible(hasPerm);
-  const productionItems = productionMenuItems(hasPerm);
-  const taskItems = [...taskMenuItems(hasPerm)].sort(
-    (a, b) => TASK_NAV_ORDER.indexOf(a.key) - TASK_NAV_ORDER.indexOf(b.key),
-  );
-  const employeeAdminNav = employeeAdminNavVisible(hasPerm);
-  const employeeAdminItems = employeeAdminMenuItems(hasPerm);
-  const hrPayrollNav = hrPayrollNavVisible(hasPerm);
-  const hrPayrollItems = hrPayrollMenuItems(hasPerm);
-  const ledgerNav = ledgerNavVisible(hasPerm);
   const ledgerItems = ledgerMenuItems(hasPerm);
-  const cashBankNav = cashBankNavVisible(hasPerm);
   const cashBankItems = cashBankMenuItems(hasPerm);
-  const settingsItems = settingsMenuItems(hasPerm);
-  void salesNav;
-  void reportsNav;
-  void inventoryNav;
-  void purchasingNav;
-  void employeeAdminNav;
-  void hrPayrollNav;
-  void ledgerNav;
-  void cashBankNav;
-  void productionNav.deliveryToday;
-  const dashboardNav = dashboardNavVisible(hasPerm, user);
-  const dashboardItems = dashboardMenuItems(hasPerm, user);
-  const showDashboard = (hasPerm(NAV_KEYS.dashboard) || dashboardNav.parent) && dashboardItems.length > 0;
-  const showSpk = canSeeSpkNav(hasPerm);
   const showChat = hasPerm(NAV_KEYS.chat) || hasPerm("chat.use");
-  const showRouteOptimizer = canAccessRoutePage(hasPerm);
-  const showSettings = settingsItems.length > 0;
-  const sidebar = buildDesktopSidebar({
-    dashboardItems: showDashboard ? dashboardItems : [],
-    salesItems,
-    productionItems,
-    taskItems,
-    showRouteOptimizer,
-    purchasingItems,
-    inventoryItems,
-    cashBankItems,
-    ledgerItems,
-    employeeAdminItems,
-    hrPayrollItems,
-    reportItems: reportsItems,
-    settingsItems: showSettings ? settingsItems : [],
-    showSpk,
-    showChat,
-  }).map((entry) => {
+  const sidebar = resolveDesktopSidebar(hasPerm, user).map((entry) => {
     if (entry.id !== "pengiriman") return entry;
     return {
       ...entry,
