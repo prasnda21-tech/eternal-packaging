@@ -857,7 +857,7 @@ export function paintNavVisible(hasPerm) {
 }
 
 export function productionNavVisible(hasPerm) {
-  const schedule = canSeeNav(hasPerm, NAV_KEYS.schedule);
+  const schedule = canSeeNav(hasPerm, "schedule.view");
   const paintSentralisasi = paintNavVisible(hasPerm);
   const deliverySchedule = canSeeNav(hasPerm, NAV_KEYS.deliverySchedule);
   const deliveryReschedule = canSeeNav(hasPerm, NAV_KEYS.deliveryReschedule);
