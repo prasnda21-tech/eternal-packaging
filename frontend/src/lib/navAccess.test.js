@@ -89,7 +89,7 @@ describe("salesNavVisible", () => {
   });
 
   test("shows parent when Faktur Penjualan is granted", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice));
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice, "sales.invoice.view"));
     expect(v.parent).toBe(true);
     expect(v.salesInvoice).toBe(true);
   });
@@ -101,7 +101,7 @@ describe("salesNavVisible", () => {
   });
 
   test("shows parent when Penerimaan Penjualan is granted", () => {
-    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt));
+    const v = salesNavVisible(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt, "sales.receipt.view"));
     expect(v.parent).toBe(true);
     expect(v.salesReceipt).toBe(true);
   });
@@ -137,14 +137,14 @@ describe("salesMenuItems", () => {
   });
 
   test("builds Faktur Penjualan tile when granted", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesInvoice, "sales.invoice.view"));
     expect(items).toEqual([
       { key: NAV_KEYS.salesInvoice, label: "Faktur Penjualan", to: "/penjualan/faktur-penjualan", tone: "purple", testid: "top-nav-sales-invoice" },
     ]);
   });
 
   test("builds Penerimaan Penjualan tile when granted", () => {
-    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt));
+    const items = salesMenuItems(has(NAV_KEYS.sales, NAV_KEYS.salesReceipt, "sales.receipt.view"));
     expect(items).toEqual([
       { key: NAV_KEYS.salesReceipt, label: "Penerimaan Penjualan", to: "/penjualan/penerimaan-penjualan", tone: "emerald", testid: "top-nav-sales-receipt" },
     ]);
@@ -268,14 +268,14 @@ describe("inventoryNavVisible", () => {
   });
 
   test("shows parent for master items only", () => {
-    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.masterItems));
+    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.masterItems, "master_items.view"));
     expect(v.parent).toBe(true);
     expect(v.masterItems).toBe(true);
     expect(v.currentStock).toBe(false);
   });
 
   test("shows parent for current stock only", () => {
-    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.currentStock));
+    const v = inventoryNavVisible(has(NAV_KEYS.inventory, NAV_KEYS.currentStock, "current_stock.view"));
     expect(v.parent).toBe(true);
     expect(v.masterItems).toBe(false);
     expect(v.currentStock).toBe(true);
@@ -290,12 +290,12 @@ describe("purchasingNavVisible", () => {
   });
 
   test("shows parent when receipts granted", () => {
-    const v = purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts));
+    const v = purchasingNavVisible(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts, "purchase_receipts.view"));
     expect(v.parent).toBe(true);
     expect(v.receipts).toBe(true);
   });
 
-  test("explicit nav deny wins over module fallback when configured", () => {
+  test("legacy configured nav cannot hide business-authorized HPP", () => {
     const v = purchasingNavVisible(has(
       "nav.configured",
       NAV_KEYS.purchasing,
@@ -304,11 +304,11 @@ describe("purchasingNavVisible", () => {
       "purchase_hpp.view",
     ));
     expect(v.orders).toBe(true);
-    expect(v.hpp).toBe(false);
+    expect(v.hpp).toBe(true);
     expect(v.returns).toBe(false);
   });
 
-  test("module fallback works only before nav.configured", () => {
+  test("business view fallback works regardless of nav.configured", () => {
     const before = purchasingNavVisible(has(
       NAV_KEYS.purchasing,
       "purchase_hpp.view",
@@ -470,7 +470,7 @@ describe("NAV_MENU_FALLBACK Settings catalog", () => {
 
 describe("productionNavVisible", () => {
   test("shows parent when only jadwal produksi is granted", () => {
-    const v = productionNavVisible(has(NAV_KEYS.schedule));
+    const v = productionNavVisible(has(NAV_KEYS.schedule, "schedule.view"));
     expect(v.parent).toBe(true);
     expect(v.schedule).toBe(true);
     expect(v.deliverySchedule).toBe(false);
@@ -488,17 +488,17 @@ describe("productionNavVisible", () => {
     const onlyStatus = productionNavVisible(has(NAV_KEYS.statusPo));
     expect(onlyStatus.parent).toBe(false);
     expect(onlyStatus.deliveryToday).toBe(false);
-    const both = productionNavVisible(has(NAV_KEYS.schedule, NAV_KEYS.statusPo));
+    const both = productionNavVisible(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.statusPo));
     expect(both.parent).toBe(true);
     expect(both.deliveryToday).toBe(false);
-    const prodOnly = productionNavVisible(has(NAV_KEYS.schedule));
+    const prodOnly = productionNavVisible(has(NAV_KEYS.schedule, "schedule.view"));
     expect(prodOnly.deliveryToday).toBe(false);
   });
 });
 
 describe("purchasingMenuItems", () => {
   test("builds tiles from existing Pembelian children only", () => {
-    expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts))).toEqual([
+    expect(purchasingMenuItems(has(NAV_KEYS.purchasing, NAV_KEYS.purchaseReceipts, "purchase_receipts.view"))).toEqual([
       { key: NAV_KEYS.purchaseReceipts, label: "Penerimaan Barang", to: "/pembelian/penerimaan-barang", tone: "amber", testid: "top-nav-penerimaan-barang" },
       { key: NAV_KEYS.purchaseReturns, label: "Retur Pembelian", to: "/pembelian/retur", tone: "rose", testid: "top-nav-retur-pembelian" },
     ]);
@@ -509,10 +509,15 @@ describe("purchasingMenuItems", () => {
     const items = purchasingMenuItems(has(
       NAV_KEYS.purchasing,
       NAV_KEYS.purchaseRequests,
+      "purchase_requests.view",
       NAV_KEYS.purchaseOrders,
+      "purchase_orders.view",
       NAV_KEYS.purchaseInvoices,
+      "purchase_invoices.view",
       NAV_KEYS.purchasePayments,
+      "purchase_payments.view",
       NAV_KEYS.purchaseReceipts,
+      "purchase_receipts.view",
     ));
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
@@ -534,7 +539,9 @@ describe("purchasingMenuItems", () => {
       NAV_KEYS.purchaseInvoices,
       NAV_KEYS.purchasePayments,
       NAV_KEYS.purchaseReceipts,
+      "purchase_receipts.view",
       NAV_KEYS.purchaseHpp,
+      "purchase_hpp.view",
     ));
     expect(items.map((item) => item.label)).toEqual([
       "Permintaan",
@@ -552,7 +559,7 @@ describe("purchasingMenuItems", () => {
 
 describe("inventoryMenuItems", () => {
   test("shows authorized Barang/Jasa only", () => {
-    const items = inventoryMenuItems(has(NAV_KEYS.inventory, NAV_KEYS.masterItems));
+    const items = inventoryMenuItems(has(NAV_KEYS.inventory, NAV_KEYS.masterItems, "master_items.view"));
     expect(items).toEqual([
       { key: NAV_KEYS.masterItems, label: "Barang/Jasa", to: "/persediaan/master-barang-jasa", tone: "green", testid: "top-nav-master-barang-jasa" },
     ]);
@@ -612,7 +619,7 @@ describe("reportsMenuItems", () => {
 
 describe("productionMenuItems", () => {
   test("keeps Produksi children without Pengiriman Hari Ini menu", () => {
-    const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.deliverySchedule, NAV_KEYS.deliveryReschedule, NAV_KEYS.statusPo));
+    const items = productionMenuItems(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.deliverySchedule, NAV_KEYS.deliveryReschedule, "delivery.schedule.view", "delivery.reschedule", NAV_KEYS.statusPo));
     expect(items.map((item) => [item.label, item.to])).toEqual([
       ["Jadwal Produksi", "/produksi"],
       ["Jadwal Pengiriman", "/produksi/jadwal-pengiriman"],
@@ -623,7 +630,7 @@ describe("productionMenuItems", () => {
   });
 
   test("omits Pengiriman Hari Ini without status po and does not invent Tugas Produksi tile", () => {
-    const items = productionMenuItems(has(NAV_KEYS.schedule, NAV_KEYS.tasksOperator));
+    const items = productionMenuItems(has(NAV_KEYS.schedule, "schedule.view", NAV_KEYS.tasksOperator));
     expect(items.map((item) => item.label)).toEqual(["Jadwal Produksi"]);
     expect(items.some((item) => item.label === "Tugas Produksi")).toBe(false);
     expect(productionMenuItems(has(NAV_KEYS.statusPo))).toEqual([]);
