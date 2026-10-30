@@ -886,6 +886,7 @@ export const api = {
   adminUpdateRole: (role, payload) => client.patch(`/admin/roles/${role}`, payload).then((r) => r.data),
   // permissions: string[] | { permissions, confirm_package_keys? }
   // Legacy callers pass an array (shrink-only; never activates package grants).
+  adminPatchRoleBusinessPermissions: (role, payload) => client.patch(`/admin/roles/${role}/permissions/business`, payload).then((r) => r.data),
   adminUpdateRolePermissions: (role, permissionsOrBody) => {
     const body = Array.isArray(permissionsOrBody)
       ? { permissions: permissionsOrBody }
