@@ -1188,8 +1188,19 @@ function RolesTab({ permissionCatalog, canManagePerms, notify }) {
             rolePermissionsPutBody(permissions, preview),
           );
         } else {
-          // Ordinary save: shrink-only — never activates legacy package grants.
-          await api.adminUpdateRolePermissions(selected, permissions);
+          // Business-only delta: backend CAS preserves unrelated grants and nav.*
+          // from concurrent edits, rejecting stale role snapshots with HTTP 409.
+          const baseline = new Set(initial);
+          const current = new Set(permsDraft);
+          const add = [...current].filter((k) => !baseline.has(k) && !k.startsWith("nav."));
+          const remove = [...baseline].filter((k) => !current.has(k) && !k.startsWith("nav."));
+          if (add.length || remove.length) {
+            await api.adminPatchRoleBusinessPermissions(selected, {
+              expected_permissions: roleDoc?.permissions || [],
+              add,
+              remove,
+            });
+          }
         }
       }
       setInitial(new Set(permsDraft));
