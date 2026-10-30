@@ -9695,6 +9695,7 @@ class PasswordResetPayload(BaseModel):
 
 class RolePermissionsPayload(BaseModel):
     permissions: List[str]
+    expected_permissions: Optional[List[str]] = None
     # Explicit production package confirmation: exact keys reviewed in the UI.
     # Absent / omitted → never grows confirmation (legacy editor safe).
     # Ordinary save shrinks confirmation to ∩ permissions only.
@@ -10069,7 +10070,26 @@ async def update_role_permissions(role: str, payload: RolePermissionsPayload, us
         "updated_by": user.get("email"),
         **confirm_meta,
     }
-    await db.role_permissions.update_one({"role": slug}, {"$set": set_doc}, upsert=True)
+    if payload.expected_permissions is not None:
+        from permissions import ROLE_DEFAULT_PERMISSIONS, with_nav_defaults
+        old_raw = list(before["permissions"]) if before is not None else list(ROLE_DEFAULT_PERMISSIONS.get(slug, []))
+        if set(payload.expected_permissions) != with_nav_defaults(set(old_raw)):
+            raise HTTPException(409, "Permission role berubah. Muat ulang sebelum menyimpan.")
+        if before is None:
+            try:
+                await db.role_permissions.insert_one(set_doc)
+            except Exception:
+                raise HTTPException(409, "Role berubah bersamaan. Muat ulang.")
+        else:
+            updated = await db.role_permissions.update_one(
+                {"role": slug, "permissions": before.get("permissions", [])},
+                {"$set": set_doc},
+            )
+            if updated.matched_count != 1:
+                raise HTTPException(409, "Permission role berubah bersamaan. Muat ulang.")
+    else:
+        # Backward-compatible legacy PUT; new editor always sends expected_permissions.
+        await db.role_permissions.update_one({"role": slug}, {"$set": set_doc}, upsert=True)
     after = await db.role_permissions.find_one({"role": slug}, {"_id": 0})
     await _write_audit("role.permissions.update", user, target_email=None, before=before, after=after, note=f"Role {slug} permissions")
     return {
