@@ -338,11 +338,11 @@ def test_service_addon_sj_line_remaps_to_parent_physical():
     assert buckets["qty_tersedia"] == 440.0
 
 
-def test_service_addon_qty_delivered_fallback_uses_parent():
-    """Legacy qty_delivered on parent+SERVICE PO still reduces parent Belum.
+def test_service_addon_qty_delivered_fallback_blocked():
+    """Header qty_delivered must not credit parent when SERVICE is on the PO.
 
-    Process group must be FULLY_COMPLETED before siap/belum moves; SERVICE lines
-    must not block the single-physical-master qty_delivered fallback.
+    Mixed jasa+inventory header totals (e.g. mould 100192) must not inflate
+    physical delivered via fallback — require line-attributed SJ proof instead.
     """
     parent = "inv-parent"
     svc = "svc-sablon"
@@ -376,21 +376,25 @@ def test_service_addon_qty_delivered_fallback_uses_parent():
     delivered, prov = aggregate_legacy_delivered_qty(
         scoped, [], process_master_ids={svc},
     )
-    assert delivered.get(parent) == 25.0
-    assert prov.get(parent) == "order_qty_delivered"
+    assert delivered.get(parent, 0) == 0
+    assert prov.get(parent) != "order_qty_delivered"
     assert progress["completed_qty"] == 100.0
     buckets = operational_availability(
         physical_qty=1000,
         ordered_qty=progress["ordered_qty"],
         completed_qty=progress["completed_qty"],
-        r2_delivered_qty=delivered[parent],
+        r2_delivered_qty=delivered.get(parent, 0),
     )
     assert buckets["qty_pesanan"] == 0.0
-    assert buckets["qty_belum_terkirim"] == 75.0  # 100 siap - 25 delivered
+    assert buckets["qty_belum_terkirim"] == 100.0  # siap intact; no invented delivery
 
 
-def test_unlinked_service_sj_stays_unproven_not_fake_zero():
-    """SERVICE SJ without parent_line_id → BELUM_TERVERIFIKASI; never belum=0."""
+def test_unlinked_service_sj_skips_line_not_blast_sibling():
+    """SERVICE SJ without parent: skip line only; do not mark parent delivery unproven.
+
+    completion_unproven may still force Belum UNVERIFIED until parent is linked
+    (data repair) — but delivery provenance must not false-blast the master.
+    """
     parent = "inv-parent"
     svc = "svc-orphan"
     orders = [{
@@ -419,7 +423,8 @@ def test_unlinked_service_sj_stays_unproven_not_fake_zero():
         scoped, [], process_master_ids={svc},
     )
     assert delivered.get(parent, 0) == 0
-    assert prov.get(parent) == "unproven"
+    assert prov.get(parent) != "unproven"
+    assert progress["completion_unproven"] is True
     row = compatibility_row(
         master={"id": parent, "item_code": "P", "item_name": "Parent"},
         physical_qty=500,
