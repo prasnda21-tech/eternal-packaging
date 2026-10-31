@@ -1,7 +1,8 @@
 """Read-only widget routes that are not already exposed with the right permission."""
 from __future__ import annotations
 
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Response
+from services.cash_availability import get_cash_availability
 
 from services.cash_bank_master import COLLECTION as CASH_BANK_ACCOUNTS
 from services.cash_bank_master import PERM_RECONCILE
@@ -51,6 +52,11 @@ def register_widget_dashboard_routes(
     require_perm,
     Depends,
 ):
+    @api_router.get("/dashboard/widget/cash-available")
+    async def current_cash_available(response: Response, user=Depends(require_perm("cash_bank.view"))):
+        response.headers["Cache-Control"] = "no-store"
+        return await get_cash_availability(get_db())
+
     @api_router.get("/dashboard/pembelian")
     async def get_dashboard_pembelian(
         start_date: str = Query(..., min_length=1),
@@ -106,3 +112,4 @@ def register_widget_dashboard_routes(
             "truncated": legacy_truncated or pairs_truncated,
             "detail": detail,
         }
+

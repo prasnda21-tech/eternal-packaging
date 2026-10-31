@@ -15,7 +15,7 @@ COLLECTION = "finance_dashboard_layouts"
 DASHBOARD_KEY = "keuangan"
 COLUMNS = 12
 MAX_Y = 48
-MAX_READY = 10
+MAX_READY = 11
 MAX_PRESERVED = 8
 
 PERM_CASH = "dashboard.finance.view"
@@ -25,6 +25,7 @@ PERM_RECON = "cash_bank.reconcile"
 PERM_SALES = "dashboard.sales.view"
 
 READY_PERMISSION = {
+    "cash_available": "cash_bank.view",
     "active_users": "users.view",
     "cash": PERM_CASH,
     "expense": PERM_CASH,
@@ -46,6 +47,7 @@ VISUALS = frozenset({"bars", "list"})
 
 # min_w, max_w, min_h, max_h, default_w, default_h
 SIZES: Dict[str, Tuple[int, int, int, int, int, int]] = {
+    "cash_available": (4, 12, 3, 8, 4, 3),
     "active_users": (4, 12, 3, 8, 6, 3),
     "cash": (3, 8, 2, 6, 3, 2),
     "sales": (3, 8, 2, 6, 3, 2),

@@ -48,6 +48,7 @@ const publicJsonRequest = async (path, options = {}) => {
 };
 
 export const api = {
+  cashAvailability: () => client.get("/dashboard/widget/cash-available", { timeout: 30000 }).then(r => r.data),
   webPresenceHeartbeat: (payload) => client.post("/auth/presence", payload, { timeout: 10000 }).then(r => r.data),
   activeUsers: (params) => client.get("/dashboard/active-users", { params, timeout: 10000 }).then(r => r.data),
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),

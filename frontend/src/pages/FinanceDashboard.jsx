@@ -280,6 +280,12 @@ export default function FinanceDashboard() {
           }
         });
       }
+      if (widget.widget_id === "cash_available") {
+        remember(async () => {
+          try { return { cash_available: await api.cashAvailability() }; }
+          catch (error) { return { cash_available: failedModel(error) }; }
+        });
+      }
       if (widget.widget_id === "recon") {
         remember(async () => {
           try {
