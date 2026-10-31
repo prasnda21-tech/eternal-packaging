@@ -1,3 +1,4 @@
+import "../productionCompact.css";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AlertCircle, AlertTriangle, ArrowLeft, CalendarClock, Check, ChevronDown, Copy, Ellipsis, Eye, FileCheck2, FileText, List, Pencil, QrCode, RefreshCw, RotateCcw, ScanLine, Send, ShieldOff, Trash2, Truck, X, XCircle, Zap } from "lucide-react";
@@ -841,7 +842,7 @@ export default function PODetail() {
 
   return (
     <div
-      className="po-detail po-detail-industrial po-detail-stage-workspace"
+      className={"po-detail po-detail-industrial po-detail-stage-workspace" + (viewedStage >= 5 && viewedStage <= 11 ? " production-compact" : "")}
       data-testid="po-detail-page"
       data-actual-stage={actualStage}
       data-viewed-stage={viewedStage}
@@ -1602,7 +1603,7 @@ export default function PODetail() {
         <QtyOpsHead icon={CalendarClock} title="Penjadwalan">
           <span className="muted small">Head of Production</span>
         </QtyOpsHead>
-        <div className="po-pair-grid po-pair-grid-schedule">
+        <div className="po-pair-grid po-pair-grid-schedule production-schedule-editor">
           <div className="po-pair-col">
             <OperatorSplitPanel order={order} canEdit={canEditSchedule} onUpdated={setOrder} mode="schedule" />
           </div>
@@ -2372,4 +2373,5 @@ export function PaymentFileRow({ file, index, orderId }) {
     </li>
   );
 }
+
 

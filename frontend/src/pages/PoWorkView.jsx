@@ -1,3 +1,4 @@
+import "../productionCompact.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw } from "lucide-react";
@@ -54,6 +55,7 @@ export default function PoWorkView() {
 
   const permitted = permittedDivisionIds(hasPerm);
   const activeId = defaultDivisionId(hasPerm, requested) || requested || "operator";
+  const compactLayout = ["designer", "kepala_produksi", "screener", "helper", "operator", "packing"].includes(activeId);
   const division = divisionById(settings, activeId) || fallbackDivision(activeId);
   const canView = hasPerm("work_panel.view") || (division.submit_perm && hasPerm(division.submit_perm));
 
@@ -75,7 +77,7 @@ export default function PoWorkView() {
   }
 
   return (
-    <div data-testid="po-work-view">
+    <div className={compactLayout ? "production-compact production-work-page" : undefined} data-testid="po-work-view">
       <div className="page-heading work-page-heading">
         <Link to={TASK_NAV_PATHS[activeId] || "/tasks"} className="ghost sm" data-testid="work-back-schedule">
           <ArrowLeft size={14} /> Tugas Produksi
@@ -102,7 +104,8 @@ export default function PoWorkView() {
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
-      <RoleWorkPanel order={order} division={division} onUpdated={setOrder} focusLineIdx={focusLineIdx} />
+      <RoleWorkPanel compactLayout={compactLayout} order={order} division={division} onUpdated={setOrder} focusLineIdx={focusLineIdx} />
     </div>
   );
 }
+

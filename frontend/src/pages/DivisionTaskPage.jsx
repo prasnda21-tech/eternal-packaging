@@ -1,3 +1,4 @@
+import "../productionCompact.css";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { RefreshCw, Search } from "lucide-react";
@@ -125,7 +126,7 @@ export default function DivisionTaskPage() {
 
   return (
     <div
-      className={"prod-page division-task-page" + (isKepala ? " kp-board-page" : "")}
+      className={"prod-page division-task-page" + (["designer", "kepala-produksi", "screener", "helper", "operator", "packing"].includes(slug) ? " production-compact" : "") + (isKepala ? " kp-board-page" : "")}
       data-testid="division-task-page"
     >
       <div className="page-heading">
@@ -245,6 +246,16 @@ export default function DivisionTaskPage() {
       <div className={"prod-table-wrap" + (isKepala ? " kp-table-wrap" : "")}>
         <table className={"prod-table" + (isKepala ? " kp-priority-table" : "")} data-testid="division-task-table">
           <thead>
+            {isKepala && (
+              <tr className="production-quantity-groups">
+                <th scope="colgroup" colSpan={4}>Pekerjaan</th>
+                <th scope="colgroup">Pesanan</th>
+                <th scope="colgroup" colSpan={2}>Hasil Produksi</th>
+                <th scope="colgroup" colSpan={2}>Penjadwalan</th>
+                <th scope="colgroup">Stok</th>
+                <th scope="colgroup" colSpan={2}>Tindak Lanjut</th>
+              </tr>
+            )}
             {isKepala ? (
               <tr>
                 <th>Prioritas</th>
@@ -436,3 +447,4 @@ export function DivisionTaskIndex() {
   const { hasPerm } = useAuth();
   return <Navigate to={firstTaskNavPath(hasPerm)} replace />;
 }
+

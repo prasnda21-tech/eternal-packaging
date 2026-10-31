@@ -1,3 +1,4 @@
+import "../productionCompact.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CalendarDays, Download, Filter, RefreshCw, RotateCcw, Search, X } from "lucide-react";
 import PaintAdvancedTable from "../components/paint/PaintAdvancedTable";
@@ -757,14 +758,14 @@ export default function SentralisasiCat() {
 
   if (!allowedTabs.length) {
     return (
-      <div className="prod-page paint-page" data-testid="paint-page-denied">
+      <div className="prod-page paint-page production-compact" data-testid="paint-page-denied">
         <p className="muted">Anda tidak memiliki akses Sentralisasi Cat.</p>
       </div>
     );
   }
 
   return (
-    <div className="prod-page paint-page" data-testid="paint-sentralisasi-page">
+    <div className="prod-page paint-page production-compact" data-testid="paint-sentralisasi-page">
       <header className="page-header paint-header">
         <div>
           <p className="eyebrow">Produksi</p>
@@ -1095,13 +1096,13 @@ export default function SentralisasiCat() {
               { key: "branch_label", label: "Cabang", type: "text", width: 80, render: (v, row) => v || branchLabel(branches, row.branch_id) },
               { key: "code", label: "Kode", type: "text", width: 80 },
               { key: "name", label: "Warna", type: "text", width: 130 },
-              { key: "opening", label: "Opening", type: "number", align: "right", width: 80, render: (v) => fmtNum(v) },
-              { key: "add", label: "Add", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
-              { key: "take", label: "Take", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
-              { key: "return", label: "Return", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
-              { key: "adjustment", label: "Adjust", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
+              { key: "opening", label: "Stok Awal", type: "number", align: "right", width: 80, render: (v) => fmtNum(v) },
+              { key: "add", label: "Tambahan", type: "number", align: "right", width: 100, render: (v) => fmtNum(v) },
+              { key: "take", label: "Diambil", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
+              { key: "return", label: "Dikembalikan", type: "number", align: "right", width: 120, render: (v) => fmtNum(v) },
+              { key: "adjustment", label: "Koreksi", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
               { key: "quantity_grams", label: "Saldo", type: "number", align: "right", width: 80, render: (v) => <strong className="saldo">{fmtNum(v)}</strong> },
-              { key: "minimum_stock_grams", label: "Min", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
+              { key: "minimum_stock_grams", label: "Minimum", type: "number", align: "right", width: 70, render: (v) => fmtNum(v) },
               { key: "status", label: "Status", type: "enum", width: 90, filterOptions: [{ value: "AMAN", label: "AMAN" }, { value: "MENIPIS", label: "MENIPIS" }, { value: "HABIS", label: "HABIS" }], render: (v) => <span className={`paint-status paint-status--${v}`}>{v}</span> },
             ]}
           />
@@ -1136,9 +1137,9 @@ export default function SentralisasiCat() {
               { key: "paint_code", label: "Warna", type: "text", width: 140, render: (_v, row) => `${row.paint_code || ""} — ${row.paint_name || ""}` },
               { key: "period_from", label: "Periode", type: "text", width: 140, render: (_v, row) => [row.period_from, row.period_to].filter(Boolean).map((d) => formatStatusPoDate(d)).join(" → ") || "—" },
               { key: "take_grams", label: "Diambil", type: "number", align: "right", width: 80, render: (v) => fmtNum(v) },
-              { key: "return_grams", label: "Dikembalikan", type: "number", align: "right", width: 90, render: (v) => fmtNum(v) },
+              { key: "return_grams", label: "Dikembalikan", type: "number", align: "right", width: 120, render: (v) => fmtNum(v) },
               { key: "net_usage_grams", label: "Bersih", type: "number", align: "right", width: 80, render: (v) => <strong className="saldo">{fmtNum(v)}</strong> },
-              { key: "transaction_count", label: "Jumlah TX", type: "number", align: "right", width: 80, render: (v) => fmtNum(v) },
+              { key: "transaction_count", label: "Jumlah Transaksi", type: "number", align: "right", width: 130, render: (v) => fmtNum(v) },
               { key: "references", label: "Referensi", type: "text", width: 120, sortable: false, filterable: false, render: (_v, row) => (row.references || []).join(", ") || "—" },
             ]}
           />
@@ -1191,3 +1192,4 @@ export default function SentralisasiCat() {
     </div>
   );
 }
+

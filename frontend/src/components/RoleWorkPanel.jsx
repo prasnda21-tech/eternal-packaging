@@ -68,7 +68,7 @@ function WorkHero({ order, title, itemLabel, testid, compactHeader }) {
   );
 }
 
-function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
+function OperatorWorkPanel({ order, division, onUpdated, compactHeader, compactLayout }) {
   const { user, hasPerm } = useAuth();
   const [drafts, setDrafts] = useState({});
   const [workDates, setWorkDates] = useState({});
@@ -194,7 +194,7 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
                 Target {fmtQty(line.target)} · Selesai {fmtQty(line.done)} · Sisa {fmtQty(line.remaining)}
               </span>
             </div>
-            <RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />
+            {!compactLayout && (<RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />)}
             <div className="work-line-total muted small">
               TOTAL: <strong className="mono">{fmtQty(total)}</strong> {line.unit}
               {" · "}SISA: <strong className="mono">{fmtQty(line.remaining)}</strong>
@@ -214,6 +214,12 @@ function OperatorWorkPanel({ order, division, onUpdated, compactHeader }) {
               helperText={division?.helper_text}
               testid={`work-entry-${line.lineIdx}`}
             />
+            {compactLayout && (
+              <details className="production-work-history">
+                <summary>Riwayat pekerjaan ({line.entries.length})</summary>
+                <RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />
+              </details>
+            )}
             {canSubmit && !split && line.splits.length === 0 && (
               <p className="muted small">Belum ada operator ditugaskan untuk item ini.</p>
             )}
@@ -268,7 +274,7 @@ async function submitQtyDivision(divisionId, orderId, confirm) {
   throw new Error("Divisi tidak didukung");
 }
 
-function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
+function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader, compactLayout }) {
   const { user, hasPerm } = useAuth();
   const [drafts, setDrafts] = useState({});
   const [busy, setBusy] = useState(false);
@@ -355,7 +361,7 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
                 {!model.hideRemain ? ` · Sisa ${fmtQty(line.remaining)}` : ""}
               </span>
             </div>
-            <RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />
+            {!compactLayout && (<RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />)}
             <div className="work-line-total muted small">
               TOTAL: <strong className="mono">{fmtQty(total)}</strong> {line.unit}
               {!model.hideRemain ? (
@@ -376,6 +382,12 @@ function QtyDivisionWorkPanel({ order, division, onUpdated, compactHeader }) {
               helperText={division?.helper_text}
               testid={`work-entry-${line.lineIdx}`}
             />
+            {compactLayout && (
+              <details className="production-work-history">
+                <summary>Riwayat pekerjaan ({line.entries.length})</summary>
+                <RoleWorkHistory entries={line.entries} unit={line.unit} testid={`work-history-${line.lineIdx}`} />
+              </details>
+            )}
           </div>
         );
       })}
@@ -548,6 +560,7 @@ export default function RoleWorkPanel({
   onUpdated,
   compactHeader = true,
   focusLineIdx = null,
+  compactLayout = false,
 }) {
   if (!order) return null;
   const resolved = division || fallbackDivision("operator");
@@ -587,6 +600,7 @@ export default function RoleWorkPanel({
   if (resolved.id === "operator") {
     return (
       <OperatorWorkPanel
+        compactLayout={compactLayout}
         order={order}
         division={resolved}
         onUpdated={onUpdated}
@@ -625,6 +639,7 @@ export default function RoleWorkPanel({
   }
   return (
     <QtyDivisionWorkPanel
+      compactLayout={compactLayout}
       order={order}
       division={resolved}
       onUpdated={onUpdated}
@@ -632,3 +647,4 @@ export default function RoleWorkPanel({
     />
   );
 }
+
