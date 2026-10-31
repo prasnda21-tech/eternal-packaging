@@ -39,15 +39,22 @@ python3 scripts/repair/b31_patch_executor.py \
   --confirm-phrase 'APPROVE ADDON PARENT REPAIR MANIFEST B31 EXACT — SOP-20261030-003'
 ```
 
-Expected: `patched_ok` × 24, `RESULT=PASS patched_orders=24 patched_links=31`,  
-`rollback_book=~/b31-patch-evidence-*/rollback_book.json`.
+Before write, executor verifies  
+`/opt/eternal-packaging-runtime/releases/active-release.txt` → `sha=baa24a13…` (fail closed).
+
+Expected: `production_sha_verified=…`, `patched_ok` × 24,  
+`RESULT=PASS patched_orders=24 patched_links=31`,  
+`rollback_book=~/b31-patch-evidence-*/rollback_book.json` (updated **after each** success).
 
 On any precheck/PATCH/postcheck failure: **STOP** immediately (no further orders).  
-Evidence JSON per order includes before/after + rollback `clear` items.
+If PATCH returned success but postcheck failed: `RECOVERY-<oid8>.json` with before snapshot + rollback items is written **before** exit.  
+Evidence dir mode `0700`, files `0600`.
 
 ## Safety
 
 - Refuses `--execute` inside Cursor Cloud Agent environments  
+- Verifies active production SHA before execute  
 - Revalidates every PO live immediately before write  
 - Aborts if parent already set, SKU/mid/qty/idx drift  
+- Atomic `rollback_book.json` after each verified success  
 - Does not modify quantity, delivery, stock, ledger, SOP, users, roles, menus  
