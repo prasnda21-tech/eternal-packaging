@@ -123,6 +123,23 @@ describe("ProductionSchedule spreadsheet", () => {
     await flush();
   };
 
+  test("compact columns keep rows and request semantics, and full view restores every column", async () => {
+    api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 1 });
+    await renderPage();
+    const originalRows = container.querySelectorAll('tbody tr').length;
+    const requestCount = api.productionDashboard.mock.calls.length;
+    await act(async () => container.querySelector('[data-testid="prod-columns-ringkas"]').click());
+    expect(container.querySelectorAll('.prod-col-label-row th')).toHaveLength(12);
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(originalRows);
+    expect(container.textContent).toContain('PO-1001');
+    expect(api.productionDashboard).toHaveBeenCalledTimes(requestCount);
+    expect(container.querySelector('[data-testid="prod-export-all"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="prod-export-filtered"]')).not.toBeNull();
+    await act(async () => container.querySelector('[data-testid="prod-columns-lengkap"]').click());
+    expect(container.querySelectorAll('.prod-col-label-row th')).toHaveLength(22);
+    expect(api.productionDashboard).toHaveBeenCalledTimes(requestCount);
+  });
+
   test("desktop headers match the shared canonical order and omit +/- Fit", async () => {
     api.productionDashboard.mockResolvedValue({ rows: sampleRows, total: 1 });
     await renderPage();
@@ -643,3 +660,4 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
   });
 });
+

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import "../productionSheet.css";
+import "../productionCompact.css";
 import { Download, Filter, LayoutGrid, RefreshCw, Table as TableIcon } from "lucide-react";
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -166,6 +167,10 @@ export default function ProductionSchedule() {
   const listUserId = user?.id || user?.email || user?.sub || "";
   const canExport = hasPerm("dashboard.production.export");
   const [mode, setMode] = useState("tabel"); // 'kartu' | 'tabel'
+  const [columnView, setColumnView] = useState("lengkap");
+  const visibleColumns = useMemo(() => columnView === "ringkas"
+    ? DESKTOP_COLS.filter((col) => ["po", "customer", "work_date", "operator", "item", "qty_cetak", "qty_operator", "progress", "prio", "buffer", "deadline", "status"].includes(col.key))
+    : DESKTOP_COLS, [columnView]);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
@@ -640,7 +645,7 @@ export default function ProductionSchedule() {
   const refreshing = (busy || schedIsPolling) && hasLoadedOnce;
 
   return (
-    <div className="prod-page prod-schedule-page" data-testid="production-schedule-page">
+    <div className="prod-page prod-schedule-page production-compact" data-testid="production-schedule-page">
       <div className="prod-schedule-chrome">
         <div className="prod-schedule-heading" data-testid="prod-schedule-heading">
           <div className="prod-schedule-heading-main">
@@ -658,6 +663,18 @@ export default function ProductionSchedule() {
             )}
           </div>
           <div className="prod-schedule-heading-actions">
+            {mode === "tabel" && (
+              <div className="production-column-view" role="group" aria-label="Kelengkapan kolom">
+                {["ringkas", "lengkap"].map((view) => (
+                  <button key={view} type="button" className="ghost sm"
+                    aria-pressed={columnView === view}
+                    data-testid={`prod-columns-${view}`}
+                    onClick={() => setColumnView(view)}>
+                    {view === "ringkas" ? "Ringkas" : "Lengkap"}
+                  </button>
+                ))}
+              </div>
+            )}
             <button className="ghost sm" onClick={refreshSched} disabled={schedIsPolling || busy} data-testid="prod-refresh-button" title="Refresh sekarang">
               <RefreshCw size={12} className={schedIsPolling ? "spin" : ""}/> Refresh
             </button>
@@ -726,6 +743,13 @@ export default function ProductionSchedule() {
           </div>
         </div>
 
+        {columnView === "ringkas" && mode === "tabel" && DESKTOP_COLS.some((col) =>
+          !visibleColumns.includes(col) && columnFilterActive(col.filter, filterState)) && (
+          <div className="production-hidden-filter" role="status">
+            Filter kolom tambahan masih aktif.
+            <button type="button" className="ghost sm" onClick={() => setColumnView("lengkap")}>Lihat filter di Lengkap</button>
+          </div>
+        )}
         {err && <div className="error" data-testid="prod-error" role="alert">{err}</div>}
         {initialLoading && (
           <div className="prod-schedule-loading" data-testid="prod-loading" role="status" aria-live="polite">
@@ -755,7 +779,7 @@ export default function ProductionSchedule() {
           )}
           <table className="production-sheet-table" data-testid="production-sheet-table" hidden={initialLoading}>
             <colgroup>
-              {DESKTOP_COLS.map((c) => (
+              {visibleColumns.map((c) => (
                 <col
                   key={c.key}
                   className={c.sticky === "po" ? "prod-col-po" : c.sticky === "customer" ? "prod-col-customer" : undefined}
@@ -765,7 +789,7 @@ export default function ProductionSchedule() {
             </colgroup>
             <thead className="production-sheet-header">
               <tr className="prod-col-group-row" data-testid="prod-col-groups">
-                {desktopProductionScheduleGroupSpans(DESKTOP_COLS).map((group) => (
+                {desktopProductionScheduleGroupSpans(visibleColumns).map((group) => (
                   <th
                     key={group.id}
                     colSpan={group.span}
@@ -778,7 +802,7 @@ export default function ProductionSchedule() {
                 ))}
               </tr>
               <tr className="prod-col-label-row">
-                {DESKTOP_COLS.map((c) => {
+                {visibleColumns.map((c) => {
                   const active = columnFilterActive(c.filter, filterState);
                   const thClass = [
                     "prod-col-label",
@@ -836,7 +860,7 @@ export default function ProductionSchedule() {
                   <ProductionScheduleSheetCells
                     row={r}
                     variant="desktop"
-                    columns={DESKTOP_COLS}
+                    columns={visibleColumns}
                     qtyProg={qtyProg}
                     cetakProg={cetakProg}
                     isToday={isToday}
@@ -847,8 +871,8 @@ export default function ProductionSchedule() {
               })}
               {!sorted.length && !busy && !initialLoading && (
                 <tr>
-                  <td colSpan={DESKTOP_COLS.length} className="production-sheet-empty" data-testid="prod-empty">
-                    Tidak ada PO cocok dengan filter.
+                  <td colSpan={visibleColumns.length} className="production-sheet-empty" data-testid="prod-empty">
+                    <span className="production-sheet-empty-msg">Tidak ada PO cocok dengan filter.</span>
                   </td>
                 </tr>
               )}
@@ -881,3 +905,4 @@ export default function ProductionSchedule() {
     </div>
   );
 }
+

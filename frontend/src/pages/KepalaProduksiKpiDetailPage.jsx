@@ -1,3 +1,4 @@
+import "../productionCompact.css";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw, Search } from "lucide-react";
@@ -117,7 +118,7 @@ export default function KepalaProduksiKpiDetailPage() {
   };
 
   return (
-    <div className="prod-page division-task-page kp-board-page" data-testid="kp-kpi-detail-page">
+    <div className="prod-page division-task-page kp-board-page production-compact" data-testid="kp-kpi-detail-page">
       <div className="page-heading">
         <div>
           <p className="eyebrow">Priority Board · Detail KPI</p>
@@ -191,6 +192,14 @@ export default function KepalaProduksiKpiDetailPage() {
       <div className="prod-table-wrap kp-table-wrap">
         <table className="prod-table kp-priority-table" data-testid="kp-kpi-detail-table">
           <thead>
+            <tr className="production-quantity-groups">
+              <th scope="colgroup" colSpan={4}>Pekerjaan</th>
+              <th scope="colgroup">Pesanan</th>
+              <th scope="colgroup" colSpan={2}>Hasil Produksi</th>
+              <th scope="colgroup" colSpan={2}>Penjadwalan</th>
+              <th scope="colgroup">Stok</th>
+              <th scope="colgroup" colSpan={2}>Tindak Lanjut</th>
+            </tr>
             <tr>
               <th>Prioritas</th>
               <th>PO / Customer</th>
@@ -285,3 +294,4 @@ export default function KepalaProduksiKpiDetailPage() {
     </div>
   );
 }
+
