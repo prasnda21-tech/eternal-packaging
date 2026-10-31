@@ -6,15 +6,19 @@ Agent production writes: **NO**.
 
 ## Phase 1 — Inventory (Owner VPS, read-only)
 
+Unpack kit `sop-enum-b32-ro-kit.tgz` (or use repo `scripts/repair/`), then:
+
 ```bash
-cd /opt/eternal-packaging-runtime/releases/current   # or repo checkout
-python3 scripts/repair/sop_belum_unverified_enumerator.py \
+bash VPS_RO_COMMANDS.sh
+# or:
+python3 sop_belum_unverified_enumerator.py \
   --session SOP-20261031-001 \
+  --expect-lines 401 \
   --include-known-residual-orders \
   --out ~/sop-belum-enum-$(date -u +%Y%m%dT%H%M%SZ).json
 ```
 
-Uses `~/.config/eternal/b31-live-ro.env`. Prints `examined` / `unverified` and per-SKU reason codes.
+Uses `~/.config/eternal/b31-live-ro.env` (same as B31). Fail closed if line count ≠ 401 or `belum_terkirim_status` missing. Do not request B32 execute until live validator RESULT=PASS.
 
 ## Phase 2 — Classification (evidence-backed)
 
