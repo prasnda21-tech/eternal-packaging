@@ -22,3 +22,6 @@ Owner memilih saldo seluruh kas/bank saja: tidak ada proyeksi, rencana pembayara
 - Full app build, Mongo end-to-end, pencocokan angka database operasional dan CI belum dijalankan.
 
 Tidak mengubah saldo, data operasional, dependency atau CI workflow. Tidak merge/deploy. Katalog kini **34 tersedia, 22 pending** (Produksi 23/25, Keuangan 11/31).
+
+## CI note
+Validation re-triggered on HEAD without [skip ci] for PR merge review.
