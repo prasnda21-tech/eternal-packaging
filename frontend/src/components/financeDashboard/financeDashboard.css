@@ -774,3 +774,12 @@
 .keuangan-board-page .kb-cash-accounts { margin-top: 12px; }
 .produksi-board-page .kb-card-footer a { color: #08784c; text-decoration: none; font-weight: 700; white-space: nowrap; }
 .produksi-board-page .kb-card-footer a:hover { text-decoration: underline; }
+
+/* Presence is an account list, not a financial period metric. */
+.keuangan-board-page .kb-presence table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.keuangan-board-page .kb-presence th, .keuangan-board-page .kb-presence td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #e7eeeb; overflow-wrap: anywhere; }
+.keuangan-board-page .kb-presence th { color: #667b85; font-weight: 600; }
+.keuangan-board-page .kb-presence small { display: block; color: #667b85; font-size: 10px; margin-top: 3px; }
+.keuangan-board-page .kb-presence-status { color: #63717a; white-space: nowrap; }
+.keuangan-board-page .kb-presence-status.is-online { color: #08784d; font-weight: 600; }
+.keuangan-board-page .kb-presence-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; }

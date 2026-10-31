@@ -17532,6 +17532,11 @@ register_widget_dashboard_routes(
     require_perm=require_perm,
     Depends=Depends,
 )
+from services.web_presence import register_web_presence_routes
+register_web_presence_routes(
+    api_router, get_db=lambda: db, current_user=current_user, require_perm=require_perm,
+)
+
 register_finance_widget_layout_routes(
     api_router,
     get_db=lambda: db,

@@ -15,6 +15,7 @@ import {
 export { COLUMNS, ROW_HEIGHT, boxesOverlap, gridHeight, layoutOverlaps, removeWidget };
 
 export const SIZES = {
+  active_users: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 6, h: 3 },
   cash: { minW: 3, maxW: 8, minH: 2, maxH: 6, w: 3, h: 2 },
   sales: { minW: 3, maxW: 8, minH: 2, maxH: 6, w: 3, h: 2 },
   purchases: { minW: 3, maxW: 8, minH: 2, maxH: 6, w: 3, h: 2 },
@@ -45,3 +46,4 @@ export function defaultLayout(hasPerm) {
     return addWidget(placed, id);
   }, []);
 }
+

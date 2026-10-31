@@ -14,6 +14,7 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
+import ActiveUsersCard from "./ActiveUsersCard";
 import { formatMoney } from "../../lib/financialDashboard";
 import {
   fakturPembelianDrillPath,
@@ -77,6 +78,7 @@ const QUIET = new Set(["loading", "empty", "error", "forbidden", "unavailable", 
 const PRESET_LABEL = { today: "Hari ini", month: "Bulan ini", year: "Tahun ini", custom: "Kustom" };
 const SLICE = ["#08784C", "#2563EB", "#D97706", "#7C3AED", "#0F766E", "#64748B", "#DC2626"];
 const GLYPH = {
+  active_users: Users,
   cash: ArrowLeftRight,
   expense: PieChart,
   profit: Scale,
@@ -88,6 +90,7 @@ const GLYPH = {
   recon: Landmark,
 };
 const CAPTION = {
+  active_users: "Status web · interaksi terakhir",
   cash: "Kas masuk, keluar, dan neto",
   expense: "Komposisi beban operasional",
   profit: "Komponen laba rugi periode",
@@ -352,6 +355,7 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
   if (id === "expense") return <ExpenseBody model={model} onRetry={onRetry} />;
   const rankedPartial = (id === "products" || id === "sellers") && status === "incomplete" && (model?.rows || []).length > 0;
   if (QUIET.has(status) && !rankedPartial) return <Quiet id={id} status={status} onRetry={onRetry} />;
+  if (id === "active_users") return <ActiveUsersCard />;
   if (id === "cash") {
     return (
       <><div className="kb-trio">
@@ -686,7 +690,7 @@ export default function FinanceWidgetBoard({
               ) : null}
             </div>
             {!editing ? <footer className="kb-card-footer">
-              <span>{widget.widget_id === "recon" ? "Snapshot saat ini" : "Periode terpilih"}</span>
+              <span>{["recon", "active_users"].includes(widget.widget_id) ? "Snapshot saat ini" : "Periode terpilih"}</span>
               {drillPath ? <button type="button" onClick={() => navigate(drillPath)} aria-label={`Lihat rincian ${title}`}>Lihat rincian ↗</button> : drillLocked ? <span className="pd-drill-locked">Akses rincian terbatas</span> : <span>Rincian pada kartu</span>}
             </footer> : null}
             {editing ? (

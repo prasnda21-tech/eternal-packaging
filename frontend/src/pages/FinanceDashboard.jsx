@@ -173,7 +173,7 @@ export default function FinanceDashboard() {
     requestRef.current = requestId;
     const nextModels = {};
     widgets.forEach((widget) => {
-      nextModels[widget.widget_id] = financeWidgetAllowed(widget.widget_id, hasPerm) ? loadingModel() : { status: "forbidden", detail: "Tidak ada izin." };
+      nextModels[widget.widget_id] = financeWidgetAllowed(widget.widget_id, hasPerm) ? (widget.widget_id === "active_users" ? { status: "complete" } : loadingModel()) : { status: "forbidden", detail: "Tidak ada izin." };
     });
     setModels(nextModels);
 
@@ -457,3 +457,4 @@ export default function FinanceDashboard() {
     </div>
   );
 }
+

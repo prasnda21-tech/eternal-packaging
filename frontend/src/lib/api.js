@@ -48,6 +48,8 @@ const publicJsonRequest = async (path, options = {}) => {
 };
 
 export const api = {
+  webPresenceHeartbeat: (payload) => client.post("/auth/presence", payload, { timeout: 10000 }).then(r => r.data),
+  activeUsers: (params) => client.get("/dashboard/active-users", { params, timeout: 10000 }).then(r => r.data),
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
   me: dedupeInflight(() => client.get("/auth/me").then((r) => r.data)),
@@ -1398,3 +1400,4 @@ function spkKeyHeader(payload) {
 }
 
 export default api;
+
