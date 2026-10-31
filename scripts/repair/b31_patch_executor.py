@@ -10,6 +10,12 @@ Never touches qty, delivery, stock, ledger, SOP, users, roles, menus.
 Default: DRY-RUN (revalidate + print intended payloads; zero writes).
 Execute:  --execute --confirm-phrase 'APPROVE ADDON PARENT REPAIR MANIFEST B31 EXACT — SOP-20261030-003'
 
+Safety:
+  - Verifies active production SHA before --execute (fail closed)
+  - Atomically rewrites rollback_book.json after EACH verified success
+  - On PATCH-ok / postcheck-fail: durable recovery record before STOP
+  - Evidence dir 0700 / files 0600; fsync where appropriate
+
 Refuses --execute when Cloud Agent env is detected.
 Requires production.route.edit (checked via /api/auth/me).
 
@@ -21,7 +27,7 @@ import argparse
 import json
 import os
 import sys
-import time
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +56,9 @@ from b31_live_validator import (  # noqa: E402
 CONFIRM_PHRASE = (
     "APPROVE ADDON PARENT REPAIR MANIFEST B31 EXACT — SOP-20261030-003"
 )
+DEFAULT_ACTIVE_RELEASE = Path(
+    "/opt/eternal-packaging-runtime/releases/active-release.txt"
+)
 
 
 def _cloud_agent_detected() -> bool:
@@ -65,6 +74,80 @@ def _cloud_agent_detected() -> bool:
     if str(Path.cwd()).startswith("/workspace") and os.environ.get("ETERNAL_ACTIONS_TOKEN"):
         return True
     return False
+
+
+def _chmod_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write JSON privately with fsync; replace atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+        # fsync directory entry where supported
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _read_active_release_sha(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("sha="):
+            return line.split("=", 1)[1].strip().lower()
+        if len(line) == 40 and all(c in "0123456789abcdef" for c in line.lower()):
+            return line.lower()
+    # also accept sha: prefix
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("sha:"):
+            return line.split(":", 1)[1].strip().lower()
+    return ""
+
+
+def _verify_production_sha(active_release_file: Path) -> str:
+    got = _read_active_release_sha(active_release_file)
+    want = PRODUCTION_SHA.lower()
+    if not got:
+        print(
+            f"EXECUTE_BLOCKED reason=ACTIVE_RELEASE_UNREADABLE "
+            f"path={active_release_file}"
+        )
+        raise SystemExit(2)
+    if got != want:
+        print(
+            f"EXECUTE_BLOCKED reason=PRODUCTION_SHA_MISMATCH "
+            f"got={got} want={want}"
+        )
+        raise SystemExit(2)
+    print(f"production_sha_verified={got}")
+    return got
 
 
 def _unwrap_order(body: Any) -> dict:
@@ -187,6 +270,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Offline fixtures: {order_id}.json (implies no real API writes unless --execute with mock)",
     )
     ap.add_argument(
+        "--active-release-file",
+        type=Path,
+        default=Path(
+            os.environ.get("ETERNAL_B31_ACTIVE_RELEASE_FILE")
+            or str(DEFAULT_ACTIVE_RELEASE)
+        ),
+        help="active-release.txt used to verify production SHA before --execute",
+    )
+    ap.add_argument(
         "--execute",
         action="store_true",
         help="Perform PATCH (requires --confirm-phrase). Default is dry-run.",
@@ -200,6 +292,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--allow-cloud-execute",
         action="store_true",
         help=argparse.SUPPRESS,  # hard deny; not documented
+    )
+    ap.add_argument(
+        "--fixture-force-postcheck-fail-oid",
+        default="",
+        help=argparse.SUPPRESS,  # offline regression only
     )
     args = ap.parse_args(argv)
 
@@ -221,6 +318,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if _cloud_agent_detected() and not args.allow_cloud_execute:
             print("EXECUTE_BLOCKED reason=CLOUD_AGENT_REFUSED (run on Owner VPS only)")
             return 2
+        _verify_production_sha(args.active_release_file)
 
     plan, links = load_expectations(args.allowlist, args.table)
     by_order: Dict[str, List[dict]] = defaultdict(list)
@@ -287,9 +385,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     evidence_dir = args.evidence_dir or (Path.home() / f"b31-patch-evidence-{ts}")
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / "meta.json").write_text(
-        json.dumps({
+    _chmod_private_dir(evidence_dir)
+    _atomic_write_json(
+        evidence_dir / "meta.json",
+        {
             "mode": mode,
             "started_at_utc": ts,
             "allowlist_sha256": digest,
@@ -297,9 +396,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             "orders": EXPECTED_ORDERS,
             "links": EXPECTED_LINKS,
             "patch_authorized_flag_in_manifest": plan.get("write_authorized"),
-        }, indent=2) + "\n",
-        encoding="utf-8",
+            "active_release_file": str(args.active_release_file),
+        },
     )
+    # Initialize empty rollback book so crash mid-run still has a readable file.
+    rollback_book_path = evidence_dir / "rollback_book.json"
+    rollback_book: List[dict] = []
+    if args.execute:
+        _atomic_write_json(
+            rollback_book_path,
+            {
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "mode": mode,
+                "updated_after_each_success": True,
+                "orders": [],
+            },
+        )
     print(f"evidence_dir={evidence_dir}")
 
     def fetch_order(oid: str) -> Tuple[int, dict]:
@@ -335,9 +447,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             order["line_items"] = lines
             fixture_store[oid] = order
             # Persist for offline auditability (mirrors durable API write).
-            (args.fixture_dir / f"{oid}.json").write_text(
-                json.dumps(order) + "\n", encoding="utf-8",
-            )
+            _atomic_write_json(args.fixture_dir / f"{oid}.json", order)
             return 200, order
         code, body = _http_json(
             "PATCH",
@@ -347,10 +457,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         return code, _unwrap_order(body)
 
+    def persist_rollback_book() -> None:
+        _atomic_write_json(
+            rollback_book_path,
+            {
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "mode": mode,
+                "updated_after_each_success": True,
+                "orders": list(rollback_book),
+            },
+        )
+
     patched_orders = 0
     patched_links = 0
     dry_ok_orders = 0
-    rollback_book: List[dict] = []
 
     for oid in order_ids:
         exp_links = by_order[oid]
@@ -376,19 +496,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         items = _build_patch_items(order, exp_links)
         before = _snapshot_parents(order, [e["service_line_idx"] for e in exp_links])
+        rollback_items = _build_rollback_items(before)
         ev = {
             "order_id_prefix": _oid8(oid),
             "order_id": oid,
             "mode": mode,
             "before": before,
             "intended_patch_items": items,
+            "rollback_items": rollback_items,
             "link_count": len(exp_links),
         }
 
         if not args.execute:
-            (evidence_dir / f"dryrun-{_oid8(oid)}.json").write_text(
-                json.dumps(ev, indent=2) + "\n", encoding="utf-8",
-            )
+            _atomic_write_json(evidence_dir / f"dryrun-{_oid8(oid)}.json", ev)
             print(
                 f"dryrun_ok order={_oid8(oid)} links={len(exp_links)} "
                 f"patch_items={len(items)}"
@@ -396,68 +516,84 @@ def main(argv: Optional[List[str]] = None) -> int:
             dry_ok_orders += 1
             continue
 
-        # EXECUTE
+        # EXECUTE — capture before snapshot before any write
         pcode, patched = apply_patch(oid, items)
         if pcode not in (200, 201) or not patched:
             print(f"STOP order={_oid8(oid)} reason=PATCH_HTTP_{pcode}")
-            # re-fetch for evidence
             _, after_fail = fetch_order(oid)
             ev["after"] = _snapshot_parents(
                 after_fail, [e["service_line_idx"] for e in exp_links],
             )
             ev["patch_http"] = pcode
-            (evidence_dir / f"FAIL-{_oid8(oid)}.json").write_text(
-                json.dumps(ev, indent=2) + "\n", encoding="utf-8",
-            )
+            ev["status"] = "PATCH_HTTP_FAIL"
+            _atomic_write_json(evidence_dir / f"FAIL-{_oid8(oid)}.json", ev)
             print(f"RESULT=FAIL patched_orders={patched_orders} patched_links={patched_links}")
+            print(f"rollback_book={rollback_book_path}")
             return 2
 
         # Independent GET verify
         vcode, verified = fetch_order(oid)
         if vcode != 200:
+            # PATCH may have applied — durable recovery before STOP
+            recovery = {
+                **ev,
+                "status": "PATCH_OK_POSTCHECK_FETCH_FAIL",
+                "patch_http": pcode,
+                "postcheck_fetch_http": vcode,
+                "after": None,
+                "rollback_items": rollback_items,
+                "note": "PATCH returned success but GET verify failed; use rollback_items",
+            }
+            _atomic_write_json(evidence_dir / f"RECOVERY-{_oid8(oid)}.json", recovery)
             print(f"STOP order={_oid8(oid)} reason=POSTCHECK_FETCH_HTTP_{vcode}")
             print(f"RESULT=FAIL patched_orders={patched_orders} patched_links={patched_links}")
+            print(f"recovery={evidence_dir / f'RECOVERY-{_oid8(oid)}.json'}")
+            print(f"rollback_book={rollback_book_path}")
             return 2
+
         post_reasons = _verify_persisted(verified, exp_links)
+        if args.fixture_force_postcheck_fail_oid and oid == args.fixture_force_postcheck_fail_oid:
+            post_reasons = list(post_reasons) + ["FIXTURE_FORCED_POSTCHECK_FAIL"]
         after = _snapshot_parents(verified, [e["service_line_idx"] for e in exp_links])
-        rollback_items = _build_rollback_items(before)
         ev["after"] = after
         ev["patch_http"] = pcode
         ev["postcheck"] = post_reasons or ["OK"]
-        ev["rollback_items"] = rollback_items
-        (evidence_dir / f"ok-{_oid8(oid)}.json").write_text(
-            json.dumps(ev, indent=2) + "\n", encoding="utf-8",
-        )
+
         if post_reasons:
+            # PATCH succeeded but postcheck failed — persist recovery BEFORE stop
+            recovery = {
+                **ev,
+                "status": "PATCH_OK_POSTCHECK_FAIL",
+                "rollback_items": rollback_items,
+                "note": (
+                    "Parent fields may be partially/fully written; "
+                    "apply rollback_items via addon-parent clear to restore empty parents"
+                ),
+            }
+            _atomic_write_json(evidence_dir / f"RECOVERY-{_oid8(oid)}.json", recovery)
+            # Prior successes already in rollback_book (atomic after each ok)
             print(
                 f"STOP order={_oid8(oid)} reason=POSTCHECK_FAIL "
                 f"detail={','.join(post_reasons)}"
             )
             print(f"RESULT=FAIL patched_orders={patched_orders} patched_links={patched_links}")
-            print(
-                f"rollback_hint order={_oid8(oid)} "
-                f"PATCH clear items recorded in evidence ok/FAIL file"
-            )
+            print(f"recovery={evidence_dir / f'RECOVERY-{_oid8(oid)}.json'}")
+            print(f"rollback_book={rollback_book_path}")
             return 2
 
+        # Success path: per-order evidence + atomic rollback_book update NOW
+        ev["status"] = "OK"
+        _atomic_write_json(evidence_dir / f"ok-{_oid8(oid)}.json", ev)
         patched_orders += 1
         patched_links += len(exp_links)
         rollback_book.append({
             "order_id": oid,
             "order_id_prefix": _oid8(oid),
             "items": rollback_items,
+            "verified_at_utc": datetime.now(timezone.utc).isoformat(),
         })
+        persist_rollback_book()
         print(f"patched_ok order={_oid8(oid)} links={len(exp_links)}")
-
-    # Write rollback book for all successes
-    (evidence_dir / "rollback_book.json").write_text(
-        json.dumps({
-            "created_at_utc": datetime.now(timezone.utc).isoformat(),
-            "mode": mode,
-            "orders": rollback_book,
-        }, indent=2) + "\n",
-        encoding="utf-8",
-    )
 
     if args.execute:
         if patched_orders != EXPECTED_ORDERS or patched_links != EXPECTED_LINKS:
@@ -465,9 +601,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"RESULT=FAIL patched_orders={patched_orders}/{EXPECTED_ORDERS} "
                 f"patched_links={patched_links}/{EXPECTED_LINKS}"
             )
+            print(f"rollback_book={rollback_book_path}")
             return 2
         print(f"RESULT=PASS patched_orders={patched_orders} patched_links={patched_links}")
-        print(f"rollback_book={evidence_dir / 'rollback_book.json'}")
+        print(f"rollback_book={rollback_book_path}")
         return 0
 
     if dry_ok_orders != EXPECTED_ORDERS:
