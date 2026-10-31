@@ -1,5 +1,7 @@
 /** Presentation helpers for Dashboard Rincian (UI only). */
 
+import { formatSalesInvoiceDate } from "./salesInvoiceDate";
+
 const CURRENCY_KEYS = new Set([
   "grand_total", "debit", "credit", "running_balance", "amount",
 ]);
@@ -137,6 +139,14 @@ export function formatCellValue(kind, raw, { unit = "" } = {}) {
   }
 }
 
+/** Sales Dashboard range only. Storage and URLs stay YYYY-MM-DD. */
+export function formatSalesDashboardRange(start, end) {
+  const a = formatSalesInvoiceDate(start);
+  const b = formatSalesInvoiceDate(end);
+  if (a && b) return a === b ? a : `${a}–${b}`;
+  return a || b || "";
+}
+
 export function periodLabelId(period) {
   const start = period?.start_date;
   const end = period?.end_date;
@@ -156,6 +166,15 @@ export function buildKpiCards(widget, kpi = {}, total) {
   const grain = String(kpi.grain || "");
   const cards = [];
   const primaryLabel = KPI_PRIMARY_LABEL[key] || kpi.label || "Total";
+  if (kpi.status === "error") {
+    return [{
+      key: "incomplete",
+      label: primaryLabel,
+      value: "Data tidak lengkap",
+      testId: "dr-kpi-incomplete",
+      kind: "status",
+    }];
+  }
 
   const hasAmount = kpi.amount != null && kpi.amount !== "";
   const hasQty = kpi.qty_remaining != null && kpi.qty_remaining !== "";

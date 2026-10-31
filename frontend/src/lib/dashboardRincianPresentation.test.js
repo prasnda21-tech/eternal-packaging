@@ -4,6 +4,7 @@ import {
   formatIdDate,
   formatIdQty,
   formatIdRupiah,
+  formatSalesDashboardRange,
   periodLabelId,
   presentationKind,
 } from "./dashboardRincianPresentation";
@@ -23,6 +24,33 @@ test("KPI labels are contextual and keep PO unique separate from line count", ()
   expect(line[0].value).toBe("3 PO");
   expect(line[1].label).toBe("Jumlah Baris Item");
   expect(line[1].value).toBe("12");
+});
+
+test("incomplete omzet is not rendered as Rp0", () => {
+  const cards = buildKpiCards("omzet", {
+    count: null,
+    amount: null,
+    status: "error",
+    grain: "invoice",
+    basis: "after_discount",
+    label: "Faktur finalized",
+    detail: "Ada faktur finalized dengan after_discount yang tidak dapat dibaca.",
+  });
+  expect(cards).toHaveLength(1);
+  expect(cards[0].value).toBe("Data tidak lengkap");
+  expect(cards[0].value).not.toBe("Rp0");
+  expect(cards[0].testId).toBe("dr-kpi-incomplete");
+});
+
+test("numeric zero omzet stays Rp0", () => {
+  const cards = buildKpiCards("omzet", {
+    count: 1,
+    amount: 0,
+    status: "zero",
+    grain: "invoice",
+  });
+  expect(cards[0].value).toBe("Rp0");
+  expect(cards[1].value).toBe("1 faktur");
 });
 
 test("money KPI keeps rupiah primary and faktur count secondary", () => {
@@ -71,6 +99,11 @@ test("formatters use id-ID and preserve zero vs null", () => {
   expect(periodLabelId({ start_date: "2026-10-01", end_date: "2026-10-27" })).toBe(
     "01/10/2026 – 27/10/2026 (WIB)",
   );
+  expect(formatSalesDashboardRange("2026-03-01", "2026-03-31")).toBe("01/03/2026–31/03/2026");
+  expect(formatSalesDashboardRange("2026-03-01", "2026-03-01")).toBe("01/03/2026");
+  expect(formatSalesDashboardRange("31/04/2026", "2026-03-01")).toBe("01/03/2026");
+  expect(formatSalesDashboardRange("", "")).toBe("");
+  expect(formatIdDate("bukan-tanggal")).toBe("bukan-tanggal");
 });
 
 test("presentation kind prefers column type then known keys", () => {

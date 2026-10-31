@@ -664,71 +664,141 @@ async def query_dashboard_rincian(
             },
         }
     elif meta["source"] == "sales_invoice":
-        if not query_sales_invoices:
-            raise HTTPException(500, "Adapter Faktur Penjualan belum siap")
+        from services.sales_dashboard import (
+            aggregate_omzet,
+            aggregate_settlement,
+            sales_invoice_population_match,
+        )
+
         today = datetime.now(WIB).date().isoformat()
         df = start_date
         dt = end_date
-        if key == "today":
+        # Explicit dates stay aligned with the card. WIB today is only the
+        # default when the today widget is opened without a period.
+        if key == "today" and not (df and dt):
             df = dt = today
-        payload = await query_sales_invoices(
-            db,
-            q=q or None,
-            list_tab="all",
-            date_from=df or None,
-            date_to=dt or None,
-            financial_status=meta.get("financial_status") or "finalized",
-            page=page,
-            page_size=page_size,
+        po_ids = None
+        if sales_scope:
+            po_ids = set()
+            cursor = db.orders.find(sales_scope, {"_id": 0, "id": 1})
+            async for order in cursor:
+                if order.get("id"):
+                    po_ids.add(str(order["id"]))
+        match = sales_invoice_population_match(
+            start=df or None,
+            end=dt or None,
+            po_ids=po_ids,
+            branch_clause=branch_scope or None,
+            search=q or "",
         )
-        invoices = payload.get("items") or payload.get("invoices") or payload.get("rows") or []
-        total = int(payload.get("total") or payload.get("total_count") or payload.get("count") or len(invoices))
-        # Omzet KPI basis = after_discount over the full filtered set (not page sum).
-        amount = 0.0
-        if total <= len(invoices):
-            amount = sum(float(i.get("after_discount") or 0) for i in invoices)
-        elif total > 0:
-            full_payload = await query_sales_invoices(
-                db,
-                q=q or None,
-                list_tab="all",
-                date_from=df or None,
-                date_to=dt or None,
-                financial_status=meta.get("financial_status") or "finalized",
-                page=1,
-                page_size=min(total, 5000),
-            )
-            all_inv = full_payload.get("invoices") or full_payload.get("items") or []
-            amount = sum(float(i.get("after_discount") or 0) for i in all_inv)
-        out_rows = []
-        for inv in invoices:
-            out_rows.append({
-                "id": inv.get("id"),
-                "invoice_number": inv.get("invoice_number") or inv.get("number"),
-                "invoice_date": str(inv.get("invoice_date") or "")[:10],
-                "customer_name": inv.get("customer_name") or inv.get("party_name") or inv.get("customer") or "",
-                "grand_total": inv.get("after_discount") if inv.get("after_discount") is not None else inv.get("grand_total"),
-                "financial_status": inv.get("financial_status") or "",
-                "payment_status": inv.get("payment_status") or "",
-                "detail_href": _detail_href("sales_invoice", inv),
-            })
-        body = {
-            "columns": COLUMNS["sales_invoice"],
-            "rows": _add_row_no(out_rows, page, page_size),
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-            "total_pages": max(1, (total + page_size - 1) // page_size) if total else 1,
-            "has_next": page * page_size < total,
-            "has_prev": page > 1,
-            "kpi_summary": {
-                "count": total,
-                "amount": amount,
-                "label": "Faktur finalized",
-                "basis": "after_discount",
-                "grain": "invoice",
-            },
-        }
+        searching = bool(str(q or "").strip())
+        comparable_filters = (not searching) and bool(df) and bool(dt)
+
+        def _customer_name(inv: dict) -> str:
+            customer = inv.get("customer")
+            if isinstance(customer, dict):
+                return customer.get("name") or customer.get("customer_name") or ""
+            return inv.get("customer_name") or customer or ""
+
+        def _page_meta(total: int) -> dict:
+            return {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": max(1, (total + page_size - 1) // page_size) if total else 1,
+                "has_next": page * page_size < total,
+                "has_prev": page > 1,
+            }
+
+        if key == "settlement":
+            # Pelunasan follows the card: grand_total, not the omzet basis.
+            summary = await aggregate_settlement(db, match, page=page, page_size=page_size)
+            total = int(summary["population_count"] or 0)
+            out_rows = []
+            for inv in summary["rows"]:
+                out_rows.append({
+                    **inv,
+                    "detail_href": _detail_href("sales_invoice", inv),
+                })
+            detail = summary["detail"]
+            if searching:
+                search_note = (
+                    "Total mengikuti pencarian. Pembandingan dengan kartu memerlukan filter yang identik."
+                )
+                detail = f"{detail} {search_note}".strip() if detail else search_note
+            body = {
+                "columns": COLUMNS["sales_invoice"],
+                "rows": _add_row_no(out_rows, page, page_size),
+                **_page_meta(total),
+                "kpi_summary": {
+                    "count": None if summary["status"] == "error" else total,
+                    "amount": summary["amount"],
+                    "settled_grand_total": summary["settled_grand_total"],
+                    "open_grand_total": summary["open_grand_total"],
+                    "settled_count": summary["settled_count"],
+                    "open_count": summary["open_count"],
+                    "status": summary["status"],
+                    "detail": detail,
+                    "label": "Faktur finalized",
+                    "basis": "grand_total",
+                    "grain": "invoice",
+                    "comparable_to_card": comparable_filters and summary["status"] != "error",
+                },
+            }
+        else:
+            summary = await aggregate_omzet(db, match)
+            total = int(summary["invoice_count"] or 0) if summary["invoice_count"] is not None else 0
+            if summary["status"] == "error":
+                count_doc = await db.sales_invoices.aggregate([
+                    {"$match": match},
+                    {"$count": "count"},
+                ]).to_list(1)
+                total = int(count_doc[0]["count"]) if count_doc else 0
+            page_rows_raw = await db.sales_invoices.find(
+                match,
+                {
+                    "_id": 0,
+                    "id": 1,
+                    "invoice_number": 1,
+                    "invoice_date": 1,
+                    "customer": 1,
+                    "customer_name": 1,
+                    "after_discount": 1,
+                    "financial_status": 1,
+                    "payment_status": 1,
+                },
+            ).sort([("invoice_date", 1), ("invoice_number", 1), ("id", 1)]).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+            out_rows = []
+            for inv in page_rows_raw:
+                out_rows.append({
+                    "id": inv.get("id"),
+                    "invoice_number": inv.get("invoice_number") or inv.get("number"),
+                    "invoice_date": str(inv.get("invoice_date") or "")[:10],
+                    "customer_name": _customer_name(inv),
+                    "grand_total": inv.get("after_discount"),
+                    "financial_status": inv.get("financial_status") or "",
+                    "payment_status": inv.get("payment_status") or "",
+                    "detail_href": _detail_href("sales_invoice", inv),
+                })
+            detail = summary["detail"]
+            if searching:
+                search_note = "Total mengikuti pencarian. Kartu omzet sama dengan rincian hanya bila pencarian kosong dan periode serta status sama."
+                detail = f"{detail} {search_note}".strip() if detail else search_note
+            body = {
+                "columns": COLUMNS["sales_invoice"],
+                "rows": _add_row_no(out_rows, page, page_size),
+                **_page_meta(total),
+                "kpi_summary": {
+                    "count": None if summary["status"] == "error" else total,
+                    "amount": summary["amount"],
+                    "status": summary["status"],
+                    "detail": detail,
+                    "label": "Faktur finalized",
+                    "basis": "after_discount",
+                    "grain": "invoice",
+                    "comparable_to_card": comparable_filters and summary["status"] != "error",
+                },
+            }
     elif meta["source"] == "purchase_invoice":
         if not list_purchase_invoices:
             raise HTTPException(500, "Adapter Faktur Pembelian belum siap")

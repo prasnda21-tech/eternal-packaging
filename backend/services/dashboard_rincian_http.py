@@ -101,6 +101,7 @@ def register_dashboard_rincian_routes(
             lead_days=int(lead_days),
             holidays=holidays,
             sales_scope=sales_owner_match(user) if callable(sales_owner_match) else None,
+            # Branch comes only from operational_query. Query-string branch ids are ignored.
             branch_scope=await _branch_scope(db, user),
             status_po_projection=status_po_projection,
             list_delivery_schedule_rows=_schedule,
