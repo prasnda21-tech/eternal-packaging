@@ -216,13 +216,14 @@ function Drill({ drill, hasPerm, label }) {
   return <Link className="kb-link" to={drill.path}>{label}</Link>;
 }
 
-function CountBody({ model, kicker, tone }) {
+function CountBody({ model, kicker, tone, poCount = false }) {
   const spark = Array.isArray(model.spark) && model.spark.length > 1 ? model.spark : null;
   return (
     <div className="pd-kpi">
       <div>
-        <p className="kb-metric">{formatCount(model.count)}</p>
-        <p className="kb-kicker">{model.status === "zero" ? "Nol tercatat" : kicker}</p>
+        <p className="kb-metric">{formatCount(model.count)}{poCount ? <span className="pd-count-unit"> PO</span> : null}</p>
+        <p className="kb-kicker">{kicker}</p>
+        {poCount ? <p className="pd-snapshot-meta" title={model.updatedAt ? productionUpdatedLabel(model.updatedAt) : undefined}><span>PO unik · </span>Snapshot saat ini</p> : null}
         {model.delta ? <p className="pd-delta">{model.delta} · contoh visual</p> : null}
       </div>
       {spark ? <Spark values={spark} tone={tone} /> : null}
@@ -257,7 +258,7 @@ function UnitBars({ entries, note }) {
           <i className="pd-swatch" data-tone={String(index % 5)} style={row.color ? { background: row.color } : undefined} />
           <span className="pd-unit-name">{row.name}</span>
           <span className="pd-track" data-tone={String(index % 5)}>
-            <span style={{ width: `${Math.max(4, (Number(row.qty) / max) * 100)}%`, background: row.color }} />
+            <span style={{ width: `${Math.max(0, (Number(row.qty) / max) * 100)}%`, background: row.color }} />
           </span>
           <strong>{formatCount(row.qty)}{row.suffix || ""}</strong>
         </div>
@@ -1178,10 +1179,12 @@ function CardBody({ id, model, tone, onRetry, controls, editing, hasPerm }) {
       );
     }
     return (
-      <UnitBars
-        entries={units.map(([unit, qty]) => ({ name: unit, qty }))}
-        note="Panjang bar dibanding nilai terbesar di kartu ini. Satuan tidak digabung."
-      />
+      <div>
+        <dl className="pd-unit-values" aria-label="Sisa produksi per satuan">
+          {units.map(([unit, qty]) => <div key={unit}><dt>{unit}</dt><dd>{formatCount(qty)} <span>{unit}</span></dd></div>)}
+        </dl>
+        <p className="pd-note">Satuan berbeda ditampilkan terpisah.</p>
+      </div>
     );
   }
   if (id === "deadline") {
@@ -1292,7 +1295,7 @@ function CardBody({ id, model, tone, onRetry, controls, editing, hasPerm }) {
       />
     );
   }
-  return <CountBody model={model} kicker={CAPTION[id]} tone={tone} />;
+  return <CountBody model={model} kicker={CAPTION[id]} tone={tone} poCount={PO_COUNT_IDS.has(id)} />;
 }
 
 export function WidgetGlyph({ id }) {
@@ -1313,6 +1316,8 @@ const CARD_DRILL_IDS = new Set([
   "po_hold",
   "po_terlambat",
 ]);
+const PO_COUNT_IDS = new Set(["po_aktif", "perlu_produksi", "po_urgent", "po_hold"]);
+const ACTIVE_COHORT_IDS = new Set(["target_produksi", "target_realisasi", "aging", "ketepatan", "bottleneck"]);
 
 export default function ProductionWidgetBoard({ widgets, models, editing, hasPerm, onLayout, onRetry, controls = {} }) {
   const navigate = useNavigate();
@@ -1400,6 +1405,7 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
             key={widget.widget_id}
             className={[
               "kb-card",
+              PO_COUNT_IDS.has(widget.widget_id) ? "is-po-count" : "",
               TONE[widget.widget_id] ? `pd-tone-${TONE[widget.widget_id]}` : "",
               widget.h <= 2 ? "is-compact" : "",
               editing ? "is-edit" : "",
@@ -1439,10 +1445,10 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
               {cardDrillPath ? (
                 <span className="pd-drill-icon kb-card-drill" aria-hidden="true"><ArrowUpRight size={14} /></span>
               ) : null}
-              {!editing && (model.status === "complete" || model.status === "zero" || model.status === "empty") ? (
+              {!PO_COUNT_IDS.has(widget.widget_id) && !editing && (model.status === "complete" || model.status === "zero" || model.status === "empty") ? (
                 <Drill drill={model.drill} hasPerm={hasPerm} label="Rincian" />
               ) : null}
-              {cardDrillLocked ? (
+              {cardDrillLocked && !PO_COUNT_IDS.has(widget.widget_id) ? (
                 <span className="pd-drill-locked" data-testid={`produksi-drill-locked-${widget.widget_id}`}>Akses terbatas</span>
               ) : null}
               <div className="kb-card-tools">
@@ -1498,7 +1504,7 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
                 navigate(cardDrillPath);
               }}
               onKeyDown={(event) => {
-                if (!cardDrillPath) return;
+                if (!cardDrillPath || isInteractiveDrillEventTarget(event.target)) return;
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   navigate(cardDrillPath);
@@ -1519,7 +1525,13 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
                 editing={editing}
                 hasPerm={hasPerm}
               />
+              {ACTIVE_COHORT_IDS.has(widget.widget_id) && !["loading", "error", "forbidden"].includes(model.status) ? <p className="pd-note">Cakupan: PO aktif pada snapshot saat ini.</p> : null}
             </div>
+            {PO_COUNT_IDS.has(widget.widget_id) && !editing && (cardDrillPath || cardDrillLocked) ? (
+              <footer className="pd-count-footer">
+                {cardDrillPath ? <Link to={cardDrillPath}>Lihat rincian ↗</Link> : <span className="pd-drill-locked" data-testid={`produksi-drill-locked-${widget.widget_id}`}>Akses rincian terbatas</span>}
+              </footer>
+            ) : null}
             {editing ? (
               <button
                 type="button"
@@ -1535,3 +1547,4 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
     </div>
   );
 }
+

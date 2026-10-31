@@ -6,6 +6,7 @@ predicates. Does not write. Pagination is over the full filtered set.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -18,7 +19,7 @@ from services.delivery_plan import (
     mongo_match as delivery_plan_mongo_match,
     paginate_rows as paginate_plan_rows,
 )
-from services.kepala_produksi_board import filter_rows_for_kpi
+from services.kepala_produksi_board import aggregate_kepala_kpis, filter_rows_for_kpi
 from services.status_po import (
     build_status_po_page_rows,
     filter_orders_for_view,
@@ -39,7 +40,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "po_urgent": {
@@ -50,7 +52,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "po_hold": {
@@ -61,7 +64,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "deadline_6h": {
@@ -72,7 +76,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "deadline_24h": {
@@ -83,7 +88,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "approval_design": {
@@ -94,7 +100,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "approval_payment": {
@@ -105,7 +112,8 @@ WIDGET_META: Dict[str, dict] = {
         "basis": "snapshot",
         "grain": "po",
         "kpi_any_of": ["dashboard.production.view"],
-        "data_any_of": ["nav.reports.status_po", "schedule.view"],
+        "data_any_of": ["nav.reports.status_po"],
+        "data_also_any_of": ["schedule.view"],
         "detail_kind": "po",
     },
     "perlu_produksi": {
@@ -225,7 +233,7 @@ WIDGET_META: Dict[str, dict] = {
         "source": "sales_invoice",
         "financial_status": "finalized",
         "grain": "invoice",
-        "kpi_any_of": ["dashboard.finance.view"],
+        "kpi_any_of": ["dashboard.finance.view", "dashboard.sales.view"],
         "data_any_of": ["sales.invoice.view", "sales_order.view", "po.view", "nav.sales.sales_invoice"],
         "detail_kind": "sales_invoice",
     },
@@ -234,7 +242,7 @@ WIDGET_META: Dict[str, dict] = {
         "title": "Pembelian",
         "source": "purchase_invoice",
         "grain": "invoice",
-        "kpi_any_of": ["dashboard.finance.view", "dashboard.sales.view"],
+        "kpi_any_of": ["dashboard.finance.view", "dashboard.sales.view", "purchase_invoices.view"],
         "data_any_of": ["purchase_invoices.view", "purchase_invoices.create"],
         "detail_kind": "purchase_invoice",
     },
@@ -252,7 +260,7 @@ WIDGET_META: Dict[str, dict] = {
         "title": "Laba/Rugi",
         "source": "profit_loss",
         "grain": "account",
-        "kpi_any_of": ["dashboard.finance.view"],
+        "kpi_any_of": ["dashboard.finance.view", "profit_loss.view"],
         "data_any_of": ["profit_loss.view", "nav.ledger.profit_loss"],
         "detail_kind": "ledger",
     },
@@ -359,9 +367,25 @@ def _has_any(perms: set, keys: Sequence[str]) -> bool:
     return any(key in perms for key in keys)
 
 
+def _sum_money(values) -> Optional[float]:
+    """Missing or invalid amounts make the summary incomplete, never zero."""
+    total = Decimal("0")
+    for raw in values:
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
+        if not value.is_finite():
+            return None
+        total += value
+    return float(total)
+
+
 def _require_access(meta: dict, perms: set) -> None:
     if not _has_any(perms, meta.get("kpi_any_of") or []):
         raise HTTPException(403, "Tidak ada izin membaca KPI dashboard")
+    if meta.get("data_also_any_of") and not _has_any(perms, meta["data_also_any_of"]):
+        raise HTTPException(403, "Tidak ada izin membaca dataset rincian")
     if not _has_any(perms, meta.get("data_any_of") or []):
         raise HTTPException(403, "Tidak ada izin membaca dataset rincian")
 
@@ -475,8 +499,10 @@ async def _status_po_rincian(
             attach_deadline(o, lead_days, holidays=holidays)
             page_orders.append(o)
     rows = build_status_po_page_rows(page_orders, page_ids=page_ids)
+    source_orders = {str(o.get("id")): o for o in page_orders}
     normalized = []
     for row in rows:
+        source_order = source_orders.get(str(row.get("id")), {})
         item = {
             "id": row.get("id"),
             "order_id": row.get("id"),
@@ -486,7 +512,7 @@ async def _status_po_rincian(
             "status_label": row.get("status_label") or row.get("workflow_status") or row.get("status") or "",
             "priority": row.get("priority") or "normal",
             "qty_remaining": row.get("qty_remaining"),
-            "deadline": row.get("deadline") or row.get("delivery_deadline_effective") or "",
+            "deadline": source_order.get("delivery_deadline_effective") or row.get("deadline") or row.get("delivery_deadline_effective") or "",
             "detail_href": _detail_href("po", row),
         }
         normalized.append(item)
@@ -504,6 +530,7 @@ async def _status_po_rincian(
             "count": sliced["total_count"],
             "label": "PO unik",
             "grain": "po",
+            "detail": "Snapshot PO unik. Sisa Qty ditampilkan hanya bila sumber Status PO menyediakannya; tanda — bukan berarti nol.",
         },
     }
 
@@ -591,7 +618,10 @@ async def query_dashboard_rincian(
             filters["date_to"] = today
         rows = build_plan_rows(docs, lead_time_days=lead_days, holidays=holidays or [], filters=filters)
         page_rows, meta_page = _paginate(rows, page, page_size)
-        qty_sum = sum(int(r.get("qty_remaining") or 0) for r in rows)
+        by_unit = {}
+        for row in rows:
+            bucket = str(row.get("qty_unit") or "Tanpa satuan")
+            by_unit[bucket] = by_unit.get(bucket, 0) + int(row.get("qty_remaining") or 0)
         out_rows = []
         for row in page_rows:
             item = {
@@ -612,7 +642,7 @@ async def query_dashboard_rincian(
             **meta_page,
             "kpi_summary": {
                 "count": meta_page["total"],
-                "qty_remaining": qty_sum,
+                "by_unit": by_unit,
                 "unit": unit or None,
                 "label": "PO dengan sisa qty",
                 "grain": "po",
@@ -625,14 +655,18 @@ async def query_dashboard_rincian(
         if hasattr(board, "__await__"):
             board = await board  # type: ignore[misc]
         kpi_key = meta.get("kpi_key") or "perlu-produksi"
-        rows = filter_rows_for_kpi(list(board.get("board_rows") or []), kpi_key)
+        board_rows = list(board.get("board_rows") or [])
+        # Priority card previews the complete ordered board, not only print work.
+        rows = board_rows if key == "prioritas" else filter_rows_for_kpi(board_rows, kpi_key)
+        if unit:
+            rows = [r for r in rows if str(r.get("unit") or "") == unit]
         if q:
             needle = q.lower()
             rows = [
                 r for r in rows
-                if needle in str(r.get("po_number") or "").lower()
+                if needle in str(r.get("order_number") or r.get("po_number") or "").lower()
                 or needle in str(r.get("customer") or r.get("customer_name") or "").lower()
-                or needle in str(r.get("item_name") or r.get("product") or "").lower()
+                or needle in str(r.get("item") or r.get("item_name") or r.get("product") or "").lower()
             ]
         unique_po = {str(r.get("order_id") or r.get("id") or r.get("po_number")) for r in rows if r.get("order_id") or r.get("id") or r.get("po_number")}
         page_rows, meta_page = _paginate(rows, page, page_size)
@@ -640,15 +674,15 @@ async def query_dashboard_rincian(
         for row in page_rows:
             oid = row.get("order_id") or row.get("id")
             out_rows.append({
-                "id": oid,
+                "id": f"{oid}:{row['line_idx']}" if row.get("line_idx") is not None else oid,
                 "order_id": oid,
-                "po_number": row.get("po_number"),
+                "po_number": row.get("order_number") or row.get("po_number"),
                 "customer": row.get("customer") or row.get("customer_name") or "",
-                "item_name": row.get("item_name") or row.get("product") or row.get("line_name") or "",
+                "item_name": row.get("item") or row.get("item_name") or row.get("product") or row.get("line_name") or "",
                 "unit": row.get("unit") or "",
-                "qty_remaining": row.get("qty_remaining") or row.get("belum_diproduksi") or row.get("qty"),
-                "priority_label": row.get("priority_label") or row.get("priority") or "",
-                "tanggal_kirim": row.get("tanggal_kirim") or row.get("delivery_date") or "",
+                "qty_remaining": row.get("qty_production_remaining"),
+                "priority_label": ", ".join(row.get("priority_display") or []) or row.get("priority_label") or row.get("priority") or "",
+                "tanggal_kirim": row.get("effective_delivery_date") or row.get("tanggal_kirim") or row.get("delivery_date") or "",
                 "detail_href": _detail_href("po", {"id": oid}),
             })
         body = {
@@ -661,6 +695,7 @@ async def query_dashboard_rincian(
                 "label": f"{len(unique_po)} PO unik · {len(rows)} baris item",
                 "grain": "line",
                 "kpi_key": kpi_key,
+                **({"by_unit": aggregate_kepala_kpis(rows)["sisa-produksi"]["by_unit"]} if key == "sisa_qty" else {}),
             },
         }
     elif meta["source"] == "sales_invoice":
@@ -815,7 +850,7 @@ async def query_dashboard_rincian(
                 or needle in str(i.get("supplier_name") or i.get("party_name") or "").lower()
             ]
         page_rows, meta_page = _paginate(invoices, page, page_size)
-        amount = sum(float(i.get("grand_total") or i.get("total") or 0) for i in invoices)
+        amount = _sum_money(i.get("grand_total") if i.get("grand_total") is not None else i.get("total") for i in invoices)
         out_rows = []
         for inv in page_rows:
             out_rows.append({
@@ -831,7 +866,7 @@ async def query_dashboard_rincian(
             "columns": COLUMNS["purchase_invoice"],
             "rows": _add_row_no(out_rows, meta_page["page"], meta_page["page_size"]),
             **meta_page,
-            "kpi_summary": {"count": meta_page["total"], "amount": amount, "label": "Faktur pembelian", "grain": "invoice"},
+            "kpi_summary": {"count": meta_page["total"], "amount": amount, "label": "Faktur pembelian", "grain": "invoice", "status": "error" if amount is None else "complete"},
         }
     elif meta["source"] == "cash_mutasi":
         if not get_mutasi or not list_cash_banks:
@@ -862,13 +897,13 @@ async def query_dashboard_rincian(
         out_rows = []
         for row in page_rows:
             out_rows.append({
-                "id": row.get("id") or row.get("journal_id"),
+                "id": row.get("journal_line_id") or row.get("id") or row.get("journal_id"),
                 "date": row.get("date"),
-                "number": row.get("number") or row.get("source_number") or "",
+                "number": row.get("transaction_number") or row.get("journal_number") or row.get("number") or row.get("source_number") or "",
                 "source_type": row.get("source_type") or "",
                 "debit": row.get("debit"),
                 "credit": row.get("credit"),
-                "running_balance": row.get("running_balance") or row.get("balance"),
+                "running_balance": row.get("running_balance") if row.get("running_balance") is not None else row.get("balance"),
                 "source_path": row.get("source_path"),
                 "source_id": row.get("source_id"),
                 "detail_href": _detail_href("cash_source", row),
@@ -883,6 +918,9 @@ async def query_dashboard_rincian(
                 "total_credit": payload.get("total_credit"),
                 "exclude_internal_transfer": True,
                 "cash_bank_id": bank_id,
+                "cash_bank_name": payload.get("cash_bank_name"),
+                "comparable_to_card": False,
+                "detail": f"Mutasi rekening {payload.get('cash_bank_name') or bank_id}. Total debit/kredit adalah seluruh periode rekening ini, meski pencarian aktif. Bukan total Arus Kas seluruh rekening pada dashboard.",
                 "label": "Mutasi eksternal",
                 "grain": "journal",
             },
@@ -933,21 +971,23 @@ async def query_dashboard_rincian(
         rows = []
         if isinstance(sections, list):
             for sec in sections:
-                group = sec.get("key") or sec.get("group") or sec.get("label") or ""
+                group = sec.get("report_group") or sec.get("key") or sec.get("group") or sec.get("label") or ""
                 if meta.get("section") == "expense" and str(group).lower() not in {"expense", "exps", "beban", "operating_expense"}:
-                    # keep expense-ish lines when structure uses items only
-                    pass
+                    # Expense excludes revenue, COGS, and other report groups.
+                    continue
                 for line in sec.get("lines") or sec.get("accounts") or sec.get("items") or []:
                     rows.append({
                         "account_id": line.get("account_id") or line.get("id"),
                         "account_code": line.get("code") or line.get("account_code"),
                         "account_name": line.get("name") or line.get("account_name"),
                         "group": group,
-                        "amount": line.get("amount") or line.get("balance") or line.get("total"),
+                        "amount": line.get("amount") if line.get("amount") is not None else line.get("balance", line.get("total")),
                         "detail_href": _detail_href("ledger", line),
                     })
-        if not rows and isinstance(statement.get("lines"), list):
+        if not sections and isinstance(statement.get("lines"), list):
             for line in statement["lines"]:
+                if meta.get("section") == "expense" and line.get("report_group") != "expense":
+                    continue
                 rows.append({
                     "account_id": line.get("account_id"),
                     "account_code": line.get("code"),
@@ -965,6 +1005,7 @@ async def query_dashboard_rincian(
             ]
         page_rows, meta_page = _paginate(rows, page, page_size)
         totals = statement.get("totals") or {}
+        expense_amount = _sum_money(r.get("amount") for r in rows) if key == "expense" else None
         body = {
             "columns": COLUMNS["pl"],
             "rows": _add_row_no(page_rows, meta_page["page"], meta_page["page_size"]),
@@ -976,6 +1017,13 @@ async def query_dashboard_rincian(
                 "expense_total": totals.get("expense_total"),
                 "label": "Baris laporan",
                 "grain": "account",
+                **({
+                    "amount": expense_amount,
+                    "status": "error" if expense_amount is None else "complete",
+                    "detail": "Beban operasional dari seluruh akun hasil filter; nilai negatif dipertahankan. Harga pokok tidak termasuk.",
+                } if key == "expense" else {
+                    "detail": "Laba bersih mengikuti seluruh periode laporan; pencarian hanya menyaring daftar akun.",
+                }),
             },
         }
     else:
@@ -993,3 +1041,4 @@ async def query_dashboard_rincian(
         "writes": 0,
         **body,
     }
+

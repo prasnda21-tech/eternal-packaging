@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { ProductionDashboardView } from "./ProductionDashboard";
+import { ProductionDashboardView, modelsFromSnapshot } from "./ProductionDashboard";
 import { simulationBoard } from "../components/productionDashboard/productionSimulation";
 import { layoutOverlaps } from "../components/productionDashboard/productionWidgetLayout";
 
@@ -20,6 +20,20 @@ jest.mock("../lib/auth", () => ({
 }));
 
 global.IS_REACT_ACT_ENVIRONMENT = true;
+
+test("partial snapshot does not turn missing widgets into zero or throw", () => {
+  for (const body of [undefined, null, {}, { po_aktif: { count: null } }]) {
+    const models = modelsFromSnapshot(body);
+    for (const key of ["po_aktif", "perlu_produksi", "po_urgent", "po_hold", "sisa_qty", "deadline", "approval", "prioritas"]) {
+      expect(models[key].status).toBe("incomplete");
+    }
+  }
+  const models = modelsFromSnapshot({ po_aktif: { count: 0 }, perlu_produksi: { count: 3 }, sisa_qty: { by_unit: {} } });
+  expect(models.po_aktif.status).toBe("zero");
+  expect(models.perlu_produksi.count).toBe(3);
+  expect(models.sisa_qty.status).toBe("zero");
+  expect(models.po_hold.status).toBe("incomplete");
+});
 
 if (typeof PointerEvent === "undefined") {
   global.PointerEvent = class PointerEvent extends MouseEvent {};
@@ -895,7 +909,7 @@ test("PO Aktif Rincian shows in view mode and hides in edit mode without navigat
   const card = view.host.querySelector("[data-testid='produksi-widget-po_aktif']");
   expect(card.getAttribute("data-drill")).toBe("ready");
   expect(card.className).toContain("is-drillable");
-  const rincian = [...card.querySelectorAll("a")].find((node) => node.textContent.includes("Rincian"));
+  const rincian = [...card.querySelectorAll("a")].find((node) => node.textContent.toLowerCase().includes("rincian"));
   expect(rincian).toBeTruthy();
   expect(rincian.getAttribute("href")).toContain("/dashboard/rincian?");
   expect(rincian.getAttribute("href")).toContain("widget=po_aktif");
@@ -906,10 +920,11 @@ test("PO Aktif Rincian shows in view mode and hides in edit mode without navigat
   expect(editingCard.className).toContain("is-edit");
   expect(editingCard.className).not.toContain("is-drillable");
   expect(editingCard.getAttribute("data-drill")).toBeNull();
-  expect([...editingCard.querySelectorAll("a")].some((node) => node.textContent.includes("Rincian"))).toBe(false);
+  expect([...editingCard.querySelectorAll("a")].some((node) => node.textContent.toLowerCase().includes("rincian"))).toBe(false);
   expect(view.host.querySelector("[data-testid='produksi-drag-po_aktif']")).toBeTruthy();
   expect(view.host.querySelector("[data-testid='produksi-menu-po_aktif']")).toBeTruthy();
   await act(async () => { editingCard.click(); });
   expect(view.host.querySelector("[data-testid='produksi-widget-po_aktif']")).toBeTruthy();
   view.unmount();
 });
+

@@ -26,6 +26,7 @@ const SAVE_LABEL = {
 };
 
 function zeroOrComplete(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "incomplete";
   return value === 0 ? "zero" : "complete";
 }
 
@@ -63,7 +64,7 @@ function mapWorkflow(plant, scope) {
   const chosen = scope === "semua" ? "full" : "production";
   const block = plant?.workflow?.per_po?.[chosen] || {};
   return {
-    status: block.status || "zero",
+    status: block.status || "incomplete",
     note: block.note || "",
     scope: scope === "semua" ? "semua" : "produksi",
     bars: block.bars || [],
@@ -90,7 +91,7 @@ function mapPerformance(body, unitChoice) {
 function mapWorkload(body) {
   const workload = body?.workload || {};
   return {
-    status: workload.status || "zero",
+    status: workload.status || "incomplete",
     note: workload.note || "",
     rows: workload.operators || [],
   };
@@ -116,42 +117,45 @@ function mapWaveBlock(body, key) {
   return block;
 }
 
-function modelsFromSnapshot(body) {
+export function modelsFromSnapshot(body = {}) {
+  body = body || {};
+  const countModel = (key) => ({ status: zeroOrComplete(body[key]?.count), count: body[key]?.count, drill: body[key]?.drill, updatedAt: body.generated_at });
   const sisaUnits = body?.sisa_qty?.by_unit || {};
+  const validSisa = body.sisa_qty?.by_unit && typeof body.sisa_qty.by_unit === "object" && !Array.isArray(body.sisa_qty.by_unit);
   const sisaKeys = Object.keys(sisaUnits);
   const priorityRows = body?.prioritas?.rows || [];
   return {
-    po_aktif: { status: zeroOrComplete(body.po_aktif.count), count: body.po_aktif.count, drill: body.po_aktif.drill },
-    perlu_produksi: { status: zeroOrComplete(body.perlu_produksi.count), count: body.perlu_produksi.count, drill: body.perlu_produksi.drill },
-    po_urgent: { status: zeroOrComplete(body.po_urgent.count), count: body.po_urgent.count, drill: body.po_urgent.drill },
-    po_hold: { status: zeroOrComplete(body.po_hold.count), count: body.po_hold.count, drill: body.po_hold.drill },
+    po_aktif: countModel("po_aktif"),
+    perlu_produksi: countModel("perlu_produksi"),
+    po_urgent: countModel("po_urgent"),
+    po_hold: countModel("po_hold"),
     sisa_qty: {
-      status: sisaKeys.length ? "complete" : "zero",
+      status: !validSisa || Object.values(sisaUnits).some((n) => zeroOrComplete(n) === "incomplete") ? "incomplete" : sisaKeys.length ? "complete" : "zero",
       byUnit: sisaUnits,
-      value: body.sisa_qty.value,
-      unit: body.sisa_qty.unit,
-      drill: body.sisa_qty.drill,
+      value: body.sisa_qty?.value,
+      unit: body.sisa_qty?.unit,
+      drill: body.sisa_qty?.drill,
     },
     deadline: {
-      status: body.deadline.within_6h || body.deadline.within_24h ? "complete" : "zero",
-      within6h: body.deadline.within_6h,
-      within24h: body.deadline.within_24h,
-      drill: body.deadline.drill,
-      drill6h: body.deadline.drill_6h,
-      drill24h: body.deadline.drill_24h,
+      status: [body.deadline?.within_6h, body.deadline?.within_24h].some((n) => zeroOrComplete(n) === "incomplete") ? "incomplete" : zeroOrComplete(body.deadline.within_24h),
+      within6h: body.deadline?.within_6h,
+      within24h: body.deadline?.within_24h,
+      drill: body.deadline?.drill,
+      drill6h: body.deadline?.drill_6h,
+      drill24h: body.deadline?.drill_24h,
     },
     approval: {
-      status: body.approval.design || body.approval.payment ? "complete" : "zero",
-      design: body.approval.design,
-      payment: body.approval.payment,
-      drill: body.approval.drill,
-      drillDesign: body.approval.drill_design,
-      drillPayment: body.approval.drill_payment,
+      status: [body.approval?.design, body.approval?.payment].some((n) => zeroOrComplete(n) === "incomplete") ? "incomplete" : zeroOrComplete(body.approval.design + body.approval.payment),
+      design: body.approval?.design,
+      payment: body.approval?.payment,
+      drill: body.approval?.drill,
+      drillDesign: body.approval?.drill_design,
+      drillPayment: body.approval?.drill_payment,
     },
     prioritas: {
-      status: priorityRows.length ? "complete" : "empty",
+      status: !Array.isArray(body.prioritas?.rows) ? "incomplete" : priorityRows.length ? "complete" : "empty",
       rows: priorityRows,
-      drill: body.prioritas.drill,
+      drill: body.prioritas?.drill,
     },
     kesiapan: mapKesiapan(body),
     target_produksi: mapWaveBlock(body, "target_produksi"),
@@ -582,3 +586,4 @@ function RoutedProductionDashboard() {
 export default function ProductionDashboard() {
   return <RoutedProductionDashboard />;
 }
+

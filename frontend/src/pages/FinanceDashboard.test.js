@@ -4,6 +4,10 @@ import FinanceDashboard from "./FinanceDashboard";
 import api from "../lib/api";
 import { layoutOverlaps } from "../components/financeDashboard/financeWidgetLayout";
 
+jest.mock("react-router-dom", () => ({
+  useNavigate: () => jest.fn(),
+}), { virtual: true });
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
     user: { role: "finance" },
@@ -387,3 +391,4 @@ test("incomplete and error cash are not shown as Rp 0", async () => {
   expect(expense).not.toContain("Rp 0");
   view.unmount();
 });
+
