@@ -671,6 +671,7 @@ export default function PesananPenjualan() {
   }));
 
   const [formBusy, setFormBusy] = useState(false);
+  const [formSaved, setFormSaved] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [allocationNotice, setAllocationNotice] = useState("");
@@ -1661,6 +1662,9 @@ export default function PesananPenjualan() {
   };
 
   const resetForm = () => {
+    submitLockRef.current = false;
+    setFormBusy(false);
+    setFormSaved(false);
     clearRepeatState();
     setFormData({
       po_number: options.suggested_po_number || "",
@@ -1904,9 +1908,9 @@ export default function PesananPenjualan() {
       if (noticeParts.length) setAllocationNotice(noticeParts.join(" · "));
       setSuccessMsg(res.message || "Pesanan Penjualan berhasil dibuat!");
       const createdId = res.order?.id;
-      // Clear busy/lock before navigate so a slow/failed route change cannot
-      // leave the create form stuck on "Menyimpan..." (SPA appears hung).
-      submitLockRef.current = false;
+      // Saving has finished, but this form must never submit the same order again.
+      // Keep the synchronous lock until resetForm starts a new order.
+      setFormSaved(true);
       setFormBusy(false);
       setTimeout(() => {
         if (createdId) {
@@ -3462,8 +3466,8 @@ export default function PesananPenjualan() {
               <button type="button" data-testid="btn-cancel-form" disabled={formBusy} onClick={leaveCreate}>
                 Batal
               </button>
-              <button type="submit" className="so-create-save" disabled={formBusy} data-testid="btn-submit-sales-order">
-                {formBusy ? "Menyimpan..." : "Simpan Pesanan"}
+              <button type="submit" className="so-create-save" disabled={formBusy || formSaved} data-testid="btn-submit-sales-order">
+                {formBusy ? "Menyimpan..." : formSaved ? "Tersimpan" : "Simpan Pesanan"}
               </button>
             </div>
           </div>
