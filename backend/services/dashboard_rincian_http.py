@@ -71,8 +71,12 @@ def register_dashboard_rincian_routes(
         async def _purchases(_db, **kwargs):
             return await list_purchase_invoices(_db, **kwargs)
 
-        async def _mutasi(_db, **kwargs):
-            return await get_mutasi(_db, **kwargs)
+        async def _cash(_db, *, start_date, end_date):
+            from services.financial_dashboard import _account_index, _cash_movement, _parse_range
+            from services.financial_statement_common import load_statement_accounts
+            start, end = _parse_range(start_date, end_date)
+            accounts = _account_index(await load_statement_accounts(_db))
+            return await _cash_movement(_db, start, end, accounts, include_rows=True)
 
         async def _pl(_db, **kwargs):
             return await get_profit_loss(_db, **kwargs)
@@ -107,8 +111,9 @@ def register_dashboard_rincian_routes(
             list_delivery_schedule_rows=_schedule,
             query_sales_invoices=_sales,
             list_purchase_invoices=_purchases,
-            get_mutasi=_mutasi,
+            get_cash_movement=_cash,
             get_profit_loss=_pl,
             list_cash_banks=_banks,
             build_kepala_board=_kepala,
         )
+

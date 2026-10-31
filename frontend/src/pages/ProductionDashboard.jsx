@@ -109,12 +109,12 @@ function mapKesiapan(body) {
 function mapWaveBlock(body, key) {
   const wave = body?.wave2;
   if (!wave) return { status: "incomplete" };
-  if (wave.status === "zero") return { status: "zero" };
+  if (wave.status === "zero") return { status: "zero", population: wave.population };
   const block = wave[key];
   if (!block || (block.status !== "complete" && block.status !== "zero" && block.status !== "unlocked")) {
     return { status: "incomplete" };
   }
-  return block;
+  return { ...block, population: wave.population };
 }
 
 export function modelsFromSnapshot(body = {}) {

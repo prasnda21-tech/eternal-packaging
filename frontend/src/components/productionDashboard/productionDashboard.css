@@ -1011,3 +1011,18 @@
   white-space: nowrap;
 }
 
+
+/* Consistent panel and table treatment for all production widgets. */
+.produksi-board-page .kb-card:not(.is-po-count) .kb-body { overflow: auto; }
+.produksi-board-page .pd-panel,
+.produksi-board-page .pd-status,
+.produksi-board-page .pd-metric { border: 1px solid #e5ece8; border-radius: 8px; }
+.produksi-board-page .pd-metric strong,
+.produksi-board-page .pd-status strong,
+.produksi-board-page .pd-panel strong { font-variant-numeric: tabular-nums; }
+.produksi-board-page .pd-rank-row { padding: 6px 0; border-bottom: 1px solid #edf2ef; }
+.produksi-board-page .kb-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.produksi-board-page .kb-body th { color: #64748b; font-size: 11px; text-align: left; padding: 8px 6px; }
+.produksi-board-page .kb-body td { padding: 9px 6px; border-top: 1px solid #edf2ef; }
+.produksi-board-page .kb-body tbody tr:hover { background: #f4f8f6; }
+.produksi-board-page .pd-note { overflow-wrap: anywhere; }

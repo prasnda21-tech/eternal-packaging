@@ -34,6 +34,7 @@ import {
 } from "../../lib/dashboardDrillNav";
 import { productionWidgetAllowed, productionWidgetMeta } from "./productionWidgetCatalog";
 import { placeWidget, removeWidget } from "./productionWidgetLayout";
+import { formatIdDate } from "../../lib/dashboardRincianPresentation";
 import { productionUpdatedLabel } from "./productionFormat";
 
 const DELIVERY_PLAN_PATH = "/produksi/rencana-jadwal-kirim";
@@ -169,6 +170,7 @@ function DrillPanelLink({ drill, hasPerm, editing, label, children, testId, clas
         go();
       }}
       onKeyDown={(event) => {
+        if (isInteractiveDrillEventTarget(event.target)) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           go();
@@ -1272,11 +1274,11 @@ function CardBody({ id, model, tone, onRetry, controls, editing, hasPerm }) {
               return (
                 <tr key={`${row.order_id}:${row.line_idx}`}>
                   <td className="pd-po">{row.po_number}</td>
-                  <td>{row.line_idx}</td>
+                  <td>{Number.isInteger(row.line_idx) ? row.line_idx + 1 : "—"}</td>
                   <td>{row.item}</td>
                   <td className="pd-qty">{formatCount(row.qty_production_remaining)} {row.unit}</td>
                   <td>{parts.status.map((label) => <span key={label} className={badgeClass(label)}>{label}</span>)}</td>
-                  <td>{parts.deadline.length ? parts.deadline.map((item) => <span key={item.key} className={`pd-badge is-${item.key === "today" ? "soon" : item.key}`}>{item.text}</span>) : "—"}</td>
+                  <td>{row.effective_delivery_date ? <span className="pd-deadline-date">{formatIdDate(row.effective_delivery_date)} </span> : null}{parts.deadline.length ? parts.deadline.map((item) => <span key={item.key} className={`pd-badge is-${item.key === "today" ? "soon" : item.key}`}>{item.text}</span>) : row.effective_delivery_date ? null : "—"}</td>
                 </tr>
               );
             })}
@@ -1525,13 +1527,20 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
                 editing={editing}
                 hasPerm={hasPerm}
               />
-              {ACTIVE_COHORT_IDS.has(widget.widget_id) && !["loading", "error", "forbidden"].includes(model.status) ? <p className="pd-note">Cakupan: PO aktif pada snapshot saat ini.</p> : null}
+
             </div>
             {PO_COUNT_IDS.has(widget.widget_id) && !editing && (cardDrillPath || cardDrillLocked) ? (
               <footer className="pd-count-footer">
                 {cardDrillPath ? <Link to={cardDrillPath}>Lihat rincian ↗</Link> : <span className="pd-drill-locked" data-testid={`produksi-drill-locked-${widget.widget_id}`}>Akses rincian terbatas</span>}
               </footer>
             ) : null}
+            {!PO_COUNT_IDS.has(widget.widget_id) && !editing ? <footer className="kb-card-footer">
+              <span>{ACTIVE_COHORT_IDS.has(widget.widget_id)
+                ? (widget.widget_id === "bottleneck" ? "Antrean aktif · snapshot saat ini" : model.population === "non_cancelled_all" ? "PO aktif & selesai · tidak termasuk batal" : "Snapshot saat ini")
+                : ["output_hari_ini", "tren_output", "output_operator", "komposisi", "output_cabang"].includes(widget.widget_id) ? "Berdasarkan konfirmasi produksi"
+                : widget.widget_id === "delivery_qty" ? "Rencana pengiriman · bukan realisasi" : "Snapshot saat ini"}</span>
+              {cardDrillPath ? <Link to={cardDrillPath}>Lihat rincian ↗</Link> : cardDrillLocked ? <span className="pd-drill-locked">Akses rincian terbatas</span> : null}
+            </footer> : null}
             {editing ? (
               <button
                 type="button"

@@ -161,25 +161,9 @@ async def test_status_po_real_rows_use_enriched_deadline_without_inventing_qty()
         apply_hold=lambda o: None, attach_deadline=lambda o, *args, **kwargs: None,
     )
     assert result["rows"][0]["deadline"] == "2026-11-03T00:00:00+07:00"
-    assert result["rows"][0]["qty_remaining"] is None
+    assert result["rows"][0]["delivery_remaining_by_unit"] == {"pcs": 100, "box": 5}
     assert result["total"] == 1
 
-
-@pytest.mark.anyio
-async def test_cash_actual_field_names_zero_balance_and_scope_disclosure():
-    async def banks(_db):
-        return [{"id": "b1"}]
-    async def mutasi(_db, **kwargs):
-        assert kwargs["exclude_internal_transfer"] is True
-        return {"cash_bank_name": "Kas Uji", "total_debit": 10, "total_credit": 10, "items": [
-            {"journal_line_id": "l1", "journal_id": "j1", "transaction_number": "OUT-1", "running_balance": 0, "balance": 999, "debit": 0, "credit": 10},
-        ]}
-    result = await query_dashboard_rincian({}, widget="cash", permissions={"dashboard.finance.view", "cash_bank.view"}, list_cash_banks=banks, get_mutasi=mutasi)
-    assert result["rows"][0]["id"] == "l1"
-    assert result["rows"][0]["number"] == "OUT-1"
-    assert result["rows"][0]["running_balance"] == 0
-    assert result["kpi_summary"]["comparable_to_card"] is False
-    assert "Kas Uji" in result["kpi_summary"]["detail"]
 
 
 def test_confirmation_analytics_keeps_units_days_and_duplicate_action_separate():

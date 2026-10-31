@@ -95,6 +95,7 @@ def _priority_rows(rows: Sequence[dict]) -> List[dict]:
             "line_id": row.get("line_id"),
             "po_number": row.get("order_number") or "",
             "item": row.get("item") or "",
+            "effective_delivery_date": row.get("effective_delivery_date"),
             "unit": row.get("unit") or "",
             "qty_production_remaining": max(0, int(row.get("qty_production_remaining") or 0)),
             "labels": labels,
@@ -224,6 +225,7 @@ def build_production_snapshot(
     holidays: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Snapshot widgets. Caller attaches HOLD and deadline, and excludes cancelled orders."""
+    orders = [o for o in orders if isinstance(o, dict) and not o.get("cancelled")]
     active, _completed = partition_orders_by_delivery(orders, is_fully_delivered)
     flags = {str(order.get("id")): summary_flags(order) for order in active if order.get("id")}
 
@@ -298,9 +300,10 @@ def build_production_snapshot(
         },
         "kesiapan": _kesiapan(active),
         "wave2": build_wave2(
-            active,
+            orders,
             today=wib_today(),
             working_days=sla_working_days,
             holidays=list(holidays or []),
         ),
     }
+

@@ -138,7 +138,7 @@ async def _legitimate_journals(db, date_query: dict) -> List[dict]:
     rows: List[dict] = []
     cursor = db[JOURNAL_ENTRIES].find(
         date_query,
-        {"_id": 0, "id": 1, "date": 1, "status": 1, "source_type": 1, "reversal_of": 1},
+        {"_id": 0, "id": 1, "date": 1, "status": 1, "source_type": 1, "reversal_of": 1, "number": 1, "source_id": 1, "description": 1},
     )
     async for doc in cursor:
         journal_id = str(doc.get("id") or "").strip()
@@ -160,7 +160,7 @@ async def _lines_for(db, journal_ids: Sequence[str], account_ids: Optional[Seque
             query["account_id"] = {"$in": account_filter}
         cursor = db[JOURNAL_LINES].find(
             query,
-            {"_id": 0, "journal_id": 1, "account_id": 1, "debit": 1, "credit": 1},
+            {"_id": 0, "id": 1, "journal_id": 1, "account_id": 1, "debit": 1, "credit": 1},
         )
         async for line in cursor:
             lines.append(line)
@@ -370,7 +370,7 @@ def _is_internal_transfer(journal: dict, transfer_ids: set) -> bool:
     return bool(original and original in transfer_ids)
 
 
-async def _cash_movement(db, start: str, end: str, accounts: Dict[str, dict]) -> dict:
+async def _cash_movement(db, start: str, end: str, accounts: Dict[str, dict], *, include_rows: bool = False) -> dict:
     bank_ids = [account_id for account_id, row in accounts.items() if row.get("account_type") == "BANK"]
     journals = await _legitimate_journals(db, {"date": {"$lte": end}})
     transfer_ids = {
@@ -411,7 +411,8 @@ async def _cash_movement(db, start: str, end: str, accounts: Dict[str, dict]) ->
     external_out = Decimal("0.00")
     internal_volume = Decimal("0.00")
     period_activity = False
-    for line in lines:
+    detail_rows = []
+    for line_index, line in enumerate(lines):
         account_id = str(line.get("account_id") or "")
         bucket = per_account.get(account_id)
         journal = by_id.get(str(line.get("journal_id") or ""))
@@ -433,6 +434,16 @@ async def _cash_movement(db, start: str, end: str, accounts: Dict[str, dict]) ->
             bucket["cash_out"] = money(bucket["cash_out"] + credit)
             external_in = money(external_in + debit)
             external_out = money(external_out + credit)
+            if include_rows:
+                detail_rows.append({
+                    "id": str(line.get("id") or f"{journal['id']}:{account_id}:{line_index}"),
+                    "journal_id": journal["id"], "date": journal_date,
+                    "number": journal.get("number") or journal["id"],
+                    "account_id": account_id, "account_name": bucket.get("name"),
+                    "source_type": journal.get("source_type"),
+                    "description": journal.get("description") or "",
+                    "debit": money_float(debit), "credit": money_float(credit),
+                })
     blocker = await reversal_incomplete_blocker(
         db,
         ({"date": {"$lt": start}}, {"date": {"$gte": start, "$lte": end}}),
@@ -472,6 +483,8 @@ async def _cash_movement(db, start: str, end: str, accounts: Dict[str, dict]) ->
         "scope": PERIOD_SCOPE,
         "scope_label": "Selama periode",
         "label": "Pergerakan kas",
+        "start_date": start, "end_date": end,
+        **({"items": sorted(detail_rows, key=lambda r: (r["date"], r["number"], r["id"]))} if include_rows else {}),
         "formal_cash_flow_statement": False,
         "source": "journal_lines.account_type_BANK",
         "cash_in": number(external_in),
@@ -1181,3 +1194,4 @@ async def get_financial_dashboard(db, *, start_date: str, end_date: str, permiss
         "payables": payables,
         "controls": controls,
     }
+

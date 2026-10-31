@@ -267,7 +267,7 @@ function Donut({ rows }) {
           <li key={row.key || row.name}>
             <i style={{ background: SLICE[index % SLICE.length] }} />
             <span title={row.name}>{row.name}</span>
-            <b>{((Number(row.amount) / total) * 100).toLocaleString("id-ID", { maximumFractionDigits: 0 })}%</b>
+            <b>{((Number(row.amount) / total) * 100).toLocaleString("id-ID", { maximumFractionDigits: 0 })}%<small>{formatMoney(row.amount)}</small></b>
           </li>
         ))}
       </ul>
@@ -354,11 +354,15 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
   if (QUIET.has(status) && !rankedPartial) return <Quiet id={id} status={status} onRetry={onRetry} />;
   if (id === "cash") {
     return (
-      <div className="kb-trio">
+      <><div className="kb-trio">
         <div><span>Kas Masuk</span><strong>{moneyText(status, model?.cashIn) || "—"}</strong></div>
         <div><span>Kas Keluar</span><strong>{moneyText(status, model?.cashOut) || "—"}</strong></div>
-        <div><span>Neto</span><strong>{moneyText(status, model?.net) || "—"}</strong></div>
+        <div className="kb-net"><span>Neto periode</span><strong>{moneyText(status, model?.net) || "—"}</strong></div>
       </div>
+      {!compact && model?.accounts?.length ? <div className="kb-lines kb-cash-accounts">
+        <p className="kb-kicker">Saldo akhir per rekening · termasuk transfer internal</p>
+        {model.accounts.map(row => <div key={row.account_id}><span>{row.name || row.code}</span><strong>{row.ending == null ? "—" : formatMoney(row.ending)}</strong></div>)}
+      </div> : null}</>
     );
   }
   if (id === "sales") {
@@ -394,7 +398,7 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
         {!compact && model?.rows?.length ? (
           <div className="kb-lines">
             {model.rows.filter((row) => row.name !== "Laba bersih").map((row) => (
-              <div key={row.name}><span>{row.name}</span><strong>{row.amount == null ? "—" : formatMoney(row.amount)}</strong></div>
+              <div key={row.name} className={/Laba/.test(row.name) ? "kb-subtotal" : ""}><span>{row.name}</span><strong>{row.amount == null ? "—" : formatMoney(row.amount)}</strong></div>
             ))}
           </div>
         ) : null}
@@ -552,7 +556,7 @@ export default function FinanceWidgetBoard({
         return (
           <article
             key={widget.widget_id}
-            className={`kb-card${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}${drillPath ? " is-drillable" : ""}`}
+            className={`kb-card kb-concept-card kb-type-${widget.widget_id}${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}${drillPath ? " is-drillable" : ""}`}
             data-testid={`finance-widget-${widget.widget_id}`}
             data-status={model.status}
             data-drill={drillPath ? "ready" : (drillLocked ? "locked" : undefined)}
@@ -681,6 +685,10 @@ export default function FinanceWidgetBoard({
                 <WidgetSettings widget={widget} onSettings={onSettings} />
               ) : null}
             </div>
+            {!editing ? <footer className="kb-card-footer">
+              <span>{widget.widget_id === "recon" ? "Snapshot saat ini" : "Periode terpilih"}</span>
+              {drillPath ? <button type="button" onClick={() => navigate(drillPath)} aria-label={`Lihat rincian ${title}`}>Lihat rincian ↗</button> : drillLocked ? <span className="pd-drill-locked">Akses rincian terbatas</span> : <span>Rincian pada kartu</span>}
+            </footer> : null}
             {editing ? (
               <button
                 type="button"

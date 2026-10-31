@@ -34,7 +34,7 @@ export const KPI_PRIMARY_LABEL = {
   shipLate: "Pengiriman Terlambat",
   sales: "Total Penjualan",
   purchases: "Total Faktur Pembelian",
-  cash: "Total Mutasi",
+  cash: "Jumlah Baris Arus Kas",
   profit: "Total Baris Laba/Rugi",
   expense: "Total Beban",
 };
@@ -266,7 +266,7 @@ export function buildKpiCards(widget, kpi = {}, total) {
     if (kpi.total_debit != null) {
       cards.push({
         key: "debit",
-        label: "Total Debit",
+        label: "Kas masuk",
         value: formatIdRupiah(kpi.total_debit),
         testId: "dr-kpi-debit",
         kind: "currency",
@@ -275,12 +275,13 @@ export function buildKpiCards(widget, kpi = {}, total) {
     if (kpi.total_credit != null) {
       cards.push({
         key: "credit",
-        label: "Total Kredit",
+        label: "Kas keluar",
         value: formatIdRupiah(kpi.total_credit),
         testId: "dr-kpi-credit",
         kind: "currency",
       });
     }
+    if (kpi.net_change != null) cards.push({key: "net", label: "Neto periode", value: formatIdRupiah(kpi.net_change), testId: "dr-kpi-net", kind: "currency"});
   } else if (count != null) {
     const suffix = grain === "po" || key.startsWith("po_") || key.startsWith("deadline") || key.startsWith("approval")
       ? " PO"

@@ -88,3 +88,49 @@ test("KPI quantities stay separate and profit/expense zero remains money", () =>
   expect(buildKpiCards("profit", { net_profit: 0, count: 3 })[0].value).toBe("Rp0");
   expect(buildKpiCards("expense", { amount: -20, count: 1, grain: "account" })[0].value).toBe("-Rp20");
 });
+
+test("all nine finance widgets share the concept treatment and stable footer", () => {
+  const ids = ["cash", "expense", "profit", "purchases", "recon", "sales", "products", "sellers", "trend"];
+  ids.forEach(id => {
+    finance(id, { status: "zero", amount: 0, cashIn: 0, cashOut: 0, net: 0, rows: [], points: [] });
+    expect(host.querySelector("article").classList.contains(`kb-type-${id}`)).toBe(true);
+    expect(host.querySelector("article footer")).not.toBeNull();
+  });
+});
+
+test("cash footer opens same all-account drill and period as its body", () => {
+  finance("cash", { status: "complete", cashIn: 100, cashOut: 30, net: 70 });
+  act(() => host.querySelector("footer button").click());
+  const path = mockNavigate.mock.calls[0][0];
+  expect(path).toContain("widget=cash");
+  expect(path).toContain("start_date=2026-10-01");
+  expect(path).not.toContain("cash_bank_id=");
+  mockNavigate.mockClear();
+  act(() => host.querySelector(".kb-body").click());
+  expect(mockNavigate).toHaveBeenCalledWith(path);
+});
+
+test("historical population and effective deadline are visible without invented stages", () => {
+  production("aging", { status: "complete", population: "non_cancelled_all", produksi: {}, total: {} });
+  expect(host.querySelector("footer").textContent).toContain("PO aktif & selesai");
+  production("prioritas", { status: "complete", rows: [{ order_id: "o", po_number: "PO-1", line_idx: 0, item: "Cup", unit: "pcs", qty_production_remaining: 20, effective_delivery_date: "2026-11-03", labels: [] }] });
+  expect(host.textContent).toContain("03/11/2026");
+  expect(host.querySelectorAll("tbody td")[1].textContent).toBe("1");
+});
+
+test("cash KPI distinguishes no source from zero and shows net", () => {
+  expect(buildKpiCards("cash", { count: 0, total_debit: null, total_credit: null }).some(c => c.kind === "currency")).toBe(false);
+  expect(buildKpiCards("cash", { count: 2, total_debit: 100, total_credit: 30, net_change: 70 }).map(c => c.value)).toContain("Rp70");
+});
+
+test.each(["loading", "error", "forbidden", "incomplete"])("finance state %s never exposes stale currency", status => {
+  finance("cash", {status, cashIn:987654321,cashOut:0,net:987654321});
+  expect(host.textContent).not.toContain("987.654.321");
+  expect(host.querySelector("footer button")).toBeNull();
+});
+
+test.each(["loading", "error", "forbidden", "incomplete"])("production state %s never exposes stale counts", status => {
+  production("po_aktif", {status,count:987654321,drill});
+  expect(host.textContent).not.toContain("987.654.321");
+  expect(host.querySelector("footer a")).toBeNull();
+});
