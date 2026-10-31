@@ -872,7 +872,7 @@ export default function ProductionSchedule() {
               {!sorted.length && !busy && !initialLoading && (
                 <tr>
                   <td colSpan={visibleColumns.length} className="production-sheet-empty" data-testid="prod-empty">
-                    Tidak ada PO cocok dengan filter.
+                    <span className="production-sheet-empty-msg">Tidak ada PO cocok dengan filter.</span>
                   </td>
                 </tr>
               )}

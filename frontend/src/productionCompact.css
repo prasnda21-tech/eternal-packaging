@@ -1,5 +1,5 @@
 /* Desktop Production design contract. Opt-in per page; never styles the PWA.
-   Shared by subsequent batches after their preview is reviewed. */
+   Shared by production schedule, division tasks, work forms, paint, PO stages. */
 .production-compact {
   --production-font: Arial, Helvetica, sans-serif;
   --production-text: 13px;
@@ -7,10 +7,29 @@
   --production-title: 19px;
   --production-ink: #182e39;
   --production-muted: #647782;
-  --production-border: #dce5e8;
-  --production-surface: #fff;
-  --production-background: #f4f7f8;
-  --production-green: #176b50;
+  --production-border: #d6e2df;
+  --production-surface: #ffffff;
+  --production-background: #f6f8f9;
+  --production-header-bg: #edf3f1;
+  --production-green: #075e50;
+  --production-green-strong: #054a40;
+  --production-green-soft: #e7f2ee;
+  --production-danger: #a53f2b;
+  --production-warn: #b45309;
+  --production-ok: #075e50;
+  --production-ctrl-h: 32px;
+  --production-row-h: 30px;
+  /* Retint module tokens so indigo/purple production chrome becomes green in-scope only. */
+  --mod: var(--production-green);
+  --mod-strong: var(--production-green-strong);
+  --mod-soft: var(--production-green-soft);
+  --mod-border: var(--production-border);
+  --mod-ink: var(--production-ink);
+  --color-input-bg: var(--production-surface);
+  --color-input-border: var(--production-border);
+  --color-input-hover: var(--production-green);
+  --color-input-focus: var(--production-green);
+  --color-input-ring: rgba(7, 94, 80, 0.28);
   font-family: var(--production-font);
   font-size: var(--production-text);
   color: var(--production-ink);
@@ -22,126 +41,368 @@
 }
 .production-compact :is(.num,.mono) { font-variant-numeric: tabular-nums; }
 .production-compact :is(.muted,.small) { color: var(--production-muted); }
+
+/* ---- Page chrome (compact) ---- */
 .production-compact .prod-schedule-title { font-size: var(--production-title); letter-spacing: 0; }
-.production-compact .prod-schedule-heading { min-height: 44px; gap: 12px; }
-.production-compact .prod-schedule-heading-main { flex-wrap: wrap; gap: 6px 10px; }
+.production-compact .prod-schedule-heading { min-height: 40px; gap: 8px; margin-bottom: 6px; }
+.production-compact .prod-schedule-heading-main { flex-wrap: wrap; gap: 4px 8px; }
 .production-compact .prod-schedule-heading-main > p { margin: 0; font-size: var(--production-caption); }
-.production-compact .prod-schedule-heading-actions { flex-wrap: wrap; justify-content: flex-end; }
+.production-compact .prod-schedule-heading-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .production-compact .production-column-view { display: inline-flex; gap: 4px; }
 .production-compact .production-column-view button[aria-pressed="true"] {
   background: var(--production-green); color: #fff; border-color: var(--production-green);
 }
+.production-compact :is(h1,.page-heading h1,.paint-header h1,.po-hero-customer) {
+  font-size: var(--production-title); line-height: 1.25; letter-spacing: 0; text-transform: none;
+}
+.production-compact :is(h2,h3,.panel-head h3,.qty-ops-head h3) {
+  font-size: 14px; line-height: 1.3; letter-spacing: 0; text-transform: none;
+}
+.production-compact :is(.page-heading,.paint-header,.work-page-heading) {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  flex-wrap: wrap; margin-bottom: 8px; padding: 8px 10px; min-height: 40px;
+  background: var(--production-surface); border: 1px solid var(--production-border); border-radius: 7px;
+  box-shadow: none;
+}
+.production-compact .page-heading::before { display: none; }
+.production-compact :is(.division-task-toolbar,.work-divisi-switch,.division-task-filters,.division-task-scope) {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+}
+.production-compact :is(.division-task-toolbar,.paint-tabs) { margin: 6px 0; }
+.production-compact :is(.kp-kpi-strip,.paint-kpi-row) {
+  display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0;
+}
+.production-compact :is(.kp-kpi-card,.paint-kpi-row > article) {
+  flex: 1 1 120px; min-width: 0; min-height: 0; padding: 8px 10px;
+  border-radius: 7px; box-shadow: none; border: 1px solid var(--production-border);
+  background: var(--production-surface);
+}
+.production-compact :is(.kp-kpi-card strong,.paint-kpi-row > article strong) { font-size: 18px; line-height: 1.2; }
+.production-compact .kp-kpi-card em { font-size: var(--production-caption); }
+
+/* ---- Buttons / tabs / filters: green active, white secondary ---- */
+.production-compact :is(button.primary, .primary, a.primary) {
+  background: var(--production-green); border-color: var(--production-green); color: #fff;
+}
+.production-compact :is(button.primary, .primary, a.primary):hover:not(:disabled) {
+  background: var(--production-green-strong); border-color: var(--production-green-strong); color: #fff;
+}
+.production-compact :is(button.ghost, .ghost, a.ghost) {
+  background: var(--production-surface); color: var(--production-green);
+  border: 1px solid var(--production-border);
+}
+.production-compact :is(button.ghost, .ghost, a.ghost):hover:not(:disabled) {
+  background: var(--production-green-soft); border-color: var(--production-green); color: var(--production-green-strong);
+}
+.production-compact :is(button.primary, button.ghost, .primary, .ghost, a.primary, a.ghost, .paint-btn-primary, .paint-period-btn, .kp-queue-tab, .work-divisi-switch a, .work-divisi-switch button, .division-task-filters button, .paint-tabs button) {
+  min-height: var(--production-ctrl-h);
+  height: auto;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: var(--production-caption);
+  line-height: 1.2;
+}
+/* Jadwal toolbar keeps owner-approved 28px ctrl row (search/filter geometry unchanged).
+   Compact 32px chrome must not inflate status tabs / Kartu-Tabel past the row. */
+.production-compact.prod-schedule-page .prod-toolbar :is(.prod-schedule-status-tab, .ghost.sm, .prod-filter-reset, .prod-reset-widths) {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+}
+.production-compact.prod-schedule-page .prod-mode {
+  flex: 0 0 auto;
+  overflow: visible;
+  align-self: center;
+  margin-inline-end: 6px; /* clear toolbar rounded-corner clip */
+}
+.production-compact.prod-schedule-page .prod-mode button {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 0;
+  font-size: 11.5px;
+  line-height: 1.2;
+  gap: 4px;
+  box-sizing: border-box;
+}
+.production-compact :is(button, a, [role="tab"], input, select, textarea):focus-visible {
+  outline: 2px solid var(--production-green);
+  outline-offset: 2px;
+}
+.production-compact :is(.paint-tabs button.is-active, .paint-tabs button.active, .paint-tabs button[aria-selected="true"], .paint-period-btn.is-active, .paint-period-btn.active, .kp-queue-tab.is-active, .prod-mode button.active, .work-divisi-switch a.active, .work-divisi-switch button.active, .division-task-filters button.active, .division-task-filters button[aria-pressed="true"]) {
+  background: var(--production-green); color: #fff; border-color: var(--production-green);
+}
+.production-compact .paint-tabs button {
+  color: var(--production-ink);
+  border-color: var(--production-border);
+  background: var(--production-surface);
+}
+.production-compact .prod-schedule-status-tab.is-active {
+  background: var(--production-green); color: #fff; border-color: var(--production-green);
+}
+.production-compact .prod-schedule-status-tab.is-active .prod-schedule-status-tab-count {
+  background: rgba(255, 255, 255, 0.22); color: #fff;
+}
+.production-compact .prod-schedule-status-tab.is-hold {
+  color: var(--production-danger); border-color: #f5c2c0; background: #fff5f4;
+}
+.production-compact .prod-schedule-status-tab.is-hold.is-active {
+  background: var(--production-danger); color: #fff; border-color: var(--production-danger);
+}
+.production-compact .kp-queue-tab {
+  border-radius: 6px; border-color: var(--production-border); color: var(--production-ink);
+  background: var(--production-surface); font-weight: 600;
+}
+.production-compact .kp-queue-tab.is-active {
+  background: var(--production-green); border-color: var(--production-green); color: #fff; box-shadow: none;
+}
+.production-compact .division-task-actions { display: flex; gap: 5px; flex-wrap: nowrap; }
+.production-compact :is(.division-task-actions,.paint-header-actions,.paint-pager) button,
+.production-compact .division-task-actions a {
+  white-space: nowrap; border-radius: 6px; font-size: var(--production-caption);
+}
+/* Semantic status chips keep meaning + text (not color-only). */
+.production-compact :is(.pill,.badge,.status-pill,[data-status]) { font-size: var(--production-caption); }
+.production-compact :is(.is-urgent,.pill.urgent,.status-urgent) { color: var(--production-danger); }
+.production-compact :is(.is-hold,.pill.hold,.status-hold) { color: var(--production-warn); }
+.production-compact :is(.is-ok,.pill.ok,.status-ok,.pill.success) { color: var(--production-ok); }
+.production-compact :is(button.primary.destructive, .primary.destructive, .qty-assign-remove, button.danger) {
+  background: var(--production-danger); border-color: var(--production-danger); color: #fff;
+}
+
+/* ---- Tables: dense, readable headers, scroll preserved ---- */
+.production-compact :is(.prod-table-wrap,.paint-table-wrap,.kp-table-wrap,.paint-adv-scroll) {
+  overflow: auto; border: 1px solid var(--production-border); border-radius: 7px;
+  background: var(--production-surface);
+  -webkit-overflow-scrolling: touch;
+}
+.production-compact .prod-table { font-size: var(--production-text); }
+.production-compact .prod-table :is(td,th) {
+  padding: 3px 6px; line-height: 1.25; border-color: var(--production-border);
+}
+.production-compact .prod-table th { font-size: var(--production-caption); text-transform: none; letter-spacing: 0; }
+.production-compact .prod-table td { font-size: var(--production-text); font-weight: 400; }
+.production-compact .prod-table tbody td { min-height: var(--production-row-h); vertical-align: middle; }
+.production-compact .prod-table .division-task-actions :is(a,button) {
+  min-height: var(--production-ctrl-h); height: var(--production-ctrl-h); padding: 0 8px;
+}
+.production-compact .prod-table thead { position: sticky; top: 0; z-index: 2; }
+/* Beat global white-on-dark thead once compact uses pale headers. */
+.production-compact .prod-table thead th {
+  position: static;
+  background: var(--production-header-bg);
+  color: var(--production-ink);
+  border-bottom-color: var(--production-border);
+  box-shadow: none;
+  padding-block: 6px;
+}
+.production-compact .kp-priority-table.prod-table thead th,
+.production-compact .kp-priority-table thead th,
+.production-compact .kp-priority-table thead th.num,
+.production-compact .kp-priority-table thead th:nth-child(1),
+.production-compact .kp-priority-table thead th:nth-child(2) {
+  background: var(--production-header-bg);
+  color: var(--production-ink);
+  border-bottom-color: var(--production-border);
+  box-shadow: inset 0 -1px 0 var(--production-border);
+  font-family: var(--production-font);
+  font-size: var(--production-caption);
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.3;
+  padding: 5px 8px;
+}
+.production-compact .kp-priority-table tbody td { padding: 3px 6px; }
+.production-compact .production-quantity-groups th {
+  padding: 4px 8px; background: var(--production-green-soft); color: var(--production-green); font-weight: 600;
+}
+.production-compact .prod-card { border-radius: 7px; box-shadow: none; border-color: var(--production-border); background: var(--production-surface); }
+.production-compact .production-hidden-filter {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: var(--production-caption);
+}
+
+/* Sheet table: denser rows; search/filter geometry stays in productionSheet.css */
 .production-compact .production-sheet {
   --production-sheet-grid: var(--production-border);
-  --production-sheet-header-bg: #edf3f1;
+  --production-sheet-header-bg: var(--production-header-bg);
   --production-sheet-header-fg: var(--production-ink);
   border-radius: 7px 7px 0 0;
 }
 .production-compact .production-sheet-table tbody td {
   font-size: calc(var(--production-text) * var(--production-sheet-zoom, 1));
   font-weight: 400;
-  padding: calc(7px * var(--production-sheet-zoom, 1)) calc(8px * var(--production-sheet-zoom, 1));
-  height: calc(38px * var(--production-sheet-zoom, 1));
-  line-height: 1.35;
+  padding: calc(2px * var(--production-sheet-zoom, 1)) calc(5px * var(--production-sheet-zoom, 1));
+  line-height: 1.25;
+  height: auto;
+  min-height: calc(var(--production-row-h) * var(--production-sheet-zoom, 1));
+}
+.production-compact .production-sheet-table .prod-op-line {
+  margin-bottom: calc(1px * var(--production-sheet-zoom, 1));
+  gap: calc(4px * var(--production-sheet-zoom, 1));
 }
 .production-compact .production-sheet-table thead th {
   font-size: calc(var(--production-caption) * var(--production-sheet-zoom, 1));
-  letter-spacing: 0; line-height: 1.3;
+  letter-spacing: 0; line-height: 1.25;
+  color: var(--production-ink);
 }
 .production-compact .production-sheet-table .prod-col-group-band { font-weight: 600; }
-.production-compact .prod-card { border-radius: 7px; box-shadow: none; border-color: var(--production-border); }
-.production-compact .production-hidden-filter {
-  display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: var(--production-caption);
+/* Soft green family for group bands (no blue/purple decorative). */
+.production-compact .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-identity,
+.production-compact .production-sheet-table thead .prod-col-group-row th.prod-col-group-identity {
+  background: #e4efeb; color: var(--production-ink);
 }
-/* Search/filter geometry and existing zoom/resize remain owned by productionSheet.css. */
-.production-compact :is(h1,.page-heading h1,.paint-header h1,.po-hero-customer) {
-  font-size: var(--production-title); line-height: 1.25; letter-spacing: 0; text-transform: none;
+.production-compact .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-planning,
+.production-compact .production-sheet-table thead .prod-col-group-row th.prod-col-group-planning {
+  background: #edf3e8; color: var(--production-ink);
 }
-.production-compact :is(h2,h3,.panel-head h3,.qty-ops-head h3) {
-  font-size: 14px; line-height: 1.35; letter-spacing: 0; text-transform: none;
+.production-compact .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-production,
+.production-compact .production-sheet-table thead .prod-col-group-row th.prod-col-group-production {
+  background: #e7f2ee; color: var(--production-ink);
 }
-.production-compact :is(.page-heading,.paint-header,.work-page-heading) {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  flex-wrap: wrap; margin-bottom: 12px; padding: 0; min-height: 44px;
+.production-compact .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-progress,
+.production-compact .production-sheet-table thead .prod-col-group-row th.prod-col-group-progress {
+  background: #e9f0ed; color: var(--production-ink);
 }
-.production-compact :is(.division-task-toolbar,.work-divisi-switch,.division-task-filters,.division-task-scope) {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+.production-compact .prod-schedule-page .production-sheet-table thead .prod-col-group-row th.prod-col-group-status,
+.production-compact .production-sheet-table thead .prod-col-group-row th.prod-col-group-status {
+  background: #eef4f2; color: var(--production-ink);
 }
-.production-compact :is(.division-task-toolbar,.paint-tabs) { margin: 10px 0; }
-.production-compact :is(.prod-table-wrap,.paint-table-wrap) {
-  overflow: auto; border: 1px solid var(--production-border); border-radius: 7px;
+.production-compact td.production-sheet-empty {
+  text-align: left !important;
+  vertical-align: middle;
 }
-.production-compact .prod-table { font-size: var(--production-text); }
-.production-compact .prod-table :is(td,th) {
-  padding: 9px 10px; line-height: 1.35; border-color: var(--production-border);
+.production-compact td.production-sheet-empty .production-sheet-empty-msg {
+  position: sticky;
+  left: 12px;
+  display: inline-block;
+  max-width: min(36rem, calc(100vw - 16rem));
+  padding: 4px 0;
 }
-.production-compact .prod-table th { font-size: var(--production-caption); text-transform: none; letter-spacing: 0; }
-.production-compact .prod-table td { font-size: var(--production-text); font-weight: 400; }
-.production-compact .prod-table thead { position: sticky; top: 0; z-index: 2; }
-.production-compact .prod-table thead th { position: static; background: #edf3f1; }
-.production-compact .production-quantity-groups th {
-  padding: 5px 10px; background: #e6efeb; color: var(--production-green); font-weight: 600;
+
+/* ---- Work form: one working page, history disclosed ---- */
+.production-compact :is(.work-panel,.work-line,.qty-ops-panel) {
+  box-shadow: none; border-radius: 7px; background: var(--production-surface);
+  border: 1px solid var(--production-border);
 }
-.production-compact .division-task-actions { display: flex; gap: 6px; flex-wrap: nowrap; }
-.production-compact :is(.division-task-actions,.paint-header-actions,.paint-pager) button,
-.production-compact .division-task-actions a {
-  white-space: nowrap; border-radius: 6px; font-size: var(--production-caption);
+.production-compact .work-panel { margin: 0; padding: 10px 12px; }
+.production-compact .work-line { padding: 8px 10px; margin: 6px 0; }
+.production-compact .work-line-head { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; }
+.production-compact .work-line-total { margin: 4px 0; font-size: var(--production-caption); }
+.production-compact .role-work-entry-row { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.production-compact .role-work-entry { margin: 6px 0; }
+.production-compact .production-work-history {
+  margin-top: 8px; border-top: 1px solid var(--production-border); padding-top: 6px;
 }
-.production-compact :is(.kp-kpi-strip,.paint-kpi-row) {
-  display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0;
+.production-compact .production-work-history summary {
+  cursor: pointer; font-size: var(--production-caption); padding: 4px 0; color: var(--production-ink);
 }
-.production-compact :is(.kp-kpi-card,.paint-kpi-row > article) {
-  flex: 1 1 130px; min-width: 0; min-height: 0; padding: 10px 12px;
-  border-radius: 7px; box-shadow: none;
-}
-.production-compact :is(.kp-kpi-card strong,.paint-kpi-row > article strong) { font-size: 20px; line-height: 1.25; }
-.production-compact .kp-kpi-card em { font-size: var(--production-caption); }
-.production-compact :is(.work-panel,.work-line,.qty-ops-panel) { box-shadow: none; border-radius: 7px; }
-.production-compact .work-panel { margin: 0; padding: 14px; }
-.production-compact .work-line { padding: 12px; margin: 10px 0; border: 1px solid var(--production-border); }
-.production-compact .work-line-head { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; }
-.production-compact .work-line-total { margin: 6px 0; font-size: var(--production-caption); }
-.production-compact .role-work-entry-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
-.production-compact .role-work-entry { margin: 10px 0; }
-.production-compact .production-work-history { margin-top: 12px; border-top: 1px solid var(--production-border); padding-top: 10px; }
-.production-compact .production-work-history summary { cursor: pointer; font-size: var(--production-caption); padding: 4px 0; }
-.production-compact.production-work-page { padding: 12px; }
+.production-compact.production-work-page { padding: 8px 10px; }
 .production-compact :is(.paint-modal,.paint-form-grid) :is(input,select,textarea),
 .production-compact .role-work-entry :is(input,select),
-.production-compact .production-schedule-editor :is(input,select) {
-  font-family: var(--production-font); font-size: var(--production-text); min-height: 34px; border-radius: 6px;
+.production-compact .production-schedule-editor :is(input,select),
+.production-compact :is(input,select,textarea) {
+  font-family: var(--production-font); font-size: var(--production-text);
+  min-height: var(--production-ctrl-h); border-radius: 6px;
+  border-color: var(--production-border); background: var(--production-surface); color: var(--production-ink);
 }
 .production-compact.paint-page :is(td,th,.paint-tabs button,.paint-modal button) { font-size: var(--production-caption); }
-.production-compact.paint-page :is(.paint-modal,.paint-form-grid) { gap: 12px; }
+.production-compact.paint-page :is(.paint-modal,.paint-form-grid) { gap: 10px; }
+.production-compact .paint-page .paint-btn-primary,
+.production-compact .paint-page button.paint-btn-primary,
+.production-compact .paint-modal .paint-btn-primary {
+  background: var(--production-green) !important; border-color: var(--production-green) !important; color: #fff !important;
+}
+.production-compact .paint-period-btn.is-active {
+  background: var(--production-green); border-color: var(--production-green); color: #fff;
+}
+.production-compact .paint-adv-scroll { border-color: var(--production-border); }
+.production-compact .paint-adv-table thead th {
+  background: var(--production-header-bg); color: var(--production-ink); padding-block: 5px;
+}
+.production-compact .paint-adv-sort { text-transform: none; letter-spacing: 0; }
+.production-compact .paint-adv-label { white-space: normal; line-height: 1.3; }
+.production-compact :is(.paint-adv-grip,.paint-adv-filter-btn) { color: var(--production-muted); }
+.production-compact .paint-adv-sort.is-active { color: var(--production-green); }
+
+/* ---- PO production stages / assignment ---- */
 .production-compact .production-schedule-editor > .po-pair-col { min-width: 0; }
 .production-compact .production-schedule-editor .qty-ops-panel { margin: 0; box-shadow: none; }
 .production-compact .production-schedule-editor .qty-ops-note { margin: 0; font-size: var(--production-caption); }
-.production-compact .po-pair-card { padding: 12px; }
-.production-compact .po-stage-ws-header { padding: 10px 14px; }
+.production-compact .po-pair-card { padding: 10px; }
+.production-compact .po-stage-ws-header { padding: 8px 12px; }
 .production-compact :is(.po-hero-number,.work-panel-hero .subhead) { font-size: var(--production-caption); }
 .production-compact :is(.po-stage-ws-header,.work-panel-hero) h1 { margin: 0; }
-@media (max-width: 1100px) {
-  .production-compact .prod-schedule-heading { flex-wrap: wrap; }
-}
-/* Allocation fields keep a named slot, including the production branch. */
 .production-compact .split-edit-row.qty-assign-card.ind-assign-row {
   display: grid;
   grid-template-columns: minmax(140px,1.3fr) minmax(130px,1fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(130px,1fr) minmax(130px,1fr) 32px;
   grid-template-areas: "barang operator qty screen branch tanggal remove";
-  gap: 8px; padding: 10px 0; align-items: end;
+  gap: 6px; padding: 6px 0; align-items: end;
 }
 .production-compact .split-assign-branch { grid-area: branch; min-width: 0; }
 .production-compact .split-edit-row :is(input,select) { width: 100%; min-width: 0; box-sizing: border-box; }
-.production-compact .split-edit-row .qty-assign-remove { width: 32px; min-height: 34px; }
-.production-compact .split-target-lock { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; }
+.production-compact .split-edit-row .qty-assign-remove { width: 32px; min-height: var(--production-ctrl-h); }
+.production-compact .split-target-lock { display: flex; flex-wrap: wrap; align-items: end; gap: 6px 10px; }
 .production-compact .split-target-lock p { margin: 0; }
 .production-compact.po-detail-stage-workspace .li-process-select { font-family: var(--production-font) !important; }
-.production-compact :is(.qty-ops-foot,.split-actions) { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.production-compact :is(.qty-ops-foot,.split-actions) {
+  display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;
+  position: sticky; bottom: 0; padding: 8px 0; background: var(--production-background);
+  z-index: 2;
+}
+
+/* ---- Confirm modal (production desktop only; modal portals to body) ---- */
+body:has(.production-compact) .confirm-action-inner {
+  max-width: 440px;
+  border-radius: 10px;
+  border-color: var(--production-border, #d6e2df);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+  color: #182e39;
+}
+body:has(.production-compact) .confirm-action-inner .modal-head {
+  padding: 14px 22px;
+  background: #edf3f1;
+}
+body:has(.production-compact) .confirm-action-inner .modal-head h3 {
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-size: 16px; letter-spacing: 0; text-transform: none; color: #182e39;
+}
+body:has(.production-compact) .confirm-action-inner .confirm-action-body {
+  padding: 16px 22px;
+  font-size: 13px;
+}
+body:has(.production-compact) .confirm-action-inner .confirm-action-dl {
+  gap: 8px;
+}
+body:has(.production-compact) .confirm-action-inner .confirm-action-dl > div {
+  grid-template-columns: 110px 1fr; gap: 10px; align-items: start;
+}
+body:has(.production-compact) .confirm-action-inner .confirm-action-dl dt {
+  font: 12px Arial, Helvetica, sans-serif; letter-spacing: 0; text-transform: none; color: #647782;
+}
+body:has(.production-compact) .confirm-action-inner .confirm-action-dl dd {
+  margin: 0; font: 13px/1.35 Arial, Helvetica, sans-serif; font-weight: 600; color: #182e39;
+  overflow-wrap: anywhere; word-break: break-word;
+}
+body:has(.production-compact) .confirm-action-inner .delete-modal-actions {
+  padding: 12px 22px 16px; gap: 8px; background: #f6f8f9; border-top-color: #d6e2df;
+}
+body:has(.production-compact) .confirm-action-inner .delete-modal-actions .ghost {
+  background: #fff; color: #075e50; border: 1px solid #d6e2df; min-height: 34px;
+}
+body:has(.production-compact) .confirm-action-inner .delete-modal-actions .primary {
+  background: #075e50; border-color: #075e50; color: #fff; min-height: 34px;
+}
+
 @media (max-width: 1200px) {
   .production-compact .split-edit-row.qty-assign-card.ind-assign-row {
     grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 32px;
     grid-template-areas: "barang operator qty remove" "screen branch tanggal remove";
   }
+}
+@media (max-width: 1100px) {
+  .production-compact .prod-schedule-heading { flex-wrap: wrap; }
 }
 @media (max-width: 640px) {
   .production-compact .split-edit-row.qty-assign-card.ind-assign-row {
@@ -149,9 +410,3 @@
     grid-template-areas: "barang operator" "qty screen" "branch tanggal" "extra remove";
   }
 }
-.production-compact .paint-adv-scroll { border-color: var(--production-border); }
-.production-compact .paint-adv-table thead th { background: #edf3f1; color: var(--production-ink); padding-block: 6px; }
-.production-compact .paint-adv-sort { text-transform: none; letter-spacing: 0; }
-.production-compact .paint-adv-label { white-space: normal; line-height: 1.3; }
-.production-compact :is(.paint-adv-grip,.paint-adv-filter-btn) { color: var(--production-muted); }
-.production-compact .paint-adv-sort.is-active { color: var(--production-green); }
