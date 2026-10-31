@@ -4,10 +4,12 @@ import { ArrowLeft, Columns3, RefreshCw, RotateCcw, Search } from "lucide-react"
 import api from "../lib/api";
 import { useAuth } from "../lib/auth";
 import DeliveryPlanAdvancedTable from "../components/deliveryPlan/DeliveryPlanAdvancedTable";
+import SalesDashboardDateInput from "../components/widgetDashboard/SalesDashboardDateInput";
 import {
   buildKpiCards,
   formatCellValue,
   formatIdDateTime,
+  formatSalesDashboardRange,
   isIdentityKey,
   periodLabelId,
   presentationKind,
@@ -198,7 +200,11 @@ export default function DashboardRincianPage() {
           </div>
         </div>
         <div className="dr-meta" data-testid="dr-meta">
-          <span data-testid="dr-period">{periodLabelId(data?.period)}</span>
+          <span data-testid="dr-period">
+            {dashboard === "penjualan"
+              ? (formatSalesDashboardRange(data?.period?.start_date, data?.period?.end_date) || periodLabelId(data?.period))
+              : periodLabelId(data?.period)}
+          </span>
           <span data-testid="dr-generated">
             {data?.generated_at ? `Pembaruan ${formatIdDateTime(data.generated_at)}` : "—"}
           </span>
@@ -206,16 +212,37 @@ export default function DashboardRincianPage() {
         </div>
       </header>
 
-      <section className="dr-kpi" data-testid="dr-kpi-summary">
-        {kpiCards.map((card) => (
-          <div key={card.key} data-kind={card.kind}>
-            <span>{card.label}</span>
-            <strong data-testid={card.testId}>{card.value}</strong>
-          </div>
-        ))}
+      <section className="dr-summary" data-testid="dr-summary">
+        <section className="dr-kpi" data-testid="dr-kpi-summary">
+          {kpiCards.map((card) => (
+            <div key={card.key} data-kind={card.kind}>
+              <span>{card.label}</span>
+              <strong data-testid={card.testId}>{card.value}</strong>
+            </div>
+          ))}
+        </section>
+        {data?.kpi_summary?.detail ? (
+          <p className="dr-kpi-detail" data-testid="dr-kpi-detail" role="status">{data.kpi_summary.detail}</p>
+        ) : null}
       </section>
 
       <section className="dr-toolbar" data-drill-ignore="true">
+        {dashboard === "penjualan" ? (
+          <div className="dr-period-filter">
+            <SalesDashboardDateInput
+              ariaLabel="Tanggal mulai"
+              testId="dr-period-start"
+              valueIso={startDate}
+              onChange={(iso) => patchParams({ start_date: iso, page: "1" })}
+            />
+            <SalesDashboardDateInput
+              ariaLabel="Tanggal akhir"
+              testId="dr-period-end"
+              valueIso={endDate}
+              onChange={(iso) => patchParams({ end_date: iso, page: "1" })}
+            />
+          </div>
+        ) : null}
         <form className="dr-search" onSubmit={applySearch}>
           <Search size={14} aria-hidden />
           <input

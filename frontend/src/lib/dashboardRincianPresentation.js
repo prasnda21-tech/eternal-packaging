@@ -1,5 +1,7 @@
 /** Presentation helpers for Dashboard Rincian (UI only). */
 
+import { formatSalesInvoiceDate } from "./salesInvoiceDate";
+
 const CURRENCY_KEYS = new Set([
   "grand_total", "debit", "credit", "running_balance", "amount",
 ]);
@@ -20,7 +22,7 @@ export const KPI_PRIMARY_LABEL = {
   approval_design: "Menunggu Approval Design",
   approval_payment: "Menunggu Approval Payment",
   perlu_produksi: "Total PO Perlu Produksi",
-  sisa_qty: "Total PO Sisa Qty",
+  sisa_qty: "Sisa Qty Produksi",
   prioritas: "Total PO Prioritas",
   delivery_qty_today: "Total Qty Rencana",
   delivery_qty_overdue: "Total Qty Rencana",
@@ -32,7 +34,7 @@ export const KPI_PRIMARY_LABEL = {
   shipLate: "Pengiriman Terlambat",
   sales: "Total Penjualan",
   purchases: "Total Faktur Pembelian",
-  cash: "Total Mutasi",
+  cash: "Jumlah Baris Arus Kas",
   profit: "Total Baris Laba/Rugi",
   expense: "Total Beban",
 };
@@ -137,6 +139,14 @@ export function formatCellValue(kind, raw, { unit = "" } = {}) {
   }
 }
 
+/** Sales Dashboard range only. Storage and URLs stay YYYY-MM-DD. */
+export function formatSalesDashboardRange(start, end) {
+  const a = formatSalesInvoiceDate(start);
+  const b = formatSalesInvoiceDate(end);
+  if (a && b) return a === b ? a : `${a}–${b}`;
+  return a || b || "";
+}
+
 export function periodLabelId(period) {
   const start = period?.start_date;
   const end = period?.end_date;
@@ -156,13 +166,31 @@ export function buildKpiCards(widget, kpi = {}, total) {
   const grain = String(kpi.grain || "");
   const cards = [];
   const primaryLabel = KPI_PRIMARY_LABEL[key] || kpi.label || "Total";
+  if (kpi.status === "error") {
+    return [{
+      key: "incomplete",
+      label: primaryLabel,
+      value: "Data tidak lengkap",
+      testId: "dr-kpi-incomplete",
+      kind: "status",
+    }];
+  }
 
   const hasAmount = kpi.amount != null && kpi.amount !== "";
   const hasQty = kpi.qty_remaining != null && kpi.qty_remaining !== "";
   const count = kpi.count != null ? kpi.count : total;
   const lineCount = kpi.line_count;
 
-  if (hasAmount) {
+  if (kpi.by_unit && typeof kpi.by_unit === "object" && !Array.isArray(kpi.by_unit)) {
+    Object.entries(kpi.by_unit).forEach(([unit, qty]) => {
+      cards.push({ key: `qty-${unit}`, label: `${primaryLabel} · ${unit}`, value: formatIdQty(qty, unit), testId: "dr-kpi-qty", kind: "quantity" });
+    });
+    if (count != null) cards.push({ key: "count", label: "Jumlah PO unik", value: `${formatIdNumber(count)} PO`, testId: "dr-kpi-count", kind: "number" });
+    if (lineCount != null) cards.push({ key: "lines", label: "Jumlah Baris Item", value: formatIdNumber(lineCount), testId: "dr-kpi-lines", kind: "number" });
+  } else if (key === "profit" && kpi.net_profit != null) {
+    cards.push({ key: "net-profit", label: "Laba bersih periode", value: formatIdRupiah(kpi.net_profit), testId: "dr-kpi-amount", kind: "currency" });
+    if (count != null) cards.push({ key: "count", label: "Jumlah Akun", value: formatIdNumber(count), testId: "dr-kpi-count", kind: "number" });
+  } else if (hasAmount) {
     cards.push({
       key: "amount",
       label: primaryLabel,
@@ -173,7 +201,7 @@ export function buildKpiCards(widget, kpi = {}, total) {
     if (count != null) {
       cards.push({
         key: "count",
-        label: grain === "invoice" || key === "purchases" ? "Jumlah Faktur" : "Jumlah Baris",
+        label: grain === "invoice" || key === "purchases" ? "Jumlah Faktur" : grain === "account" ? "Jumlah Akun" : "Jumlah Baris",
         value: `${formatIdNumber(count)}${grain === "invoice" || key === "purchases" ? " faktur" : ""}`.trim(),
         testId: "dr-kpi-count",
         kind: "number",
@@ -238,7 +266,7 @@ export function buildKpiCards(widget, kpi = {}, total) {
     if (kpi.total_debit != null) {
       cards.push({
         key: "debit",
-        label: "Total Debit",
+        label: "Kas masuk",
         value: formatIdRupiah(kpi.total_debit),
         testId: "dr-kpi-debit",
         kind: "currency",
@@ -247,12 +275,13 @@ export function buildKpiCards(widget, kpi = {}, total) {
     if (kpi.total_credit != null) {
       cards.push({
         key: "credit",
-        label: "Total Kredit",
+        label: "Kas keluar",
         value: formatIdRupiah(kpi.total_credit),
         testId: "dr-kpi-credit",
         kind: "currency",
       });
     }
+    if (kpi.net_change != null) cards.push({key: "net", label: "Neto periode", value: formatIdRupiah(kpi.net_change), testId: "dr-kpi-net", kind: "currency"});
   } else if (count != null) {
     const suffix = grain === "po" || key.startsWith("po_") || key.startsWith("deadline") || key.startsWith("approval")
       ? " PO"
@@ -268,3 +297,4 @@ export function buildKpiCards(widget, kpi = {}, total) {
 
   return cards;
 }
+

@@ -14,12 +14,19 @@ import { clearStockSaatIniPageCache } from "./stockSaatIniPageCache";
 import { clearAllSmartListCaches } from "./smartListCaches";
 import { clearSalesWorkspaceTabs } from "./salesWorkspace";
 
+import { startWebPresence } from "./webPresence";
+
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const accessFingerprint = useRef("");
+  const presenceIdentity = user?.id || user?.email;
+  useEffect(() => {
+    if (!presenceIdentity || window.location.pathname.startsWith("/dev/")) return undefined;
+    return startWebPresence(payload => api.webPresenceHeartbeat(payload));
+  }, [presenceIdentity]);
 
   const refresh = useCallback(async () => {
     try {
@@ -97,3 +104,4 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(AuthContext);
+

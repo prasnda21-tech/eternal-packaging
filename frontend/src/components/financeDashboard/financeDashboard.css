@@ -172,6 +172,7 @@
 }
 
 .kb-card {
+  box-sizing: border-box;
   position: absolute;
   display: flex;
   flex-direction: column;
@@ -190,6 +191,7 @@
 .kb-card.is-menu { overflow: visible; z-index: 6; }
 
 .kb-card > header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -302,6 +304,7 @@
 }
 
 .kb-metric {
+  font-variant-numeric: tabular-nums;
   margin: 2px 0 0;
   font-size: 22px;
   line-height: 1.15;
@@ -464,9 +467,9 @@
 }
 .kb-info p { margin: 0 0 4px; }
 
-.kb-chart { display: flex; flex-direction: column; height: calc(100% - 4px); min-height: 120px; }
+.kb-chart { display: flex; flex-direction: column; height: calc(100% - 4px); min-height: 120px; overflow-x: auto; }
 .kb-bars { flex: 1; display: flex; align-items: flex-end; gap: 3px; min-height: 90px; }
-.kb-bar { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.kb-bar { flex: 1; height: 100%; display: flex; align-items: flex-end; position: relative; }
 .kb-bar i { display: block; width: 100%; background: #08784c; border-radius: 3px 3px 0 0; }
 .kb-axis { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; color: #64748b; font-size: 11px; }
 .kb-spark { display: flex; align-items: flex-end; gap: 2px; height: 36px; margin-top: 8px; }
@@ -735,3 +738,48 @@
 }
 .keuangan-board-page .kb-card-drill { margin-left: 4px; color: #08784c; }
 .keuangan-board-page .pd-drill-locked { font-size: 11px; color: #8a6a2f; white-space: nowrap; }
+
+
+/* Shared final dashboard language: quiet cards, clear totals, stable footer. */
+.keuangan-board-page .kb-concept-card { border-top: 3px solid #15803d; }
+.keuangan-board-page .kb-type-sales,
+.keuangan-board-page .kb-type-trend { border-top-color: #2563eb; }
+.keuangan-board-page .kb-type-expense { border-top-color: #d97706; }
+.keuangan-board-page .kb-type-profit,
+.keuangan-board-page .kb-type-recon { border-top-color: #7c3aed; }
+.kb-card-footer { display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 8px; padding: 6px 12px 9px; color: #64748b; font-size: 10px; line-height: 14px; }
+.kb-card-footer button { border: 0; padding: 0; background: transparent; color: #08784c; font: inherit; font-weight: 700; cursor: pointer; }
+.kb-card-footer button:focus-visible { outline: 2px solid #08784c; outline-offset: 3px; }
+.kb-card-footer .pd-drill-locked { white-space: normal; }
+.keuangan-board-page .kb-concept-card.is-compact > header { min-height: 30px; padding: 6px 10px 0; }
+.keuangan-board-page .kb-concept-card.is-compact .kb-glyph { width: 22px; height: 22px; }
+.keuangan-board-page .kb-concept-card.is-compact .kb-body { padding: 3px 10px 0; overflow: auto; }
+.keuangan-board-page .kb-concept-card.is-compact .kb-card-footer { padding: 3px 10px 7px; }
+.keuangan-board-page .kb-concept-card.is-compact .kb-trio { gap: 2px; }
+.keuangan-board-page .kb-net { padding-top: 4px; border-top: 1px solid #dce8e2; }
+.keuangan-board-page .kb-net strong { color: #08784c; }
+.keuangan-board-page .kb-subtotal { border-top: 1px solid #dce8e2; padding-top: 6px; font-weight: 700; }
+.keuangan-board-page .kb-lines > div { padding-bottom: 5px; border-bottom: 1px solid #edf2ef; }
+.keuangan-board-page .kb-rank { padding: 7px 0; border-bottom: 1px solid #edf2ef; }
+.keuangan-board-page .kb-rank-no { width: 20px; height: 20px; text-align: center; border-radius: 50%; background: #e8f6ef; color: #08784c; }
+.keuangan-board-page .kb-card-title h2 { font-size: 13px; }
+.keuangan-board-page .kb-option { border-radius: 12px; padding: 12px; }
+.keuangan-board-page .kb-badge.is-off { border: 1px solid #e2e8e5; }
+
+.keuangan-board-page .kb-donut-wrap { flex: 0 0 auto; min-height: 116px; }
+.keuangan-board-page .kb-donut { width: 112px; height: 112px; }
+.keuangan-board-page .kb-donut-hole { box-sizing: border-box; width: 80px; height: 80px; }
+.keuangan-board-page .kb-legend b { display: grid; gap: 2px; text-align: right; }
+.keuangan-board-page .kb-legend b small { color: #102337; font-size: 11px; }
+.keuangan-board-page .kb-cash-accounts { margin-top: 12px; }
+.produksi-board-page .kb-card-footer a { color: #08784c; text-decoration: none; font-weight: 700; white-space: nowrap; }
+.produksi-board-page .kb-card-footer a:hover { text-decoration: underline; }
+
+/* Presence is an account list, not a financial period metric. */
+.keuangan-board-page .kb-presence table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.keuangan-board-page .kb-presence th, .keuangan-board-page .kb-presence td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #e7eeeb; overflow-wrap: anywhere; }
+.keuangan-board-page .kb-presence th { color: #667b85; font-weight: 600; }
+.keuangan-board-page .kb-presence small { display: block; color: #667b85; font-size: 10px; margin-top: 3px; }
+.keuangan-board-page .kb-presence-status { color: #63717a; white-space: nowrap; }
+.keuangan-board-page .kb-presence-status.is-online { color: #08784d; font-weight: 600; }
+.keuangan-board-page .kb-presence-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; }

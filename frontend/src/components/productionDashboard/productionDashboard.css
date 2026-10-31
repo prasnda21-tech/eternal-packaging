@@ -23,21 +23,45 @@
 }
 
 .produksi-board-page .kb-card.pd-tone-info {
-  background: linear-gradient(180deg, #eef4ff 0%, #ffffff 70%);
+  background: #fff;
   border-color: #d6e4fb;
+  border-top: 3px solid #2563eb;
 }
 .produksi-board-page .kb-card.pd-tone-warn {
-  background: linear-gradient(180deg, #fff7ed 0%, #ffffff 70%);
+  background: #fff;
   border-color: #fed7aa;
+  border-top: 3px solid #d97706;
 }
 .produksi-board-page .kb-card.pd-tone-risk {
-  background: linear-gradient(180deg, #fff1f2 0%, #ffffff 70%);
+  background: #fff;
   border-color: #fecdd3;
+  border-top: 3px solid #e11d48;
 }
 .produksi-board-page .kb-card.pd-tone-ok {
-  background: linear-gradient(180deg, #ecfdf5 0%, #ffffff 70%);
+  background: #fff;
   border-color: #a7f3d0;
+  border-top: 3px solid #15803d;
 }
+.produksi-board-page .kb-card.pd-tone-analytics { border-top: 3px solid #7c3aed; }
+
+.produksi-board-page .is-po-count > header { flex-shrink: 0; min-height: 32px; padding: 7px 10px 0; }
+.produksi-board-page .is-po-count .kb-card-title p { display: none; }
+.produksi-board-page .is-po-count .kb-glyph { width: 24px; height: 24px; }
+.produksi-board-page .is-po-count .kb-body { padding: 4px 10px 0; }
+.produksi-board-page .is-po-count .kb-kicker { color: #102337; font-weight: 600; }
+.produksi-board-page .pd-count-unit { font-size: 14px; letter-spacing: 0; color: #08784c; }
+.produksi-board-page .pd-tone-info .pd-count-unit { color: #2563eb; }
+.produksi-board-page .pd-snapshot-meta { margin: 2px 0 0; color: #64748b; font-size: 11px; line-height: 1.25; }
+.produksi-board-page .is-compact .pd-snapshot-meta span { display: none; }
+.produksi-board-page .is-po-count.is-compact .kb-metric { font-size: 24px; }
+.produksi-board-page .pd-count-footer { flex: 0 0 auto; padding: 5px 10px 10px; font-size: 12px; line-height: 16px; }
+.produksi-board-page .pd-count-footer a { color: #08784c; font-weight: 600; text-decoration: none; }
+.produksi-board-page .pd-count-footer a:hover { text-decoration: underline; }
+.produksi-board-page .pd-unit-values { margin: 0 0 8px; display: grid; gap: 8px; }
+.produksi-board-page .pd-unit-values > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.produksi-board-page .pd-unit-values dt { color: #64748b; font-size: 12px; }
+.produksi-board-page .pd-unit-values dd { margin: 0; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.produksi-board-page .pd-unit-values dd span { font-size: 12px; font-weight: 500; }
 
 .produksi-board-page .kb-glyph.pd-glyph-info { background: #dbeafe; color: #2563eb; }
 .produksi-board-page .kb-glyph.pd-glyph-warn { background: #ffedd5; color: #ea580c; }
@@ -47,6 +71,8 @@
 
 .produksi-board-page .kb-card.is-compact > header { min-height: 34px; padding: 8px 12px 0; }
 .produksi-board-page .kb-card.is-compact .kb-body { padding: 2px 12px 10px; }
+.produksi-board-page .is-po-count.is-compact > header { min-height: 30px; padding: 6px 10px 0; }
+.produksi-board-page .is-po-count.is-compact .kb-body { padding: 2px 10px 0; }
 .produksi-board-page .pd-kpi { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
 .produksi-board-page .pd-kpi .kb-metric {
   margin: 0;
@@ -984,3 +1010,19 @@
   color: #8a6a2f;
   white-space: nowrap;
 }
+
+
+/* Consistent panel and table treatment for all production widgets. */
+.produksi-board-page .kb-card:not(.is-po-count) .kb-body { overflow: auto; }
+.produksi-board-page .pd-panel,
+.produksi-board-page .pd-status,
+.produksi-board-page .pd-metric { border: 1px solid #e5ece8; border-radius: 8px; }
+.produksi-board-page .pd-metric strong,
+.produksi-board-page .pd-status strong,
+.produksi-board-page .pd-panel strong { font-variant-numeric: tabular-nums; }
+.produksi-board-page .pd-rank-row { padding: 6px 0; border-bottom: 1px solid #edf2ef; }
+.produksi-board-page .kb-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.produksi-board-page .kb-body th { color: #64748b; font-size: 11px; text-align: left; padding: 8px 6px; }
+.produksi-board-page .kb-body td { padding: 9px 6px; border-top: 1px solid #edf2ef; }
+.produksi-board-page .kb-body tbody tr:hover { background: #f4f8f6; }
+.produksi-board-page .pd-note { overflow-wrap: anywhere; }

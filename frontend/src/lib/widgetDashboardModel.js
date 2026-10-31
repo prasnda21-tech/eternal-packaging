@@ -221,6 +221,8 @@ export function mapCash(section) {
     cashOut: section.cash_out,
     net: section.net_change,
     internal: section.internal_transfer_volume,
+    accounts: section.accounts || [],
+    asOf: section.end_date,
     detail: section.detail || section.note,
   };
 }
@@ -244,6 +246,7 @@ export function mapProfit(periodBody, ytdBody, ytdLabel) {
     return [
       { name: "Pendapatan", amount: body.revenue },
       { name: "Harga pokok", amount: body.cogs },
+      { name: "Laba kotor", amount: body.gross_profit },
       { name: "Beban", amount: body.operating_expense },
       { name: "Pendapatan lain", amount: body.other_income },
       { name: "Beban lain", amount: body.other_expense },
@@ -453,3 +456,4 @@ export function chartWithheld(amounts) {
   const total = numbers.reduce((sum, value) => sum + value, 0);
   return total <= 0;
 }
+

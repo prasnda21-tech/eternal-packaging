@@ -6,6 +6,8 @@ import { resolveWidgetLocation } from "../components/widgetDashboard/widgetDashb
 import { useAuth } from "../lib/auth";
 import { jakartaDate, periodRange, shouldApplyDashboardResponse } from "../lib/financialDashboard";
 import api from "../lib/api";
+import SalesDashboardDateInput from "../components/widgetDashboard/SalesDashboardDateInput";
+import { formatSalesDashboardRange } from "../lib/dashboardRincianPresentation";
 import {
   failedModel,
   forbiddenModel,
@@ -55,7 +57,9 @@ export default function WidgetDashboard() {
     : periodRange(preset);
   const start = ranged.start;
   const end = ranged.end;
-  const periodLabel = formatRange(start, end);
+  const periodLabel = tab.id === "penjualan"
+    ? formatSalesDashboardRange(start, end)
+    : formatRange(start, end);
   const asOfLabel = formatLongDate(today);
   const ytdStart = `${today.slice(0, 4)}-01-01`;
   const [models, setModels] = useState({});
@@ -273,7 +277,24 @@ export default function WidgetDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadKey]);
 
-  const periodControl = (
+  const periodControl = tab.id === "penjualan" ? (
+    <>
+      <button type="button" className="wp-text-btn" onClick={() => go({ preset: "today", start: today, end: today })}>Hari ini</button>
+      <button type="button" className="wp-text-btn" onClick={() => { const range = periodRange("month"); go({ preset: "month", start: range.start, end: range.end }); }}>Bulan ini</button>
+      <SalesDashboardDateInput
+        ariaLabel="Tanggal mulai"
+        testId="sales-period-start"
+        valueIso={start}
+        onChange={(iso) => go({ preset: "custom", start: iso, end })}
+      />
+      <SalesDashboardDateInput
+        ariaLabel="Tanggal akhir"
+        testId="sales-period-end"
+        valueIso={end}
+        onChange={(iso) => go({ preset: "custom", start, end: iso })}
+      />
+    </>
+  ) : (
     <>
       <button type="button" className="wp-text-btn" onClick={() => go({ preset: "today", start: today, end: today })}>Hari ini</button>
       <button type="button" className="wp-text-btn" onClick={() => { const range = periodRange("month"); go({ preset: "month", start: range.start, end: range.end }); }}>Bulan ini</button>

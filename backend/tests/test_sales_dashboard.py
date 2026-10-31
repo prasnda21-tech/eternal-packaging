@@ -39,6 +39,17 @@ def anyio_backend():
 
 
 @pytest.fixture(autouse=True)
+def local_branch_runtime(monkeypatch):
+    """Existing admin fixtures have no branch assignment.
+
+    Unset APP_ENV is production-like and would deny that admin. These tests
+    keep the local unrestricted runtime; production branch rules live in
+    test_sales_dashboard_branch_scope.py.
+    """
+    monkeypatch.setenv("APP_ENV", "test")
+
+
+@pytest.fixture(autouse=True)
 def bind_motor():
     from motor.motor_asyncio import AsyncIOMotorClient
 

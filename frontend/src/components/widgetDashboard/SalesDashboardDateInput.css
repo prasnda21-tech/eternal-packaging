@@ -1,0 +1,108 @@
+/* Scoped to SalesDashboardDateInput. Loaded with the component on every page. */
+.sd-date {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  position: relative;
+}
+.sd-date-label {
+  font-size: 11px;
+  line-height: 1.2;
+  color: #3d4f48;
+  white-space: nowrap;
+}
+.sd-date-control {
+  display: inline-grid;
+  grid-template-columns: 7.4rem 30px;
+  gap: 4px;
+  align-items: center;
+  position: relative;
+}
+.sd-date input[type="text"],
+.content .sd-date input[type="text"] {
+  width: 7.4rem;
+  box-sizing: border-box;
+  border: 1px solid #d5e4dc;
+  background: #fff;
+  color: #183e32;
+  border-radius: 8px;
+  padding: 4px 6px;
+  font: inherit;
+  min-height: 0 !important;
+  height: 30px !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+.sd-date-trigger,
+.content .sd-date-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px !important;
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 1px solid #d5e4dc;
+  border-radius: 8px;
+  background: #fff;
+  color: #176b4d;
+  cursor: pointer;
+  box-shadow: none;
+}
+.sd-date-trigger:hover,
+.sd-date-trigger:focus-visible {
+  border-color: #176b4d;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(23, 107, 77, 0.18);
+}
+.sd-date-calendar,
+.content .sd-date-calendar {
+  position: absolute !important;
+  left: -9999px !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 1px !important;
+  max-height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+}
+.sd-date-calendar::-webkit-datetime-edit,
+.sd-date-calendar::-webkit-datetime-edit-fields-wrapper,
+.sd-date-calendar::-webkit-datetime-edit-text,
+.sd-date-calendar::-webkit-datetime-edit-month-field,
+.sd-date-calendar::-webkit-datetime-edit-day-field,
+.sd-date-calendar::-webkit-datetime-edit-year-field,
+.sd-date-calendar::-webkit-calendar-picker-indicator {
+  display: none !important;
+  width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  color: transparent !important;
+}
+.sd-date-error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 2;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #8a2b2b;
+  white-space: nowrap;
+}

@@ -14,6 +14,8 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
+import CashAvailabilityBody from "./CashAvailabilityBody";
+import ActiveUsersCard from "./ActiveUsersCard";
 import { formatMoney } from "../../lib/financialDashboard";
 import {
   fakturPembelianDrillPath,
@@ -77,6 +79,8 @@ const QUIET = new Set(["loading", "empty", "error", "forbidden", "unavailable", 
 const PRESET_LABEL = { today: "Hari ini", month: "Bulan ini", year: "Tahun ini", custom: "Kustom" };
 const SLICE = ["#08784C", "#2563EB", "#D97706", "#7C3AED", "#0F766E", "#64748B", "#DC2626"];
 const GLYPH = {
+  cash_available: Landmark,
+  active_users: Users,
   cash: ArrowLeftRight,
   expense: PieChart,
   profit: Scale,
@@ -88,12 +92,14 @@ const GLYPH = {
   recon: Landmark,
 };
 const CAPTION = {
+  cash_available: "Saldo pembukuan · seluruh rekening",
+  active_users: "Status web · interaksi terakhir",
   cash: "Kas masuk, keluar, dan neto",
   expense: "Komposisi beban operasional",
   profit: "Komponen laba rugi periode",
   sales: "Omzet faktur finalized",
   trend: "Deret omzet sesuai grain",
-  products: "Peringkat dari line_subtotal",
+  products: "Nilai baris barang terjual",
   sellers: "Omzet yang terpetakan",
   purchases: "Nilai faktur pembelian",
   recon: "Dokumen rekonsiliasi",
@@ -213,7 +219,7 @@ function Spark({ points }) {
   return (
     <div className="kb-spark" aria-hidden="true">
       {points.map((point, index) => (
-        <i key={`${point.label}-${index}`} style={{ height: `${Math.max(8, (Number(point.amount) / max) * 100)}%` }} />
+        <i key={`${point.label}-${index}`} style={{ height: `${Math.max(0, (Number(point.amount) / max) * 100)}%` }} />
       ))}
     </div>
   );
@@ -221,19 +227,21 @@ function Spark({ points }) {
 
 function SeriesChart({ points, grain }) {
   const rows = (points || []).filter((point) => point.amount != null && Number.isFinite(Number(point.amount)));
+  if (!rows.length) return null;
   const max = rows.reduce((peak, point) => Math.max(peak, Number(point.amount)), 0);
-  if (!rows.length || max <= 0) return null;
-  const visible = rows.slice(-31);
+  const min = rows.reduce((low, point) => Math.min(low, Number(point.amount)), 0);
+  const span = max - min || 1;
+  const visible = rows;
   return (
     <div className="kb-chart">
-      <div className="kb-bars">
+      <div className="kb-bars" role="img" aria-label={`Tren ${grain || "penjualan"}: ${visible.map((p) => `${p.label} ${formatMoney(p.amount)}`).join("; ")}`} style={{ minWidth: `${visible.length * 12}px` }}>
         {visible.map((point, index) => (
           <span key={`${point.label}-${index}`} className="kb-bar" title={`${point.label}: ${formatMoney(point.amount)}`}>
-            <i style={{ height: `${Math.max(4, (Number(point.amount) / max) * 100)}%` }} />
+            <i style={{ position: "absolute", height: `${Math.abs(Number(point.amount)) / span * 100}%`, bottom: `${(Number(point.amount) < 0 ? Number(point.amount) - min : -min) / span * 100}%`, background: Number(point.amount) < 0 ? "#dc2626" : undefined }} />
           </span>
         ))}
       </div>
-      <div className="kb-axis">
+      <div className="kb-axis" style={{ minWidth: `${visible.length * 12}px` }}>
         <span>{visible[0].label}</span>
         {grain ? <span>{grain}</span> : null}
         {visible.length > 1 ? <span>{visible[visible.length - 1].label}</span> : null}
@@ -256,16 +264,16 @@ function Donut({ rows }) {
     <div className="kb-donut-wrap">
       <div className="kb-donut" style={{ background: `conic-gradient(${stops.join(", ")})` }}>
         <div className="kb-donut-hole">
-          <span>Total</span>
+          <span>Beban positif</span>
           <strong>{formatMoney(total)}</strong>
         </div>
       </div>
       <ul className="kb-legend">
-        {items.slice(0, 6).map((row, index) => (
+        {items.map((row, index) => (
           <li key={row.key || row.name}>
             <i style={{ background: SLICE[index % SLICE.length] }} />
             <span title={row.name}>{row.name}</span>
-            <b>{((Number(row.amount) / total) * 100).toLocaleString("id-ID", { maximumFractionDigits: 0 })}%</b>
+            <b>{((Number(row.amount) / total) * 100).toLocaleString("id-ID", { maximumFractionDigits: 0 })}%<small>{formatMoney(row.amount)}</small></b>
           </li>
         ))}
       </ul>
@@ -349,14 +357,20 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
   const status = model?.status || "loading";
   if (id === "expense") return <ExpenseBody model={model} onRetry={onRetry} />;
   const rankedPartial = (id === "products" || id === "sellers") && status === "incomplete" && (model?.rows || []).length > 0;
+  if (id === "cash_available" && ["complete", "incomplete"].includes(status)) return <CashAvailabilityBody model={model} onRetry={onRetry} />;
   if (QUIET.has(status) && !rankedPartial) return <Quiet id={id} status={status} onRetry={onRetry} />;
+  if (id === "active_users") return <ActiveUsersCard />;
   if (id === "cash") {
     return (
-      <div className="kb-trio">
+      <><div className="kb-trio">
         <div><span>Kas Masuk</span><strong>{moneyText(status, model?.cashIn) || "—"}</strong></div>
         <div><span>Kas Keluar</span><strong>{moneyText(status, model?.cashOut) || "—"}</strong></div>
-        <div><span>Neto</span><strong>{moneyText(status, model?.net) || "—"}</strong></div>
+        <div className="kb-net"><span>Neto periode</span><strong>{moneyText(status, model?.net) || "—"}</strong></div>
       </div>
+      {!compact && model?.accounts?.length ? <div className="kb-lines kb-cash-accounts">
+        <p className="kb-kicker">Saldo akhir per rekening · termasuk transfer internal</p>
+        {model.accounts.map(row => <div key={row.account_id}><span>{row.name || row.code}</span><strong>{row.ending == null ? "—" : formatMoney(row.ending)}</strong></div>)}
+      </div> : null}</>
     );
   }
   if (id === "sales") {
@@ -392,7 +406,7 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
         {!compact && model?.rows?.length ? (
           <div className="kb-lines">
             {model.rows.filter((row) => row.name !== "Laba bersih").map((row) => (
-              <div key={row.name}><span>{row.name}</span><strong>{row.amount == null ? "—" : formatMoney(row.amount)}</strong></div>
+              <div key={row.name} className={/Laba/.test(row.name) ? "kb-subtotal" : ""}><span>{row.name}</span><strong>{row.amount == null ? "—" : formatMoney(row.amount)}</strong></div>
             ))}
           </div>
         ) : null}
@@ -425,7 +439,7 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
     const pairs = model?.pairs || [];
     const legacy = model?.rows || [];
     if (!pairs.length && !legacy.length) return <Quiet id={id} status={status === "complete" ? "empty" : status} />;
-    const limit = expanded ? 12 : 5;
+    const limit = expanded ? Math.max(pairs.length, legacy.length) : 5;
     return (
       <div className="kb-lines">
         {pairs.length ? <p className="kb-kicker">Pencocokan transaksi</p> : null}
@@ -550,7 +564,7 @@ export default function FinanceWidgetBoard({
         return (
           <article
             key={widget.widget_id}
-            className={`kb-card${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}${drillPath ? " is-drillable" : ""}`}
+            className={`kb-card kb-concept-card kb-type-${widget.widget_id}${widget.h <= 2 ? " is-compact" : ""}${editing ? " is-edit" : ""}${menuFor === widget.widget_id ? " is-menu" : ""}${drillPath ? " is-drillable" : ""}`}
             data-testid={`finance-widget-${widget.widget_id}`}
             data-status={model.status}
             data-drill={drillPath ? "ready" : (drillLocked ? "locked" : undefined)}
@@ -655,7 +669,7 @@ export default function FinanceWidgetBoard({
                 navigate(drillPath);
               }}
               onKeyDown={(event) => {
-                if (!drillPath) return;
+                if (!drillPath || isInteractiveDrillEventTarget(event.target)) return;
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   navigate(drillPath);
@@ -679,6 +693,10 @@ export default function FinanceWidgetBoard({
                 <WidgetSettings widget={widget} onSettings={onSettings} />
               ) : null}
             </div>
+            {!editing ? <footer className="kb-card-footer">
+              <span>{["recon", "active_users", "cash_available"].includes(widget.widget_id) ? "Snapshot saat ini" : "Periode terpilih"}</span>
+              {drillPath ? <button type="button" onClick={() => navigate(drillPath)} aria-label={`Lihat rincian ${title}`}>Lihat rincian ↗</button> : drillLocked ? <span className="pd-drill-locked">Akses rincian terbatas</span> : <span>Rincian pada kartu</span>}
+            </footer> : null}
             {editing ? (
               <button
                 type="button"
@@ -716,3 +734,4 @@ function WidgetSettings({ widget, onSettings }) {
     </form>
   );
 }
+

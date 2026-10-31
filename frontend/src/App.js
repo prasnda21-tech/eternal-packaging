@@ -103,6 +103,9 @@ const DeliveryReschedulePage = lazy(() => import("./pages/DeliveryReschedulePage
 const DeliveryBatchPage = lazy(() => import("./pages/DeliveryBatchPage"));
 const FormShowcase = lazy(() => import("./pages/FormShowcase"));
 const UrgentPoApprovalPreview = lazy(() => import("./pages/UrgentPoApprovalPreview"));
+const DashboardConceptPreview = lazy(() => import("./prototypes/dashboardConcept/DashboardConceptPreview"));
+const PoAktifCardPreview = lazy(() => import("./prototypes/poAktifCard/PoAktifCardPreview"));
+const PoPerluProduksiCardPreview = lazy(() => import("./prototypes/poPerluProduksiCard/PoPerluProduksiCardPreview"));
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const SpkDashboard = lazy(() => import("./pages/SpkDashboard"));
 const SpkCreate = lazy(() => import("./pages/SpkCreate"));
@@ -455,7 +458,12 @@ export default function App() {
           {/* Dev-only showcase (no auth needed for dev preview) */}
           <Route path="/dev/form-showcase" element={<FormShowcase />} />
           {process.env.NODE_ENV !== "production" ? (
-            <Route path="/dev/urgent-po-approval-preview" element={<UrgentPoApprovalPreview />} />
+            <>
+              <Route path="/dev/urgent-po-approval-preview" element={<UrgentPoApprovalPreview />} />
+              <Route path="/dev/dashboard-concept-preview" element={<DashboardConceptPreview />} />
+              <Route path="/dev/po-aktif-card-preview" element={<PoAktifCardPreview />} />
+              <Route path="/dev/po-perlu-produksi-card-preview" element={<PoPerluProduksiCardPreview />} />
+            </>
           ) : null}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
