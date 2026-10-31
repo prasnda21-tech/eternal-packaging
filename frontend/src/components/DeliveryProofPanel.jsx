@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Trash2, Loader2, CheckCircle2, XCircle, ImagePlus } from "lucide-react";
+import { AlertCircle, Camera, Trash2, Loader2, CheckCircle2, XCircle, ImagePlus } from "lucide-react";
 import api, { fileUrl } from "../lib/api";
 import { compressImage } from "../lib/imageCompress";
 import { formatDate, formatDisplayDateTime, ROLES } from "../lib/constants";
@@ -31,6 +31,28 @@ import { newActionId } from "../lib/workflowEntries";
 import ConfirmActionModal from "./ConfirmActionModal";
 import RescheduleDeliveryModal from "./RescheduleDeliveryModal";
 import SignaturePad from "./SignaturePad";
+import { formatAllocationWarningsList } from "../lib/stockAllocationForm";
+
+/** Soft, non-blocking allocation vs actual warehouse mismatch for delivery UI. */
+export function deliveryAllocationSoftWarnings(order, warehouseId) {
+  const wid = String(warehouseId || "").trim();
+  if (!wid) return [];
+  const out = [];
+  (order?.line_items || []).forEach((line, idx) => {
+    const allocs = Array.isArray(line?.stock_allocations) ? line.stock_allocations : [];
+    if (!allocs.length) return;
+    const match = allocs.find((a) => String(a?.warehouse_id || "").trim() === wid);
+    if (!match) {
+      out.push({
+        code: "REALIZATION_MISMATCH",
+        message: "Realisasi pengiriman berbeda dari rencana alokasi",
+        line_idx: idx,
+        line_id: line?.line_id,
+      });
+    }
+  });
+  return out;
+}
 
 // Multi-foto Bukti Kirim: driver can select/capture multiple photos, review the
 // staged list (with per-photo note + remove/replace), then confirm upload.
@@ -115,6 +137,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const [stockPreflight, setStockPreflight] = useState(null);
   const [stockPreflightErr, setStockPreflightErr] = useState("");
   const [stockPreflightLoading, setStockPreflightLoading] = useState(false);
+  const [allocationNotice, setAllocationNotice] = useState("");
 
   useEffect(() => {
     const n = order.delivery_recipient_signature?.recipient_name;
@@ -593,6 +616,11 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
           branch_id: selectedWh?.branch_id || order.branch_id || undefined,
         } : {}),
       });
+      const allocMsg = formatAllocationWarningsList(
+        res.allocation_warnings
+        || (res.stock_warnings || []).filter((w) => w?.code === "REALIZATION_MISMATCH"),
+      );
+      if (allocMsg) setAllocationNotice(allocMsg);
       onUpdated(res.order);
       setConfirmDeliver(null);
       setSignatureDataUrl(null);
@@ -1057,6 +1085,24 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
               <div><AlertCircle size={16} /><span>{stockPreflightErr}</span></div>
             </div>
           )}
+          {deliverButtonVisible && (() => {
+            const soft = deliveryAllocationSoftWarnings(order, deliveryWarehouseId);
+            const text = allocationNotice || formatAllocationWarningsList(soft);
+            if (!text) return null;
+            return (
+              <div
+                className="signal-strip"
+                role="status"
+                data-testid="delivery-allocation-warning"
+                style={{ marginTop: 10, display: "block" }}
+              >
+                <p style={{ margin: "0 0 4px", fontWeight: 600 }}>
+                  Peringatan alokasi gudang (tidak memblokir pengiriman)
+                </p>
+                <p style={{ margin: 0, fontSize: 13 }}>{text}</p>
+              </div>
+            );
+          })()}
           {deliverButtonVisible
             && (stockPreflight?.r2_authority_active || stockPreflight?.warehouse_stock_standalone_active)
             && Array.isArray(stockPreflight.stock_warnings) && (

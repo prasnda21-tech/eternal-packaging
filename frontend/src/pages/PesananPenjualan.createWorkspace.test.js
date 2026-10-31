@@ -426,6 +426,15 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     });
     await tick(0);
     expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toContain("Tersimpan");
+    expect(submit.textContent).not.toContain("Menyimpan...");
+    expect(container.querySelector('[data-testid="btn-cancel-form"]').disabled).toBe(false);
+    await act(async () => {
+      container.querySelector('[data-testid="sales-order-form"]').requestSubmit();
+    });
+    expect(api.createSalesOrder).toHaveBeenCalledTimes(1);
+    await tick(750);
+    expect(mockNavigate).toHaveBeenCalledWith("/po/new");
     await act(async () => {
       container.querySelector('[data-testid="sales-order-form"]').requestSubmit();
     });
@@ -587,6 +596,8 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.textContent).not.toContain("Isi harga jual");
     expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
     await chooseMaster(0, "Cup PET");
+    expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(false);
+    await act(async () => container.querySelector('[data-testid="btn-line-detail-0"]').click());
     expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(true);
     await act(async () => container.querySelector('[data-testid="btn-line-detail-0"]').click());
     expect(container.querySelector('[data-testid="line-item-detail-0"]').hidden).toBe(false);

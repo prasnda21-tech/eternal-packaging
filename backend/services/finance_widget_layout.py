@@ -15,7 +15,7 @@ COLLECTION = "finance_dashboard_layouts"
 DASHBOARD_KEY = "keuangan"
 COLUMNS = 12
 MAX_Y = 48
-MAX_READY = 11
+MAX_READY = 12
 MAX_PRESERVED = 8
 
 PERM_CASH = "dashboard.finance.view"
@@ -23,6 +23,7 @@ PERM_PROFIT = "profit_loss.view"
 PERM_PURCHASES = "purchase_invoices.view"
 PERM_RECON = "cash_bank.reconcile"
 PERM_SALES = "dashboard.sales.view"
+PERM_MIN_STOCK = "current_stock.view"
 
 READY_PERMISSION = {
     "cash_available": "cash_bank.view",
@@ -36,6 +37,7 @@ READY_PERMISSION = {
     "products": PERM_SALES,
     "sellers": PERM_SALES,
     "trend": PERM_SALES,
+    "min_stock": PERM_MIN_STOCK,
 }
 
 PERIOD_WIDGETS = frozenset({
@@ -58,6 +60,7 @@ SIZES: Dict[str, Tuple[int, int, int, int, int, int]] = {
     "products": (4, 12, 3, 8, 4, 3),
     "sellers": (4, 12, 3, 8, 6, 3),
     "recon": (4, 12, 3, 8, 6, 3),
+    "min_stock": (4, 12, 3, 8, 4, 3),
 }
 
 DEFAULT_ORDER = (

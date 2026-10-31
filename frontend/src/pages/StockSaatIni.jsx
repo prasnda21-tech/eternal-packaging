@@ -297,6 +297,7 @@ export default function StockSaatIni() {
   }
   const bootView = bootViewRef.current || null;
   const canOpening = hasPerm("current_stock.update") || hasPerm("permissions.manage");
+  const canManageMinimum = hasPerm("stock_minimum.manage") || hasPerm("permissions.manage");
   const canExport = hasPerm("current_stock.export");
   const [data, setData] = useState(() => bootView?.data || null);
   const canAdjust = Boolean(data?.can_adjust_physical_stock);
@@ -1359,7 +1360,7 @@ export default function StockSaatIni() {
             branchAggregate: showBranchAggregate,
           })}
           branches={branches}
-          branchId={branchId}
+          branchId={effectiveBranchId || branchId}
           warehouseId={warehouseId}
           scopeLabel={[
             branchLabel,
@@ -1369,6 +1370,7 @@ export default function StockSaatIni() {
           ].filter(Boolean).join(" · ")}
           canAdjust={canAdjust}
           canOpening={canOpening}
+          canManageMinimum={canManageMinimum}
           adjustBlockedReason={data?.adjust_blocked_reason}
           onClose={closeDetail}
           onOpenOpening={(row) => {

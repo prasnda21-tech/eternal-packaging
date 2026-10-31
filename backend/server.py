@@ -7524,6 +7524,45 @@ async def confirm_delivered(order_id: str, payload: Optional[ConfirmDeliveredPay
         result["branch_id"] = r2_stock_warnings_holder.get("branch_id")
         if uses_standalone_stock:
             result["stock_engine"] = "warehouse_standalone"
+    # Soft allocation realization warnings — never block confirm-delivered.
+    try:
+        from services.stock_allocation import realization_mismatch_warning
+        actual_wh = str(
+            (payload.warehouse_id if payload else None)
+            or r2_stock_warnings_holder.get("warehouse_id")
+            or ""
+        ).strip()
+        alloc_warns = []
+        for idx, li in enumerate((order or {}).get("line_items") or []):
+            if not isinstance(li, dict):
+                continue
+            allocs = li.get("stock_allocations") if isinstance(li.get("stock_allocations"), list) else []
+            planned = None
+            planned_qty = None
+            for a in allocs:
+                if isinstance(a, dict) and str(a.get("warehouse_id") or "").strip() == actual_wh:
+                    planned = actual_wh
+                    planned_qty = a.get("qty")
+                    break
+            if allocs and actual_wh and planned is None:
+                # Delivered from a warehouse not in the plan.
+                planned = str((allocs[0] or {}).get("warehouse_id") or "") if allocs else None
+            warn = realization_mismatch_warning(
+                line_id=str(li.get("line_id") or ""),
+                planned_warehouse_id=planned,
+                actual_warehouse_id=actual_wh or None,
+                planned_remaining=planned_qty,
+                shipped_qty=None,
+            )
+            if warn and (not allocs or planned != actual_wh):
+                warn["line_idx"] = idx
+                alloc_warns.append(warn)
+        if alloc_warns:
+            result["allocation_warnings"] = alloc_warns
+            existing = list(result.get("stock_warnings") or [])
+            result["stock_warnings"] = existing + alloc_warns
+    except Exception:
+        logging.getLogger(__name__).warning("allocation realization warning failed", exc_info=True)
     return result
 
 
@@ -11390,6 +11429,9 @@ class SalesOrderLineItemInput(BaseModel):
     line_id: Optional[str] = None
     parent_line_id: Optional[str] = None
     parent_line_idx: Optional[int] = None
+    # Warehouse allocation recording only — empty/unbalanced never blocks create.
+    stock_allocations: Optional[List[dict]] = None
+    item_type: Optional[str] = None
 
 
 class SalesOrderPriceQuotePayload(BaseModel):
@@ -12029,12 +12071,31 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
     )
 
     from services.sales_order_prices import price_order_lines
+    # Preserve client allocation payloads by index before line_id remap.
+    raw_alloc_by_index = [
+        (li.stock_allocations if isinstance(getattr(li, "stock_allocations", None), list) else None)
+        for li in (payload.line_items or [])
+    ]
     normalized_lines, selling_total, selling_prices_complete = await price_order_lines(db, normalized_lines)
     # price_order_lines assigns new UUIDs and remaps parent_line_id; re-validate
     # so a broken map never persists silently.
     parent_err_after_price = validate_service_print_requires_parent(normalized_lines)
     if parent_err_after_price:
         raise HTTPException(400, parent_err_after_price)
+
+    from services.stock_allocation import (
+        attach_allocations_to_lines,
+        load_allowed_warehouses_for_branch,
+        summarize_order_allocation_warnings,
+    )
+    allowed_wh = await load_allowed_warehouses_for_branch(db, operational_branch_id)
+    normalized_lines, allocation_warnings, _alloc_complete = attach_allocations_to_lines(
+        normalized_lines,
+        branch_id=operational_branch_id,
+        allowed_warehouses=allowed_wh,
+        raw_by_index=raw_alloc_by_index,
+    )
+    allocation_summary = summarize_order_allocation_warnings(normalized_lines)
 
     now = now_iso()
     total_qty = sum(li["quantity"] for li in normalized_lines)
@@ -12166,11 +12227,21 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
         new_order["customer_id"] = final_customer_id
 
     new_order.pop("_id", None)
+    new_order["stock_allocation_summary"] = allocation_summary
     await _audit_po(new_order, "sales_order.create", user, note=f"Buat Pesanan Penjualan {po_num}")
+    combined_warnings = list(stock_warnings or []) + list(allocation_warnings or [])
+    if allocation_summary.get("message"):
+        combined_warnings.append({
+            "code": "ALLOCATION_INCOMPLETE",
+            "message": allocation_summary["message"],
+            "incomplete_line_count": allocation_summary.get("incomplete_line_count"),
+        })
     return {
         "order": new_order,
         "message": "Pesanan Penjualan berhasil dibuat",
-        "warnings": list(stock_warnings or []),
+        "warnings": combined_warnings,
+        "allocation_warnings": allocation_warnings,
+        "stock_allocation_summary": allocation_summary,
     }
 
 
@@ -17530,6 +17601,15 @@ register_widget_dashboard_routes(
     api_router,
     get_db=lambda: db,
     require_perm=require_perm,
+    Depends=Depends,
+)
+from services.stock_minimum_http import register_stock_minimum_routes
+register_stock_minimum_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_perm=require_perm,
+    require_any_perm=_require_any_perm,
     Depends=Depends,
 )
 from services.web_presence import register_web_presence_routes

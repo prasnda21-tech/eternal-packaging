@@ -30,6 +30,13 @@ import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import CustomerSearchSelect from "../components/CustomerSearchSelect";
 import LookupSearchSelect from "../components/LookupSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
+import StockAllocationEditor from "../components/StockAllocationEditor";
+import {
+  formatAllocationWarningsList,
+  isInventoryLineForAllocation,
+  payloadAllocationsFromLine,
+  summarizeFormAllocationWarnings,
+} from "../lib/stockAllocationForm";
 import {
   EMPTY_SALES_ORDER_COLUMN_FILTERS,
   SALES_ORDER_DELIVERY_STATUS_OPTIONS,
@@ -402,6 +409,9 @@ export function buildSalesOrderCreatePayload(formData) {
       const itemType = String(li.item_type || "").trim().toUpperCase();
       if (itemType) next.item_type = itemType;
       else delete next.item_type;
+      const allocs = payloadAllocationsFromLine(li);
+      if (allocs && allocs.length) next.stock_allocations = allocs;
+      else delete next.stock_allocations;
       delete next.parent_line_idx;
       delete next.entry_mode;
       delete next.rowKey;
@@ -438,6 +448,7 @@ const INITIAL_LINE_ITEM = {
   price_lock: false,
   parent_line_id: "",
   item_type: "",
+  stock_allocations: [],
 };
 
 const CHIP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
@@ -660,8 +671,11 @@ export default function PesananPenjualan() {
   }));
 
   const [formBusy, setFormBusy] = useState(false);
+  const [formSaved, setFormSaved] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [allocationNotice, setAllocationNotice] = useState("");
+  const [warehouses, setWarehouses] = useState([]);
   const [lineModes, setLineModes] = useState({});
   const submitLockRef = useRef(false);
   const dirtyRef = useRef(false);
@@ -768,9 +782,13 @@ export default function PesananPenjualan() {
         ))
         .then((res) => res || { items: [] })
         .catch(() => ({ items: [] }));
-      const [data, catalogRes] = await Promise.all([
+      const [data, catalogRes, warehouseRes] = await Promise.all([
         api.salesOrderOptions(),
         catalogPromise,
+        Promise.resolve()
+          .then(() => (typeof api.warehouses === "function" ? api.warehouses() : { items: [] }))
+          .then((res) => res || { items: [] })
+          .catch(() => ({ items: [] })),
       ]);
       const catalog = Array.isArray(catalogRes?.items) ? catalogRes.items : [];
       const catalogNames = catalog.map((s) => s.sales_name).filter(Boolean);
@@ -779,6 +797,10 @@ export default function PesananPenjualan() {
         ...catalogNames,
       ])).sort((a, b) => String(a).localeCompare(String(b), "id"));
       setOptions({ ...(data || {}), sales_options: mergedSales, sales_master_catalog: catalog });
+      setWarehouses(
+        (Array.isArray(warehouseRes?.items) ? warehouseRes.items : [])
+          .filter((wh) => wh && wh.active !== false),
+      );
       // List mode loads options for header filters (e.g. Sales); only create may seed PO.
       if (applySuggestedPo && data?.suggested_po_number) {
         setFormData((prev) => ({
@@ -1374,7 +1396,7 @@ export default function PesananPenjualan() {
       const lines = [...prev.line_items];
       const current = lines[index];
       if (!current) return prev;
-      const next = { ...current, [field]: value };
+      let next = { ...current, [field]: value };
       if (field === "unit_price") {
         next.price_message = "";
         if (String(value).trim() === "") {
@@ -1386,15 +1408,33 @@ export default function PesananPenjualan() {
           next.price_lock = true;
           next.price_review = false;
         }
-      } else if (field === "quantity" || field === "unit") {
+      } else if (field === "unit") {
+        const hadPrice = linePriceNumber(current.unit_price) !== null;
+        next = {
+          ...current,
+          unit: value,
+          stock_allocations: [],
+          price_review: hadPrice || current.price_lock || current.price_source === "pengaturan_harga",
+          price_source: hadPrice
+            ? (current.price_source === "pengaturan_harga" ? "manual" : (current.price_source || "manual"))
+            : current.price_source,
+        };
+        if (next.accurate_item_id && !current.price_review && !next.price_review) {
+          quoteIdentity = {
+            accurate_item_id: next.accurate_item_id,
+            unit: next.unit,
+            quantity: Number(next.quantity),
+          };
+        }
+      } else if (field === "quantity") {
         const hadPrice = linePriceNumber(current.unit_price) !== null;
         if (hadPrice || current.price_lock || current.price_source === "pengaturan_harga") {
           next.price_review = true;
         } else if (!current.price_review && current.accurate_item_id) {
           quoteIdentity = {
             accurate_item_id: current.accurate_item_id,
-            unit: field === "unit" ? value : current.unit,
-            quantity: field === "quantity" ? value : current.quantity,
+            unit: current.unit,
+            quantity: value,
           };
         }
       }
@@ -1404,8 +1444,19 @@ export default function PesananPenjualan() {
     if (quoteIdentity) requestSellingQuote(index, quoteIdentity);
   };
 
+  const handleLineAllocationsChange = (index, nextAllocations) => {
+    dirtyRef.current = true;
+    setFormData((prev) => {
+      const lines = [...prev.line_items];
+      if (!lines[index]) return prev;
+      lines[index] = { ...lines[index], stock_allocations: nextAllocations };
+      return { ...prev, line_items: lines };
+    });
+  };
+
   const handleSelectMasterItem = (index, master) => {
     let quoteIdentity = null;
+    let openDetailKey = "";
     setFormData((prev) => {
       const lines = [...prev.line_items];
       const current = lines[index];
@@ -1419,6 +1470,7 @@ export default function PesananPenjualan() {
           accurate_item_id: null,
           master_item_id: null,
           item_type: "",
+          stock_allocations: [],
           price_review: hadPrice || current.price_lock || current.price_source === "pengaturan_harga",
           price_source: hadPrice ? "manual" : "",
         };
@@ -1429,15 +1481,22 @@ export default function PesananPenjualan() {
             ? "print"
             : null;
         const masterType = String(master.item_type || "").trim().toUpperCase();
+        const nextMasterId = master.id || master.master_item_id || null;
+        const nextUnit = master.unit || current.unit || "pcs";
+        const masterOrUnitChanged = (
+          String(current.master_item_id || "") !== String(nextMasterId || "")
+          || String(current.unit || "").toLowerCase() !== String(nextUnit || "").toLowerCase()
+        );
         const next = {
           ...current,
           name: master.item_name || current.name,
           item_code: master.item_code || current.item_code,
-          unit: master.unit || current.unit || "pcs",
+          unit: nextUnit,
           accurate_item_id: master.accurate_item_id || null,
-          master_item_id: master.id || master.master_item_id || null,
+          master_item_id: nextMasterId,
           item_type: masterType || "",
           price_message: "",
+          ...(masterOrUnitChanged ? { stock_allocations: [] } : {}),
           ...(masterProcess ? { production_process: masterProcess } : {}),
         };
         // Inventory / non-SERVICE lines are never Add On children.
@@ -1459,9 +1518,14 @@ export default function PesananPenjualan() {
           next.price_message = "Barang belum terhubung ke Pengaturan Harga. Isi manual.";
         }
         lines[index] = next;
+        // Surface warehouse allocation editor (lives in detail row) for inventory picks.
+        if (isInventoryLineForAllocation(next)) {
+          openDetailKey = String(next.rowKey || "").trim();
+        }
       }
       return { ...prev, line_items: lines };
     });
+    if (openDetailKey) setDetailRowKey(openDetailKey);
     if (quoteIdentity) requestSellingQuote(index, quoteIdentity);
   };
 
@@ -1598,6 +1662,9 @@ export default function PesananPenjualan() {
   };
 
   const resetForm = () => {
+    submitLockRef.current = false;
+    setFormBusy(false);
+    setFormSaved(false);
     clearRepeatState();
     setFormData({
       po_number: options.suggested_po_number || "",
@@ -1810,11 +1877,19 @@ export default function PesananPenjualan() {
     if (submitLockRef.current || formBusy) return;
     setFormErr("");
     setSuccessMsg("");
+    setAllocationNotice("");
 
     const validationError = validateSalesOrderCreate(formData);
     if (validationError) {
       setFormErr(validationError);
       return;
+    }
+
+    const softAllocWarnings = summarizeFormAllocationWarnings(formData.line_items);
+    if (softAllocWarnings.length) {
+      setAllocationNotice(
+        softAllocWarnings.map((w) => `Baris #${(w.lineIndex || 0) + 1}: ${w.message}`).join(" · "),
+      );
     }
 
     submitLockRef.current = true;
@@ -1823,8 +1898,20 @@ export default function PesananPenjualan() {
       const payload = buildSalesOrderCreatePayload(formData);
 
       const res = await api.createSalesOrder(payload);
+      const serverAlloc = formatAllocationWarningsList(res.allocation_warnings);
+      const noticeParts = [
+        softAllocWarnings.length
+          ? softAllocWarnings.map((w) => `Baris #${(w.lineIndex || 0) + 1}: ${w.message}`).join(" · ")
+          : "",
+        serverAlloc,
+      ].filter(Boolean);
+      if (noticeParts.length) setAllocationNotice(noticeParts.join(" · "));
       setSuccessMsg(res.message || "Pesanan Penjualan berhasil dibuat!");
       const createdId = res.order?.id;
+      // Saving has finished, but this form must never submit the same order again.
+      // Keep the synchronous lock until resetForm starts a new order.
+      setFormSaved(true);
+      setFormBusy(false);
       setTimeout(() => {
         if (createdId) {
           invalidateSalesOrderListCache();
@@ -3036,6 +3123,19 @@ export default function PesananPenjualan() {
                                           Catatan Item
                                           <input type="text" className="so-line-input" value={line.notes || ""} onChange={(e) => handleLineChange(originalIndex, "notes", e.target.value)} placeholder="Catatan item" data-testid={`line-notes-${originalIndex}`} />
                                         </label>
+                                        <div className="so-line-alloc-wrap">
+                                          <StockAllocationEditor
+                                            line={line}
+                                            warehouses={(warehouses || []).filter((wh) => {
+                                              const bid = String(formData.operational_branch_id || "").trim();
+                                              if (!bid) return true;
+                                              return String(wh.branch_id || "") === bid;
+                                            })}
+                                            onChange={(next) => handleLineAllocationsChange(originalIndex, next)}
+                                            disabled={formBusy}
+                                            testIdPrefix={`line-alloc-${originalIndex}`}
+                                          />
+                                        </div>
                                       </div>
                                     </td>
                                   </tr>
@@ -3056,6 +3156,11 @@ export default function PesananPenjualan() {
                       {sellingIncomplete ? (
                         <p className="ux90-warn-box" data-testid="so-side-price-warning" role="status">
                           Terdapat barang dengan harga belum diisi. Harga kosong diperbolehkan.
+                        </p>
+                      ) : null}
+                      {allocationNotice ? (
+                        <p className="ux90-warn-box" data-testid="so-allocation-warning" role="status">
+                          {allocationNotice}
                         </p>
                       ) : null}
                       <div className="ux90-doc-summary" data-testid="so-create-side-panel" aria-label="Ringkasan pesanan" hidden>
@@ -3361,8 +3466,8 @@ export default function PesananPenjualan() {
               <button type="button" data-testid="btn-cancel-form" disabled={formBusy} onClick={leaveCreate}>
                 Batal
               </button>
-              <button type="submit" className="so-create-save" disabled={formBusy} data-testid="btn-submit-sales-order">
-                {formBusy ? "Menyimpan..." : "Simpan Pesanan"}
+              <button type="submit" className="so-create-save" disabled={formBusy || formSaved} data-testid="btn-submit-sales-order">
+                {formBusy ? "Menyimpan..." : formSaved ? "Tersimpan" : "Simpan Pesanan"}
               </button>
             </div>
           </div>
