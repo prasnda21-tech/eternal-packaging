@@ -11,7 +11,8 @@ export const FINANCE_WIDGETS = [
   { id: "sales", title: "Penjualan", category: "Penjualan & Pelanggan", perm: "dashboard.sales.view", endpoint: "GET /dashboard/penjualan", summary: "Omzet after_discount faktur finalized yang tidak dibatalkan.", ready: true, period: true, visual: false },
   { id: "products", title: "Penjualan Barang", category: "Penjualan & Pelanggan", perm: "dashboard.sales.view", endpoint: "GET /dashboard/penjualan", summary: "Peringkat barang dari line_subtotal. Baris tanpa identitas tidak masuk peringkat.", ready: true, period: true, visual: true },
   { id: "sellers", title: "Performa Penjual", category: "Penjualan & Pelanggan", perm: "dashboard.sales.view", endpoint: "GET /dashboard/penjualan", summary: "Omzet yang terpetakan. Faktur tanpa sales masuk Belum ditetapkan.", ready: true, period: true, visual: true },
-  { id: "trend", title: "Tren Penjualan", category: "Penjualan & Pelanggan", perm: "dashboard.sales.view", endpoint: "GET /dashboard/penjualan", summary: "Deret omzet dengan grain yang dihitung service.", ready: true, period: true, visual: true },
+  { id: "trend", title: "Tren Penjualan", category: "Penjualan & Pelanggan", perm: "dashboard.sales.view", endpoint: "GET /dashboard/penjualan", summary: "Deret omzet dengan grain yang dihitung service.", ready: true, period: true, visual: false },
+  { id: "min_stock", title: "Barang Stok Minimum", category: "Operasional & Persediaan", perm: "current_stock.view", endpoint: "GET /dashboard/widget/min-stock", summary: "Kombinasi barang–gudang dengan Stock Dapat Dijual di/bawah batas minimum. Demand belum dialokasi tidak dibagi ke gudang.", ready: true, period: false, visual: false },
 ];
 
 export const PENDING_WIDGETS = [
@@ -26,7 +27,6 @@ export const PENDING_WIDGETS = [
   { id: "sales_daily", title: "Penjualan per Hari", category: "Penjualan & Pelanggan", summary: "Grain harian hanya tersedia untuk rentang pendek." },
   { id: "customer_growth", title: "Pertumbuhan Pelanggan", category: "Penjualan & Pelanggan", summary: "Belum ada seri pertumbuhan yang sah." },
   { id: "sales_orders", title: "Pesanan Penjualan", category: "Penjualan & Pelanggan", summary: "Hitungan status pesanan bukan pendapatan dan belum dikontrak sebagai widget." },
-  { id: "min_stock", title: "Barang Stok Minimum", category: "Operasional & Persediaan", summary: "Ambang minimum pada stok barang belum ada." },
   { id: "hpp", title: "Monitoring HPP", category: "Operasional & Persediaan", summary: "Sumber HPP belum dipilih dan tidak boleh diringkas di kartu." },
   { id: "item_requests", title: "Permintaan Barang", category: "Operasional & Persediaan", summary: "Daftar permintaan belum diagregasi dengan batas baca yang jujur." },
   { id: "purchase_orders", title: "Pesanan Pembelian", category: "Operasional & Persediaan", summary: "Daftar pesanan pembelian belum menjadi widget yang sah." },

@@ -98,6 +98,7 @@ PERMISSION_CATALOG = [
     ("Persediaan", "current_stock.update", "Ubah Qty Saat Ini / Pembelian Barang"),
     ("Persediaan", "current_stock.import", "Impor & Sesuaikan Stock Saat Ini"),
     ("Persediaan", "current_stock.export", "Export Stock Saat Ini"),
+    ("Persediaan", "stock_minimum.manage", "Atur Stok Minimum"),
     ("Persediaan", "inventory_valuation.view", "Lihat Nilai Persediaan"),
     ("Persediaan", "inventory_valuation.export", "Export Nilai Persediaan"),
     ("Persediaan", "inventory_valuation.manage_opening", "Atur HPP Awal Persediaan"),
@@ -445,6 +446,8 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
     "sales.invoice.cancel",
     "sales.receipt.cancel",
     "sales.receipt.edit",
+    # Stock minimum thresholds — never implied by current_stock.update.
+    "stock_minimum.manage",
     # Destructive unmatched statement purge — never in admin/operator defaults.
     "cash_bank.reconcile.purge_unmatched",
     # Sentralisasi Cat V1 — never auto-granted; assign via Hak Akses & Role.

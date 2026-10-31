@@ -26,6 +26,7 @@ export const SIZES = {
   products: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 4, h: 3 },
   sellers: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 6, h: 3 },
   recon: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 6, h: 3 },
+  min_stock: { minW: 4, maxW: 12, minH: 3, maxH: 8, w: 4, h: 3 },
 };
 
 const PERIOD = new Set(["cash", "expense", "profit", "purchases", "sales", "products", "sellers", "trend"]);

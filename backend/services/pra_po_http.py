@@ -92,9 +92,14 @@ def register_pra_po_routes(
         return {"pra_po": await svc.return_pra_po(get_db(), pra_po_id, data, user, perms)}
 
     @api_router.post("/pra-po/{pra_po_id}/verify")
-    async def verify_pra_po_endpoint(pra_po_id: str, user=Depends(current_user)):
+    async def verify_pra_po_endpoint(
+        pra_po_id: str,
+        payload: Optional[LoosePayload] = None,
+        user=Depends(current_user),
+    ):
         perms = await _perms(user)
-        return await svc.verify_pra_po(get_db(), pra_po_id, user, perms)
+        data: dict[str, Any] = payload.model_dump() if payload else {}
+        return await svc.verify_pra_po(get_db(), pra_po_id, user, perms, allocation_payload=data)
 
     @api_router.get("/pra-po/{pra_po_id}/history")
     async def pra_po_history_endpoint(pra_po_id: str, user=Depends(current_user)):

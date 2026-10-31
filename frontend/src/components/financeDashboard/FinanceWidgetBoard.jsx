@@ -6,6 +6,7 @@ import {
   GripVertical,
   Landmark,
   MoreHorizontal,
+  AlertTriangle,
   Package,
   PieChart,
   Receipt,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import CashAvailabilityBody from "./CashAvailabilityBody";
 import ActiveUsersCard from "./ActiveUsersCard";
+import MinStockCard from "./MinStockCard";
 import { formatMoney } from "../../lib/financialDashboard";
 import {
   fakturPembelianDrillPath,
@@ -62,6 +64,10 @@ function financeDrillPath(id, range = {}, hasPerm) {
     if (!(hasPerm("cash_bank.reconcile") || hasPerm("cash_bank.view") || hasPerm("nav.cash_bank.reconciliation"))) return null;
     return "/kas-bank/rekonsiliasi";
   }
+  if (id === "min_stock") {
+    if (!hasPerm("current_stock.view")) return null;
+    return "/persediaan/stock-saat-ini";
+  }
   return null;
 }
 
@@ -90,6 +96,7 @@ const GLYPH = {
   sellers: Users,
   purchases: Receipt,
   recon: Landmark,
+  min_stock: AlertTriangle,
 };
 const CAPTION = {
   cash_available: "Saldo pembukuan · seluruh rekening",
@@ -98,6 +105,7 @@ const CAPTION = {
   expense: "Komposisi beban operasional",
   profit: "Komponen laba rugi periode",
   sales: "Omzet faktur finalized",
+  min_stock: "Kombinasi barang–gudang di/bawah minimum",
   trend: "Deret omzet sesuai grain",
   products: "Nilai baris barang terjual",
   sellers: "Omzet yang terpetakan",
@@ -358,6 +366,9 @@ function CardBody({ id, model, compact, expanded, onRetry }) {
   if (id === "expense") return <ExpenseBody model={model} onRetry={onRetry} />;
   const rankedPartial = (id === "products" || id === "sellers") && status === "incomplete" && (model?.rows || []).length > 0;
   if (id === "cash_available" && ["complete", "incomplete"].includes(status)) return <CashAvailabilityBody model={model} onRetry={onRetry} />;
+  if (id === "min_stock" && ["complete", "incomplete", "empty", "zero"].includes(status)) {
+    return <MinStockCard model={model} compact={compact} />;
+  }
   if (QUIET.has(status) && !rankedPartial) return <Quiet id={id} status={status} onRetry={onRetry} />;
   if (id === "active_users") return <ActiveUsersCard />;
   if (id === "cash") {
@@ -694,7 +705,7 @@ export default function FinanceWidgetBoard({
               ) : null}
             </div>
             {!editing ? <footer className="kb-card-footer">
-              <span>{["recon", "active_users", "cash_available"].includes(widget.widget_id) ? "Snapshot saat ini" : "Periode terpilih"}</span>
+              <span>{["recon", "active_users", "cash_available", "min_stock"].includes(widget.widget_id) ? "Snapshot saat ini" : "Periode terpilih"}</span>
               {drillPath ? <button type="button" onClick={() => navigate(drillPath)} aria-label={`Lihat rincian ${title}`}>Lihat rincian ↗</button> : drillLocked ? <span className="pd-drill-locked">Akses rincian terbatas</span> : <span>Rincian pada kartu</span>}
             </footer> : null}
             {editing ? (

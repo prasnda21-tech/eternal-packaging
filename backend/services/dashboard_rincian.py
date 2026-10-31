@@ -275,6 +275,15 @@ WIDGET_META: Dict[str, dict] = {
         "data_any_of": ["profit_loss.view", "nav.ledger.profit_loss"],
         "detail_kind": "ledger",
     },
+    "min_stock": {
+        "dashboard": "keuangan",
+        "title": "Barang Stok Minimum",
+        "source": "min_stock",
+        "grain": "item_warehouse",
+        "kpi_any_of": ["current_stock.view"],
+        "data_any_of": ["current_stock.view"],
+        "detail_kind": "min_stock",
+    },
 }
 
 COLUMNS = {
@@ -348,6 +357,18 @@ COLUMNS = {
         {"key": "account_name", "label": "Akun", "type": "text"},
         {"key": "group", "label": "Kelompok", "type": "text"},
         {"key": "amount", "label": "Nominal", "type": "number"},
+    ],
+    "min_stock": [
+        {"key": "row_no", "label": "#", "type": "number"},
+        {"key": "item_name", "label": "Produk", "type": "text"},
+        {"key": "branch_id", "label": "Cabang", "type": "text"},
+        {"key": "warehouse_name", "label": "Gudang", "type": "text"},
+        {"key": "stock", "label": "Stock", "type": "number"},
+        {"key": "stock_dapat_dijual", "label": "Stock Dapat Dijual", "type": "number"},
+        {"key": "qty_polos", "label": "Qty Polos", "type": "number"},
+        {"key": "sisa_belum_cetak", "label": "Sisa Belum Cetak", "type": "number"},
+        {"key": "minimum_label", "label": "Batas Minimum", "type": "text"},
+        {"key": "status_label", "label": "Status", "type": "text"},
     ],
 }
 
@@ -1054,6 +1075,40 @@ async def query_dashboard_rincian(
                 } if key == "expense" else {
                     "detail": "Laba bersih mengikuti seluruh periode laporan; pencarian hanya menyaring daftar akun.",
                 }),
+            },
+        }
+    elif meta["source"] == "min_stock":
+        from services.min_stock_widget import build_min_stock_snapshot
+        snap = await build_min_stock_snapshot(
+            db,
+            branch_id=str((branch_scope or {}).get("branch_id") or "") or None,
+            warehouse_id=None,
+            page=page,
+            limit=page_size,
+        )
+        rows = list(snap.get("items") or [])
+        if q:
+            needle = q.lower()
+            rows = [
+                r for r in rows
+                if needle in str(r.get("item_name") or "").lower()
+                or needle in str(r.get("item_code") or "").lower()
+                or needle in str(r.get("warehouse_name") or "").lower()
+            ]
+        body = {
+            "columns": COLUMNS["min_stock"],
+            "rows": _add_row_no(rows, snap.get("page") or page, snap.get("limit") or page_size),
+            "total": snap.get("total") or 0,
+            "page": snap.get("page") or page,
+            "page_size": snap.get("limit") or page_size,
+            "page_count": snap.get("page_count") or 0,
+            "kpi_summary": {
+                "count": snap.get("violation_count") or 0,
+                "label": "Kombinasi barang–gudang di/bawah minimum",
+                "grain": "item_warehouse",
+                "unevaluable_count": snap.get("unevaluable_count") or 0,
+                "status": snap.get("status"),
+                "detail": snap.get("detail"),
             },
         }
     else:

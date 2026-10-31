@@ -216,15 +216,22 @@ export default function StockSaatIniDetailDrawer({
   scopeLabel,
   canAdjust,
   canOpening,
+  canManageMinimum = false,
   onClose,
   onOpenOpening,
   onOpenAdjust,
   adjustBlockedReason,
+  onMinimumSaved,
 }) {
   const [lane, setLane] = useState("SEMUA");
   const [activity, setActivity] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [minimumQty, setMinimumQty] = useState("");
+  const [minimumConfigured, setMinimumConfigured] = useState(false);
+  const [minimumBusy, setMinimumBusy] = useState(false);
+  const [minimumMsg, setMinimumMsg] = useState("");
+  const [minimumErr, setMinimumErr] = useState("");
   const panelRef = useRef(null);
   const closeBtnRef = useRef(null);
   const itemId = item?.master_item_id || "";
@@ -234,7 +241,38 @@ export default function StockSaatIniDetailDrawer({
     setActivity(null);
     setErr("");
     setLoading(Boolean(itemId));
+    setMinimumMsg("");
+    setMinimumErr("");
   }, [itemId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!itemId || !branchId || !warehouseId) {
+      setMinimumQty("");
+      setMinimumConfigured(false);
+      return undefined;
+    }
+    api.listStockMinimums({ branch_id: branchId, warehouse_id: warehouseId })
+      .then((res) => {
+        if (cancelled) return;
+        const rows = Array.isArray(res?.items) ? res.items : [];
+        const hit = rows.find((row) => String(row.master_item_id || "") === String(itemId));
+        if (hit && hit.configured) {
+          setMinimumConfigured(true);
+          setMinimumQty(hit.minimum_qty === 0 || hit.minimum_qty === "0" ? "0" : String(hit.minimum_qty ?? ""));
+        } else {
+          setMinimumConfigured(false);
+          setMinimumQty("");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMinimumConfigured(false);
+          setMinimumQty("");
+        }
+      });
+    return () => { cancelled = true; };
+  }, [itemId, branchId, warehouseId]);
 
   const loadActivity = useCallback(async () => {
     if (!itemId) return;
@@ -430,6 +468,116 @@ export default function StockSaatIniDetailDrawer({
             </div>
           </section>
 
+          <section className="ssi-item-detail-section" data-testid="ssi-detail-minimum">
+            <h3>Batas Stok Minimum</h3>
+            {!warehouseId ? (
+              <p className="muted small" data-testid="ssi-minimum-need-warehouse">
+                Pilih satu gudang di filter Stock Saat Ini untuk mengatur minimum per barang × cabang × gudang.
+              </p>
+            ) : (
+              <div className="ssi-minimum-form" data-testid="ssi-minimum-form">
+                <p className="muted small">
+                  Kosong = belum diatur. 0 = batas minimum sah. Hanya mengubah pengaturan; tidak memutasi stok.
+                </p>
+                <div className="ssi-minimum-row">
+                  <label>
+                    Batas minimum ({item.base_unit || "PCS"})
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      className="so-line-input"
+                      value={minimumQty}
+                      disabled={!canManageMinimum || minimumBusy}
+                      placeholder="Belum diatur"
+                      data-testid="ssi-minimum-input"
+                      onChange={(e) => setMinimumQty(e.target.value)}
+                    />
+                  </label>
+                  {canManageMinimum ? (
+                    <div className="ssi-minimum-actions">
+                      <button
+                        type="button"
+                        className="stock-btn-outline sm"
+                        disabled={minimumBusy}
+                        data-testid="ssi-minimum-save"
+                        onClick={async () => {
+                          setMinimumBusy(true);
+                          setMinimumErr("");
+                          setMinimumMsg("");
+                          try {
+                            const res = await api.upsertStockMinimum({
+                              master_item_id: itemId,
+                              branch_id: branchId,
+                              warehouse_id: warehouseId,
+                              minimum_qty: minimumQty,
+                              unit: item.base_unit || "PCS",
+                            });
+                            const configured = Boolean(res?.minimum?.configured);
+                            setMinimumConfigured(configured);
+                            setMinimumQty(
+                              configured
+                                ? (res.minimum.minimum_qty === 0 ? "0" : String(res.minimum.minimum_qty ?? ""))
+                                : "",
+                            );
+                            setMinimumMsg(configured ? "Minimum disimpan." : "Minimum dikosongkan.");
+                            onMinimumSaved?.(res?.minimum);
+                          } catch (ex) {
+                            const det = ex.response?.data?.detail;
+                            setMinimumErr(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal menyimpan"));
+                          } finally {
+                            setMinimumBusy(false);
+                          }
+                        }}
+                      >
+                        Simpan
+                      </button>
+                      <button
+                        type="button"
+                        className="stock-btn-outline sm"
+                        disabled={minimumBusy || !minimumConfigured}
+                        data-testid="ssi-minimum-clear"
+                        onClick={async () => {
+                          setMinimumBusy(true);
+                          setMinimumErr("");
+                          setMinimumMsg("");
+                          try {
+                            await api.upsertStockMinimum({
+                              master_item_id: itemId,
+                              branch_id: branchId,
+                              warehouse_id: warehouseId,
+                              clear: true,
+                              unit: item.base_unit || "PCS",
+                            });
+                            setMinimumConfigured(false);
+                            setMinimumQty("");
+                            setMinimumMsg("Minimum dikosongkan.");
+                            onMinimumSaved?.(null);
+                          } catch (ex) {
+                            const det = ex.response?.data?.detail;
+                            setMinimumErr(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || "Gagal mengosongkan"));
+                          } finally {
+                            setMinimumBusy(false);
+                          }
+                        }}
+                      >
+                        Kosongkan
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="muted small" data-testid="ssi-minimum-readonly">
+                      {minimumConfigured
+                        ? `Minimum terpasang: ${minimumQty}`
+                        : "Minimum belum diatur. Izin Atur Stok Minimum diperlukan untuk mengubah."}
+                    </p>
+                  )}
+                </div>
+                {minimumMsg ? <p className="muted small" data-testid="ssi-minimum-msg">{minimumMsg}</p> : null}
+                {minimumErr ? <p className="stock-err small" data-testid="ssi-minimum-err">{minimumErr}</p> : null}
+              </div>
+            )}
+          </section>
+
           <section className="ssi-item-detail-section" data-testid="ssi-detail-warehouses">
             <h3>Rincian gudang</h3>
             {whBalances.length === 0 ? (
@@ -441,6 +589,7 @@ export default function StockSaatIniDetailDrawer({
                     <tr>
                       <th>Gudang</th>
                       <th className="num">Stock</th>
+                      <th className="num">Stock Dapat Dijual</th>
                       <th>Status</th>
                     </tr>
                   </thead>
@@ -461,6 +610,22 @@ export default function StockSaatIniDetailDrawer({
                               ? (wb.physical_qty ?? 0)
                               : 0,
                           )}
+                        </td>
+                        <td
+                          className={`num mono${Number(wb.stock_dapat_dijual) < 0 ? " stock-book-negative" : ""}`}
+                          data-testid={`ssi-detail-wh-sellable-${wb.warehouse_id}`}
+                          title={
+                            wb.stock_dapat_dijual_status === "INCOMPLETE"
+                              || wb.qty_polos_note
+                              ? (wb.stock_dapat_dijual_provisional
+                                ? "Provisional — alokasi belum lengkap"
+                                : (wb.qty_polos_note || "INCOMPLETE"))
+                              : undefined
+                          }
+                        >
+                          {wb.stock_dapat_dijual == null
+                            ? "—"
+                            : fmtQty(wb.stock_dapat_dijual)}
                         </td>
                         <td className="small">
                           {(wb.balance_present || wb.operational_qty_proven || wb.no_relevant_activity)

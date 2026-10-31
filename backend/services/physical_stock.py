@@ -3936,6 +3936,8 @@ async def _r2_attributed_delivery_rows(
             "id": 1,
             "master_item_id": 1,
             "qty_delta": 1,
+            "warehouse_id": 1,
+            "branch_id": 1,
             "metadata": 1,
         },
     ).to_list(20000)
@@ -3969,6 +3971,9 @@ async def _r2_attributed_delivery_rows(
             "master_item_id": mid,
             "qty": abs(delta),
         }
+        wid = str(row.get("warehouse_id") or meta.get("warehouse_id") or "").strip()
+        if wid:
+            entry["warehouse_id"] = wid
         lid = str(meta.get("line_id") or "").strip()
         if lid:
             entry["line_id"] = lid
@@ -4576,6 +4581,17 @@ async def list_physical_stock_catalog(
         active_lines=active_commit_lines,
         attributed_deliveries=attributed_deliveries,
     )
+    from services.stock_sellable import collect_allocation_commitment
+
+    allocation_commit = collect_allocation_commitment(
+        orders,
+        attributed_deliveries,
+        exclude_master_ids=service_master_ids,
+    )
+    remaining_alloc_by_master_wh = allocation_commit.get("remaining_by_master_warehouse") or {}
+    unallocated_open_by_master = allocation_commit.get("unallocated_open_by_master") or {}
+    incomplete_allocation_masters = allocation_commit.get("incomplete_masters") or set()
+    allocation_warnings_by_master = allocation_commit.get("warnings_by_master") or {}
     blank_pack = collect_blank_open_commitment_by_master(
         orders,
         owners,
@@ -4679,8 +4695,48 @@ async def list_physical_stock_catalog(
             })
         # G1: prove no relevant activity before treating missing balances as
         # operational 0. Activity without balance stays Belum / UNVERIFIED.
-        open_commit = _qty_num(commitment_by_master.get(str(mid) or mid, 0.0))
         mid_key = str(mid) or mid
+        branch_open_commit = _qty_num(commitment_by_master.get(str(mid) or mid, 0.0))
+        wh_remaining_map = remaining_alloc_by_master_wh.get(mid_key) or remaining_alloc_by_master_wh.get(str(mid) or mid) or {}
+        allocation_incomplete = mid_key in incomplete_allocation_masters or str(mid) in incomplete_allocation_masters
+        unallocated_open = _qty_num(
+            unallocated_open_by_master.get(mid_key, unallocated_open_by_master.get(str(mid) or mid, 0.0))
+        )
+        if selected_warehouse:
+            # Per-warehouse ATP: book(W) − remaining allocation on W only.
+            # Never subtract full branch commitment from one warehouse.
+            open_commit = _qty_num(
+                wh_remaining_map.get(str(selected_warehouse.get("id") or ""), 0.0)
+            )
+        else:
+            # Branch aggregate keeps full open SO (includes unallocated demand).
+            open_commit = branch_open_commit
+        # Enrich nested warehouse rows with allocation-based sellable (not branch copy).
+        from services.stock_sellable import stock_dapat_dijual_warehouse as _atp_wh
+        for wb in warehouse_balances:
+            wid = str(wb.get("warehouse_id") or "")
+            rem = _qty_num(wh_remaining_map.get(wid, 0.0))
+            wb["remaining_allocation"] = rem
+            if wb.get("physical_qty") is None and not wb.get("balance_present"):
+                wb["stock_dapat_dijual"] = None
+                wb["stock_dapat_dijual_status"] = "INCOMPLETE"
+                wb["qty_polos"] = None
+                wb["qty_polos_note"] = "Belum tersedia per gudang"
+                wb["sisa_belum_cetak"] = None
+                wb["sisa_belum_cetak_note"] = "Belum tersedia per gudang"
+            else:
+                slot = _atp_wh(
+                    stock_book=wb.get("physical_qty"),
+                    remaining_allocation=rem,
+                    incomplete=allocation_incomplete,
+                )
+                wb["stock_dapat_dijual"] = slot.get("qty")
+                wb["stock_dapat_dijual_status"] = slot.get("status")
+                wb["stock_dapat_dijual_provisional"] = bool(slot.get("provisional"))
+                wb["qty_polos"] = None
+                wb["qty_polos_note"] = "Belum tersedia per gudang"
+                wb["sisa_belum_cetak"] = None
+                wb["sisa_belum_cetak_note"] = "Belum tersedia per gudang"
         balance_present_any = any(
             bool(wb.get("balance_present")) for wb in warehouse_balances
         )
@@ -4777,10 +4833,19 @@ async def list_physical_stock_catalog(
             "warehouse_balances": warehouse_balances,
             "no_relevant_activity": bool(proven_no_activity),
             "operational_qty_proven": bool(proven_no_activity),
-            # Demand/availability is branch-level — never fabricate per-warehouse
-            # allocation of orders across gudang.
+            # Branch open SO includes unallocated demand. Warehouse ATP uses
+            # remaining stock_allocations only (see stock_sellable).
             "demand_scope": "BRANCH",
-            "availability_scope": "BRANCH",
+            "availability_scope": "WAREHOUSE_ALLOCATION" if selected_warehouse else "BRANCH",
+            "unallocated_open_commitment": unallocated_open,
+            "allocation_incomplete": bool(allocation_incomplete),
+            "allocation_warning_codes": list(
+                allocation_warnings_by_master.get(mid_key)
+                or allocation_warnings_by_master.get(str(mid) or mid)
+                or []
+            ),
+            "remaining_allocation": open_commit if selected_warehouse else None,
+            "branch_open_so_commitment": branch_open_commit,
         }
         # Owner Excel SSI (PCS): Saldo Awal, Pembelian, Stock, Stock Dapat Dijual,
         # Qty Tercetak / Polos / Tercetak Belum Kirim / Cetak Sudah Dikirim.
@@ -4882,26 +4947,39 @@ async def list_physical_stock_catalog(
         row["print_delivery_provenance"] = print_prov or (
             "verified_zero" if print_proven else ""
         )
+        if allocation_incomplete:
+            row["qty_siap_jual_status"] = "INCOMPLETE"
+            row["qty_siap_jual_reason"] = "UNALLOCATED_BRANCH_DEMAND"
+            note = (
+                "Alokasi gudang belum lengkap — Stock Dapat Dijual gudang bersifat "
+                "provisional; demand belum dialokasi tetap dihitung pada agregat cabang."
+            )
+            row["qty_siap_jual_note"] = note
+            if unallocated_open > 0:
+                row["unallocated_open_commitment_note"] = (
+                    f"Demand belum dialokasi: {unallocated_open:g}"
+                )
         if selected_warehouse:
             row["warehouse_id"] = str(selected_warehouse.get("id") or "")
             row["warehouse_code"] = selected_warehouse.get("code") or ""
             row["warehouse_name"] = selected_warehouse.get("name") or ""
             row["physical_qty_scope"] = "WAREHOUSE"
-            row["availability_scope"] = "BRANCH_DEMAND_VS_WAREHOUSE_BOOK"
+            row["availability_scope"] = "WAREHOUSE_ALLOCATION"
             row["demand_scope_note"] = (
-                "Qty Pesanan / Belum Terkirim adalah lingkup cabang; "
-                "bukan alokasi per gudang."
+                "Stock Dapat Dijual gudang = stok buku gudang − sisa alokasi aktif "
+                "gudang ini. Demand belum dialokasi tidak dibagi ke gudang."
             )
-            scope_note = (
-                "Qty Tersedia memakai permintaan cabang terhadap saldo buku gudang ini "
-                "— bukan ketersediaan yang dialokasikan per gudang."
-            )
-            if row.get("qty_tersedia_note"):
-                row["qty_tersedia_note"] = (
-                    f"{row['qty_tersedia_note']} {scope_note}"
-                ).strip()
-            else:
-                row["qty_tersedia_note"] = scope_note
+            if allocation_incomplete:
+                scope_note = (
+                    "Alokasi gudang belum lengkap — jangan anggap angka gudang sebagai "
+                    "kesimpulan aman untuk seluruh cabang."
+                )
+                if row.get("qty_tersedia_note"):
+                    row["qty_tersedia_note"] = (
+                        f"{row['qty_tersedia_note']} {scope_note}"
+                    ).strip()
+                else:
+                    row["qty_tersedia_note"] = scope_note
         else:
             row["physical_qty_scope"] = "BRANCH"
         if not qty_tersedia_valid and baseline_status != BASELINE_RECONCILED:

@@ -683,7 +683,13 @@ async def return_pra_po(db, pra_po_id: str, payload: dict, user: dict, perms: se
         return public_view(updated)
 
 
-async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
+async def _materialize_sales_order(
+    db,
+    pra: dict,
+    user: dict,
+    *,
+    allocation_payload: Optional[dict] = None,
+) -> dict:
     """Create one operational orders document from a verified Pra PO."""
     from services.line_product_replacement import require_po_create_line_master
     from services.master_items import resolve_line_production_process
@@ -691,6 +697,11 @@ async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
     from services.physical_stock_engine import attach_order_stock_snapshot
     from services.stock_engine_v2 import validate_sales_order_availability
     from services.sales_user_mapping import attach_sales_ownership
+    from services.stock_allocation import (
+        attach_allocations_to_lines,
+        load_allowed_warehouses_for_branch,
+        summarize_order_allocation_warnings,
+    )
 
     # Local import of stage labels to avoid circular module load at import time.
     try:
@@ -845,6 +856,30 @@ async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
         "updated_at": now,
     }
 
+    # Admin may supply warehouse allocations at verify time. Empty/unbalanced
+    # never blocks materialize — warnings only (Owner policy).
+    alloc_payload = allocation_payload if isinstance(allocation_payload, dict) else {}
+    raw_by_line_id = {}
+    raw_by_index = None
+    if isinstance(alloc_payload.get("line_allocations"), dict):
+        raw_by_line_id = alloc_payload.get("line_allocations") or {}
+    elif isinstance(alloc_payload.get("line_items"), list):
+        raw_by_index = [
+            (li.get("stock_allocations") if isinstance(li, dict) else None)
+            for li in alloc_payload.get("line_items") or []
+        ]
+    branch_for_alloc = str(new_order.get("operational_branch_id") or new_order.get("branch_id") or "")
+    allowed_wh = await load_allowed_warehouses_for_branch(db, branch_for_alloc)
+    lines_with_alloc, allocation_warnings, _ = attach_allocations_to_lines(
+        new_order.get("line_items") or [],
+        branch_id=branch_for_alloc,
+        allowed_warehouses=allowed_wh,
+        raw_by_line_id=raw_by_line_id,
+        raw_by_index=raw_by_index,
+    )
+    new_order["line_items"] = lines_with_alloc
+    new_order["stock_allocation_summary"] = summarize_order_allocation_warnings(lines_with_alloc)
+
     await validate_sales_order_availability(db, new_order.get("line_items") or [])
     await attach_order_stock_snapshot(db, new_order)
     await attach_sales_ownership(db, new_order)
@@ -860,6 +895,8 @@ async def _materialize_sales_order(db, pra: dict, user: dict) -> dict:
         new_order["po_number"] = await _next_po_number(db)
         await db.orders.insert_one(dict(new_order))
     new_order.pop("_id", None)
+    # Transient (not in Mongo): consumed by verify_pra_po response.
+    new_order["_allocation_warnings_out"] = list(allocation_warnings)
     return new_order
 
 
@@ -1018,7 +1055,14 @@ async def _link_existing_order_if_any(db, pra: dict, user: dict) -> Optional[dic
     return {"pra_po": public_view(updated or pra), "order": existing, "idempotent": True}
 
 
-async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
+async def verify_pra_po(
+    db,
+    pra_po_id: str,
+    user: dict,
+    perms: set,
+    *,
+    allocation_payload: Optional[dict] = None,
+) -> dict:
     if not can_verify(perms):
         raise HTTPException(403, "Tidak berwenang menyetujui Pra PO")
     async with get_named_lock(f"pra_po:{pra_po_id}"):
@@ -1079,7 +1123,9 @@ async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
                     {"$set": {"customer_id": resolved_id, "updated_at": now_iso()}},
                 )
                 claimed = {**claimed, "customer_id": resolved_id}
-            order = await _materialize_sales_order(db, claimed, user)
+            order = await _materialize_sales_order(
+                db, claimed, user, allocation_payload=allocation_payload,
+            )
         except DuplicateKeyError:
             # Concurrent insert hit unique pra_po_id — adopt the winner's SO.
             recovered = await _link_existing_order_if_any(db, claimed, user)
@@ -1188,7 +1234,25 @@ async def verify_pra_po(db, pra_po_id: str, user: dict, perms: set) -> dict:
             await emit_sales_order_verified_to_creator(db, order=order)
         except Exception:
             logger.exception("sales_order_verified notification failed")
-        return {"pra_po": public_view(updated), "order": order, "idempotent": False}
+        allocation_summary = (order or {}).get("stock_allocation_summary") or {}
+        allocation_warnings = []
+        if isinstance(order, dict):
+            allocation_warnings = list(order.pop("_allocation_warnings_out", None) or [])
+        warnings = list(allocation_warnings)
+        if allocation_summary.get("message"):
+            warnings.append({
+                "code": "ALLOCATION_INCOMPLETE",
+                "message": allocation_summary["message"],
+                "incomplete_line_count": allocation_summary.get("incomplete_line_count"),
+            })
+        return {
+            "pra_po": public_view(updated),
+            "order": order,
+            "idempotent": False,
+            "warnings": warnings,
+            "allocation_warnings": allocation_warnings,
+            "stock_allocation_summary": allocation_summary,
+        }
 
 
 async def list_history(db, pra_po_id: str, user: dict, perms: set) -> List[dict]:

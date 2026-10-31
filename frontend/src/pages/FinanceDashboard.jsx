@@ -286,6 +286,12 @@ export default function FinanceDashboard() {
           catch (error) { return { cash_available: failedModel(error) }; }
         });
       }
+      if (widget.widget_id === "min_stock") {
+        remember(async () => {
+          try { return { min_stock: await api.widgetMinStock({ page: 1, limit: 50 }) }; }
+          catch (error) { return { min_stock: failedModel(error) }; }
+        });
+      }
       if (widget.widget_id === "recon") {
         remember(async () => {
           try {
