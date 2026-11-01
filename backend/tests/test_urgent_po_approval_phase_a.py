@@ -84,6 +84,8 @@ async def _seed_order(db, *, priority="normal", cancelled=False):
 
 
 def test_permissions_catalog_and_defaults():
+    leadership = {"direktur_utama", "holding_team"}
+    leadership_defaults = {"urgent.review", "urgent.approve"}
     for key in (
         "urgent.request",
         "urgent.review",
@@ -93,7 +95,10 @@ def test_permissions_catalog_and_defaults():
     ):
         assert key in OPT_IN_ONLY_PERMISSIONS
         for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
-            assert key not in perms, role
+            if key in leadership_defaults and role in leadership:
+                assert key in perms, role
+            else:
+                assert key not in perms, role
     assert "urgent.approve" in DIRECTOR_MUST_OPT_IN_PERMISSIONS
     assert "urgent.email_notify" in DIRECTOR_MUST_OPT_IN_PERMISSIONS
     full = director_full_permission_set()
@@ -116,8 +121,9 @@ async def test_director_and_sa_need_explicit_approve(bind_db, monkeypatch):
     await server.db.users.insert_one({**dir_user, "status": "active", "is_super_admin": False})
     perms = await user_permissions(dir_user)
     assert "urgent.request" not in perms
-    assert "urgent.review" not in perms
-    assert "urgent.approve" not in perms
+    # Owner initial defaults: review/approve via builtin ROLE_DEFAULT merge.
+    assert "urgent.review" in perms
+    assert "urgent.approve" in perms
     assert "urgent.notify" not in perms
     assert "urgent.email_notify" not in perms
 
