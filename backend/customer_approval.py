@@ -851,6 +851,8 @@ def build_router(deps):
                 order["design_approved_by"] = None
                 order["design_approved_by_name"] = None
                 order["design_approved_at"] = None
+                from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+                invalidate_delivery_sla_stamp(order, now=now_str)
             order.setdefault("design_approval_history", []).append({
                 "action": history_action,
                 "by_email": None,

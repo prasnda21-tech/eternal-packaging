@@ -103,10 +103,11 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
       <header className="panel-head">
         <h3><Calendar size={14}/> Deadline Pengiriman</h3>
         <span className={`pill sm dd-source-${fact?.source || source}`} data-testid="dd-source-badge">
-          {fact?.source === "jadwal_pengiriman" ? "Jadwal Pengiriman"
-            : fact?.source === "otomatis" ? "Otomatis"
+          {fact?.source === "urgent_manual" || fact?.source === "jadwal_pengiriman" ? "Jadwal Pengiriman"
+            : fact?.source === "automatic" || fact?.source === "otomatis" ? "Otomatis"
             : fact?.source === "manual" ? "Manual"
-            : fact?.source === "belum_dijadwalkan" ? "Belum Dijadwalkan"
+            : fact?.display_state === "belum_dijadwalkan" || fact?.source === "belum_dijadwalkan" ? "Belum Dijadwalkan"
+            : fact?.display_state === "menunggu_approval" || fact?.source === "non_final" ? "Menunggu Approval"
             : fact?.contract === "legacy_working_days" || fact?.contract === "legacy_calendar"
               || fact?.source === "legacy" ? "Otomatis (Legacy · Hari Kerja)"
             : source === "manual" ? "Manual"
@@ -129,14 +130,17 @@ export default function DeliveryDeadlinePanel({ order, canEdit, onUpdated }) {
       )}
 
       <div className="row" style={{ display: "flex", flexWrap: "wrap", gap: "8px 20px", fontSize: 13 }}>
-        <div><span className="muted small">Effective</span><br/><strong data-testid="dd-effective">{fact?.date ? fmtDateKey(fact.date) : fmt(effective)}</strong></div>
+        <div><span className="muted small">Effective</span><br/><strong data-testid="dd-effective">{fact?.date ? fmtDateKey(fact.date) : (fact?.final === false ? (fact?.display_state === "belum_dijadwalkan" ? "Belum Dijadwalkan" : "Menunggu Approval") : fmt(effective))}</strong></div>
         {source === "manual" && <div><span className="muted small">Manual oleh</span><br/>{manualBy || "-"}</div>}
-        {fact?.contract === "sla_v2" && fact?.source === "otomatis" && <div><span className="muted small">Formula</span><br/>{order?.delivery_sla_v2?.working_days || 3} hari kerja setelah kedua approval</div>}
+        {fact?.contract === "sla_v2" && (fact?.source === "automatic" || fact?.source === "otomatis") && <div><span className="muted small">Formula</span><br/>{order?.delivery_sla_v2?.working_days || 3} hari kerja setelah kedua approval</div>}
         {(fact?.contract === "legacy_working_days" || fact?.contract === "legacy_calendar"
-          || (source === "automatic" && fact?.source === "legacy")) && lead && (
+          || (source === "automatic" && (fact?.source === "legacy" || fact?.source === "automatic"))) && lead && (
           <div><span className="muted small">Formula</span><br/>Approval terakhir + {lead} hari kerja</div>
         )}
         {calc && source === "manual" && <div><span className="muted small">Otomatis (ref)</span><br/>{fmt(calc)}</div>}
+        {fact?.jadwal_ulang && (
+          <div data-testid="dd-jadwal-ulang"><span className="muted small">Jadwal ulang</span><br/>{fmtDateKey(fact.jadwal_ulang)}</div>
+        )}
       </div>
 
       {isDelivered && (

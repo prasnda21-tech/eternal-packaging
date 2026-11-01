@@ -186,11 +186,11 @@ def _today_key(today: Any) -> str:
 
 
 def _public_sla(fact: Dict[str, Any]) -> Dict[str, Any]:
-    """Public read contract. Never invents dates for non-Legacy paths.
+    """Public estimation contract. Never invents dates for non-Legacy paths.
 
-    For ``legacy_working_days`` only, exposes a read-only calendar→working
-    compare so UI can show a soft notice when the estimate shifted. This is
-    not persisted and is never applied to manual, urgent, or locked SLA V2.
+    ``source`` is one of: automatic | urgent_manual | non_final.
+    Operational Jadwal Ulang (when distinct) is exposed as ``jadwal_ulang`` only —
+    it never replaces Normal automatic estimation.
     """
     out = {
         "date": fact.get("date"),
@@ -198,7 +198,14 @@ def _public_sla(fact: Dict[str, Any]) -> Dict[str, Any]:
         "state": fact.get("state"),
         "contract": fact.get("contract"),
         "countable": bool(fact.get("countable")),
+        "final": bool(fact.get("final")),
+        "display_state": fact.get("display_state") or (
+            "final" if fact.get("final") else "menunggu_approval"
+        ),
     }
+    jadwal = parse_calendar_date(fact.get("jadwal_ulang"))
+    if jadwal:
+        out["jadwal_ulang"] = jadwal
     if fact.get("contract") != "legacy_working_days":
         return out
     calendar = parse_calendar_date(fact.get("legacy_calendar_date"))
@@ -213,6 +220,89 @@ def _public_sla(fact: Dict[str, Any]) -> Dict[str, Any]:
     else:
         out["estimate_adjusted"] = False
     return out
+
+
+def stamp_anchor_matches(stamp: Optional[dict], latest: datetime) -> bool:
+    """True when locked stamp belongs to the current dual-gate anchor."""
+    if not isinstance(stamp, dict):
+        return False
+    if stamp.get("invalidated"):
+        return False
+    prev = _parse_dt(stamp.get("anchor_at"))
+    if prev is None:
+        return False
+    return prev.astimezone(timezone.utc) == latest.astimezone(timezone.utc)
+
+
+def invalidate_delivery_sla_stamp(order: dict, *, now: Optional[str] = None) -> bool:
+    """Mark locked automatic stamp non-final after a gate revoke/reject.
+
+    Preserves stamp fields for audit; read path ignores invalidated stamps.
+    """
+    stamp = order.get("delivery_sla_v2")
+    if not isinstance(stamp, dict) or stamp.get("invalidated"):
+        return False
+    updated = dict(stamp)
+    updated["invalidated"] = True
+    updated["invalidated_at"] = now or datetime.now(timezone.utc).isoformat()
+    order["delivery_sla_v2"] = updated
+    return True
+
+
+def _usable_stamp_date(stamp: Optional[dict], latest: Optional[datetime]) -> Optional[str]:
+    """Return stamped automatic_date only when gates are complete and stamp is live."""
+    if latest is None or not isinstance(stamp, dict):
+        return None
+    if stamp.get("invalidated"):
+        return None
+    return parse_calendar_date(stamp.get("automatic_date"))
+
+
+def _normal_estimasi_fact(
+    order: dict,
+    days: int,
+    holidays: Optional[Any],
+    stamp: Optional[dict],
+    working: Optional[str],
+) -> Dict[str, Any]:
+    """Normal / non-urgent customer estimation — automatic only; never manual legacy."""
+    latest = latest_required_approval_at(order)
+    if latest is None:
+        return {
+            "date": None,
+            "source": "non_final",
+            "contract": "incomplete",
+            "countable": False,
+            "final": False,
+            "display_state": "menunggu_approval",
+        }
+    stamp_date = _usable_stamp_date(stamp, latest)
+    if stamp_date:
+        return {
+            "date": stamp_date,
+            "source": "automatic",
+            "contract": "sla_v2",
+            "countable": True,
+            "final": True,
+            "display_state": "final",
+        }
+    if working:
+        return {
+            "date": working,
+            "source": "automatic",
+            "contract": "legacy_working_days",
+            "countable": False,
+            "final": True,
+            "display_state": "final",
+        }
+    return {
+        "date": None,
+        "source": "non_final",
+        "contract": "incomplete",
+        "countable": False,
+        "final": False,
+        "display_state": "menunggu_approval",
+    }
 
 
 def classify_delivery_deadline_setting(doc: Optional[dict]) -> Dict[str, Any]:
@@ -274,14 +364,14 @@ def delivery_sla_effective(
     today: Any = None,
     holidays: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """One read contract for the customer delivery date.
+    """Customer estimation contract (not operational Jadwal Pengiriman).
 
-    Urgent uses only the stored Jadwal Pengiriman date.
-    A locked ``delivery_sla_v2.automatic_date`` wins and is not recomputed when
-    holidays or settings change.
-    Unstamped automatic orders use working days (``legacy_working_days``),
-    ``countable=false``. ``lead_time_days`` is the official ``sla_working_days``.
-    This function never writes the order.
+    Normal: automatic from both Design+Payment gates + working-day SLA only.
+    Manual/reschedule on Normal never replaces estimation; when distinct it is
+    exposed as ``jadwal_ulang``.
+    Urgent (priority=urgent, i.e. approved/legacy urgent): manual date only.
+    Stale ``delivery_sla_v2`` stamps (gates incomplete or anchor mismatch) are
+    not treated as final. This function never writes the order.
     """
     from quantity_rules import is_fully_delivered
 
@@ -291,30 +381,29 @@ def delivery_sla_effective(
     manual = manual_tanggal_pengiriman(order)
     urgent = str(order.get("priority") or "").lower() == "urgent"
     stamp = order.get("delivery_sla_v2") if isinstance(order.get("delivery_sla_v2"), dict) else None
-    stamp_date = parse_calendar_date((stamp or {}).get("automatic_date"))
     if urgent:
         if manual:
-            fact = {"date": manual, "source": "jadwal_pengiriman", "contract": "urgent", "countable": True}
+            fact = {
+                "date": manual,
+                "source": "urgent_manual",
+                "contract": "urgent",
+                "countable": True,
+                "final": True,
+                "display_state": "final",
+            }
         else:
-            fact = {"date": None, "source": "belum_dijadwalkan", "contract": "urgent", "countable": False}
-    elif manual:
-        fact = {
-            "date": manual,
-            "source": "manual",
-            "contract": "sla_v2" if stamp_date else "manual",
-            "countable": True,
-        }
-    elif stamp_date:
-        fact = {"date": stamp_date, "source": "otomatis", "contract": "sla_v2", "countable": True}
-    elif working:
-        fact = {
-            "date": working,
-            "source": "legacy",
-            "contract": "legacy_working_days",
-            "countable": False,
-        }
+            fact = {
+                "date": None,
+                "source": "non_final",
+                "contract": "urgent",
+                "countable": False,
+                "final": False,
+                "display_state": "belum_dijadwalkan",
+            }
     else:
-        fact = {"date": None, "source": "legacy", "contract": "incomplete", "countable": False}
+        fact = _normal_estimasi_fact(order, days, holidays, stamp, working)
+        if manual and manual != fact.get("date"):
+            fact["jadwal_ulang"] = manual
     # Automatic candidate for mirrors: working-day estimate (not calendar days).
     fact["calendar_date"] = working
     fact["legacy_calendar_date"] = calendar
@@ -323,8 +412,8 @@ def delivery_sla_effective(
         state = "buffer"
     elif is_fully_delivered(order):
         state = "delivered"
-    elif not fact["countable"] or not fact["date"]:
-        state = "unscheduled" if fact["source"] == "belum_dijadwalkan" else "legacy"
+    elif not fact.get("final") or not fact.get("date"):
+        state = "unscheduled" if fact.get("display_state") == "belum_dijadwalkan" else "legacy"
     elif _today_key(today) > fact["date"]:
         state = "overdue"
     else:
@@ -338,24 +427,27 @@ def resolve_tanggal_pengiriman(
     lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
     holidays: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Return authoritative Tanggal Pengiriman snapshot.
+    """Return operational Tanggal Pengiriman + customer estimation snapshot.
 
-    Keys:
-      tanggal_pengiriman — YYYY-MM-DD or None
-      source — manual | automatic | none (legacy readers and Rencana Kirim)
-      calculated — working-day automatic candidate (not used when manual/stamp wins)
-      lead_time_days — official sla_working_days used for the automatic candidate
-      is_manual — bool
-      delivery_sla_effective — shared read contract
+    ``tanggal_pengiriman`` keeps Jadwal/Rencana semantics: manual/reschedule wins
+    for Normal; Urgent uses manual only.
+    ``delivery_sla_effective`` is the customer estimation contract (Normal =
+    automatic only; Urgent = urgent_manual).
     """
     fact = delivery_sla_effective(order, lead_time_days, holidays=holidays)
-    if fact["source"] in ("manual", "jadwal_pengiriman"):
-        source, is_manual = "manual", True
-    elif fact["source"] == "otomatis" or fact["contract"] in ("legacy_calendar", "legacy_working_days"):
-        source, is_manual = "automatic", False
+    manual = manual_tanggal_pengiriman(order)
+    urgent = str(order.get("priority") or "").lower() == "urgent"
+    if urgent:
+        if manual:
+            source, is_manual, date_key = "manual", True, manual
+        else:
+            source, is_manual, date_key = "none", False, None
+    elif manual:
+        source, is_manual, date_key = "manual", True, manual
+    elif fact.get("final") and fact.get("date"):
+        source, is_manual, date_key = "automatic", False, fact["date"]
     else:
-        source, is_manual = "none", False
-    date_key = None if source == "none" else fact["date"]
+        source, is_manual, date_key = "none", False, None
     return {
         "tanggal_pengiriman": date_key,
         "source": source,

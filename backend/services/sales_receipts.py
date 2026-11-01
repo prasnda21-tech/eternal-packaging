@@ -127,6 +127,20 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def _stamp_delivery_sla_if_ready(db, order: dict) -> bool:
+    """Stamp Normal SLA when Design+Payment gates are both satisfied. Never posts finance."""
+    try:
+        from services.production_wave2 import holiday_dates, stamp_delivery_sla
+        from services.tanggal_pengiriman import classify_delivery_deadline_setting
+
+        days = await holiday_dates(db)
+        doc = await db.app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
+        working = classify_delivery_deadline_setting(doc)["sla_working_days"]
+        return stamp_delivery_sla(order, days, working_days=working, now=now_iso())
+    except Exception:
+        return False
+
+
 def derive_base_receipt_number(po_number: str) -> str:
     """Derives base receipt number from PO number while preserving main sequence."""
     pn = (po_number or "").strip()
@@ -832,6 +846,7 @@ async def create_sales_receipt(
                             }
                             order.setdefault("timeline", []).append(timeline_entry)
                             sync_workflow_stage(order)
+                            await _stamp_delivery_sla_if_ready(db, order)
 
                         await db.orders.replace_one({"id": order["id"]}, order)
 
@@ -991,10 +1006,13 @@ async def sync_order_payment_projections(db, po_id: str) -> None:
             }
             merged = {**order, **base_patch, **approve_set}
             sync_workflow_stage(merged)
+            await _stamp_delivery_sla_if_ready(db, merged)
             approve_set["current_stage"] = merged.get("current_stage")
             approve_set["status_label"] = merged.get("status_label")
             if "events" in merged:
                 approve_set["events"] = merged.get("events")
+            if merged.get("delivery_sla_v2") is not None:
+                approve_set["delivery_sla_v2"] = merged.get("delivery_sla_v2")
             await db.orders.update_one(
                 {
                     "id": order["id"],
@@ -1015,6 +1033,10 @@ async def sync_order_payment_projections(db, po_id: str) -> None:
             base_patch["payment_approved_by"] = None
             base_patch["payment_approved_by_name"] = None
             base_patch["payment_approved_at"] = None
+            from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+            working = {**order, **base_patch}
+            if invalidate_delivery_sla_stamp(working, now=now_iso()):
+                base_patch["delivery_sla_v2"] = working.get("delivery_sla_v2")
         await db.orders.update_one({"id": order["id"]}, {"$set": base_patch})
 
 

@@ -11,6 +11,7 @@ import {
   compactItemSummary,
   currentHeadline,
   documentTiles,
+  formatEstimasiPengiriman,
   formatItemQty,
   formatTrackingDate,
   hasApprovalCta,
@@ -166,7 +167,8 @@ export default function CustomerTrackingPage() {
   const ctaPath = approvalActionPath(approval);
   const tiles = documentTiles(data);
   const headline = currentHeadline(data?.workflow, approval);
-  const estimasi = formatTrackingDate(summary.deadline || summary.estimated_delivery);
+  const estimasiView = formatEstimasiPengiriman(summary.estimasi);
+  const estimasi = estimasiView.text;
 
   const copyPo = async () => {
     const value = data?.order_number;
@@ -324,7 +326,9 @@ export default function CustomerTrackingPage() {
                 </div>
                 <div className="tracking-fact-row" data-testid="tracking-deadline">
                   <span className="lbl">Estimasi</span>
-                  <strong>{estimasi || "—"}</strong>
+                  <strong data-testid="tracking-estimasi" data-estimasi-state={estimasiView.displayState}>
+                    {estimasi || "—"}
+                  </strong>
                 </div>
               </div>
             </section>
@@ -467,17 +471,18 @@ export default function CustomerTrackingPage() {
                   <dd>{itemLineLabel(item)} · {formatItemQty(item)}</dd>
                 </div>
               ))}
-              {(summary.deadline || summary.estimated_delivery) && (
-                <div>
-                  <dt>Estimasi selesai</dt>
-                  <dd>{formatTrackingDate(summary.deadline || summary.estimated_delivery)}</dd>
-                </div>
-              )}
-              {data.delivery_reschedule?.scheduled_date && (
+              <div>
+                <dt>Estimasi selesai</dt>
+                <dd data-testid="tracking-detail-estimasi">{estimasi || "—"}</dd>
+              </div>
+              {(summary.estimasi?.jadwal_ulang || data.delivery_reschedule?.scheduled_date) && (
                 <div data-testid="tracking-reschedule">
                   <dt>Pengiriman dijadwalkan ulang</dt>
                   <dd data-testid="tracking-reschedule-date">
-                    Tanggal: {formatTrackingDate(data.delivery_reschedule.scheduled_date) || "—"}
+                    Tanggal:{" "}
+                    {formatTrackingDate(
+                      summary.estimasi?.jadwal_ulang || data.delivery_reschedule?.scheduled_date
+                    ) || "—"}
                   </dd>
                 </div>
               )}
