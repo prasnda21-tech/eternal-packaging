@@ -1660,6 +1660,9 @@ a.spwa-po-card {
 }
 .spwa-hist-scroll {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: min(58dvh, calc(100dvh - 280px));
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   background: var(--spwa-surface);
   border: 1px solid var(--spwa-line);
@@ -1667,28 +1670,78 @@ a.spwa-po-card {
   max-width: 100%;
 }
 .spwa-hist-table {
-  width: 100%;
-  min-width: 820px;
-  border-collapse: collapse;
-  table-layout: fixed;
+  width: max-content;
+  min-width: 1180px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: auto;
   font-size: 11px;
 }
-.spwa-hist-table th {
+.spwa-hist-col-date { width: 120px; min-width: 110px; }
+.spwa-hist-col-customer { width: 180px; min-width: 160px; }
+.spwa-hist-col-po { width: 220px; min-width: 190px; }
+.spwa-hist-col-sj { width: 220px; min-width: 190px; }
+.spwa-hist-col-item { width: 260px; min-width: 220px; }
+.spwa-hist-col-qty { width: 110px; min-width: 100px; }
+.spwa-hist-col-status { width: 110px; min-width: 100px; }
+.spwa-hist-col-action { width: 68px; min-width: 60px; }
+.spwa-hist-table th,
+.spwa-hist-table td {
+  box-sizing: border-box;
+  padding: 8px;
+  vertical-align: top;
   text-align: left;
+  color: var(--spwa-ink);
+  background: var(--spwa-surface);
+  border-right: 1px solid var(--spwa-line);
+  border-bottom: 1px solid var(--spwa-line);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow: hidden;
+}
+.spwa-hist-table th:first-child,
+.spwa-hist-table td:first-child {
+  border-left: 1px solid var(--spwa-line);
+}
+.spwa-hist-table th {
   font-weight: 650;
   font-size: 9px;
   letter-spacing: 0.04em;
   color: var(--spwa-soft);
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--spwa-line);
   background: var(--spwa-muted-bg);
   text-transform: uppercase;
+  position: sticky;
+  z-index: 2;
 }
-.spwa-hist-table td {
-  padding: 8px;
-  vertical-align: top;
-  border-bottom: 1px solid var(--spwa-line);
-  color: var(--spwa-ink);
+.spwa-hist-table thead tr:first-child th {
+  border-top: 1px solid var(--spwa-line);
+  top: 0;
+  z-index: 3;
+}
+.spwa-hist-table thead tr.spwa-hist-desktop-filters th {
+  top: 30px;
+  z-index: 2;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+.spwa-hist-table td.mono,
+.spwa-hist-table .spwa-hist-cell-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+.spwa-hist-table .spwa-cust,
+.spwa-hist-table .spwa-po {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.spwa-hist-table td.spwa-hist-col-action {
+  text-align: center;
+  overflow: visible;
 }
 .spwa-hist-field {
   position: relative;
