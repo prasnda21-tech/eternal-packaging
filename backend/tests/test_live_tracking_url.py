@@ -316,7 +316,13 @@ async def test_alias_opens_same_order_and_old_token_still_works(isolated):
     assert by_alias.status_code == by_token.status_code == 200
     assert by_alias.json()["customer_name"] == by_token.json()["customer_name"] == "Frutavor"
     assert by_alias.json()["order_number"] == by_token.json()["order_number"] == "PO-2026-10-02-000012"
-    assert by_alias.json()["summary"]["deadline"] == "2026-10-02"
+    # Live Tracking uses summary.estimasi; legacy deadline must not surface.
+    for body_json in (by_alias.json(), by_token.json()):
+        summary = body_json["summary"]
+        assert "deadline" not in summary
+        assert "estimasi" in summary
+        assert summary["estimasi"]["final"] is False
+        assert summary["estimasi"]["display_state"] == "menunggu_approval"
     assert again.json()["code"] == alias
     assert again.json()["token"] == long_token
 
