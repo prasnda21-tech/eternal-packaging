@@ -34,16 +34,36 @@ jest.mock("../lib/auth", () => ({
 
 jest.mock("./SignaturePad", () => {
   const React = require("react");
+  // Controllable deferred restore (simulates delayed image.onload).
+  // When __deferSigRestore is true, "ready" waits until flushDeferredSigRestores().
+  if (!global.__sigRestorePending) global.__sigRestorePending = [];
+  if (typeof global.__deferSigRestore !== "boolean") global.__deferSigRestore = false;
+  global.flushDeferredSigRestores = () => {
+    const q = global.__sigRestorePending.splice(0, global.__sigRestorePending.length);
+    q.forEach((fn) => fn());
+  };
   return {
     __esModule: true,
     default: ({ onChange, value, onRestoreState }) => {
+      const restoreRef = React.useRef(onRestoreState);
+      restoreRef.current = onRestoreState;
       React.useEffect(() => {
+        let cancelled = false;
         if (value && String(value).startsWith("data:image/")) {
-          onRestoreState?.("ready");
+          restoreRef.current?.("restoring");
+          const complete = () => {
+            if (!cancelled) restoreRef.current?.("ready");
+          };
+          if (global.__deferSigRestore) {
+            global.__sigRestorePending.push(complete);
+          } else {
+            Promise.resolve().then(complete);
+          }
         } else {
-          onRestoreState?.(null);
+          restoreRef.current?.(null);
         }
-      }, [value, onRestoreState]);
+        return () => { cancelled = true; };
+      }, [value]);
       return (
         <div
           data-testid="signature-pad-mock"
@@ -232,6 +252,8 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    global.__deferSigRestore = false;
+    global.__sigRestorePending = [];
     URL.createObjectURL = jest.fn((blob) => `blob:mock-${blob?.size || 0}-${Math.random()}`);
     URL.revokeObjectURL = jest.fn();
     global.fetch = jest.fn(() => Promise.resolve({
@@ -242,6 +264,8 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
   });
 
   afterEach(() => {
+    global.__deferSigRestore = false;
+    global.__sigRestorePending = [];
     setSearch("");
   });
 
@@ -859,6 +883,91 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     await flush();
     expect(padValues(container)[0]).toBe("");
     expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+    unmount();
+  });
+
+  test("deferred restore (delayed onload): restoring does not satisfy confirm gate until ready", async () => {
+    global.__deferSigRestore = true;
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+        proof("p002a", "demo-multisj-photo-002"),
+        proof("p002b", "demo-multisj-photo-002"),
+      ],
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    typeRecipientName(container, "Nama A");
+    // Sign via onChange path — ready without restore.
+    global.__deferSigRestore = false;
+    signBothPads(container);
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    // Change value by leaving and returning — draft restore starts with deferred onload.
+    global.__deferSigRestore = true;
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    // Draft value is present but restore still pending → must NOT enable confirm.
+    expect(padValues(container)[0]).toMatch(/^data:image\//);
+    expect(padValues(container)[1]).toMatch(/^data:image\//);
+    expect(global.__sigRestorePending.length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="confirm-delivered-hint"]')?.textContent || "")
+      .toMatch(/Tanda tangan/i);
+
+    await act(async () => {
+      global.flushDeferredSigRestores();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    // Failed restore while deferred mid-cycle on sibling then back stays gated after fail.
+    global.__deferSigRestore = true;
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+    await act(async () => {
+      container.querySelectorAll('[data-testid="signature-pad-mock-fail-restore"]')[0]
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      // Drop pending ready callbacks for cancelled/failed pad — simulate onload abort.
+      global.__sigRestorePending = [];
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+
+    // Rapid SJ switch must not leave sibling restore enabling the wrong SJ.
+    global.__deferSigRestore = true;
+    typeRecipientName(container, "Nama A");
+    global.__deferSigRestore = false;
+    signBothPads(container);
+    await flush();
+    global.__deferSigRestore = true;
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    const pendingForB = global.__sigRestorePending.length;
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    // Completing stale B callbacks (if any) must not unlock A incorrectly mid-restore.
+    await act(async () => {
+      // Only complete current pending (A's restore).
+      global.flushDeferredSigRestores();
+    });
+    await flush();
+    expect(pendingForB).toBeGreaterThanOrEqual(0);
+    expect(container.querySelector('[data-testid="pengiriman-sj-select"]').value)
+      .toBe("demo-multisj-photo-001");
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
     unmount();
   });
 });

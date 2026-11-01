@@ -127,4 +127,59 @@ describe("SignaturePad draft restore", () => {
     expect(host.querySelector('[data-testid="signature-empty-hint"]')).toBeTruthy();
     unmount();
   });
+
+  test("delayed image.onload: reports restoring before ready; abort leaves failed/null safe", async () => {
+    const pending = [];
+    class DeferredImage {
+      set src(v) {
+        this._src = v;
+        pending.push(this);
+      }
+      get src() { return this._src; }
+      completeOk() { this.onload?.(); }
+      completeErr() { this.onerror?.(new Error("bad")); }
+    }
+    global.Image = DeferredImage;
+
+    const states = [];
+    const { host, rerender, unmount } = mount(
+      <SignaturePad
+        value={TINY_PNG}
+        onRestoreState={(s) => states.push(s)}
+      />
+    );
+    expect(states).toEqual(["restoring"]);
+    expect(host.querySelector('[data-testid="signature-pad"]').getAttribute("data-restore")).toBe("pending");
+    expect(host.querySelector('[data-testid="signature-empty-hint"]')).toBeTruthy();
+    expect(pending.length).toBe(1);
+
+    await act(async () => { pending[0].completeOk(); });
+    expect(states).toEqual(["restoring", "ready"]);
+    expect(host.querySelector('[data-testid="signature-pad"]').getAttribute("data-restore")).toBe("ready");
+
+    // Change value → new restoring; previous image completion must not apply after unmount/cancel.
+    const states2 = [];
+    const pendingBefore = pending.length;
+    rerender(
+      <SignaturePad
+        value={`${TINY_PNG}/*v2*/`}
+        onRestoreState={(s) => states2.push(s)}
+      />
+    );
+    expect(states2[0]).toBe("restoring");
+    expect(pending.length).toBeGreaterThan(pendingBefore);
+    // Abort by clearing value before onload.
+    rerender(
+      <SignaturePad
+        value={null}
+        onRestoreState={(s) => states2.push(s)}
+      />
+    );
+    const stale = pending[pending.length - 1];
+    await act(async () => { stale.completeOk(); });
+    // After cancel/clear, last reported state for empty value is null; stale ready ignored.
+    expect(states2[states2.length - 1]).toBe(null);
+    expect(host.querySelector('[data-testid="signature-empty-hint"]')).toBeTruthy();
+    unmount();
+  });
 });

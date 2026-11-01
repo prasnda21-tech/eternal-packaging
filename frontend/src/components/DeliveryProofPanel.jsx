@@ -273,13 +273,19 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       setRecipientSigReady(true);
       return;
     }
+    // "restoring" (and null/failed) must not leave a prior ready flag satisfying the gate
+    // while the canvas is blank or still painting a draft.
+    if (state === "restoring") {
+      setRecipientSigReady(false);
+      return;
+    }
     if (state === "failed") {
       setRecipientSigReady(false);
       setSignatureDataUrl(null);
       patchActiveDraft({ signatureDataUrl: null });
       return;
     }
-    if (state === null && !signatureDataUrl) setRecipientSigReady(false);
+    if (state === null) setRecipientSigReady(false);
   };
 
   const onDriverRestoreState = (state) => {
@@ -288,13 +294,17 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       setDriverSigReady(true);
       return;
     }
+    if (state === "restoring") {
+      setDriverSigReady(false);
+      return;
+    }
     if (state === "failed") {
       setDriverSigReady(false);
       setDriverSignatureDataUrl(null);
       patchActiveDraft({ driverSignatureDataUrl: null });
       return;
     }
-    if (state === null && !driverSignatureDataUrl) setDriverSigReady(false);
+    if (state === null) setDriverSigReady(false);
   };
 
   // Hydrate empty input only from the active SJ's saved POD — never a sibling.
