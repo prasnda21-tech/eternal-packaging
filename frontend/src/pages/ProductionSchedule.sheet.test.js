@@ -17,7 +17,10 @@ import { buildProductionScheduleHariIniPreviewDummyRows, shiftProductionDateKey 
 const mockHasPerm = jest.fn(() => true);
 
 jest.mock("react-router-dom", () => ({
-  Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  Link: ({ to, children, state, onClick, ...props }) => (
+    <a href={to} onClick={onClick} data-state={state ? "1" : undefined} {...props}>{children}</a>
+  ),
+  useLocation: () => ({ pathname: "/produksi", search: "" }),
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
@@ -147,6 +150,7 @@ describe("ProductionSchedule spreadsheet", () => {
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
     const headers = [...container.querySelectorAll('[data-testid="production-sheet-table"] thead .prod-th-label')].map((el) => el.textContent.trim());
     expect(headers).toEqual(DESKTOP_PRODUCTION_SCHEDULE_TABLE_COLS.map((c) => c.label));
@@ -561,6 +565,7 @@ describe("ProductionSchedule spreadsheet", () => {
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
     expect(container.querySelector('[data-testid="prod-row-PO-TODAY-DONE"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="prod-row-PO-TODAY-DONE-ACTIVE"]')).toBeFalsy();

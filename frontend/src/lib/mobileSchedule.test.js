@@ -36,16 +36,19 @@ describe("mobile production schedule canonical helpers", () => {
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
     expect(productionDashboardRequestParams(FILTER_DEFAULTS)).toEqual({
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
     expect(mobileProductionDashboardParams(FILTER_DEFAULTS)).toEqual({
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
   });
 

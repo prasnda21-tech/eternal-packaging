@@ -9,6 +9,11 @@ import {
 } from "./productionScheduleDisplayRows";
 import { isPrintableScheduleSplit, printableCompletedQty } from "./productionScheduleQty";
 
+/** Desktop default list scope: current WIB month + unfinished older work. */
+export const PRODUCTION_SCHEDULE_SCOPE_DEFAULT = "default";
+/** Explicit histori / semua — skips month+open default predicate. */
+export const PRODUCTION_SCHEDULE_SCOPE_ALL = "all";
+
 export const FILTER_DEFAULTS = {
   q: "",
   poFilter: "",
@@ -29,6 +34,12 @@ export const FILTER_DEFAULTS = {
   workDateTo: "",
   /** Desktop status tabs: all | unscheduled | scheduled | hold (E1). */
   scheduleStatusTab: "all",
+  /**
+   * Desktop schedule scope (independent of column date filters):
+   * - default: bulan berjalan + pekerjaan lama belum selesai
+   * - all: histori / semua (no month+open predicate)
+   */
+  scheduleScope: PRODUCTION_SCHEDULE_SCOPE_DEFAULT,
   sortBy: "deadline",
   includeCancelled: false,
   includeCompleted: true,
@@ -197,6 +208,93 @@ export function resolveProductionTodayKey(today) {
     return toDateKey(today) || productionTodayKey();
   }
   return productionTodayKey();
+}
+
+/** YYYY-MM from a YYYY-MM-DD key (WIB calendar month). */
+export function productionMonthKey(dateKey) {
+  const key = toDateKey(dateKey);
+  return key && key.length >= 7 ? key.slice(0, 7) : null;
+}
+
+export function normalizeProductionScheduleScope(value) {
+  return value === PRODUCTION_SCHEDULE_SCOPE_ALL
+    ? PRODUCTION_SCHEDULE_SCOPE_ALL
+    : PRODUCTION_SCHEDULE_SCOPE_DEFAULT;
+}
+
+/**
+ * Date/history controls that must not be silently clipped by default month scope.
+ * Hari Ini keeps its own workload predicate; rentang tanggal = explicit histori.
+ */
+export function productionScheduleHistoryOverrideActive(filters = {}) {
+  const f = { ...FILTER_DEFAULTS, ...filters };
+  if (f.workDateFilter === "hari_ini") return true;
+  if (f.workDateFrom || f.workDateTo) return true;
+  if (f.dateFrom || f.dateTo) return true;
+  return false;
+}
+
+/**
+ * Default desktop scope (work_date / work units only — not stage≥14 as 100%).
+ * - Current WIB month work_date → include (even 100%).
+ * - Prior-month unfinished qty → include.
+ * - Prior-month dates without measurable units → include (unknown ≠ 100%).
+ * - Prior-month all units proven finished → exclude.
+ * - Future-only schedules → exclude (findable via histori filters).
+ * - No work_date: aktif/hold include; selesai/cancelled exclude from scope
+ *   (cancelled still gated by includeCancelled elsewhere).
+ */
+export function rowMatchesDefaultProductionScheduleScope(row, today) {
+  if (!row) return false;
+  const todayKey = resolveProductionTodayKey(today);
+  const currentMonth = productionMonthKey(todayKey);
+  if (!currentMonth) return true;
+
+  const keys = workDateKeys(row);
+  const units = productionScheduleWorkUnits(row);
+  const months = keys.map(productionMonthKey).filter(Boolean);
+
+  if (months.some((m) => m === currentMonth)) return true;
+
+  const pastKeys = keys.filter((k) => {
+    const m = productionMonthKey(k);
+    return m && m < currentMonth;
+  });
+  const futureOnly = keys.length > 0 && pastKeys.length === 0
+    && months.every((m) => m > currentMonth);
+
+  if (pastKeys.length) {
+    const pastUnits = units.filter((u) => {
+      if (u?.cancelled) return false;
+      const m = productionMonthKey(u.workDate);
+      return m && m < currentMonth;
+    });
+    if (!pastUnits.length) return true;
+    if (pastUnits.some((u) => isScheduledWorkUnfinished(u))) return true;
+    // Cross-month: unfinished unit in a non-past bucket already handled by
+    // current-month keys; unfinished future alone does not keep past-done rows.
+    return false;
+  }
+
+  if (futureOnly) return false;
+
+  if (!keys.length) {
+    const status = statusOfRow(row);
+    if (status === "selesai" || status === "cancelled") return false;
+    return true;
+  }
+
+  // Any remaining unfinished unit (e.g. undated edge) keeps the PO visible.
+  return units.some((u) => !u?.cancelled && isScheduledWorkUnfinished(u));
+}
+
+export function shouldApplyDefaultProductionScheduleScope(filters = {}) {
+  const f = { ...FILTER_DEFAULTS, ...filters };
+  if (normalizeProductionScheduleScope(f.scheduleScope) === PRODUCTION_SCHEDULE_SCOPE_ALL) {
+    return false;
+  }
+  if (productionScheduleHistoryOverrideActive(f)) return false;
+  return true;
 }
 
 /** Visible Tgl Pengerjaan on a display/work row. Date-only strings stay calendar dates. */
@@ -426,6 +524,7 @@ export function applyProductionFilters(rows, filters = {}) {
   const f = { ...FILTER_DEFAULTS, ...filters };
   const q = String(f.q || "").trim().toLowerCase();
   const todayKey = resolveProductionTodayKey(f.today);
+  const applyDefaultScope = shouldApplyDefaultProductionScheduleScope(f);
 
   return (rows || []).filter((r) => {
     if (!f.includeCancelled && r.cancelled) return false;
@@ -435,6 +534,10 @@ export function applyProductionFilters(rows, filters = {}) {
       && !r.cancelled
       && (r.current_stage || 0) >= 14
     ) return false;
+
+    if (applyDefaultScope && !rowMatchesDefaultProductionScheduleScope(r, todayKey)) {
+      return false;
+    }
 
     if (f.statusFilter !== "all" && statusOfRow(r) !== f.statusFilter) return false;
     if (f.urgentOnly && !r.urgent) return false;
@@ -548,6 +651,7 @@ export function productionFiltersAreActive(filters = {}) {
     || f.urgentOnly
     || f.holdOnly
     || (f.scheduleStatusTab || "all") !== FILTER_DEFAULTS.scheduleStatusTab
+    || normalizeProductionScheduleScope(f.scheduleScope) !== PRODUCTION_SCHEDULE_SCOPE_DEFAULT
     || f.screenerFilter !== FILTER_DEFAULTS.screenerFilter
     || f.helperFilter !== FILTER_DEFAULTS.helperFilter
     || f.packingFilter !== FILTER_DEFAULTS.packingFilter
