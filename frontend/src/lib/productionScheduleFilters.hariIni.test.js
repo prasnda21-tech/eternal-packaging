@@ -2,6 +2,7 @@ import { wibDateKey } from "./suratJalan";
 import { buildProductionScheduleDisplayRows } from "./productionScheduleDisplayRows";
 import {
   FILTER_DEFAULTS,
+  PRODUCTION_SCHEDULE_SCOPE_ALL,
   applyProductionFilters,
   applyWorkDateFilterControl,
   applyWorkDateRangeControl,
@@ -303,7 +304,11 @@ describe("Hari Ini workload predicate", () => {
       po({ id: "c", po_number: "C", work_date: "2026-09-15", operators: [op({ name: "C", date: "2026-09-15", qty: 10, done: 0 })] }),
       po({ id: "d", po_number: "D", work_date: null, operators: [] }),
     ];
-    const all = applyProductionFilters(rows, FILTER_DEFAULTS);
+    const all = applyProductionFilters(rows, {
+      ...FILTER_DEFAULTS,
+      scheduleScope: PRODUCTION_SCHEDULE_SCOPE_ALL,
+      today: TODAY,
+    });
     expect(all.map((r) => r.po_number)).toEqual(["A", "B", "C", "D"]);
   });
 
@@ -589,10 +594,16 @@ describe("Hari Ini completion precedence over current_stage", () => {
       current_stage: 8,
       operators: [op({ name: "Budi", date: TODAY, qty: 1000, done: 100 })],
     });
-    expect(applyProductionFilters([unfinishedAtStage14, active], FILTER_DEFAULTS).map((r) => r.po_number))
+    expect(applyProductionFilters([unfinishedAtStage14, active], {
+      ...FILTER_DEFAULTS,
+      scheduleScope: PRODUCTION_SCHEDULE_SCOPE_ALL,
+      today: TODAY,
+    }).map((r) => r.po_number))
       .toEqual(["PO-1", "PO-ACTIVE"]);
     expect(applyProductionFilters([unfinishedAtStage14, active], {
       ...FILTER_DEFAULTS,
+      scheduleScope: PRODUCTION_SCHEDULE_SCOPE_ALL,
+      today: TODAY,
       includeCompleted: false,
     }).map((r) => r.po_number)).toEqual(["PO-ACTIVE"]);
     expect(hariIni([unfinishedAtStage14], { includeCompleted: false }).map((r) => r.po_number)).toEqual(["PO-1"]);

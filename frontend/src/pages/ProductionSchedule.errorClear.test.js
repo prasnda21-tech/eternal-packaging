@@ -11,6 +11,7 @@ const mockHasPerm = jest.fn(() => true);
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useLocation: () => ({ pathname: "/produksi", search: "" }),
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({

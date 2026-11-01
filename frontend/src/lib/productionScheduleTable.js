@@ -1,6 +1,17 @@
 /** Canonical Jadwal Produksi table columns — shared by desktop /produksi and mobile /m/schedule. */
 
-import { FILTER_DEFAULTS } from "./productionScheduleFilters";
+import {
+  FILTER_DEFAULTS,
+  productionTodayKey,
+  rowMatchesDefaultProductionScheduleScope,
+} from "./productionScheduleFilters";
+
+/** Safety caps for internal staged fetch (no UI pager). Not a completeness claim. */
+export const PRODUCTION_SCHEDULE_FETCH_MAX_PAGES = 100;
+export const PRODUCTION_SCHEDULE_FETCH_MAX_MS = 45_000;
+/** Light poll: head discovery + bounded id reconcile batches (no full staged replay). */
+export const PRODUCTION_SCHEDULE_RECONCILE_IDS_PER_REQUEST = 150;
+export const PRODUCTION_SCHEDULE_RECONCILE_MAX_REQUESTS = 4;
 
 /** Frozen inventory of every legitimate schedule column. Reorder allowed; deletion is not. */
 export const PRODUCTION_SCHEDULE_REQUIRED_COLUMN_IDS = [
@@ -121,11 +132,240 @@ export function desktopProductionScheduleGroupSpans(cols = DESKTOP_PRODUCTION_SC
 
 export function productionDashboardRequestParams(filters = {}) {
   const f = { ...FILTER_DEFAULTS, ...filters };
-  return {
+  const scope = f.scheduleScope === "all" ? "all" : "default";
+  const q = String(f.q || "").trim();
+  const workDateFrom = String(f.workDateFrom || "").trim();
+  const workDateTo = String(f.workDateTo || "").trim();
+  const dateFrom = String(f.dateFrom || "").trim();
+  const dateTo = String(f.dateTo || "").trim();
+  // Histori / date overrides need the catalog stream (not default-only).
+  // Plain text search stays on the active schedule_scope so default mode still
+  // returns bulan berjalan + unfinished, while Semua/riwayat can search history.
+  const historyOpen = Boolean(
+    f.workDateFilter === "hari_ini"
+    || workDateFrom
+    || workDateTo
+    || dateFrom
+    || dateTo
+  );
+  const params = {
     include_cancelled: Boolean(f.includeCancelled),
     include_completed: Boolean(f.includeCompleted) || f.workDateFilter === "hari_ini",
     // Additive backend path: same `_production_row` columns, no file-byte documents.
     view: "summary",
+    schedule_scope: historyOpen || scope === "all" ? "all" : "default",
+  };
+  if (q) params.q = q;
+  if (workDateFrom) params.work_date_from = workDateFrom;
+  if (workDateTo) params.work_date_to = workDateTo;
+  if (dateFrom) params.deadline_from = dateFrom;
+  if (dateTo) params.deadline_to = dateTo;
+  return params;
+}
+
+function summarizeDashboardPages(byId, last, baseParams, { pages, cursor, stoppedEarly, stoppedByTime }) {
+  const scopeComplete = Boolean(last?.scope_complete) && !stoppedEarly && !stoppedByTime;
+  const scanCapped = Boolean(last?.scan_capped) || stoppedEarly || stoppedByTime;
+  const completeness = scopeComplete && !scanCapped ? "complete" : "incomplete";
+  return {
+    rows: Array.from(byId.values()),
+    total: byId.size,
+    completeness,
+    read_limit: last?.read_limit,
+    matched_count: last?.matched_count,
+    candidate_count: last?.candidate_count,
+    schedule_scope: last?.schedule_scope || baseParams.schedule_scope,
+    scope_complete: scopeComplete,
+    next_cursor: (stoppedEarly || stoppedByTime) ? cursor : null,
+    pages_fetched: pages,
+    scan_capped: scanCapped,
+    stopped_by_time: Boolean(stoppedByTime),
+  };
+}
+
+/** Internal staged fetch (no UI pager). Stops on scope_complete or safety caps. */
+export async function fetchProductionDashboardPages(apiClient, baseParams = {}, options = {}) {
+  const maxPages = Number(options.maxPages) > 0
+    ? Number(options.maxPages)
+    : PRODUCTION_SCHEDULE_FETCH_MAX_PAGES;
+  const maxMs = Number(options.maxMs) > 0
+    ? Number(options.maxMs)
+    : PRODUCTION_SCHEDULE_FETCH_MAX_MS;
+  const started = Date.now();
+  const byId = new Map();
+  let cursor;
+  let pages = 0;
+  let last = null;
+  let stoppedByTime = false;
+  do {
+    if (pages > 0 && Date.now() - started >= maxMs) {
+      stoppedByTime = true;
+      break;
+    }
+    const params = { ...baseParams };
+    if (cursor) params.cursor = cursor;
+    delete params.refresh;
+    // eslint-disable-next-line no-await-in-loop
+    const payload = await apiClient.productionDashboard(params);
+    last = payload || {};
+    for (const row of last.rows || []) {
+      if (row?.id == null || row.id === "") continue;
+      byId.set(String(row.id), row);
+    }
+    pages += 1;
+    cursor = last.next_cursor || null;
+  } while (cursor && pages < maxPages);
+
+  const hitPageCap = Boolean(cursor) && pages >= maxPages && !stoppedByTime;
+  return summarizeDashboardPages(byId, last, baseParams, {
+    pages,
+    cursor,
+    stoppedEarly: hitPageCap || stoppedByTime,
+    stoppedByTime,
+  });
+}
+
+function chunkIds(ids, size) {
+  const out = [];
+  const n = Math.max(1, Number(size) || 1);
+  for (let i = 0; i < ids.length; i += n) out.push(ids.slice(i, i + n));
+  return out;
+}
+
+/**
+ * Light poll refresh:
+ * 1) head discovery page (new / reshuffled scope matches)
+ * 2) bounded id-batch reconcile for cached rows outside that head page
+ *
+ * Does not wipe unchanged cached rows on partial failure. Only drops ids listed
+ * in an explicit reconcile ``missing_ids`` contract for batches that succeeded.
+ */
+export async function fetchProductionDashboardRefresh(apiClient, baseParams = {}, options = {}) {
+  const prevRows = Array.isArray(options.prevRows) ? options.prevRows : [];
+  const today = options.today || productionTodayKey();
+  const scheduleScope = (baseParams.schedule_scope || "default") === "all" ? "all" : "default";
+  const perRequest = Number(options.reconcileIdsPerRequest) > 0
+    ? Number(options.reconcileIdsPerRequest)
+    : PRODUCTION_SCHEDULE_RECONCILE_IDS_PER_REQUEST;
+  const maxReconcileRequests = Number(options.reconcileMaxRequests) > 0
+    ? Number(options.reconcileMaxRequests)
+    : PRODUCTION_SCHEDULE_RECONCILE_MAX_REQUESTS;
+  const rotateOffset = Math.max(0, Number(options.reconcileOffset) || 0);
+
+  const byId = new Map();
+  for (const row of prevRows) {
+    if (row?.id == null || row.id === "") continue;
+    byId.set(String(row.id), row);
+  }
+
+  let head = {};
+  let pagesFetched = 0;
+  let headFailed = false;
+  let headErrorDetail = "";
+  try {
+    head = await apiClient.productionDashboard({
+      ...baseParams,
+      refresh: true,
+    }) || {};
+    pagesFetched += 1;
+    for (const row of head.rows || []) {
+      if (row?.id == null || row.id === "") continue;
+      byId.set(String(row.id), row);
+    }
+  } catch (error) {
+    headFailed = true;
+    headErrorDetail = error?.response?.data?.detail || error?.message || "Gagal memverifikasi ulang jadwal";
+    if (!byId.size) throw error;
+  }
+
+  const headIds = new Set((head.rows || []).map((row) => String(row.id)).filter(Boolean));
+  const cachedIds = Array.from(byId.keys()).filter((id) => !headIds.has(id)).sort();
+  const budget = perRequest * maxReconcileRequests;
+  const rotateStart = cachedIds.length ? (rotateOffset % cachedIds.length) : 0;
+  const windowIds = [];
+  for (let i = 0; i < cachedIds.length && windowIds.length < budget; i += 1) {
+    windowIds.push(cachedIds[(rotateStart + i) % cachedIds.length]);
+  }
+  const skippedIds = cachedIds.length > windowIds.length;
+  // If head discovery failed, skip reconcile this cycle — keep cache, mark stale.
+  const batches = headFailed
+    ? []
+    : chunkIds(windowIds, perRequest).slice(0, maxReconcileRequests);
+
+  let reconcileFailed = false;
+  let reconcileTruncated = false;
+  let reconcileErrorDetail = "";
+  const missingIds = [];
+  for (const batch of batches) {
+    if (!batch.length) continue;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const payload = await apiClient.productionDashboard({
+        ...baseParams,
+        ids: batch.join(","),
+      }) || {};
+      pagesFetched += 1;
+      if (payload.reconcile_truncated) reconcileTruncated = true;
+      // Contract: only drop ids explicitly reported missing for this batch.
+      if (Array.isArray(payload.missing_ids)) {
+        for (const oid of payload.missing_ids) {
+          const key = String(oid || "");
+          if (!key) continue;
+          missingIds.push(key);
+          byId.delete(key);
+        }
+      }
+      for (const row of payload.rows || []) {
+        if (row?.id == null || row.id === "") continue;
+        byId.set(String(row.id), row);
+      }
+    } catch (error) {
+      reconcileFailed = true;
+      reconcileErrorDetail = error?.response?.data?.detail || error?.message || "Gagal rekonsiliasi batch jadwal";
+      // Keep cached rows for this batch — do not wipe on partial failure.
+      break;
+    }
+  }
+
+  let rows = Array.from(byId.values());
+  if (scheduleScope === "default") {
+    rows = rows.filter((row) => rowMatchesDefaultProductionScheduleScope(row, today));
+  }
+
+  const priorComplete = options.priorScopeComplete === true
+    && options.priorCompleteness === "complete";
+  const reconcileStale = Boolean(
+    headFailed || reconcileFailed || reconcileTruncated || skippedIds || options.priorScanCapped
+  );
+  const completeness = (priorComplete && !reconcileStale)
+    ? "complete"
+    : (reconcileStale ? "incomplete" : (options.priorCompleteness || "incomplete"));
+  const nextOffset = headFailed
+    ? rotateOffset
+    : (cachedIds.length ? (rotateStart + windowIds.length) % cachedIds.length : 0);
+
+  return {
+    rows,
+    total: rows.length,
+    completeness,
+    read_limit: head.read_limit ?? options.priorReadLimit,
+    matched_count: head.matched_count ?? options.priorMatchedCount,
+    candidate_count: head.candidate_count ?? options.priorCandidateCount,
+    schedule_scope: head.schedule_scope || baseParams.schedule_scope,
+    scope_complete: priorComplete && !reconcileStale,
+    next_cursor: (priorComplete && !reconcileStale)
+      ? null
+      : (options.priorNextCursor || head.next_cursor || null),
+    pages_fetched: pagesFetched,
+    refresh: true,
+    mode: "refresh",
+    scan_capped: Boolean(head.scan_capped) || Boolean(options.priorScanCapped),
+    reconcile_stale: reconcileStale,
+    reconcile_failed: reconcileFailed || headFailed,
+    refresh_error: headErrorDetail || reconcileErrorDetail || "",
+    missing_ids: missingIds,
+    reconcile_offset: nextOffset,
+    requests_this_cycle: pagesFetched,
   };
 }
 
