@@ -6,6 +6,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
+DASHBOARD_HTTP = (ROOT / "services" / "production_dashboard_http.py").read_text(encoding="utf-8")
 
 _VISIBLE_ROW_KEYS = (
     "id",
@@ -59,12 +60,15 @@ def test_summary_is_additive_opt_in_query():
     assert "view: Optional[str] = None" in body
     assert '== "summary"' in body
     assert "_PRODUCTION_DASHBOARD_SUMMARY_PROJECTION" in body
-    assert 'find(q, {"_id": 0})' in body
+    # Default (non-summary) still hydrates full documents via {"_id": 0}.
+    assert '{"_id": 0}' in body
+    assert "fetch_production_schedule_orders_page" in body
 
 
 def test_default_production_dashboard_path_unchanged():
     body = _dashboard_fn_body()
-    assert 'find(q, {"_id": 0})' in body
+    assert '{"_id": 0}' in body
+    assert "fetch_production_schedule_orders_page" in body
     assert "_apply_hold_snapshot" in body
     assert "_attach_deadline_snapshot" in body
     assert "_production_row" in body
@@ -102,9 +106,15 @@ def test_summary_and_default_are_read_only():
 
 
 def test_summary_is_single_orders_find_not_n_plus_one():
+    """Endpoint stays free of per-row finds; page/reconcile helpers own orders.find."""
     body = _dashboard_fn_body()
-    assert body.count("db.orders.find") == 2  # summary branch + default branch
-    assert "db.orders.find_one" not in body
+    assert "db.orders.find" not in body
+    assert "db.orders.find_one" not in body.replace("_get_delivery_deadline_settings", "")
+    # Helpers may scan in batches, but never escalate to per-row find_one.
+    assert "db.orders.find_one" not in DASHBOARD_HTTP
+    assert DASHBOARD_HTTP.count(".orders.find(") >= 1
+    assert "fetch_production_schedule_orders_page" in body
+    assert "fetch_production_schedule_orders_by_ids" in body
 
 
 def test_production_row_hold_matches_with_id_only_files():
