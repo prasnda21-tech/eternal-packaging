@@ -247,9 +247,16 @@ async def test_director_super_admin_keeps_opt_in_purge_and_auth_me(bind_db, monk
     for opt_in in OPT_IN_ONLY_PERMISSIONS - DIRECTOR_MUST_OPT_IN_PERMISSIONS:
         assert opt_in in dir_sa
         assert opt_in not in admin_sa
+    # Owner initial defaults: review/approve merge in from Direktur ROLE_DEFAULT.
+    director_builtin_must = {"urgent.review", "urgent.approve"}
     for must in DIRECTOR_MUST_OPT_IN_PERMISSIONS:
-        assert must not in dir_sa
-        assert must not in admin_sa
+        if must in director_builtin_must:
+            assert must in dir_sa
+            assert must in dir_nosa
+            assert must not in admin_sa
+        else:
+            assert must not in dir_sa
+            assert must not in admin_sa
     for sales_key in SALES_DIR_OPT_IN:
         assert sales_key not in dir_sa
         assert sales_key not in dir_nosa
