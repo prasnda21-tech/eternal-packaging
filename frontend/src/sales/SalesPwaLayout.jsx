@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { ClipboardList, LayoutDashboard, MapPin, MoreHorizontal, Receipt, TrendingUp, UserRound, Users, Wallet, X } from "lucide-react";
+import { ClipboardList, LayoutDashboard, MapPin, MoreHorizontal, Receipt, TrendingUp, Truck, UserRound, Users, Wallet, X } from "lucide-react";
 import { activeSalesPwaNav, SALES_PWA_MORE_NAV, SALES_PWA_NAV } from "../lib/salesPwa";
 import "./salesPwa.css";
 
@@ -13,6 +13,7 @@ const ICONS = {
   receivables: Wallet,
   customers: Users,
   predictions: TrendingUp,
+  deliveries: Truck,
   profile: UserRound,
 };
 

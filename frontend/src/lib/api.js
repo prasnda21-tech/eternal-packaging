@@ -1313,6 +1313,7 @@ export const api = {
   salesPwaMe: () => client.get("/sales-pwa/me").then((r) => r.data),
   salesPwaDashboard: (params = {}) => client.get("/sales-pwa/dashboard", { params }).then((r) => r.data),
   salesPwaDeliveriesToday: () => client.get("/sales-pwa/deliveries/today").then((r) => r.data),
+  salesPwaDeliveryHistory: (params = {}) => client.get("/sales-pwa/deliveries/history", { params }).then((r) => r.data),
   salesPwaInvoices: (params = {}) => client.get("/sales-pwa/invoices", { params }).then((r) => r.data),
   salesPwaReceivables: () => client.get("/sales-pwa/receivables").then((r) => r.data),
   salesPwaOrders: (params = {}) => client.get("/sales-pwa/orders", { params }).then((r) => r.data),

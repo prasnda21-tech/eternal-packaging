@@ -13,6 +13,7 @@ export const SALES_PWA_MORE_NAV = [
   { id: "receivables", label: "Piutang", to: "/sales/receivables" },
   { id: "customers", label: "Pelanggan", to: "/sales/pelanggan" },
   { id: "predictions", label: "Prediksi Order", to: "/sales/prediksi" },
+  { id: "deliveries", label: "Riwayat Pengiriman", to: "/sales/riwayat-pengiriman" },
   { id: "profile", label: "Profil", to: "/sales/profil" },
 ];
 
@@ -44,6 +45,7 @@ export function activeSalesPwaNav(pathname) {
   if (path.startsWith("/sales/receivables")) return "receivables";
   if (path.startsWith("/sales/pelanggan")) return "customers";
   if (path.startsWith("/sales/prediksi")) return "predictions";
+  if (path.startsWith("/sales/riwayat-pengiriman")) return "deliveries";
   if (path.startsWith("/sales/profil")) return "profile";
   if (path.startsWith("/sales")) return "dashboard";
   return "";
