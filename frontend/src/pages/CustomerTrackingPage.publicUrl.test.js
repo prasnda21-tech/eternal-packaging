@@ -22,7 +22,12 @@ const payload = {
   summary: {
     items: [{ name: "Cup", quantity: 12, unit: "pcs" }],
     order_date: "2026-10-02",
-    deadline: "2026-10-02",
+    estimasi: {
+      date: "2026-10-02",
+      source: "automatic",
+      final: true,
+      display_state: "final",
+    },
   },
   workflow: [],
   documents: { design_approved: [], surat_jalan: [] },
@@ -114,11 +119,15 @@ describe("pretty and legacy Live Tracking routes", () => {
 
     api.publicTracking.mockResolvedValue({
       ...payload,
-      summary: { ...payload.summary, deadline: "", order_date: "" },
+      summary: {
+        ...payload.summary,
+        order_date: "",
+        estimasi: { source: "non_final", final: false, display_state: "menunggu_approval" },
+      },
     });
     setRoute({ token: CODE });
     const { host, root } = await mount();
-    expect(host.querySelector('[data-testid="tracking-deadline"]').textContent).toContain("—");
+    expect(host.querySelector('[data-testid="tracking-deadline"]').textContent).toContain("Menunggu Approval");
     expect(host.textContent).not.toMatch(/Invalid Date/);
     await act(async () => { root.unmount(); });
   });

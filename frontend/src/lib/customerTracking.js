@@ -103,6 +103,46 @@ export function trackingStatusLabel(status) {
   return CUSTOMER_STATUS_LABEL[status] || "Menunggu";
 }
 
+/** Customer-facing Estimasi Pengiriman from public summary.estimasi (never legacy deadline). */
+export function formatEstimasiPengiriman(estimasi, formatDateFn = formatTrackingDate) {
+  const est = estimasi && typeof estimasi === "object" ? estimasi : null;
+  if (!est) {
+    return { text: "—", displayState: "empty", source: "non_final", final: false };
+  }
+  const displayState = String(est.display_state || "");
+  if (displayState === "menunggu_approval" || (est.final !== true && displayState !== "belum_dijadwalkan" && !est.date)) {
+    return {
+      text: "Menunggu Approval",
+      displayState: "menunggu_approval",
+      source: "non_final",
+      final: false,
+    };
+  }
+  if (displayState === "belum_dijadwalkan" || (est.source === "non_final" && !est.date && displayState !== "menunggu_approval")) {
+    return {
+      text: "Belum Dijadwalkan",
+      displayState: "belum_dijadwalkan",
+      source: "non_final",
+      final: false,
+    };
+  }
+  if (est.final && est.date) {
+    return {
+      text: formatDateFn(est.date) || "—",
+      displayState: "final",
+      source: est.source === "urgent_manual" ? "urgent_manual" : "automatic",
+      final: true,
+      date: est.date,
+    };
+  }
+  return {
+    text: "Menunggu Approval",
+    displayState: "menunggu_approval",
+    source: "non_final",
+    final: false,
+  };
+}
+
 export function trackingDisplayLabel(row) {
   const label = row?.label != null ? String(row.label).trim() : "";
   if (label) return label;

@@ -375,17 +375,20 @@ def stamp_delivery_sla(
     working_days: int = NORMAL_WORKING_DAYS,
     now: Optional[str] = None,
 ) -> bool:
-    """Stamp the working-day estimate once. Existing stamps and GET callers stay untouched.
+    """Stamp the working-day estimate for the current dual-gate anchor.
 
-    ``working_days`` is 1, 3, or 5. Any other value uses the default of 3.
-    A later settings or holiday change does not recompute a stored stamp.
+    Same-anchor stamps stay locked (settings/holiday edits do not recompute).
+    When gates are re-satisfied with a new latest approval timestamp, replace
+    the stamp so revoke→re-approve does not keep a stale automatic date.
     """
-    if order.get("delivery_sla_v2"):
-        return False
     if not group2_complete(order):
         return False
     anchor = latest_required_approval_at(order)
     if anchor is None:
+        return False
+    existing = order.get("delivery_sla_v2") if isinstance(order.get("delivery_sla_v2"), dict) else None
+    # Live (non-invalidated) stamps stay locked until a gate revoke invalidates them.
+    if existing is not None and not existing.get("invalidated"):
         return False
     try:
         days = int(working_days)
@@ -415,14 +418,39 @@ def _effective_delivery(
     working_days: int = NORMAL_WORKING_DAYS,
     holidays: Optional[Iterable[str]] = None,
 ) -> dict:
-    """Widget date. Same read contract as Detail PO / Status PO / Jadwal Pengiriman."""
+    """Widget / overdue date uses operational Tanggal Pengiriman (manual/reschedule wins).
+
+    Customer estimation remains on ``delivery_sla_effective`` / ``contract_date``.
+    """
+    from services.tanggal_pengiriman import resolve_tanggal_pengiriman
+
+    snap = resolve_tanggal_pengiriman(order, working_days, holidays=holidays)
     fact = delivery_sla_effective(order, working_days, today=today, holidays=holidays)
+    op_date = snap.get("tanggal_pengiriman")
+    countable = bool(op_date)
+    # Reuse estimation state when ops date matches estimation; otherwise derive from ops date.
+    if op_date and op_date == fact.get("date"):
+        state = fact.get("state")
+    elif order.get("buffer_stock"):
+        state = "buffer"
+    elif fact.get("state") == "delivered":
+        state = "delivered"
+    elif not countable:
+        state = "unscheduled" if fact.get("display_state") == "belum_dijadwalkan" else "legacy"
+    else:
+        today_key = (
+            today.isoformat() if hasattr(today, "isoformat") and not hasattr(today, "hour")
+            else (today.astimezone(WIB).date().isoformat() if hasattr(today, "astimezone") else str(today or "")[:10])
+        )
+        if not today_key or len(today_key) < 10:
+            today_key = datetime.now(WIB).date().isoformat()
+        state = "overdue" if today_key[:10] > op_date else "scheduled"
     return {
-        "date": fact["date"] if fact["countable"] else None,
-        "source": fact["source"],
-        "countable": fact["countable"],
-        "state": fact["state"],
-        "contract_date": fact["date"],
+        "date": op_date if countable else None,
+        "source": snap.get("source") or fact.get("source"),
+        "countable": countable,
+        "state": state,
+        "contract_date": fact.get("date"),
     }
 
 

@@ -109,26 +109,29 @@ def test_stamped_normal_ignores_calendar_lead_and_later_holidays():
         snap = resolve_tanggal_pengiriman(order, days)
         assert snap["tanggal_pengiriman"] == "2026-10-27"
         assert snap["calculated"] == working_by_days[days]
-        assert snap["delivery_sla_effective"]["source"] == "otomatis"
+        assert snap["delivery_sla_effective"]["source"] == "automatic"
         assert snap["delivery_sla_effective"]["date"] == "2026-10-27"
     order["delivery_deadline_manual"] = "2026-11-02T00:00:00+07:00"
     manual = delivery_sla_effective(order, today=date(2026, 10, 30))
-    assert manual["date"] == "2026-11-02"
-    assert manual["source"] == "manual"
-    assert manual["state"] == "scheduled"
+    # Normal estimation stays automatic; jadwal ulang is exposed separately.
+    assert manual["date"] == "2026-10-27"
+    assert manual["source"] == "automatic"
+    assert manual["jadwal_ulang"] == "2026-11-02"
+    assert manual["state"] == "overdue"  # automatic 27 vs today 30
+    assert resolve_tanggal_pengiriman(order, 3)["tanggal_pengiriman"] == "2026-11-02"
 
 
 def test_urgent_never_uses_normal_stamp_and_legacy_uses_working_days():
     urgent = _base(id="po-u", priority="urgent")
     stamp_delivery_sla(urgent, [])
     fact = delivery_sla_effective(urgent, today=date(2026, 10, 30))
-    assert fact["source"] == "belum_dijadwalkan"
+    assert fact["display_state"] == "belum_dijadwalkan"
     assert fact["date"] is None
     assert fact["state"] == "unscheduled"
     urgent["scheduled_delivery_date"] = "2026-10-20"
     dated = delivery_sla_effective(urgent, today=date(2026, 10, 30))
     assert dated["date"] == "2026-10-20"
-    assert dated["source"] == "jadwal_pengiriman"
+    assert dated["source"] == "urgent_manual"
     assert dated["state"] == "overdue"
 
     legacy = _base(id="po-old")
@@ -371,13 +374,16 @@ async def test_http_same_deadline_across_modules(db):
     assert before == after
     for fact in normal_facts:
         assert fact["date"] == "2026-10-27"
-        assert fact["source"] == "otomatis"
+        assert fact["source"] == "automatic"
         assert fact["state"] == normal_facts[0]["state"]
     assert normal_facts[0]["date"] != "2026-10-26"
-    for fact in urgent_facts:
+    for fact in urgent_facts[:3]:
         assert fact["date"] == "2026-10-20"
-        assert fact["source"] == "jadwal_pengiriman"
+        assert fact["source"] == "urgent_manual"
         assert fact["state"] == urgent_facts[0]["state"]
+    # Wave2 overdue contract uses operational schedule source ("manual").
+    assert urgent_facts[3]["date"] == "2026-10-20"
+    assert urgent_facts[3]["source"] in ("manual", "urgent_manual")
     assert urgent_facts[0]["state"] == "overdue"
 
 
@@ -520,12 +526,14 @@ async def test_http_working_day_setting_and_plan_matrix(db):
     rows = {row["id"]: row for row in plan.json()["rows"]}
     assert "po-plan-open" not in rows
     assert rows["po-plan-n"]["delivery_sla_effective"]["date"] == "2026-10-27"
-    assert rows["po-plan-n"]["delivery_sla_effective"]["source"] == "otomatis"
+    assert rows["po-plan-n"]["delivery_sla_effective"]["source"] == "automatic"
     assert rows["po-plan-n"]["qty_total"] == 10000
     assert rows["po-plan-u"]["delivery_sla_effective"]["date"] == "2026-10-20"
-    assert rows["po-plan-u"]["delivery_sla_effective"]["source"] == "jadwal_pengiriman"
-    assert rows["po-plan-m"]["delivery_sla_effective"]["date"] == "2026-11-02"
-    assert rows["po-plan-m"]["delivery_sla_effective"]["source"] == "manual"
+    assert rows["po-plan-u"]["delivery_sla_effective"]["source"] == "urgent_manual"
+    assert rows["po-plan-m"]["delivery_sla_effective"]["date"] == "2026-10-24"
+    assert rows["po-plan-m"]["delivery_sla_effective"]["source"] == "automatic"
+    assert rows["po-plan-m"]["delivery_sla_effective"]["jadwal_ulang"] == "2026-11-02"
+    assert rows["po-plan-m"]["tanggal_pengiriman"] == "2026-11-02"
     assert rows["po-plan-l"]["delivery_sla_effective"]["contract"] == "legacy_working_days"
     assert rows["po-plan-l"]["delivery_sla_effective"]["date"] == "2026-10-29"  # Fri + 5 WD
     assert rows["po-plan-l"]["delivery_sla_effective"]["countable"] is False

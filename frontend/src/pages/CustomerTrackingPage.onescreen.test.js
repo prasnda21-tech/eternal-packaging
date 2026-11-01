@@ -19,9 +19,14 @@ const payload = {
   customer_name: "PT Sumber Makmur",
   summary: {
     items: [{ name: "Standing Pouch", quantity: 5000, unit: "pcs" }],
-    deadline: "2025-09-25",
     order_date: "2025-09-01",
     outlet: "Outlet A",
+    estimasi: {
+      date: "2025-09-25",
+      source: "automatic",
+      final: true,
+      display_state: "final",
+    },
   },
   design_approval: {
     status: "active",

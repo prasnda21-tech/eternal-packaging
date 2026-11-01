@@ -3252,6 +3252,8 @@ async def approve_design(order_id: str, payload: ApprovalPayload, user=Depends(c
         order["design_approved_by"] = None
         order["design_approved_by_name"] = None
         order["design_approved_at"] = None
+        from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+        invalidate_delivery_sla_stamp(order, now=now_iso())
         order.setdefault("design_approval_history", []).append({
             "action": "revoke",
             "by_email": user.get("email"),
@@ -3298,6 +3300,8 @@ async def approve_payment(order_id: str, payload: ApprovalPayload, user=Depends(
         order["payment_approved_by"] = None
         order["payment_approved_by_name"] = None
         order["payment_approved_at"] = None
+        from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+        invalidate_delivery_sla_stamp(order, now=now_iso())
         order.setdefault("payment_approval_history", []).append({
             "action": "revoke",
             "by_email": user.get("email"),
@@ -3419,12 +3423,14 @@ async def rollback_stage(order_id: str, payload: RollbackPayload, user=Depends(c
     order.setdefault("rollback_history", []).append(entry)
     order["current_stage"] = payload.to_stage
     # If rolling back TO design/approval region, invalidate downstream approval if dependencies broken
+    gate_reset = False
     if payload.to_stage <= 1:  # rolled back to before Approval Design
         if order.get("design_status") == "Approved":
             order["design_status"] = "Waiting"
             order["design_approved_by"] = None
             order["design_approved_by_name"] = None
             order["design_approved_at"] = None
+            gate_reset = True
             order.setdefault("design_approval_history", []).append({
                 "action": "reset-on-rollback", "by_email": user.get("email"), "by_name": user.get("name"),
                 "at": now_iso(), "note": f"Rollback ke {STAGES[payload.to_stage]}",
@@ -3435,10 +3441,14 @@ async def rollback_stage(order_id: str, payload: RollbackPayload, user=Depends(c
             order["payment_approved_by"] = None
             order["payment_approved_by_name"] = None
             order["payment_approved_at"] = None
+            gate_reset = True
             order.setdefault("payment_approval_history", []).append({
                 "action": "reset-on-rollback", "by_email": user.get("email"), "by_name": user.get("name"),
                 "at": now_iso(), "note": f"Rollback ke {STAGES[payload.to_stage]}",
             })
+    if gate_reset:
+        from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+        invalidate_delivery_sla_stamp(order, now=now_iso())
     add_timeline(order, payload.to_stage, user, note=f"Rollback dari {entry['from_stage_label']} → {entry['to_stage_label']}: {reason}")
     await _persist_order(order)
     await _audit_po(order, "workflow.rollback", user, before={"stage": from_stage}, after={"stage": payload.to_stage}, note=reason)
@@ -5569,6 +5579,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, view: Optional
             order["design_approved_by"] = None
             order["design_approved_by_name"] = None
             order["design_approved_at"] = None
+            from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+            invalidate_delivery_sla_stamp(order, now=now_iso())
             order.setdefault("design_approval_history", []).append({
                 "action": "reset-on-new-upload",
                 "by_email": user.get("email"),
@@ -5598,6 +5610,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, view: Optional
             order["payment_approved_by"] = None
             order["payment_approved_by_name"] = None
             order["payment_approved_at"] = None
+            from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+            invalidate_delivery_sla_stamp(order, now=now_iso())
             order.setdefault("payment_approval_history", []).append({
                 "action": "reset-on-new-upload",
                 "by_email": user.get("email"),

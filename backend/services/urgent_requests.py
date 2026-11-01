@@ -357,7 +357,47 @@ async def _ensure_order_matches_approved(db, *, request: dict, order: dict) -> d
     """If request is approved but order is not urgent, re-apply priority idempotently."""
     if not order:
         return order
+    from services.tanggal_pengiriman import (
+        apply_manual_tanggal_pengiriman,
+        manual_tanggal_pengiriman,
+        parse_calendar_date,
+    )
+
+    def _seed_manual(order_doc: dict) -> Dict[str, Any]:
+        if manual_tanggal_pengiriman(order_doc):
+            return {}
+        target = parse_calendar_date(request.get("target_completion_date"))
+        if not target:
+            return {}
+        actor_email = str(request.get("decided_by_email") or "")
+        apply_manual_tanggal_pengiriman(
+            order_doc,
+            target,
+            user={"email": actor_email, "name": request.get("decided_by_name")},
+            reason=f"Urgent target_completion_date ({request.get('id')})",
+        )
+        return {
+            "delivery_deadline_manual": order_doc.get("delivery_deadline_manual"),
+            "scheduled_delivery_date": order_doc.get("scheduled_delivery_date"),
+            "delivery_deadline_manual_by": order_doc.get("delivery_deadline_manual_by"),
+            "delivery_deadline_manual_by_name": order_doc.get("delivery_deadline_manual_by_name"),
+            "delivery_deadline_manual_at": order_doc.get("delivery_deadline_manual_at"),
+            "delivery_deadline_manual_reason": order_doc.get("delivery_deadline_manual_reason"),
+            "delivery_deadline_history": order_doc.get("delivery_deadline_history"),
+        }
+
     if str(order.get("priority") or "").lower() == "urgent" and order_has_urgent_apply(order, request["id"]):
+        seed = _seed_manual(dict(order))
+        if not seed:
+            return order
+        fixed = await db.orders.find_one_and_update(
+            {"id": order["id"], "cancelled": {"$ne": True}},
+            {"$set": seed},
+            return_document=ReturnDocument.AFTER,
+        )
+        if fixed:
+            fixed.pop("_id", None)
+            return fixed
         return order
     now = now_iso()
     actor_email = str(request.get("decided_by_email") or "")
@@ -370,13 +410,14 @@ async def _ensure_order_matches_approved(db, *, request: dict, order: dict) -> d
         "note": f"Urgent disetujui via pengajuan {request.get('id')} (reconcile)",
         "urgent_request_id": request["id"],
     }
-    update: Dict[str, Any] = {
-        "$set": {
-            "priority": "urgent",
-            "urgency_approved_by": actor_email or order.get("urgency_approved_by"),
-            "updated_at": now,
-        }
+    working = dict(order)
+    set_fields: Dict[str, Any] = {
+        "priority": "urgent",
+        "urgency_approved_by": actor_email or order.get("urgency_approved_by"),
+        "updated_at": now,
     }
+    set_fields.update(_seed_manual(working))
+    update: Dict[str, Any] = {"$set": set_fields}
     if not order_has_urgent_apply(order, request["id"]):
         update["$push"] = {"timeline": timeline_entry}
     applied = await db.orders.find_one_and_update(
@@ -526,18 +567,50 @@ async def _apply_order_urgent(
         await _release_claim(db, request["id"], claim_id)
         raise HTTPException(400, "PO dibatalkan tidak dapat disetujui Urgent.")
 
+    from services.tanggal_pengiriman import (
+        apply_manual_tanggal_pengiriman,
+        manual_tanggal_pengiriman,
+        parse_calendar_date,
+    )
+
+    def _urgent_manual_seed_fields(order_doc: dict) -> Dict[str, Any]:
+        """Seed delivery_deadline_manual from target_completion_date when missing.
+
+        Never overwrites a valid manual date. Idempotent on retry.
+        """
+        if manual_tanggal_pengiriman(order_doc):
+            return {}
+        target = parse_calendar_date(request.get("target_completion_date"))
+        if not target:
+            return {}
+        apply_manual_tanggal_pengiriman(
+            order_doc,
+            target,
+            user={"email": actor_email, "name": actor_name},
+            reason=f"Urgent target_completion_date ({request.get('id')})",
+        )
+        return {
+            "delivery_deadline_manual": order_doc.get("delivery_deadline_manual"),
+            "scheduled_delivery_date": order_doc.get("scheduled_delivery_date"),
+            "delivery_deadline_manual_by": order_doc.get("delivery_deadline_manual_by"),
+            "delivery_deadline_manual_by_name": order_doc.get("delivery_deadline_manual_by_name"),
+            "delivery_deadline_manual_at": order_doc.get("delivery_deadline_manual_at"),
+            "delivery_deadline_manual_reason": order_doc.get("delivery_deadline_manual_reason"),
+            "delivery_deadline_history": order_doc.get("delivery_deadline_history"),
+        }
+
     if order_has_urgent_apply(existing_order, request["id"]):
         # Ensure priority flag even if a partial write only pushed timeline.
+        heal_set: Dict[str, Any] = {}
         if str(existing_order.get("priority") or "").lower() != "urgent":
+            heal_set["priority"] = "urgent"
+            heal_set["urgency_approved_by"] = actor_email
+            heal_set["updated_at"] = now
+        heal_set.update(_urgent_manual_seed_fields(dict(existing_order)))
+        if heal_set:
             fixed = await db.orders.find_one_and_update(
                 {"id": order["id"], "cancelled": {"$ne": True}},
-                {
-                    "$set": {
-                        "priority": "urgent",
-                        "urgency_approved_by": actor_email,
-                        "updated_at": now,
-                    }
-                },
+                {"$set": heal_set},
                 return_document=ReturnDocument.AFTER,
             )
             if fixed:
@@ -555,14 +628,17 @@ async def _apply_order_urgent(
         "note": f"Urgent disetujui via pengajuan {request.get('id')}",
         "urgent_request_id": request["id"],
     }
+    set_fields: Dict[str, Any] = {
+        "priority": "urgent",
+        "urgency_approved_by": actor_email,
+        "updated_at": now,
+    }
+    working = dict(existing_order)
+    set_fields.update(_urgent_manual_seed_fields(working))
     applied = await db.orders.find_one_and_update(
         {"id": order["id"], "cancelled": {"$ne": True}},
         {
-            "$set": {
-                "priority": "urgent",
-                "urgency_approved_by": actor_email,
-                "updated_at": now,
-            },
+            "$set": set_fields,
             "$push": {"timeline": timeline_entry},
         },
         return_document=ReturnDocument.AFTER,

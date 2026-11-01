@@ -320,8 +320,49 @@ _DESIGN_APPROVAL_STATUSES = frozenset({
 _DESIGN_PREVIEW_STATUSES = frozenset({"active", "approved", "rejected"})
 
 
-def public_order_summary(order: dict) -> Dict[str, Any]:
-    """Customer-safe PO facts only. No line_id, prices, or internal flags."""
+def public_estimasi_summary(
+    order: dict,
+    *,
+    lead_time_days: int = 3,
+    holidays: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Customer estimation from the authoritative resolver. Never uses legacy deadline."""
+    from services.tanggal_pengiriman import attach_tanggal_pengiriman_snapshot
+
+    attach_tanggal_pengiriman_snapshot(order, lead_time_days, holidays=holidays)
+    sla = order.get("delivery_sla_effective") if isinstance(order.get("delivery_sla_effective"), dict) else {}
+    source = str(sla.get("source") or "non_final")
+    if source not in ("automatic", "urgent_manual", "non_final"):
+        source = "non_final"
+    display_state = str(sla.get("display_state") or "menunggu_approval")
+    if display_state not in ("final", "menunggu_approval", "belum_dijadwalkan"):
+        display_state = "menunggu_approval" if not sla.get("final") else "final"
+    out: Dict[str, Any] = {
+        "source": source,
+        "final": bool(sla.get("final")),
+        "display_state": display_state,
+    }
+    date_key = str(sla.get("date") or "").strip()
+    if date_key and out["final"]:
+        out["date"] = date_key[:10]
+    jadwal = str(sla.get("jadwal_ulang") or "").strip()
+    if jadwal:
+        out["jadwal_ulang"] = jadwal[:10]
+    return out
+
+
+def public_order_summary(
+    order: dict,
+    *,
+    lead_time_days: int = 3,
+    holidays: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Customer-safe PO facts only. No line_id, prices, or internal flags.
+
+    Estimation uses the resolver (``estimasi``). Legacy ``deadline`` /
+    ``estimated_delivery`` are intentionally omitted so customers never see
+    creation-time fallbacks as final delivery estimates.
+    """
     items: List[Dict[str, Any]] = []
     for li in order.get("line_items") or []:
         if not isinstance(li, dict):
@@ -346,10 +387,13 @@ def public_order_summary(order: dict) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     if items:
         out["items"] = items
-    for key in ("order_date", "deadline", "estimated_delivery", "outlet"):
+    for key in ("order_date", "outlet"):
         val = str(order.get(key) or "").strip()
         if val:
             out[key] = val
+    out["estimasi"] = public_estimasi_summary(
+        order, lead_time_days=lead_time_days, holidays=holidays
+    )
     return out
 
 
@@ -380,7 +424,13 @@ def public_design_approval(order: dict, token: str) -> Optional[Dict[str, Any]]:
     return out
 
 
-def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
+def public_payload(
+    order: dict,
+    token: Optional[str] = None,
+    *,
+    lead_time_days: int = 3,
+    holidays: Optional[Any] = None,
+) -> Dict[str, Any]:
     """Minimal public JSON: customer, order number, workflow, documents, bounded proofs."""
     tok = (token or order.get("tracking_token") or "").strip()
     payload = {
@@ -394,7 +444,9 @@ def public_payload(order: dict, token: Optional[str] = None) -> Dict[str, Any]:
         },
         "shipments_evidence": public_shipment_evidence(order, tok),
     }
-    summary = public_order_summary(order)
+    summary = public_order_summary(
+        order, lead_time_days=lead_time_days, holidays=holidays
+    )
     if summary:
         payload["summary"] = summary
     approval = public_design_approval(order, tok)
@@ -469,7 +521,8 @@ def is_public_payload_safe(payload: dict) -> bool:
         "driver", "driver_name", "driver_signed_at",
         "design_approval", "path", "action",
         "summary", "items", "color", "unit", "quantity",
-        "order_date", "deadline", "estimated_delivery", "outlet",
+        "order_date", "outlet",
+        "estimasi", "date", "source", "final", "display_state", "jadwal_ulang",
     }
     return collect_public_keys(payload) <= allowed
 
@@ -594,8 +647,33 @@ def build_router(deps: dict) -> APIRouter:
 
     router = APIRouter(prefix="/api", tags=["customer-tracking"])
 
-    def _safe_public_payload(order: dict, token: str) -> dict:
-        payload = public_payload(order, token)
+    async def _public_sla_context() -> tuple:
+        """Official sla_working_days + operational holidays. Read-only; defaults on failure."""
+        lead = 3
+        holidays: list = []
+        try:
+            from services.tanggal_pengiriman import classify_delivery_deadline_setting
+            doc = await get_db().app_settings.find_one({"key": "delivery_deadline"}, {"_id": 0})
+            lead = int(classify_delivery_deadline_setting(doc)["sla_working_days"])
+        except Exception:
+            lead = 3
+        try:
+            from services.production_wave2 import holiday_dates
+            holidays = await holiday_dates(get_db())
+        except Exception:
+            holidays = []
+        return lead, holidays
+
+    def _safe_public_payload(
+        order: dict,
+        token: str,
+        *,
+        lead_time_days: int = 3,
+        holidays: Optional[Any] = None,
+    ) -> dict:
+        payload = public_payload(
+            order, token, lead_time_days=lead_time_days, holidays=holidays
+        )
         if is_public_payload_safe(payload):
             return payload
         logger.warning("public tracking payload sanitized token=%s", mask_token(token))
@@ -632,9 +710,21 @@ def build_router(deps: dict) -> APIRouter:
             clean_sum = {}
             if clean_items:
                 clean_sum["items"] = clean_items
-            for key in ("order_date", "deadline", "estimated_delivery", "outlet"):
+            for key in ("order_date", "outlet"):
                 if summary.get(key):
                     clean_sum[key] = str(summary.get(key))
+            est = summary.get("estimasi")
+            if isinstance(est, dict):
+                clean_est: Dict[str, Any] = {
+                    "source": str(est.get("source") or "non_final"),
+                    "final": bool(est.get("final")),
+                    "display_state": str(est.get("display_state") or "menunggu_approval"),
+                }
+                if est.get("date"):
+                    clean_est["date"] = str(est.get("date"))[:10]
+                if est.get("jadwal_ulang"):
+                    clean_est["jadwal_ulang"] = str(est.get("jadwal_ulang"))[:10]
+                clean_sum["estimasi"] = clean_est
             if clean_sum:
                 out["summary"] = clean_sum
         approval = payload.get("design_approval")
@@ -757,7 +847,10 @@ def build_router(deps: dict) -> APIRouter:
     @router.get("/public/tracking/{token}")
     async def public_tracking(token: str):
         order = await _order_for_token(token)
-        return _safe_public_payload(order, token)
+        lead, holidays = await _public_sla_context()
+        return _safe_public_payload(
+            order, token, lead_time_days=lead, holidays=holidays
+        )
 
     @router.get("/public/tracking/{token}/proofs/{proof_id}")
     async def public_tracking_proof(token: str, proof_id: str):
