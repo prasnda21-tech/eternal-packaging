@@ -31,11 +31,14 @@ describe("sales PWA helpers", () => {
     // The old four labels are not the current bar, so this expectation follows the nav in use.
     expect(SALES_PWA_NAV.map((item) => item.label)).toEqual(["Dashboard", "PO Saya", "Visit", "Lainnya"]);
     expect(SALES_PWA_MORE_NAV.map((item) => item.label)).toContain("Prediksi Order");
+    expect(SALES_PWA_MORE_NAV.map((item) => item.label)).toContain("Riwayat Pengiriman");
     expect(SALES_PWA_NAV.map((item) => item.label)).not.toContain("Prediksi Order");
+    expect(SALES_PWA_NAV.map((item) => item.label)).not.toContain("Riwayat Pengiriman");
     expect(activeSalesPwaNav("/sales")).toBe("dashboard");
     expect(activeSalesPwaNav("/sales/po")).toBe("orders");
     expect(activeSalesPwaNav("/sales/visit")).toBe("visits");
     expect(activeSalesPwaNav("/sales/prediksi")).toBe("predictions");
+    expect(activeSalesPwaNav("/sales/riwayat-pengiriman")).toBe("deliveries");
   });
 
   test("manifest is a separate sales PWA", () => {

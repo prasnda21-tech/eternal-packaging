@@ -439,8 +439,8 @@ test("links omzet and receivables with the existing pressable card treatment", a
   expect(node.querySelector('[data-testid="sales-dashboard-visits"]').getAttribute("href")).toBe("/sales/visit");
   const css = readFileSync(path.join(__dirname, "salesPwa.css"), "utf8");
   expect(css).toMatch(/a\.spwa-metric-link\s*\{[^}]*cursor:\s*pointer/);
-  expect(css).toMatch(/a\.spwa-metric-link:hover\s*\{[^}]*border-color:\s*#8bd6bd/);
-  expect(css).toMatch(/a\.spwa-metric-link:active\s*\{[^}]*border-color:\s*#08785d/);
+  expect(css).toMatch(/a\.spwa-metric-link:hover\s*\{[^}]*border-color:\s*var\(--spwa-accent\)/);
+  expect(css).toMatch(/a\.spwa-metric-link:active\s*\{[^}]*border-color:\s*var\(--spwa-primary\)/);
   act(() => root.unmount());
 });
 

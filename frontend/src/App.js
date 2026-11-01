@@ -134,6 +134,7 @@ const SalesPwaInvoiceDetailPage = lazy(() => import("./sales/SalesPwaInvoiceDeta
 const SalesPwaReceivablesPage = lazy(() => import("./sales/SalesPwaReceivablesPage"));
 const SalesPwaPredictionsPage = lazy(() => import("./sales/SalesPwaPredictionsPage"));
 const SalesPwaProfilePage = lazy(() => import("./sales/SalesPwaProfilePage"));
+const SalesPwaDeliveryHistoryPage = lazy(() => import("./sales/SalesPwaDeliveryHistoryPage"));
 
 const SETTINGS_PERMS = ["users.view", "users.manage", "roles.manage", "permissions.manage", "audit.view", "customer_approval.view", "customer_approval.settings", "delivery.deadline.settings", "delivery.deadline.edit", "settings.operational_calendar.manage", "dashboard.production.view", "schedule.edit", "settings.work_panel.view", "settings.work_panel.manage", "settings.operator_wage.view", "settings.operator_wage.manage", "reports.gaji_operator.view", "settings.depot.view", "settings.depot.manage", "settings.hpp.view", "settings.hpp.manage", "settings.sales_accounting.view", "settings.sales_accounting.manage", "payroll_accounting.view", "payroll_accounting.manage", "settings.customer_pricing.view", "settings.customer_pricing.manage", "settings.customer_pricing.publish", "settings.public_catalog.view", "settings.public_catalog.manage", "employee_admin.settings", "payroll.settings", "settings.sales_activity.view", "settings.sales_activity.manage", "settings.route_optimizer.view", "settings.route_optimizer.manage", "settings.sales_user_mapping.view", "settings.sales_user_mapping.manage", "settings.sales_master.view", "settings.sales_master.manage", "settings.crm_daily_report.view", "settings.crm_daily_report.manage"];
 const PHYSICAL_STOCK_SETTINGS_PERMS = ["current_stock.view", "current_stock.update", "permissions.manage"];
@@ -328,6 +329,7 @@ export default function App() {
             <Route path="/sales/visit" element={<SalesPwaVisitsPage />} />
             <Route path="/sales/prediksi" element={<SalesPwaPredictionsPage />} />
             <Route path="/sales/prediksi/:customerKey" element={<SalesPwaPredictionsPage />} />
+            <Route path="/sales/riwayat-pengiriman" element={<SalesPwaDeliveryHistoryPage />} />
             <Route path="/sales/profil" element={<SalesPwaProfilePage />} />
           </Route>
           {/* Optimasi Rute: same paths for desktop + PWA; adaptive shell keeps standalone in-app. */}
