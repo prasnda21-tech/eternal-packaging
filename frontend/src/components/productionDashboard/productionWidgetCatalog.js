@@ -3,6 +3,11 @@
 export const PRODUCTION_PERM = "dashboard.production.view";
 export const OPERATOR_ANALYTICS_PERM = "dashboard.production.operator_analytics";
 export const BRANCH_OUTPUT_PERM = "dashboard.production.branch_output";
+export const URGENT_REQUESTS_PERM = [
+  "dashboard.production.urgent_requests.view",
+  "urgent.review",
+  "urgent.approve",
+];
 
 export const PRODUCTION_WIDGETS = [
   { id: "po_aktif", title: "PO Aktif", category: "Snapshot", perm: PRODUCTION_PERM, summary: "PO unik yang belum sepenuhnya terkirim. Snapshot saat ini, bukan histori.", ready: true },
@@ -33,6 +38,14 @@ export const PRODUCTION_WIDGETS = [
     category: "Monitoring",
     perm: ["delivery.schedule.view", "schedule.view", "nav.delivery_schedule"],
     summary: "Sisa qty rencana aktif hari ini dan yang lewat tanggal, per satuan. Grafik 7 atau 30 hari ke depan adalah snapshot rencana, bukan realisasi pengiriman.",
+    ready: true,
+  },
+  {
+    id: "urgent_requests",
+    title: "Daftar Pengajuan Urgent",
+    category: "Monitoring",
+    perm: URGENT_REQUESTS_PERM,
+    summary: "Monitoring pengajuan urgent dari workflow approval. Bukan hitungan PO priority=urgent. Read-only.",
     ready: true,
   },
 ];

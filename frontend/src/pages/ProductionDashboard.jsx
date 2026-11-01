@@ -36,6 +36,7 @@ const OPERATOR_IDS = ["output_operator", "beban_operator"];
 const BRANCH_IDS = ["output_cabang"];
 const DELIVERY_QTY_IDS = ["delivery_qty"];
 const PO_LATE_IDS = ["po_terlambat"];
+const URGENT_REQUEST_IDS = ["urgent_requests"];
 
 function mapToday(plant) {
   const today = plant?.today || {};
@@ -175,6 +176,7 @@ export function ProductionDashboardView({
   branchOutputApi = null,
   deliveryPlanQtyApi = null,
   poLateTrackingSummaryApi = null,
+  urgentRequestsApi = null,
   simulation = null,
 }) {
   const [widgets, setWidgets] = useState([]);
@@ -309,7 +311,22 @@ export function ProductionDashboardView({
     const needBranch = BRANCH_IDS.some(allowed);
     const needDeliveryQty = DELIVERY_QTY_IDS.some(allowed);
     const needPoLate = PO_LATE_IDS.some(allowed);
-    if (!needSnapshot && !needPlant && !needOperator && !needBranch && !needDeliveryQty && !needPoLate) return undefined;
+    const needUrgentRequests = URGENT_REQUEST_IDS.some(allowed);
+    if (!needSnapshot && !needPlant && !needOperator && !needBranch && !needDeliveryQty && !needPoLate && !needUrgentRequests) {
+      return undefined;
+    }
+    if (!needSnapshot && !needPlant && !needOperator && !needBranch && !needDeliveryQty && !needPoLate && needUrgentRequests) {
+      setModels((current) => {
+        const patch = { ...current };
+        widgets.forEach((widget) => {
+          if (URGENT_REQUEST_IDS.includes(widget.widget_id) && productionWidgetAllowed(widget.widget_id, hasPerm)) {
+            patch[widget.widget_id] = { status: "ready" };
+          }
+        });
+        return patch;
+      });
+      return undefined;
+    }
     let live = true;
     const jobs = [];
     if (needSnapshot) {
@@ -390,6 +407,9 @@ export function ProductionDashboardView({
             patch[widget.widget_id] = poLateResult && !poLateResult.error
               ? mapPoLateSummary(poLateResult.body)
               : { status: poLateResult && poLateResult.forbidden ? "forbidden" : "error" };
+          }
+          if (URGENT_REQUEST_IDS.includes(widget.widget_id)) {
+            patch[widget.widget_id] = { status: "ready" };
           }
         });
         return patch;
@@ -488,7 +508,17 @@ export function ProductionDashboardView({
           hasPerm={hasPerm}
           onLayout={changeLayout}
           onRetry={() => setReloadToken((value) => value + 1)}
-          controls={{ days, setDays, scope, setScope, setTrendUnit, setOperatorUnit }}
+          controls={{
+            days,
+            setDays,
+            scope,
+            setScope,
+            setTrendUnit,
+            setOperatorUnit,
+            urgentRequestsApi: simulation
+              ? null
+              : (urgentRequestsApi || ((params) => api.productionUrgentRequests(params))),
+          }}
         />
       </div>
       {catalogOpen ? (
@@ -579,6 +609,7 @@ function RoutedProductionDashboard() {
       branchOutputApi={(period) => api.productionBranchOutput(period)}
       deliveryPlanQtyApi={(period) => api.deliveryPlanQty({ days: period })}
       poLateTrackingSummaryApi={() => api.poLateTrackingSummary()}
+      urgentRequestsApi={(params) => api.productionUrgentRequests(params)}
     />
   );
 }

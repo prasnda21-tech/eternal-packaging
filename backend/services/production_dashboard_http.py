@@ -1,7 +1,9 @@
 """Read-only Production Dashboard routes. No order, stock, or finance writes."""
 from __future__ import annotations
 
-from fastapi import Depends, HTTPException
+from typing import Optional
+
+from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from services.branch_access import resolve_branch_access
@@ -10,8 +12,13 @@ from services.finance_widget_layout import LayoutError
 from services.po_late_tracking import branch_mongo_scope
 from services.production_analytics import build_branch_output, build_operator_analytics, build_plant_analytics
 from services.production_dashboard_snapshot import build_production_snapshot
+from services.production_dashboard_urgent_requests import (
+    PERM_MONITOR as URGENT_REQUESTS_MONITOR_PERM,
+    list_dashboard_urgent_requests,
+)
 from services.production_widget_layout import get_production_layout, reset_production_layout, save_production_layout
 from services.sales_user_mapping import sales_owner_match
+from services import urgent_requests as urg
 
 
 class LayoutSaveBody(BaseModel):
@@ -103,6 +110,7 @@ def register_production_dashboard_routes(
     attach_deadline,
     get_deadline_settings,
     now_iso,
+    require_opt_in_perm=None,
     Depends=Depends,
 ):
     async def _perms(user) -> set:
@@ -110,6 +118,21 @@ def register_production_dashboard_routes(
             return set(await user_permissions(user))
         except Exception as exc:
             raise HTTPException(403, "Izin pengguna tidak dapat dibaca") from exc
+
+    async def _require_urgent_monitor(user) -> None:
+        """Dashboard monitor perm, or urgent.review/approve. Never grants mutate rights."""
+        perms = await _perms(user)
+        if URGENT_REQUESTS_MONITOR_PERM in perms:
+            return
+        if require_opt_in_perm is None:
+            raise HTTPException(500, "Pemeriksaan izin urgent tidak tersedia")
+        try:
+            await require_opt_in_perm(user, urg.PERM_REVIEW)
+            return
+        except HTTPException as review_exc:
+            if review_exc.status_code != 403:
+                raise
+        await require_opt_in_perm(user, urg.PERM_APPROVE)
 
     @api_router.get("/dashboard/produksi/snapshot")
     async def production_snapshot(user=Depends(require_perm("dashboard.production.view"))):
@@ -187,6 +210,29 @@ def register_production_dashboard_routes(
             if doc.get("id")
         }
         return build_branch_output(orders, branch_names=names, days=chosen, generated_at=now_iso())
+
+    @api_router.get("/dashboard/produksi/urgent-requests")
+    async def production_urgent_requests(
+        status: Optional[str] = Query(None),
+        q: Optional[str] = Query(None),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(10, ge=1, le=50),
+        user=Depends(require_perm("dashboard.production.view")),
+    ):
+        """Read-only urgent request table. Scoped like other produksi widgets."""
+        await _require_urgent_monitor(user)
+        db = get_db()
+        perms = await _perms(user)
+        return await list_dashboard_urgent_requests(
+            db,
+            user,
+            status=status,
+            q=q,
+            page=page,
+            page_size=page_size,
+            can_open_po="po.view" in perms,
+            now_iso=now_iso(),
+        )
 
     @api_router.get("/dashboard/produksi/layout")
     async def get_my_production_layout(user=Depends(current_user)):

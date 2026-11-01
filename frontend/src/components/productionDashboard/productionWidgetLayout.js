@@ -29,6 +29,7 @@ export const SIZES = {
   komposisi: { minW: 6, maxW: 12, minH: 4, maxH: 8, w: 6, h: 5 },
   output_cabang: { minW: 6, maxW: 12, minH: 4, maxH: 8, w: 6, h: 5 },
   delivery_qty: { minW: 6, maxW: 12, minH: 5, maxH: 9, w: 7, h: 7 },
+  urgent_requests: { minW: 6, maxW: 12, minH: 4, maxH: 10, w: 12, h: 6 },
 };
 
 const DEFAULT_ORDER = [
