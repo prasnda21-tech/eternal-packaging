@@ -34,6 +34,12 @@ def anyio_backend():
 
 
 @pytest.fixture(autouse=True)
+def local_branch_runtime(monkeypatch):
+    """Keep unassigned admin fixtures on the local branch bypass."""
+    monkeypatch.setenv("APP_ENV", "test")
+
+
+@pytest.fixture(autouse=True)
 def bind_motor():
     from motor.motor_asyncio import AsyncIOMotorClient
 

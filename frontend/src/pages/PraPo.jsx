@@ -45,6 +45,12 @@ import {
   emptyPraPoNewCustomerDraft,
   praPoNewCustomerDraftFromForm,
 } from "../lib/praPoForm";
+import StockAllocationEditor from "../components/StockAllocationEditor";
+import {
+  formatAllocationWarningsList,
+  payloadAllocationsFromLine,
+  summarizeFormAllocationWarnings,
+} from "../lib/stockAllocationForm";
 import "./pesananPenjualan.css";
 import "./ux90SalesCreate.css";
 import "./praPo.css";
@@ -116,6 +122,8 @@ export default function PraPoPage() {
     all: 0, draft: 0, queue: 0, returned: 0, verified: 0,
   });
   const [fieldError, setFieldError] = useState("");
+  const [allocationNotice, setAllocationNotice] = useState("");
+  const [warehouses, setWarehouses] = useState([]);
   const [newCustomerOpen, setNewCustomerOpen] = useState(false);
   const [newCustomerDraft, setNewCustomerDraft] = useState(emptyPraPoNewCustomerDraft);
   const [newCustomerError, setNewCustomerError] = useState("");
@@ -152,8 +160,18 @@ export default function PraPoPage() {
 
   const loadOptions = useCallback(async () => {
     try {
-      const data = await api.salesOrderOptions();
+      const [data, warehouseRes] = await Promise.all([
+        api.salesOrderOptions(),
+        Promise.resolve()
+          .then(() => (typeof api.warehouses === "function" ? api.warehouses() : { items: [] }))
+          .then((res) => res || { items: [] })
+          .catch(() => ({ items: [] })),
+      ]);
       setMasterCustomers(Array.isArray(data?.master_customers) ? data.master_customers : []);
+      setWarehouses(
+        (Array.isArray(warehouseRes?.items) ? warehouseRes.items : [])
+          .filter((wh) => wh && wh.active !== false),
+      );
     } catch {
       setMasterCustomers([]);
     }
@@ -372,7 +390,18 @@ export default function PraPoPage() {
     setForm((prev) => {
       const lines = [...prev.line_items];
       if (!lines[index]) return prev;
-      lines[index] = { ...lines[index], [field]: value };
+      const next = { ...lines[index], [field]: value };
+      if (field === "unit") next.stock_allocations = [];
+      lines[index] = next;
+      return { ...prev, line_items: lines };
+    });
+  };
+
+  const handleLineAllocationsChange = (index, nextAllocations) => {
+    setForm((prev) => {
+      const lines = [...prev.line_items];
+      if (!lines[index]) return prev;
+      lines[index] = { ...lines[index], stock_allocations: nextAllocations };
       return { ...prev, line_items: lines };
     });
   };
@@ -479,8 +508,28 @@ export default function PraPoPage() {
     if (!selected?.id) return;
     setBusy(true);
     setError("");
+    setAllocationNotice("");
+    const softAllocWarnings = summarizeFormAllocationWarnings(form.line_items);
+    if (softAllocWarnings.length) {
+      setAllocationNotice(
+        softAllocWarnings.map((w) => `Baris #${(w.lineIndex || 0) + 1}: ${w.message}`).join(" · "),
+      );
+    }
     try {
-      const d = await api.verifyPraPo(selected.id);
+      const line_items = (form.line_items || []).map((li) => {
+        const allocs = payloadAllocationsFromLine(li);
+        return {
+          line_id: li.line_id || li.rowKey,
+          ...(allocs && allocs.length ? { stock_allocations: allocs } : {}),
+        };
+      });
+      const d = await api.verifyPraPo(selected.id, { line_items });
+      const serverAlloc = formatAllocationWarningsList(
+        d.allocation_warnings || d.order?._allocation_warnings_out || d.warnings,
+      );
+      if (serverAlloc) {
+        setAllocationNotice((prev) => [prev, serverAlloc].filter(Boolean).join(" · "));
+      }
       setSelected(d.pra_po);
       setForm(praPoDocToForm(d.pra_po));
       setSuccessMsg("Pra PO disetujui. Pesanan Penjualan dibuat.");
@@ -1004,6 +1053,34 @@ export default function PraPoPage() {
               </section>
             </div>
           </div>
+
+          {showAdminActions && canVerify ? (
+            <section className="pra-po-verify-alloc" data-testid="pra-po-verify-allocations">
+              <header>
+                <h2>Alokasi gudang (verifikasi)</h2>
+                <p>Pencatatan saja — kosong/tidak seimbang tetap boleh disetujui.</p>
+              </header>
+              {(form.line_items || []).map((line, index) => (
+                <div key={line.line_id || line.rowKey || index} className="pra-po-verify-alloc-line">
+                  <div className="pra-po-verify-alloc-title">
+                    #{index + 1} {line.name || line.item_code || "Barang"} · qty {line.quantity} {line.unit || "pcs"}
+                  </div>
+                  <StockAllocationEditor
+                    line={line}
+                    warehouses={warehouses}
+                    onChange={(next) => handleLineAllocationsChange(index, next)}
+                    disabled={busy}
+                    testIdPrefix={`pra-po-alloc-${index}`}
+                  />
+                </div>
+              ))}
+              {allocationNotice ? (
+                <p className="ux90-warn-box" role="status" data-testid="pra-po-allocation-warning">
+                  {allocationNotice}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
 
           <div className="so-create-actionbar" data-testid="pra-po-actionbar">
             <button type="button" className="so-create-back" onClick={leaveForm} data-testid="pra-po-cancel">

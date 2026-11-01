@@ -433,6 +433,141 @@
   padding: 2px 6px;
   font: inherit;
 }
+.wp-period .sd-date,
+.dr-period-filter .sd-date {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  position: relative;
+}
+.wp-period .sd-date-label,
+.dr-period-filter .sd-date-label {
+  font-size: 11px;
+  line-height: 1.2;
+  color: #3d4f48;
+  white-space: nowrap;
+}
+.wp-period .sd-date-control,
+.dr-period-filter .sd-date-control {
+  display: inline-grid;
+  grid-template-columns: 7.4rem 30px;
+  gap: 4px;
+  align-items: center;
+  position: relative;
+}
+.wp-period .sd-date input[type="text"],
+.dr-period-filter .sd-date input[type="text"],
+.content .widget-dashboard-page .wp-period .sd-date input[type="text"] {
+  width: 7.4rem;
+  box-sizing: border-box;
+  border: 1px solid #d5e4dc;
+  background: #fff;
+  color: #183e32;
+  border-radius: 8px;
+  padding: 4px 6px;
+  font: inherit;
+  min-height: 0;
+  height: 30px;
+  margin: 0;
+  box-shadow: none;
+}
+.wp-period .sd-date-trigger,
+.dr-period-filter .sd-date-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #d5e4dc;
+  border-radius: 8px;
+  background: #fff;
+  color: #176b4d;
+  cursor: pointer;
+}
+.wp-period .sd-date-trigger:hover,
+.dr-period-filter .sd-date-trigger:hover,
+.wp-period .sd-date-trigger:focus-visible,
+.dr-period-filter .sd-date-trigger:focus-visible {
+  border-color: #176b4d;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(23, 107, 77, 0.18);
+}
+/* Native date stays a hidden picker; locale mm/dd text must not appear. */
+.content .widget-dashboard-page .wp-period .sd-date-calendar,
+.content .dr-page .dr-period-filter .sd-date-calendar,
+.wp-period .sd-date-calendar,
+.dr-period-filter .sd-date-calendar {
+  position: absolute !important;
+  left: -9999px !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 1px !important;
+  max-height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+}
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-datetime-edit,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-datetime-edit,
+.wp-period .sd-date-calendar::-webkit-datetime-edit,
+.dr-period-filter .sd-date-calendar::-webkit-datetime-edit,
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-datetime-edit-fields-wrapper,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-datetime-edit-fields-wrapper,
+.wp-period .sd-date-calendar::-webkit-datetime-edit-fields-wrapper,
+.dr-period-filter .sd-date-calendar::-webkit-datetime-edit-fields-wrapper,
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-datetime-edit-text,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-datetime-edit-text,
+.wp-period .sd-date-calendar::-webkit-datetime-edit-text,
+.dr-period-filter .sd-date-calendar::-webkit-datetime-edit-text,
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-datetime-edit-month-field,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-datetime-edit-month-field,
+.wp-period .sd-date-calendar::-webkit-datetime-edit-month-field,
+.dr-period-filter .sd-date-calendar::-webkit-datetime-edit-month-field,
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-datetime-edit-day-field,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-datetime-edit-day-field,
+.wp-period .sd-date-calendar::-webkit-datetime-edit-day-field,
+.dr-period-filter .sd-date-calendar::-webkit-datetime-edit-day-field,
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-datetime-edit-year-field,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-datetime-edit-year-field,
+.wp-period .sd-date-calendar::-webkit-datetime-edit-year-field,
+.dr-period-filter .sd-date-calendar::-webkit-datetime-edit-year-field,
+.content .widget-dashboard-page .wp-period .sd-date-calendar::-webkit-calendar-picker-indicator,
+.content .dr-page .dr-period-filter .sd-date-calendar::-webkit-calendar-picker-indicator,
+.wp-period .sd-date-calendar::-webkit-calendar-picker-indicator,
+.dr-period-filter .sd-date-calendar::-webkit-calendar-picker-indicator {
+  display: none !important;
+  width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  color: transparent !important;
+}
+.sd-date-error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 2;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #8a2b2b;
+  white-space: nowrap;
+}
 
 .wp-card.is-drillable .wp-body { cursor: pointer; }
 .wp-card.is-drillable:hover { border-color: rgba(8, 120, 76, 0.35); }

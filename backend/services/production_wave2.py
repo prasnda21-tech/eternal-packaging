@@ -658,9 +658,9 @@ def build_wave2(
     holidays: Optional[Iterable[str]] = None,
 ) -> dict:
     today = today or datetime.now(WIB).date()
-    rows = [order for order in orders if isinstance(order, dict) and order.get("id")]
+    rows = [order for order in orders if isinstance(order, dict) and order.get("id") and not order.get("cancelled")]
     if not rows:
-        return {"status": "zero", "population": "non_cancelled_active"}
+        return {"status": "zero", "population": "non_cancelled_all"}
     holiday_list = list(holidays or [])
     overdue = unscheduled = legacy = 0
     late_rows = []
@@ -728,7 +728,7 @@ def build_wave2(
         produced = _print_done(order) and _packing_done(order)
         if produced and not is_fully_delivered(order):
             ship_open.add(oid)
-        if hold or pending_approval or produced:
+        if is_fully_delivered(order) or hold or pending_approval or produced:
             continue
         target = finish.get("current")
         if finish["status"] == "unlocked" or not target or today.isoformat() <= target:
@@ -753,7 +753,7 @@ def build_wave2(
     cohort = _cohort(rows)
     return {
         "status": "complete",
-        "population": "non_cancelled_active",
+        "population": "non_cancelled_all",
         "target_produksi": {
             "status": "complete" if cohort["locked"] else "unlocked",
             "note": "Target belum dikunci." if not cohort["locked"] else "Realisasi cohort mengikuti tanggal jadwal. Output kalender tetap di widget tren.",
@@ -897,3 +897,4 @@ async def mutate_holiday(db, *, action: str, action_id: str, day: str, note: str
     await db[HOLIDAY_HISTORY].insert_one(dict(event))
     event.pop("_id", None)
     return {"replay": False, "holiday": after, "event": event}
+

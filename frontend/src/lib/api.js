@@ -48,6 +48,14 @@ const publicJsonRequest = async (path, options = {}) => {
 };
 
 export const api = {
+  cashAvailability: () => client.get("/dashboard/widget/cash-available", { timeout: 30000 }).then(r => r.data),
+  widgetMinStock: (params = {}) => client.get("/dashboard/widget/min-stock", { params, timeout: 60000 }).then((r) => r.data),
+  listStockMinimums: (params = {}) => client.get("/settings/stock-minimum", { params }).then((r) => r.data),
+  upsertStockMinimum: (payload) => client.put("/settings/stock-minimum", payload).then((r) => r.data),
+  patchOrderStockAllocations: (orderId, payload) =>
+    client.patch(`/orders/${encodeURIComponent(orderId)}/stock-allocations`, payload).then((r) => r.data),
+  webPresenceHeartbeat: (payload) => client.post("/auth/presence", payload, { timeout: 10000 }).then(r => r.data),
+  activeUsers: (params) => client.get("/dashboard/active-users", { params, timeout: 10000 }).then(r => r.data),
   login: (email, password) => client.post("/auth/login", { email, password }).then((r) => r.data),
   logout: () => client.post("/auth/logout", {}).then((r) => r.data),
   me: dedupeInflight(() => client.get("/auth/me").then((r) => r.data)),
@@ -717,7 +725,8 @@ export const api = {
   updatePraPo: (id, payload) => client.put(`/pra-po/${encodeURIComponent(id)}`, payload).then((r) => r.data),
   submitPraPo: (id) => client.post(`/pra-po/${encodeURIComponent(id)}/submit`).then((r) => r.data),
   returnPraPo: (id, payload) => client.post(`/pra-po/${encodeURIComponent(id)}/return`, payload).then((r) => r.data),
-  verifyPraPo: (id) => client.post(`/pra-po/${encodeURIComponent(id)}/verify`).then((r) => r.data),
+  verifyPraPo: (id, payload = {}) =>
+    client.post(`/pra-po/${encodeURIComponent(id)}/verify`, payload).then((r) => r.data),
   praPoHistory: (id) => client.get(`/pra-po/${encodeURIComponent(id)}/history`).then((r) => r.data),
   salesAccountingSettings: () => client.get(`/settings/sales-accounting`).then((r) => r.data),
   updateSalesAccountingSettings: (payload) => client.put(`/settings/sales-accounting`, payload).then((r) => r.data),
@@ -1398,3 +1407,4 @@ function spkKeyHeader(payload) {
 }
 
 export default api;
+

@@ -15,7 +15,7 @@ COLLECTION = "finance_dashboard_layouts"
 DASHBOARD_KEY = "keuangan"
 COLUMNS = 12
 MAX_Y = 48
-MAX_READY = 9
+MAX_READY = 12
 MAX_PRESERVED = 8
 
 PERM_CASH = "dashboard.finance.view"
@@ -23,8 +23,11 @@ PERM_PROFIT = "profit_loss.view"
 PERM_PURCHASES = "purchase_invoices.view"
 PERM_RECON = "cash_bank.reconcile"
 PERM_SALES = "dashboard.sales.view"
+PERM_MIN_STOCK = "current_stock.view"
 
 READY_PERMISSION = {
+    "cash_available": "cash_bank.view",
+    "active_users": "users.view",
     "cash": PERM_CASH,
     "expense": PERM_CASH,
     "profit": PERM_PROFIT,
@@ -34,6 +37,7 @@ READY_PERMISSION = {
     "products": PERM_SALES,
     "sellers": PERM_SALES,
     "trend": PERM_SALES,
+    "min_stock": PERM_MIN_STOCK,
 }
 
 PERIOD_WIDGETS = frozenset({
@@ -45,6 +49,8 @@ VISUALS = frozenset({"bars", "list"})
 
 # min_w, max_w, min_h, max_h, default_w, default_h
 SIZES: Dict[str, Tuple[int, int, int, int, int, int]] = {
+    "cash_available": (4, 12, 3, 8, 4, 3),
+    "active_users": (4, 12, 3, 8, 6, 3),
     "cash": (3, 8, 2, 6, 3, 2),
     "sales": (3, 8, 2, 6, 3, 2),
     "purchases": (3, 8, 2, 6, 3, 2),
@@ -54,6 +60,7 @@ SIZES: Dict[str, Tuple[int, int, int, int, int, int]] = {
     "products": (4, 12, 3, 8, 4, 3),
     "sellers": (4, 12, 3, 8, 6, 3),
     "recon": (4, 12, 3, 8, 6, 3),
+    "min_stock": (4, 12, 3, 8, 4, 3),
 }
 
 DEFAULT_ORDER = (
@@ -421,3 +428,4 @@ async def reset_finance_layout(db, user: Optional[dict], permissions: Iterable[s
     uid = _require_user_id(user)
     await db[COLLECTION].delete_one({"user_id": uid, "dashboard_key": _dashboard_key(spec)})
     return _view(0, "default", default_widgets(permissions, spec), [], [], spec)
+

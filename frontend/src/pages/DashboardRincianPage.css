@@ -68,11 +68,27 @@
   color: var(--dr-muted);
 }
 
+/* Keep summary+detail as one grid row so 1fr stays on the table, not the toolbar. */
+.dr-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
 .dr-kpi {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   min-width: 0;
+}
+
+.dr-kpi-detail {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--dr-muted);
+  max-width: 72rem;
 }
 
 .dr-kpi > div {
@@ -101,14 +117,36 @@
   white-space: nowrap;
 }
 
+.dr-period-filter {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+}
 .dr-toolbar {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 8px 10px;
   position: relative;
   z-index: 4;
   min-width: 0;
+  flex: 0 0 auto;
+}
+/* Keep date fields compact; beat global .content input min-heights. */
+.content .dr-page .sd-date input[type="text"],
+.dr-page .sd-date input[type="text"] {
+  min-height: 0 !important;
+  height: 30px !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+.content .dr-page .sd-date-trigger,
+.dr-page .sd-date-trigger {
+  min-height: 0 !important;
+  height: 30px !important;
+  width: 30px !important;
+  padding: 0 !important;
 }
 
 /* Scope overrides beat global .content input cyan/blue module tokens. */

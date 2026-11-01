@@ -173,7 +173,7 @@ export default function FinanceDashboard() {
     requestRef.current = requestId;
     const nextModels = {};
     widgets.forEach((widget) => {
-      nextModels[widget.widget_id] = financeWidgetAllowed(widget.widget_id, hasPerm) ? loadingModel() : { status: "forbidden", detail: "Tidak ada izin." };
+      nextModels[widget.widget_id] = financeWidgetAllowed(widget.widget_id, hasPerm) ? (widget.widget_id === "active_users" ? { status: "complete" } : loadingModel()) : { status: "forbidden", detail: "Tidak ada izin." };
     });
     setModels(nextModels);
 
@@ -278,6 +278,18 @@ export default function FinanceDashboard() {
           } catch (error) {
             return { profit: failedModel(error) };
           }
+        });
+      }
+      if (widget.widget_id === "cash_available") {
+        remember(async () => {
+          try { return { cash_available: await api.cashAvailability() }; }
+          catch (error) { return { cash_available: failedModel(error) }; }
+        });
+      }
+      if (widget.widget_id === "min_stock") {
+        remember(async () => {
+          try { return { min_stock: await api.widgetMinStock({ page: 1, limit: 50 }) }; }
+          catch (error) { return { min_stock: failedModel(error) }; }
         });
       }
       if (widget.widget_id === "recon") {
@@ -457,3 +469,4 @@ export default function FinanceDashboard() {
     </div>
   );
 }
+

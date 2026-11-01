@@ -3,6 +3,7 @@ import {
   failedModel,
   formatLongDate,
   mapCash,
+  mapProfit,
   mapCustomerRank,
   mapDeliveryQty,
   mapProduction,
@@ -245,4 +246,13 @@ test("delivery qty keeps today overdue and units separate", () => {
 test("a later request id wins", () => {
   expect(shouldApplyDashboardResponse(1, 2)).toBe(false);
   expect(shouldApplyDashboardResponse(2, 2)).toBe(true);
+});
+
+
+test("cash account balances and gross profit retain source values", () => {
+  const cash = mapCash({status:"complete",cash_in:100,cash_out:30,net_change:70,end_date:"2026-10-31",accounts:[{account_id:"a",ending:0}]});
+  expect(cash.accounts[0].ending).toBe(0);
+  expect(cash.asOf).toBe("2026-10-31");
+  const profit = mapProfit({status:"complete",revenue:100,cogs:60,gross_profit:40,net_profit:20});
+  expect(profit.rows.find(r=>r.name==="Laba kotor").amount).toBe(40);
 });

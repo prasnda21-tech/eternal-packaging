@@ -4,6 +4,10 @@ import FinanceDashboard from "./FinanceDashboard";
 import api from "../lib/api";
 import { layoutOverlaps } from "../components/financeDashboard/financeWidgetLayout";
 
+jest.mock("react-router-dom", () => ({
+  useNavigate: () => jest.fn(),
+}), { virtual: true });
+
 jest.mock("../lib/auth", () => ({
   useAuth: () => ({
     user: { role: "finance" },
@@ -22,6 +26,7 @@ jest.mock("../lib/api", () => ({
     purchasePeriodSummary: jest.fn(),
     widgetProfitLoss: jest.fn(),
     widgetReconciliations: jest.fn(),
+    cashAvailability: jest.fn(),
   },
 }));
 
@@ -71,6 +76,7 @@ beforeEach(() => {
   api.purchasePeriodSummary.mockReset();
   api.widgetProfitLoss.mockReset();
   api.widgetReconciliations.mockReset();
+  api.cashAvailability.mockReset();
   api.financeDashboardLayout.mockResolvedValue(layout([cashWidget(), expenseWidget()]));
   api.saveFinanceDashboardLayout.mockImplementation(async (body) => ({ ...body, version: body.version + 1, source: "saved" }));
   api.financialDashboard.mockResolvedValue({
@@ -386,4 +392,41 @@ test("incomplete and error cash are not shown as Rp 0", async () => {
   expect(expense).toContain("Gagal memuat");
   expect(expense).not.toContain("Rp 0");
   view.unmount();
+});
+
+
+test("cash availability is current, independent of period and reconciliation, with refresh", async () => {
+  global.__financePerms = ["cash_bank.view"];
+  api.financeDashboardLayout.mockResolvedValue(layout([{ widget_id: "cash_available", x: 0, y: 0, w: 4, h: 3, settings: {} }]));
+  api.cashAvailability.mockResolvedValue({ status: "complete", total: 50, generated_at: "2026-10-31T18:00:00Z", rows: [{ account_id: "a", name: "Kas Jogja", balance: 70 }, { account_id: "b", name: "Bank", balance: -20 }] });
+  const view = await renderPage();
+  const card = () => view.host.querySelector("[data-testid='finance-widget-cash_available']");
+  expect(card().textContent).toContain("Kas Jogja");
+  expect(card().textContent).toContain("Rp -20");
+  expect(card().textContent).toContain("WIB");
+  expect(card().textContent).toContain("Snapshot saat ini");
+  await act(async () => { [...view.host.querySelectorAll("button")].find(b => b.textContent === "Tahun ini").click(); await flush(); });
+  expect(api.cashAvailability.mock.calls.every(call => call.length === 0)).toBe(true);
+  expect(api.financialDashboard).not.toHaveBeenCalled();
+  expect(api.widgetReconciliations).not.toHaveBeenCalled();
+  const calls = api.cashAvailability.mock.calls.length;
+  await act(async () => { [...card().querySelectorAll("button")].find(b => b.textContent === "Muat ulang saldo").click(); await flush(); });
+  expect(api.cashAvailability).toHaveBeenCalledTimes(calls + 1);
+  view.unmount();
+});
+
+test("cash availability unknown is not zero and reconciliation permission grants no access", async () => {
+  global.__financePerms = ["cash_bank.view"];
+  api.financeDashboardLayout.mockResolvedValue(layout([{ widget_id: "cash_available", x: 0, y: 0, w: 4, h: 3, settings: {} }]));
+  api.cashAvailability.mockResolvedValue({ status: "incomplete", total: null, known_total: 50, detail: "Total belum lengkap", rows: [{ cash_bank_id: "missing", name: "Kas Baru", balance: null }] });
+  let view = await renderPage();
+  let card = view.host.querySelector("[data-testid='finance-widget-cash_available']");
+  expect(card.textContent).toContain("Belum terhubung");
+  expect(card.querySelector(".kb-metric").textContent).toBe("—");
+  expect(card.textContent).not.toContain("Rp 0"); view.unmount();
+  global.__financePerms = ["cash_bank.reconcile"];
+  api.cashAvailability.mockClear(); view = await renderPage();
+  card = view.host.querySelector("[data-testid='finance-widget-cash_available']");
+  expect(card.textContent).toContain("Tidak ada izin");
+  expect(api.cashAvailability).not.toHaveBeenCalled(); view.unmount();
 });

@@ -15,11 +15,13 @@ time, not a historical balance at the filter end date.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from services.customer_identity import extract_stable_customer_id
+from services.operational_branch import operational_query
 from services.financial_statement_common import parse_financial_date_range
 from services.sales_invoices import (
     FINANCIAL_FINALIZED,
@@ -93,8 +95,14 @@ def wib_today(now: Optional[datetime] = None) -> date:
 
 def _money(raw: Any) -> Optional[Decimal]:
     """None when the stored amount is missing or not a number. Never implies 0."""
-    if raw is None:
+    if raw is None or isinstance(raw, bool):
         return None
+    to_decimal = getattr(raw, "to_decimal", None)
+    if callable(to_decimal):
+        try:
+            return Decimal(to_decimal()).quantize(MONEY_Q)
+        except (InvalidOperation, ValueError, TypeError):
+            return None
     if isinstance(raw, str) and not raw.strip():
         return None
     try:
@@ -358,6 +366,476 @@ def _scope_clause(po_ids: Optional[set]) -> dict:
     if po_ids is None:
         return {}
     return {"po_id": {"$in": list(po_ids)}}
+
+
+def _invoice_access_extra(
+    branch_clause: Optional[dict],
+    po_ids: Optional[set],
+    extra_clause: Optional[dict] = None,
+) -> dict:
+    """AND official branch scope with sales ownership. Empty clauses are omitted.
+
+    ``po_ids is None`` means the caller is not sales-scoped. An empty set means
+    the sales user owns no PO, so the invoice match is empty.
+    """
+    clauses = []
+    if extra_clause:
+        clauses.append(extra_clause)
+    scope = _scope_clause(po_ids)
+    if scope:
+        clauses.append(scope)
+    if branch_clause:
+        clauses.append(branch_clause)
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+def sales_invoice_population_match(
+    *,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    po_ids: Optional[set] = None,
+    branch_clause: Optional[dict] = None,
+    search: str = "",
+) -> dict:
+    """Same omzet population as the sales card: finalized, not cancelled, period, access.
+
+    Dates use the card's half-open ``invoice_date`` bound (calendar day, next day
+    exclusive). A search narrows the set and is not comparable to the card.
+    """
+    clauses = [
+        {"financial_status": FINANCIAL_FINALIZED},
+        {"is_cancelled": {"$ne": True}},
+    ]
+    if start or end:
+        date_query: Dict[str, str] = {}
+        if start:
+            date_query["$gte"] = start
+        if end:
+            date_query["$lt"] = _next_day(end)
+        clauses.append({"invoice_date": date_query})
+    scope = _scope_clause(po_ids)
+    if scope:
+        clauses.append(scope)
+    if branch_clause:
+        clauses.append(branch_clause)
+    needle = str(search or "").strip()
+    if needle:
+        escaped = re.escape(needle)
+        clauses.append({"$or": [
+            {"invoice_number": {"$regex": escaped, "$options": "i"}},
+            {"customer": {"$regex": escaped, "$options": "i"}},
+            {"customer_name": {"$regex": escaped, "$options": "i"}},
+        ]})
+    return {"$and": clauses}
+
+
+async def resolve_sales_invoice_access(db, user: Optional[dict]) -> Tuple[Optional[set], dict]:
+    """Branch clause from ``operational_query``, AND sales ownership.
+
+    Global Direktur/Holding receive an empty branch clause. A non-global user
+    with no assignment raises the official 403 and does not become global.
+    """
+    branch_clause = await operational_query(db, user)
+    po_ids = await _scoped_po_ids(db, user)
+    return po_ids, branch_clause
+
+
+_UNREADABLE_OMZET = "Ada faktur finalized dengan after_discount yang tidak dapat dibaca."
+_UNREADABLE_GRAND = "Ada faktur finalized dengan grand_total yang tidak dapat dibaca."
+_UNREADABLE_CREDIT = "Pemakaian saldo pelanggan tidak dapat dibaca."
+_SETTLEMENT_DETAIL = (
+    "Total adalah jumlah nominal lunas dan belum lunas, sesuai kartu Pelunasan. "
+    "Pembayaran parsial masuk belum lunas sebesar nilai faktur penuh."
+)
+
+
+async def aggregate_omzet(db, match: dict) -> dict:
+    """Sum ``after_discount`` over the match without loading the invoice set.
+
+    Null, missing, and non-numeric values follow the card: the amount is
+    incomplete, not zero. A stored numeric 0 stays a recorded zero.
+    """
+    pipeline = [
+        {"$match": match},
+        {"$project": {
+            "parsed": {
+                "$convert": {
+                    "input": "$after_discount",
+                    "to": "decimal",
+                    "onError": None,
+                    "onNull": None,
+                }
+            },
+            "raw_type": {"$type": "$after_discount"},
+        }},
+        {"$group": {
+            "_id": None,
+            "count": {"$sum": 1},
+            "bad": {"$sum": {"$cond": [
+                {"$or": [
+                    {"$eq": ["$parsed", None]},
+                    {"$eq": ["$raw_type", "bool"]},
+                ]},
+                1,
+                0,
+            ]}},
+            "amount": {"$sum": {"$cond": [
+                {"$and": [
+                    {"$ne": ["$parsed", None]},
+                    {"$ne": ["$raw_type", "bool"]},
+                ]},
+                "$parsed",
+                0,
+            ]}},
+        }},
+    ]
+    rows = await _cursor_all(db.sales_invoices.aggregate(pipeline))
+    if not rows or int(rows[0].get("count") or 0) == 0:
+        return {
+            "status": "empty",
+            "amount": None,
+            "invoice_count": 0,
+            "detail": "Belum ada faktur pada periode ini",
+        }
+    row = rows[0]
+    if int(row.get("bad") or 0) > 0:
+        return {
+            "status": "error",
+            "amount": None,
+            "invoice_count": None,
+            "detail": _UNREADABLE_OMZET,
+        }
+    amount = _money(row.get("amount"))
+    if amount is None:
+        return {
+            "status": "error",
+            "amount": None,
+            "invoice_count": None,
+            "detail": _UNREADABLE_OMZET,
+        }
+    status = "zero" if amount == 0 else "complete"
+    return {
+        "status": status,
+        "amount": _num(amount),
+        "invoice_count": int(row.get("count") or 0),
+        "detail": None,
+    }
+
+
+def _decimal_expr(raw_expr: Any) -> dict:
+    return {
+        "$convert": {
+            "input": raw_expr,
+            "to": "decimal",
+            "onError": None,
+            "onNull": None,
+        }
+    }
+
+
+def _receipt_count_expr() -> dict:
+    """Same inclusion rule as ``receipt_counts_toward_outstanding``."""
+    status = {
+        "$toLower": {
+            "$trim": {"input": {"$ifNull": ["$$r.financial_status", ""]}},
+        }
+    }
+    return {"$not": {"$or": [
+        {"$in": [status, ["cancelled", "reversed"]]},
+        {"$eq": ["$$r.cancelled", True]},
+        {"$eq": ["$$r.settlement_effective", False]},
+    ]}}
+
+
+def _receipt_row_expr() -> dict:
+    """Allocated amount when present, otherwise amount. Unreadable money stays bad."""
+    has_allocated = {"$and": [
+        {"$ne": [{"$type": "$$r.allocated_amount"}, "missing"]},
+        {"$ne": ["$$r.allocated_amount", None]},
+    ]}
+    return {"$let": {
+        "vars": {
+            "raw": {"$cond": [has_allocated, "$$r.allocated_amount", "$$r.amount"]},
+            "raw_type": {"$cond": [
+                has_allocated,
+                {"$type": "$$r.allocated_amount"},
+                {"$type": "$$r.amount"},
+            ]},
+            "field": {"$cond": [has_allocated, "allocated_amount", "amount"]},
+        },
+        "in": {"$let": {
+            "vars": {"parsed": _decimal_expr("$$raw")},
+            "in": {
+                "counts": _receipt_count_expr(),
+                "parsed": "$$parsed",
+                "bad": {"$or": [
+                    {"$eq": ["$$parsed", None]},
+                    {"$eq": ["$$raw_type", "bool"]},
+                ]},
+                "field": "$$field",
+            },
+        }},
+    }}
+
+
+def _credit_row_expr() -> dict:
+    """Active posted applications only, matching ``_load_credit``."""
+    counts = {"$and": [
+        {"$eq": ["$$c.financial_status", "active"]},
+        {"$eq": ["$$c.status", "posted"]},
+    ]}
+    parsed = _decimal_expr("$$c.amount")
+    return {
+        "counts": counts,
+        "parsed": parsed,
+        "bad": {"$or": [
+            {"$eq": [parsed, None]},
+            {"$eq": [{"$type": "$$c.amount"}, "bool"]},
+        ]},
+    }
+
+
+def _paid_sum_expr(rows_field: str) -> dict:
+    return {"$sum": {"$map": {
+        "input": rows_field,
+        "as": "row",
+            "in": {"$cond": [
+                {"$and": ["$$row.counts", {"$not": ["$$row.bad"]}]},
+                "$$row.parsed",
+                0,
+            ]},
+    }}}
+
+
+def _bad_count_expr(rows_field: str) -> dict:
+    return {"$gt": [
+        {"$size": {"$filter": {
+            "input": rows_field,
+            "as": "row",
+            "cond": {"$and": ["$$row.counts", "$$row.bad"]},
+        }}},
+        0,
+    ]}
+
+
+def _settlement_page_row(inv: dict) -> dict:
+    grand = None
+    if not inv.get("grand_bad"):
+        grand = _num(_money(inv.get("grand_parsed")))
+    customer = inv.get("customer")
+    if isinstance(customer, dict):
+        customer_name = customer.get("name") or customer.get("customer_name") or ""
+    else:
+        customer_name = inv.get("customer_name") or customer or ""
+    return {
+        "id": inv.get("id"),
+        "invoice_number": inv.get("invoice_number") or inv.get("number"),
+        "invoice_date": str(inv.get("invoice_date") or "")[:10],
+        "customer_name": customer_name,
+        "grand_total": grand,
+        "financial_status": inv.get("financial_status") or "",
+        "payment_status": inv.get("payment_status") or "",
+    }
+
+
+async def aggregate_settlement(db, match: dict, *, page: int = 1, page_size: int = 50) -> dict:
+    """Sum ``grand_total`` for the settlement card population without loading it.
+
+    Lunas / belum lunas uses the same receipt and credit rules as
+    ``_build_settlement``. A partial payment stays in belum lunas at the full
+    invoice grand total. Null or unreadable grand_total is an error, not zero.
+    Null ``after_discount`` is ignored. Pagination limits returned rows only.
+    """
+    safe_page = max(1, int(page or 1))
+    safe_size = max(1, int(page_size or 50))
+    parsed_grand = _decimal_expr("$grand_total")
+    pipeline = [
+        {"$match": match},
+        {"$lookup": {
+            "from": "sales_receipts",
+            "localField": "id",
+            "foreignField": "invoice_id",
+            "as": "receipts",
+        }},
+        {"$lookup": {
+            "from": "sales_customer_credit_applications",
+            "localField": "id",
+            "foreignField": "invoice_id",
+            "as": "credits",
+        }},
+        {"$addFields": {
+            "receipt_rows": {"$map": {
+                "input": {"$ifNull": ["$receipts", []]},
+                "as": "r",
+                "in": _receipt_row_expr(),
+            }},
+            "credit_rows": {"$map": {
+                "input": {"$ifNull": ["$credits", []]},
+                "as": "c",
+                "in": _credit_row_expr(),
+            }},
+            "grand_parsed": parsed_grand,
+            "grand_type": {"$type": "$grand_total"},
+        }},
+        {"$addFields": {
+            "grand_bad": {"$or": [
+                {"$eq": ["$grand_parsed", None]},
+                {"$eq": ["$grand_type", "bool"]},
+            ]},
+            "bad_receipt": _bad_count_expr("$receipt_rows"),
+            "bad_credit": _bad_count_expr("$credit_rows"),
+            "paid": {"$add": [
+                _paid_sum_expr("$receipt_rows"),
+                _paid_sum_expr("$credit_rows"),
+            ]},
+            "receipt_bad_field": {"$min": {"$map": {
+                "input": "$receipt_rows",
+                "as": "row",
+                "in": {"$cond": [
+                    {"$and": ["$$row.counts", "$$row.bad"]},
+                    "$$row.field",
+                    "zzz",
+                ]},
+            }}},
+        }},
+        {"$addFields": {
+            "bad": {"$or": ["$grand_bad", "$bad_receipt", "$bad_credit"]},
+            "is_lunas": {"$and": [
+                {"$not": ["$grand_bad"]},
+                {"$not": ["$bad_receipt"]},
+                {"$not": ["$bad_credit"]},
+                {"$gt": ["$paid", 0]},
+                {"$gte": ["$paid", "$grand_parsed"]},
+            ]},
+            "payment_status": {"$switch": {
+                "branches": [
+                    {"case": {"$eq": ["$bad", True]}, "then": ""},
+                    {"case": {"$lte": ["$paid", 0]}, "then": "BELUM DIBAYAR"},
+                    {"case": {"$lt": ["$paid", "$grand_parsed"]}, "then": "DP"},
+                ],
+                "default": "LUNAS",
+            }},
+        }},
+        {"$facet": {
+            "summary": [
+                {"$group": {
+                    "_id": None,
+                    "count": {"$sum": 1},
+                    "bad": {"$sum": {"$cond": ["$bad", 1, 0]}},
+                    "bad_credit": {"$sum": {"$cond": ["$bad_credit", 1, 0]}},
+                    "bad_receipt": {"$sum": {"$cond": ["$bad_receipt", 1, 0]}},
+                    "bad_grand": {"$sum": {"$cond": ["$grand_bad", 1, 0]}},
+                    "receipt_bad_field": {"$min": "$receipt_bad_field"},
+                    "settled_count": {"$sum": {"$cond": [
+                        {"$and": [{"$not": ["$bad"]}, "$is_lunas"]}, 1, 0,
+                    ]}},
+                    "open_count": {"$sum": {"$cond": [
+                        {"$and": [{"$not": ["$bad"]}, {"$not": ["$is_lunas"]}]}, 1, 0,
+                    ]}},
+                    "settled_grand": {"$sum": {"$cond": [
+                        {"$and": [{"$not": ["$bad"]}, "$is_lunas"]}, "$grand_parsed", 0,
+                    ]}},
+                    "open_grand": {"$sum": {"$cond": [
+                        {"$and": [{"$not": ["$bad"]}, {"$not": ["$is_lunas"]}]}, "$grand_parsed", 0,
+                    ]}},
+                }},
+            ],
+            "page": [
+                {"$sort": {"invoice_date": 1, "invoice_number": 1, "id": 1}},
+                {"$skip": (safe_page - 1) * safe_size},
+                {"$limit": safe_size},
+                {"$project": {
+                    "_id": 0,
+                    "id": 1,
+                    "invoice_number": 1,
+                    "invoice_date": 1,
+                    "customer": 1,
+                    "customer_name": 1,
+                    "financial_status": 1,
+                    "grand_parsed": 1,
+                    "grand_bad": 1,
+                    "payment_status": 1,
+                }},
+            ],
+        }},
+    ]
+    docs = await _cursor_all(db.sales_invoices.aggregate(pipeline))
+    facet = docs[0] if docs else {}
+    summary_rows = facet.get("summary") or []
+    page_rows = [_settlement_page_row(inv) for inv in (facet.get("page") or [])]
+    if not summary_rows or int(summary_rows[0].get("count") or 0) == 0:
+        return {
+            "status": "empty",
+            "amount": None,
+            "settled_grand_total": None,
+            "open_grand_total": None,
+            "settled_count": 0,
+            "open_count": 0,
+            "invoice_count": 0,
+            "population_count": 0,
+            "detail": "Belum ada faktur pada periode ini",
+            "basis": "grand_total",
+            "rows": [],
+        }
+    row = summary_rows[0]
+    population = int(row.get("count") or 0)
+    if int(row.get("bad") or 0) > 0:
+        if int(row.get("bad_credit") or 0) > 0:
+            detail = _UNREADABLE_CREDIT
+        elif int(row.get("bad_receipt") or 0) > 0:
+            field = str(row.get("receipt_bad_field") or "amount")
+            if field not in {"allocated_amount", "amount"}:
+                field = "amount"
+            detail = f"{field} tidak valid."
+        else:
+            detail = _UNREADABLE_GRAND
+        return {
+            "status": "error",
+            "amount": None,
+            "settled_grand_total": None,
+            "open_grand_total": None,
+            "settled_count": None,
+            "open_count": None,
+            "invoice_count": None,
+            "population_count": population,
+            "detail": detail,
+            "basis": "grand_total",
+            "rows": page_rows,
+        }
+    settled = _money(row.get("settled_grand"))
+    opened = _money(row.get("open_grand"))
+    if settled is None or opened is None:
+        return {
+            "status": "error",
+            "amount": None,
+            "settled_grand_total": None,
+            "open_grand_total": None,
+            "settled_count": None,
+            "open_count": None,
+            "invoice_count": None,
+            "population_count": population,
+            "detail": _UNREADABLE_GRAND,
+            "basis": "grand_total",
+            "rows": page_rows,
+        }
+    amount = (settled + opened).quantize(MONEY_Q)
+    return {
+        "status": "complete",
+        "amount": _num(amount),
+        "settled_grand_total": _num(settled),
+        "open_grand_total": _num(opened),
+        "settled_count": int(row.get("settled_count") or 0),
+        "open_count": int(row.get("open_count") or 0),
+        "invoice_count": population,
+        "population_count": population,
+        "detail": _SETTLEMENT_DETAIL,
+        "basis": "grand_total",
+        "rows": page_rows,
+    }
 
 
 async def _load_finalized_invoices(db, extra: dict, projection: dict) -> List[dict]:
@@ -1156,7 +1634,13 @@ def _build_customer_rank(invoices: Sequence[dict], orders_by_id: Dict[str, dict]
     }
 
 
-async def _prior_customer_ids(db, customer_ids: Sequence[str], start: str, po_ids: Optional[set]) -> set:
+async def _prior_customer_ids(
+    db,
+    customer_ids: Sequence[str],
+    start: str,
+    po_ids: Optional[set],
+    branch_clause: Optional[dict] = None,
+) -> set:
     if not customer_ids:
         return set()
     order_query: Dict[str, Any] = {"customer_id": {"$in": list(customer_ids)}}
@@ -1172,7 +1656,11 @@ async def _prior_customer_ids(db, customer_ids: Sequence[str], start: str, po_id
         return set()
     invoices = await _load_finalized_invoices(
         db,
-        {"po_id": {"$in": list(po_to_customer)}, "invoice_date": {"$lt": start}},
+        _invoice_access_extra(
+            branch_clause,
+            None,
+            {"po_id": {"$in": list(po_to_customer)}, "invoice_date": {"$lt": start}},
+        ),
         {"id": 1, "po_id": 1, "invoice_date": 1, "financial_status": 1, "is_cancelled": 1},
     )
     found = set()
@@ -1288,7 +1776,7 @@ async def get_sales_dashboard(
     today = wib_today(now)
     perms = set(permissions or [])
     can_link_orders = any(key in perms for key in ORDER_LINK_PERMS)
-    scoped = await _scoped_po_ids(db, user)
+    scoped, branch_clause = await resolve_sales_invoice_access(db, user)
 
     base = {
         "preset": kind,
@@ -1304,8 +1792,7 @@ async def get_sales_dashboard(
     period_invoices: Optional[List[dict]] = None
     period_error: Optional[Exception] = None
     try:
-        extra = {"invoice_date": _date_query(start, end)}
-        extra.update(_scope_clause(scoped))
+        extra = _invoice_access_extra(branch_clause, scoped, {"invoice_date": _date_query(start, end)})
         period_invoices = await _load_finalized_invoices(db, extra, INVOICE_FIELDS)
     except Exception as exc:
         period_error = exc
@@ -1326,8 +1813,11 @@ async def get_sales_dashboard(
         comparison = _comparison_payload(available=False, detail="Pembanding tidak setara untuk rentang ini.")
         if previous:
             try:
-                prev_extra = {"invoice_date": _date_query(previous[0], previous[1])}
-                prev_extra.update(_scope_clause(scoped))
+                prev_extra = _invoice_access_extra(
+                    branch_clause,
+                    scoped,
+                    {"invoice_date": _date_query(previous[0], previous[1])},
+                )
                 prev_rows = await _load_finalized_invoices(
                     db,
                     prev_extra,
@@ -1391,13 +1881,13 @@ async def get_sales_dashboard(
                     stable = extract_stable_customer_id(order) if order else None
                     if stable:
                         stable_ids.append(stable)
-                prior = await _prior_customer_ids(db, list(set(stable_ids)), start, scoped)
+                prior = await _prior_customer_ids(db, list(set(stable_ids)), start, scoped, branch_clause)
                 base["customers"] = _build_customers(period_invoices, orders_by_id, prior)
             except Exception as exc:
                 base["customers"] = _section_error(exc)
 
     try:
-        open_extra = _scope_clause(scoped)
+        open_extra = _invoice_access_extra(branch_clause, scoped)
         open_invoices = await _load_finalized_invoices(
             db,
             open_extra,

@@ -41,6 +41,7 @@ export function emptyPraPoLine() {
     accurate_item_id: null,
     unit_price: "",
     item_type: "",
+    stock_allocations: [],
   };
 }
 
