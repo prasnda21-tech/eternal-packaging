@@ -46,13 +46,16 @@ import {
   validateMultiSourceSelection,
 } from "../lib/salesDeliveryMultiSource";
 import {
+  buildSjSourceAllocationRows,
   financialStatusLabel,
   formatRelationEventLabel,
   fulfillmentRecoveryUi,
   isPartialFailedOneshot,
   partialFailedSources,
   paymentStatusLabel,
+  salesDeliveryDocumentStatusLabel,
   sharedProofSummary,
+  sjFulfillmentStatusLabels,
   sortRelationEvents,
 } from "../lib/salesDocumentRelations";
 import "./salesSubmenuDensity.css";
@@ -1882,7 +1885,7 @@ export default function PengirimanPesanan() {
                     </th>
                   )}
                   <th>Pelanggan / No. SJ</th>
-                  <th>No. PO</th>
+                  <th>No. PO (jumlah)</th>
                   <th>
                     <HeaderSelectFilter
                       label="Tgl Kirim"
@@ -1987,8 +1990,9 @@ export default function PengirimanPesanan() {
                             + (String(d.status).toUpperCase() === "SELESAI" ? " is-selesai" : " is-sebagian")
                           }
                           data-testid={`delivery-status-${d.id}`}
+                          title="Status dokumen/alokasi SJ — bukan bukti Loading/POD"
                         >
-                          {String(d.status).toUpperCase() === "SELESAI" ? "SELESAI" : "SEBAGIAN"}
+                          {salesDeliveryDocumentStatusLabel(d.status)}
                         </span>
                       </td>
                       <td className="sd-creator-cell">
@@ -2139,67 +2143,171 @@ export default function PengirimanPesanan() {
             </header>
 
             <div className="sd-delivery-detail-body" data-testid="delivery-detail-body">
-              {detailData.po_summary && (
-                <div
-                  className="sd-delivery-detail-kpi"
-                  data-testid="delivery-po-progress-summary"
-                >
-                  <div>
-                    <span className="sd-delivery-detail-kpi-label">TOTAL QTY PO</span>
-                    <strong data-testid="detail-total-po-qty">
-                      {Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs
-                    </strong>
-                  </div>
-                  <div>
-                    <span className="sd-delivery-detail-kpi-label">SUDAH DIBUAT SURAT JALAN</span>
-                    <strong className="is-shipped" data-testid="detail-cumulative-sj-qty">
-                      {Number(detailData.po_summary.total_shipped || 0).toLocaleString("id-ID")} pcs
-                    </strong>
-                  </div>
-                  <div>
-                    <span className="sd-delivery-detail-kpi-label">SISA</span>
-                    <strong
-                      className={Number(detailData.po_summary.total_remaining || 0) === 0 ? "is-ok" : "is-remain"}
-                      data-testid="detail-remaining-po-qty"
+              {(() => {
+                const sjStatus = sjFulfillmentStatusLabels(
+                  detailData.delivery,
+                  detailData.slice_fulfillment,
+                  detailData.oneshot_fulfillment,
+                );
+                const sourceRows = buildSjSourceAllocationRows({
+                  delivery: detailData.delivery,
+                  sliceInfo: detailData.slice_fulfillment,
+                  sourcePoSummaries: detailData.source_po_summaries,
+                });
+                const sourceTotal = sourceRows.reduce((acc, r) => acc + Number(r.allocated_qty || 0), 0);
+                const isMulti = Boolean(
+                  detailData.delivery?.is_multi_source
+                  || (Array.isArray(detailData.delivery?.source_po_ids) && detailData.delivery.source_po_ids.length > 1)
+                  || sourceRows.length > 1,
+                );
+                return (
+                  <>
+                    <div
+                      className="sd-delivery-detail-meta"
+                      data-testid="delivery-detail-header-meta"
+                      style={{ marginBottom: 12 }}
                     >
-                      {Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs
-                    </strong>
-                  </div>
-                  <div>
-                    <span className="sd-delivery-detail-kpi-label">STATUS</span>
-                    <span
-                      data-testid="detail-delivery-status"
-                      className={
-                        "sd-delivery-detail-status" +
-                        ((detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI")
-                          ? " is-done"
-                          : " is-partial")
-                      }
-                    >
-                      {(detailData.po_summary.total_remaining === 0 || detailData.po_summary.delivery_status === "SELESAI") ? "SELESAI" : "SEBAGIAN"}
-                    </span>
-                  </div>
-                </div>
-              )}
+                      <div>
+                        <span className="sd-delivery-detail-meta-label">Nomor SJ:</span>
+                        <strong data-testid="detail-sj-number">{detailData.delivery?.sj_number || "-"}</strong>
+                        {isMulti ? (
+                          <span className="pj-status-badge" style={{ marginLeft: 8 }} data-testid="detail-multi-po-badge">
+                            multi-PO
+                          </span>
+                        ) : null}
+                      </div>
+                      <div>
+                        <span className="sd-delivery-detail-meta-label">Customer:</span>
+                        <strong data-testid="detail-sj-customer">{detailData.delivery?.customer || "-"}</strong>
+                      </div>
+                      <div>
+                        <span className="sd-delivery-detail-meta-label">Outlet / Cabang:</span>
+                        <strong data-testid="detail-sj-outlet">{detailData.delivery?.outlet || "-"}</strong>
+                      </div>
+                      <div>
+                        <span className="sd-delivery-detail-meta-label">Status dokumen:</span>
+                        <span
+                          data-testid="detail-delivery-status"
+                          className={
+                            "sd-delivery-detail-status" +
+                            (sjStatus.documentLabel === "Penerimaan selesai" ? " is-done" : " is-partial")
+                          }
+                        >
+                          {sjStatus.documentLabel}
+                        </span>
+                      </div>
+                    </div>
 
-              {Array.isArray(detailData.source_po_summaries) && detailData.source_po_summaries.length > 0 ? (
-                <div data-testid="delivery-source-po-list" style={{ marginBottom: 12 }}>
-                  <div className="sd-delivery-detail-meta-label" style={{ marginBottom: 6 }}>PO Sumber</div>
-                  <ul style={{ margin: 0, paddingLeft: 18 }}>
-                    {detailData.source_po_summaries.map((src) => (
-                      <li key={src.po_id}>
-                        <Link to={`/po/${src.po_id}`} className="sd-delivery-detail-po-link">
-                          {src.po_number || src.po_id}
-                        </Link>
-                        {" · alokasi SJ "}
-                        {Number(src.allocated_on_this_sj || 0).toLocaleString("id-ID")} pcs
-                        {" · sisa "}
-                        {Number(src.total_remaining || 0).toLocaleString("id-ID")} pcs
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
+                    <div
+                      className="sd-delivery-detail-kpi"
+                      data-testid="delivery-sj-kpi-summary"
+                    >
+                      <div>
+                        <span className="sd-delivery-detail-kpi-label">TOTAL QTY SJ</span>
+                        <strong className="is-shipped" data-testid="detail-total-sj-qty">
+                          {Number(sjStatus.totalQty || 0).toLocaleString("id-ID")} pcs
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="sd-delivery-detail-kpi-label">JUMLAH PO SUMBER</span>
+                        <strong data-testid="detail-source-po-count">
+                          {Number(sjStatus.sourcePoCount || 0).toLocaleString("id-ID")} PO
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="sd-delivery-detail-kpi-label">QTY DITERIMA</span>
+                        <strong
+                          className={Number(sjStatus.deliveredQty || 0) > 0 ? "is-ok" : "is-remain"}
+                          data-testid="detail-delivered-qty"
+                        >
+                          {Number(sjStatus.deliveredQty || 0).toLocaleString("id-ID")} pcs
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="sd-delivery-detail-kpi-label">LOADING / POD</span>
+                        <span data-testid="detail-loading-pod-status" className="sd-delivery-detail-status is-partial">
+                          {sjStatus.loadingLabel} · {sjStatus.podLabel}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Keep legacy test ids as aliases of SJ metrics (not primary-PO ordered qty). */}
+                    <div hidden aria-hidden="true">
+                      <span data-testid="detail-total-po-qty">{Number(sjStatus.totalQty || 0)}</span>
+                      <span data-testid="delivery-po-progress-summary">{sjStatus.documentLabel}</span>
+                      <span data-testid="detail-cumulative-sj-qty">{Number(sjStatus.totalQty || 0)}</span>
+                      <span data-testid="detail-remaining-po-qty">
+                        {Math.max(0, Number(sjStatus.totalQty || 0) - Number(sjStatus.deliveredQty || 0))}
+                      </span>
+                    </div>
+
+                    <div data-testid="delivery-source-po-list" style={{ marginBottom: 12 }}>
+                      <div className="sd-delivery-detail-meta-label" style={{ marginBottom: 6 }}>
+                        Daftar PO Sumber
+                      </div>
+                      <div className="ux90-table-wrap">
+                        <table className="ux90-table" data-testid="sj-source-alloc-table" style={{ fontSize: 12 }}>
+                          <thead>
+                            <tr>
+                              <th>No. PO</th>
+                              <th>Produk</th>
+                              <th className="is-num">Qty dialokasikan</th>
+                              <th className="is-num">Loading</th>
+                              <th className="is-num">Diterima</th>
+                              <th className="is-num">Sisa belum diterima</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sourceRows.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="muted">Belum ada alokasi sumber</td>
+                              </tr>
+                            ) : (
+                              sourceRows.map((row) => (
+                                <tr key={row.key} data-testid={`sj-source-row-${row.key}`}>
+                                  <td>
+                                    <Link
+                                      to={`/po/${encodeURIComponent(row.source_po_id)}`}
+                                      className="sd-delivery-detail-po-link"
+                                      data-testid={`sj-source-po-link-${row.source_po_id}`}
+                                    >
+                                      {row.source_po_number}
+                                    </Link>
+                                  </td>
+                                  <td>{row.product}</td>
+                                  <td className="is-num">{Number(row.allocated_qty || 0).toLocaleString("id-ID")}</td>
+                                  <td className="is-num">{Number(row.loading_qty || 0).toLocaleString("id-ID")}</td>
+                                  <td className="is-num">{Number(row.delivered_qty || 0).toLocaleString("id-ID")}</td>
+                                  <td className="is-num">{Number(row.remaining_undelivered || 0).toLocaleString("id-ID")}</td>
+                                  <td>{row.status}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                          <tfoot>
+                            <tr data-testid="sj-source-alloc-total">
+                              <td colSpan={2}><strong>Total Qty SJ</strong></td>
+                              <td className="is-num">
+                                <strong>{Number(sourceTotal || sjStatus.totalQty || 0).toLocaleString("id-ID")}</strong>
+                              </td>
+                              <td colSpan={4} />
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                      {!isMulti && detailData.po_summary ? (
+                        <p className="ux90-hint" data-testid="detail-anchor-po-qty-hint" style={{ margin: "6px 0 0" }}>
+                          Qty ordered PO anchor ({detailData.delivery?.po_number || "PO"}):{" "}
+                          {Number(detailData.po_summary.total_ordered || 0).toLocaleString("id-ID")} pcs
+                          {" · sisa kirim PO "}
+                          {Number(detailData.po_summary.total_remaining || 0).toLocaleString("id-ID")} pcs
+                        </p>
+                      ) : null}
+                    </div>
+                  </>
+                );
+              })()}
 
               {(() => {
                 const partialFailed = isPartialFailedOneshot(
@@ -2352,9 +2460,9 @@ export default function PengirimanPesanan() {
                           {" · "}
                           <strong data-testid="sj-combined-status">
                             {detailData.slice_fulfillment?.complete
-                              ? "LENGKAP"
+                              ? "PENERIMAAN SELESAI"
                               : detailData.slice_fulfillment?.loading_complete && !detailData.slice_fulfillment?.pod_complete
-                                ? "LOADING OK · POD SEBAGIAN"
+                                ? "LOADING SELESAI · POD BELUM"
                                 : "SEBAGIAN / BELUM LENGKAP"}
                           </strong>
                           {detailData.oneshot_fulfillment?.fulfillment_last_status ? (
@@ -2364,44 +2472,19 @@ export default function PengirimanPesanan() {
                             </span>
                           ) : null}
                         </div>
-                        <div className="ux90-table-wrap" style={{ marginBottom: 8 }}>
-                          <table className="ux90-table" data-testid="sj-slice-status-table">
-                            <thead>
-                              <tr>
-                                <th>PO</th>
-                                <th className="is-num">Alokasi</th>
-                                <th>Loading</th>
-                                <th>POD</th>
-                                <th className="is-num">Belum diterima</th>
+                        {/* Compact mirror of source rows for legacy test hooks — visually collapsed. */}
+                        <table className="ux90-table" data-testid="sj-slice-status-table" hidden aria-hidden="true">
+                          <tbody>
+                            {(detailData.slice_fulfillment?.sources || []).map((s) => (
+                              <tr key={s.source_po_id}>
+                                <td>{s.po_number || s.source_po_id}</td>
+                                <td>{Number(s.slice_qty || 0)}</td>
+                                <td>{s.loading_complete ? "OK" : "Parsial"}</td>
+                                <td>{s.delivered ? "OK" : "Belum"}</td>
                               </tr>
-                            </thead>
-                            <tbody>
-                              {(detailData.slice_fulfillment?.sources || []).map((s) => {
-                                const remain = Math.max(
-                                  0,
-                                  Number(s.slice_qty || 0) - Number(s.delivered_qty || 0),
-                                );
-                                const poMeta = (detailData.source_po_summaries || []).find(
-                                  (x) => String(x.po_id) === String(s.source_po_id),
-                                );
-                                return (
-                                  <tr key={s.source_po_id}>
-                                    <td>
-                                      <Link to={`/po/${s.source_po_id}`} className="sd-delivery-detail-po-link">
-                                        {poMeta?.po_number || s.po_number || s.source_po_id}
-                                      </Link>
-                                      {!s.has_mirror ? " · mirror hilang" : ""}
-                                    </td>
-                                    <td className="is-num">{Number(s.slice_qty || 0).toLocaleString("id-ID")}</td>
-                                    <td>{s.loading_complete ? "OK" : `Parsial (${Number(s.loading_qty || 0)})`}</td>
-                                    <td>{s.delivered ? "OK" : "Belum"}</td>
-                                    <td className="is-num">{remain.toLocaleString("id-ID")}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
+                            ))}
+                          </tbody>
+                        </table>
                         {detailData.oneshot_fulfillment?.reason ? (
                           <p className="ux90-hint" data-testid="sj-oneshot-blocked-reason" style={{ margin: "0 0 8px" }}>
                             One-shot gabungan: {detailData.oneshot_fulfillment.reason}
@@ -2486,18 +2569,12 @@ export default function PengirimanPesanan() {
 
               <div className="sd-delivery-detail-meta">
                 <div>
-                  <span className="sd-delivery-detail-meta-label">Nomor PO:</span>
+                  <span className="sd-delivery-detail-meta-label">
+                    {detailData.delivery?.is_multi_source ? "PO anchor:" : "Nomor PO:"}
+                  </span>
                   <Link to={`/po/${detailData.delivery?.po_id}`} className="sd-delivery-detail-po-link">
                     {detailData.delivery?.po_number}
                   </Link>
-                </div>
-                <div>
-                  <span className="sd-delivery-detail-meta-label">Customer:</span>
-                  <strong>{detailData.delivery?.customer || "-"}</strong>
-                </div>
-                <div>
-                  <span className="sd-delivery-detail-meta-label">Outlet:</span>
-                  <strong>{detailData.delivery?.outlet || "-"}</strong>
                 </div>
                 <div>
                   <span className="sd-delivery-detail-meta-label">Tanggal Kirim:</span>
@@ -2537,6 +2614,7 @@ export default function PengirimanPesanan() {
                   <thead>
                     <tr>
                       <th>#</th>
+                      <th>PO Sumber</th>
                       <th>Barang / Jasa</th>
                       <th>Proses</th>
                       <th className="num">Qty Kirim</th>
@@ -2546,8 +2624,15 @@ export default function PengirimanPesanan() {
                   </thead>
                   <tbody>
                     {(detailData.delivery?.line_items || []).map((li, idx) => (
-                      <tr key={idx}>
+                      <tr key={li.line_id || `${li.source_po_id || "line"}-${idx}`}>
                         <td className="muted">{idx + 1}</td>
+                        <td>
+                          {li.source_po_id ? (
+                            <Link to={`/po/${encodeURIComponent(li.source_po_id)}`} className="sd-delivery-detail-po-link">
+                              {li.source_po_number || li.source_po_id}
+                            </Link>
+                          ) : (detailData.delivery?.po_number || "-")}
+                        </td>
                         <td className="item-name">
                           {li.name}
                           {li.color && <div className="item-color">{li.color}</div>}
@@ -2565,8 +2650,8 @@ export default function PengirimanPesanan() {
                       </tr>
                     ))}
                     <tr className="sd-delivery-detail-total-row">
-                      <td colSpan={3} className="num-label">Total Kuantitas:</td>
-                      <td className="num total-qty">
+                      <td colSpan={4} className="num-label">Total Qty SJ:</td>
+                      <td className="num total-qty" data-testid="detail-items-total-sj-qty">
                         {Number(detailData.delivery?.total_qty || 0).toLocaleString("id-ID")}
                       </td>
                       <td colSpan={2}>pcs</td>

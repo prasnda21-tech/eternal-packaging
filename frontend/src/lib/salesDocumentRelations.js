@@ -36,6 +36,52 @@ export function paymentStatusLabel(status) {
   return "Belum dibayar";
 }
 
+/** Indonesian thousand separators + pcs unit for relation KPIs. */
+export function formatPcs(value) {
+  return `${asInt(value).toLocaleString("id-ID")} pcs`;
+}
+
+/**
+ * Map backend SJ document/allocation status for relation UI.
+ * "SELESAI" means qty fully allocated onto an issued SJ — NOT physically delivered/POD.
+ * Does not mutate stored status values.
+ */
+export function sjDocumentAllocationStatusLabel(sjOrStatus) {
+  if (sjOrStatus && typeof sjOrStatus === "object" && sjOrStatus.is_cancelled) {
+    return "Dibatalkan";
+  }
+  const raw = String(
+    typeof sjOrStatus === "string" || sjOrStatus == null
+      ? sjOrStatus
+      : (sjOrStatus.status || ""),
+  )
+    .trim()
+    .toUpperCase();
+  if (!raw || raw === "ACTIVE" || raw === "AKTIF") return "SJ dibuat";
+  if (raw === "CANCELLED" || raw === "CANCELED" || raw === "DIBATALKAN") return "Dibatalkan";
+  if (raw === "SELESAI" || raw === "COMPLETE" || raw === "COMPLETED") return "Alokasi lengkap";
+  if (raw === "SEBAGIAN" || raw === "PARTIAL") return "Alokasi sebagian";
+  if (raw === "DRAFT") return "Draft SJ";
+  if (raw === "PENDING") return "Pending";
+  return "SJ dibuat";
+}
+
+/** List/detail badge for sales delivery document status (allocation semantics). */
+export function salesDeliveryDocumentStatusLabel(status, { cancelled = false } = {}) {
+  if (cancelled) return "Dibatalkan";
+  return sjDocumentAllocationStatusLabel(status);
+}
+
+export const PO_RELATION_QTY_KPI = [
+  { key: "ordered", label: "Dipesan" },
+  { key: "shipped", label: "Masuk SJ" },
+  { key: "loaded", label: "Loading" },
+  { key: "delivered", label: "Diterima" },
+  { key: "invoiced", label: "Difakturkan" },
+  { key: "remaining_delivery", label: "Belum Masuk SJ" },
+  { key: "remaining_invoiceable", label: "Sisa Faktur" },
+];
+
 /** Loading/POD labels — never treat loading complete as POD complete. */
 export function sliceLoadingLabel(slice) {
   if (!slice) return "Belum tercatat";
@@ -156,4 +202,142 @@ export function sharedProofSummary(oneshotOrDelivery) {
     photo_count: asInt(proof.photo_count),
     has_signature: Boolean(proof.has_signature),
   };
+}
+
+/** Canonical SJ qty from delivery allocations — never use primary PO ordered qty. */
+export function sjTotalQty(delivery) {
+  const direct = asInt(delivery?.total_qty);
+  if (direct > 0) return direct;
+  const lines = Array.isArray(delivery?.line_items) ? delivery.line_items : [];
+  if (lines.length) {
+    return lines.reduce((acc, li) => acc + asInt(li.qty ?? li.quantity ?? li.allocated_qty), 0);
+  }
+  const allocs = Array.isArray(delivery?.source_allocations) ? delivery.source_allocations : [];
+  return allocs.reduce((acc, a) => acc + asInt(a.allocated_qty), 0);
+}
+
+export function sjSourcePoCount(delivery) {
+  const ids = Array.isArray(delivery?.source_po_ids) ? delivery.source_po_ids : [];
+  if (ids.length) return ids.length;
+  if (delivery?.po_id) return 1;
+  return 0;
+}
+
+/**
+ * Document / fulfillment status for SJ detail KPI.
+ * Never treat "SJ exists" as delivered/POD complete.
+ */
+export function sjFulfillmentStatusLabels(delivery, sliceInfo, oneshot) {
+  const slice = sliceInfo || oneshot?.slice_fulfillment || null;
+  const recovery = fulfillmentRecoveryUi(oneshot, delivery);
+
+  let loading = "Belum loading";
+  if (slice?.loading_complete) loading = "Loading selesai";
+  else if (asInt(slice?.loading_qty) > 0 || (slice?.sources || []).some((s) => asInt(s.loading_qty) > 0)) {
+    loading = "Loading sebagian";
+  }
+
+  let pod = "Belum POD";
+  if (slice?.pod_complete || slice?.complete) pod = "POD selesai";
+  else if (
+    asInt(slice?.delivered_qty) > 0
+    || (slice?.sources || []).some((s) => asInt(s.delivered_qty) > 0 || s.delivered)
+  ) {
+    pod = "POD sebagian";
+  }
+
+  let documentLabel = "SJ dibuat";
+  if (recovery.manual) documentLabel = "Perlu pemeriksaan";
+  else if (
+    recovery.inProgress
+    || recovery.status === "partial_failed"
+    || recovery.status === "partial"
+    || recovery.status === "recovery_required"
+  ) {
+    documentLabel = "Fulfillment pending";
+  } else if (slice?.complete || pod === "POD selesai") documentLabel = "Penerimaan selesai";
+  else if (pod === "POD sebagian") documentLabel = "Penerimaan parsial";
+  else if (loading === "Loading selesai") documentLabel = "Loading selesai";
+  else if (loading === "Loading sebagian") documentLabel = "Loading sebagian";
+
+  const deliveredQty = Array.isArray(slice?.sources)
+    ? slice.sources.reduce((acc, s) => acc + asInt(s.delivered_qty), 0)
+    : asInt(slice?.delivered_qty);
+
+  return {
+    documentLabel,
+    loadingLabel: loading,
+    podLabel: pod,
+    aggregateLabel: sjAggregateFulfillmentLabel(slice),
+    deliveredQty,
+    totalQty: sjTotalQty(delivery),
+    sourcePoCount: sjSourcePoCount(delivery),
+  };
+}
+
+/**
+ * Compact per-source rows for SJ detail.
+ * One row per source allocation/line — never merge by master_item_id.
+ */
+export function buildSjSourceAllocationRows({ delivery, sliceInfo, sourcePoSummaries } = {}) {
+  const summaries = Array.isArray(sourcePoSummaries) ? sourcePoSummaries : [];
+  const sliceByPo = new Map(
+    (Array.isArray(sliceInfo?.sources) ? sliceInfo.sources : []).map((s) => [String(s.source_po_id), s]),
+  );
+  const lines = Array.isArray(delivery?.line_items) ? delivery.line_items : [];
+  const allocs = Array.isArray(delivery?.source_allocations) ? delivery.source_allocations : [];
+  const base = lines.length
+    ? lines.map((li, idx) => ({
+        key: String(li.line_id || `${li.source_po_id || "po"}-${idx}`),
+        source_po_id: li.source_po_id || delivery?.po_id,
+        source_po_number: li.source_po_number,
+        product: li.name || "—",
+        allocated_qty: asInt(li.qty ?? li.quantity ?? li.allocated_qty),
+      }))
+    : allocs.map((a, idx) => ({
+        key: String(a.source_line_id || `${a.source_po_id}-${idx}`),
+        source_po_id: a.source_po_id || delivery?.po_id,
+        source_po_number: a.source_po_number,
+        product: a.name || "—",
+        allocated_qty: asInt(a.allocated_qty),
+      }));
+
+  // Legacy single-PO without source_allocations: one synthetic row from delivery.
+  const rowsIn = base.length
+    ? base
+    : delivery?.po_id
+      ? [{
+          key: String(delivery.po_id),
+          source_po_id: delivery.po_id,
+          source_po_number: delivery.po_number,
+          product: (lines[0] && lines[0].name) || "—",
+          allocated_qty: sjTotalQty(delivery),
+        }]
+      : [];
+
+  return rowsIn.map((row) => {
+    const poId = String(row.source_po_id || "");
+    const slice = sliceByPo.get(poId) || null;
+    const meta = summaries.find((s) => String(s.po_id) === poId);
+    const allocated = asInt(row.allocated_qty);
+    const loadingQty = asInt(slice?.loading_qty);
+    const deliveredQty = asInt(slice?.delivered_qty);
+    const remain = Math.max(0, allocated - deliveredQty);
+    let status = "SJ dibuat";
+    if (slice?.delivered || (slice?.loading_complete && deliveredQty >= allocated && allocated > 0)) {
+      status = "Diterima";
+    } else if (deliveredQty > 0) status = "Penerimaan parsial";
+    else if (slice?.loading_complete) status = "Loading selesai";
+    else if (loadingQty > 0) status = "Loading sebagian";
+    return {
+      ...row,
+      source_po_number: row.source_po_number || meta?.po_number || poId || "—",
+      loading_qty: loadingQty,
+      delivered_qty: deliveredQty,
+      remaining_undelivered: remain,
+      status,
+      loading_complete: Boolean(slice?.loading_complete),
+      delivered: Boolean(slice?.delivered),
+    };
+  });
 }

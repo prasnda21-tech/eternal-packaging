@@ -1,14 +1,21 @@
 import {
+  buildSjSourceAllocationRows,
   financialStatusLabel,
+  formatPcs,
   fulfillmentRecoveryUi,
   isPartialFailedOneshot,
   normalizeSourceMode,
   partialFailedSources,
   paymentStatusLabel,
+  PO_RELATION_QTY_KPI,
   poQtySummary,
+  salesDeliveryDocumentStatusLabel,
   sharedProofSummary,
   sliceLoadingLabel,
   slicePodLabel,
+  sjDocumentAllocationStatusLabel,
+  sjFulfillmentStatusLabels,
+  sjTotalQty,
   sortRelationEvents,
 } from "./salesDocumentRelations";
 
@@ -114,5 +121,112 @@ describe("salesDocumentRelations Stage 4", () => {
       recovery_status: "in_progress",
     });
     expect(running.inProgress).toBe(true);
+  });
+
+  it("T1/T2 multi-PO SJ qty uses canonical allocations not primary PO ordered", () => {
+    const delivery = {
+      total_qty: 5000,
+      is_multi_source: true,
+      source_po_ids: ["po-a", "po-b"],
+      po_id: "po-a",
+      line_items: [
+        { line_id: "a0", source_po_id: "po-a", source_po_number: "PO/A", name: "Cup PET 16 oz", qty: 3000 },
+        { line_id: "b0", source_po_id: "po-b", source_po_number: "PO/B", name: "Cup PET 16 oz", qty: 2000 },
+      ],
+    };
+    expect(sjTotalQty(delivery)).toBe(5000);
+    const rows = buildSjSourceAllocationRows({
+      delivery,
+      sliceInfo: {
+        sources: [
+          { source_po_id: "po-a", loading_qty: 0, delivered_qty: 0, loading_complete: false, delivered: false },
+          { source_po_id: "po-b", loading_qty: 0, delivered_qty: 0, loading_complete: false, delivered: false },
+        ],
+      },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.allocated_qty)).toEqual([3000, 2000]);
+    expect(rows[0].product).toBe(rows[1].product);
+    expect(rows[0].source_po_id).not.toBe(rows[1].source_po_id);
+  });
+
+  it("T3/T4 SJ existence is not delivered; loading and POD stay separate", () => {
+    const labels = sjFulfillmentStatusLabels(
+      { total_qty: 5000, source_po_ids: ["a", "b"], is_multi_source: true },
+      {
+        loading_complete: true,
+        pod_complete: false,
+        complete: false,
+        loading_qty: 5000,
+        delivered_qty: 0,
+        sources: [
+          { source_po_id: "a", loading_complete: true, delivered: false, loading_qty: 3000, delivered_qty: 0 },
+          { source_po_id: "b", loading_complete: true, delivered: false, loading_qty: 2000, delivered_qty: 0 },
+        ],
+      },
+      null,
+    );
+    expect(labels.documentLabel).toBe("Loading selesai");
+    expect(labels.loadingLabel).toBe("Loading selesai");
+    expect(labels.podLabel).toBe("Belum POD");
+    expect(labels.deliveredQty).toBe(0);
+    expect(labels.totalQty).toBe(5000);
+    expect(labels.sourcePoCount).toBe(2);
+  });
+
+  it("T8 legacy single-PO source row stays one row", () => {
+    const rows = buildSjSourceAllocationRows({
+      delivery: {
+        po_id: "po-1",
+        po_number: "PO/1",
+        total_qty: 1000,
+        line_items: [{ line_id: "l0", name: "Item", qty: 1000 }],
+      },
+      sliceInfo: { sources: [] },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].allocated_qty).toBe(1000);
+  });
+
+  it("T10 partial failure document label stays accurate", () => {
+    const labels = sjFulfillmentStatusLabels(
+      { total_qty: 5000, source_po_ids: ["a", "b"] },
+      { complete: false, loading_complete: false, sources: [] },
+      { fulfillment_last_status: "partial_failed", reason: "fence" },
+    );
+    expect(labels.documentLabel).toBe("Fulfillment pending");
+  });
+
+  it("T6 SELESAI allocation is not POD selesai", () => {
+    expect(sjDocumentAllocationStatusLabel("SELESAI")).toBe("Alokasi lengkap");
+    expect(sjDocumentAllocationStatusLabel({ status: "SELESAI", is_cancelled: false })).toBe("Alokasi lengkap");
+    expect(salesDeliveryDocumentStatusLabel("SELESAI")).toBe("Alokasi lengkap");
+    expect(salesDeliveryDocumentStatusLabel("SEBAGIAN")).toBe("Alokasi sebagian");
+    expect(slicePodLabel({ status: "SELESAI", loading_complete: false, delivered: false })).toBe("Belum POD");
+    expect(sliceLoadingLabel({ status: "SELESAI", loading_complete: false })).toBe("Belum loading");
+  });
+
+  it("T7/T8 SJ created ≠ loading ≠ received", () => {
+    expect(sjDocumentAllocationStatusLabel("active")).toBe("SJ dibuat");
+    expect(sliceLoadingLabel({ loading_complete: true, delivered: false })).toBe("Loading selesai");
+    expect(slicePodLabel({ loading_complete: true, delivered: false })).toBe("Belum POD");
+    expect(slicePodLabel({ delivered: true })).toBe("POD selesai");
+  });
+
+  it("T9 finalized invoice is not lunas", () => {
+    expect(financialStatusLabel("finalized")).toBe("Finalized");
+    expect(paymentStatusLabel("BELUM DIBAYAR")).toBe("Belum dibayar");
+  });
+
+  it("T3 formatPcs uses Indonesian thousands + pcs", () => {
+    expect(formatPcs(3000)).toBe("3.000 pcs");
+    expect(formatPcs(5000)).toBe("5.000 pcs");
+  });
+
+  it("Relasi KPI remaining_delivery label is Belum Masuk SJ not Sisa Kirim", () => {
+    const remaining = PO_RELATION_QTY_KPI.find((k) => k.key === "remaining_delivery");
+    expect(remaining.label).toBe("Belum Masuk SJ");
+    expect(PO_RELATION_QTY_KPI.some((k) => k.label === "Sisa Kirim")).toBe(false);
+    expect(poQtySummary({ qty_summary: { remaining_delivery: 0 } }).remaining_delivery).toBe(0);
   });
 });

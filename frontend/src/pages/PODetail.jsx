@@ -30,9 +30,12 @@ import { trackingQrDataUrl } from "../lib/trackingQr";
 import { aksiPoSalesDeliveryState } from "../lib/aksiPoSalesDelivery";
 import {
   financialStatusLabel,
+  formatPcs,
   formatRelationEventLabel,
   paymentStatusLabel,
+  PO_RELATION_QTY_KPI,
   poQtySummary,
+  sjDocumentAllocationStatusLabel,
   sliceLoadingLabel,
   slicePodLabel,
   sortRelationEvents,
@@ -1888,146 +1891,161 @@ export default function PODetail() {
       </div>
       </section>
 
-      {/* Catatan Produksi: Order Masuk for every Detail PO viewer; all stages with production_note.view. */}
-      <div className="po-order-masuk-tail" hidden={!showProductionNotes}>
-      <ProductionNotesPanel
-        notes={order.notes}
-        visible={showProductionNotes}
-        canAppend={allowAppendProductionNote}
-        canEdit={allowEditProductionNote}
-        busy={busy}
-        onAppend={appendProductionNote}
-        onReplace={replaceProductionNote}
-      />
+      {/* Relasi Dokumen: available on every PO stage (read-only; uses existing document_relations). */}
       <section
-        className="panel"
+        className="panel po-doc-relations"
         data-testid="po-document-relations"
-        hidden={!onOrderMasuk}
         style={{ marginBottom: 12 }}
       >
-        <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Relasi Dokumen</h3>
+        <h3 className="po-doc-relations__title">Relasi Dokumen</h3>
         {(() => {
           const rel = order.document_relations || {};
           const qty = poQtySummary(rel);
           const sjs = Array.isArray(rel.sales_deliveries) ? rel.sales_deliveries : [];
           const invs = Array.isArray(rel.invoices) ? rel.invoices : [];
           const hist = sortRelationEvents(order.relation_history || []);
+          const allocBadgeClass = (label) => {
+            if (label === "Dibatalkan") return "is-danger";
+            if (label === "Alokasi lengkap") return "is-alloc";
+            if (label === "Alokasi sebagian") return "is-partial";
+            return "is-muted";
+          };
           return (
             <>
-              <div className="ux90-table-wrap" data-testid="po-rel-qty-summary" style={{ marginBottom: 10 }}>
-                <table className="ux90-table" style={{ fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th>Ordered</th>
-                      <th>Shipped</th>
-                      <th>Loaded</th>
-                      <th>Delivered</th>
-                      <th>Invoiced</th>
-                      <th>Sisa kirim</th>
-                      <th>Sisa faktur</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>{qty.ordered.toLocaleString("id-ID")}</td>
-                      <td>{qty.shipped.toLocaleString("id-ID")}</td>
-                      <td>{qty.loaded.toLocaleString("id-ID")}</td>
-                      <td>{qty.delivered.toLocaleString("id-ID")}</td>
-                      <td>{qty.invoiced.toLocaleString("id-ID")}</td>
-                      <td>{qty.remaining_delivery.toLocaleString("id-ID")}</td>
-                      <td>{qty.remaining_invoiceable.toLocaleString("id-ID")}</td>
-                    </tr>
-                  </tbody>
-                </table>
+              <div className="po-doc-relations__kpi-grid" data-testid="po-rel-qty-summary">
+                {PO_RELATION_QTY_KPI.map((item) => (
+                  <div
+                    key={item.key}
+                    className="po-doc-relations__kpi"
+                    data-testid={`po-rel-kpi-${item.key}`}
+                  >
+                    <span className="po-doc-relations__kpi-label">{item.label}</span>
+                    <span className="po-doc-relations__kpi-value">{formatPcs(qty[item.key])}</span>
+                  </div>
+                ))}
               </div>
-              <div className="ux90-table-wrap" style={{ marginBottom: 10 }}>
-                <div className="ux90-table-head">
-                  <h4 style={{ margin: 0, fontSize: 13 }}>Surat Jalan terkait</h4>
+
+              <div className="po-doc-relations__block">
+                <h4 className="po-doc-relations__block-title">Surat Jalan terkait</h4>
+                <div className="po-doc-relations__table-wrap">
+                  <table className="po-doc-relations__table" data-testid="po-rel-sj-table">
+                    <thead>
+                      <tr>
+                        <th>Nomor SJ</th>
+                        <th>Sumber</th>
+                        <th className="is-num">Qty PO dalam SJ</th>
+                        <th>Status dokumen</th>
+                        <th>Loading</th>
+                        <th>Penerimaan (POD)</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sjs.length === 0 ? (
+                        <tr><td colSpan={7} className="muted">Belum ada SJ aktif</td></tr>
+                      ) : (
+                        sjs.map((sj) => {
+                          const docLabel = sjDocumentAllocationStatusLabel(sj);
+                          return (
+                            <tr key={sj.id} data-testid={`po-rel-sj-${sj.id}`}>
+                              <td>
+                                <Link
+                                  to={`/penjualan/pengiriman-pesanan?sj_id=${encodeURIComponent(sj.id)}`}
+                                  data-testid={`po-rel-sj-link-${sj.id}`}
+                                >
+                                  {sj.sj_number || sj.id}
+                                </Link>
+                              </td>
+                              <td>
+                                {sj.is_multi_source ? (
+                                  <span
+                                    className="po-doc-relations__badge is-multi"
+                                    data-testid={`po-rel-sj-multipo-${sj.id}`}
+                                  >
+                                    multi-PO
+                                    {sj.source_po_count ? ` · ${sj.source_po_count}` : ""}
+                                  </span>
+                                ) : (
+                                  <span className="po-doc-relations__badge is-muted">1 PO</span>
+                                )}
+                              </td>
+                              <td className="is-num">{formatPcs(sj.po_qty_on_sj)}</td>
+                              <td>
+                                <span
+                                  className={`po-doc-relations__badge ${allocBadgeClass(docLabel)}`}
+                                  data-testid={`po-rel-sj-doc-status-${sj.id}`}
+                                >
+                                  {docLabel}
+                                </span>
+                              </td>
+                              <td data-testid={`po-rel-sj-loading-${sj.id}`}>{sliceLoadingLabel(sj)}</td>
+                              <td data-testid={`po-rel-sj-pod-${sj.id}`}>{slicePodLabel(sj)}</td>
+                              <td>
+                                <Link
+                                  to={`/penjualan/pengiriman-pesanan?sj_id=${encodeURIComponent(sj.id)}`}
+                                  data-testid={`po-rel-sj-lihat-${sj.id}`}
+                                >
+                                  Lihat
+                                </Link>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-                <table className="ux90-table" data-testid="po-rel-sj-table" style={{ fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th>No. SJ</th>
-                      <th className="is-num">Qty PO</th>
-                      <th>Loading</th>
-                      <th>POD</th>
-                      <th>Status</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sjs.length === 0 ? (
-                      <tr><td colSpan={6} className="muted">Belum ada SJ aktif</td></tr>
-                    ) : (
-                      sjs.map((sj) => (
-                        <tr key={sj.id} data-testid={`po-rel-sj-${sj.id}`}>
-                          <td>
-                            {sj.sj_number || sj.id}
-                            {sj.is_multi_source ? (
-                              <span className="pj-status-badge" style={{ marginLeft: 6 }} data-testid={`po-rel-sj-multipo-${sj.id}`}>
-                                multi-PO
-                              </span>
-                            ) : null}
-                          </td>
-                          <td className="is-num">{Number(sj.po_qty_on_sj || 0).toLocaleString("id-ID")}</td>
-                          <td>{sliceLoadingLabel(sj)}</td>
-                          <td>{slicePodLabel(sj)}</td>
-                          <td>{sj.is_cancelled ? "Dibatalkan" : (sj.status || "aktif")}</td>
-                          <td>
-                            <Link
-                              to={`/penjualan/pengiriman-pesanan?sj_id=${encodeURIComponent(sj.id)}`}
-                              data-testid={`po-rel-sj-link-${sj.id}`}
-                            >
-                              Buka
-                            </Link>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
               </div>
-              <div className="ux90-table-wrap" style={{ marginBottom: 10 }}>
-                <div className="ux90-table-head">
-                  <h4 style={{ margin: 0, fontSize: 13 }}>Faktur terkait</h4>
+
+              <div className="po-doc-relations__block">
+                <h4 className="po-doc-relations__block-title">Faktur terkait</h4>
+                <div className="po-doc-relations__table-wrap">
+                  <table className="po-doc-relations__table" data-testid="po-rel-invoice-table">
+                    <thead>
+                      <tr>
+                        <th>Nomor Faktur</th>
+                        <th>Mode</th>
+                        <th className="is-num">Qty dari PO ini</th>
+                        <th>Status Faktur</th>
+                        <th>Status Pembayaran</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invs.length === 0 ? (
+                        <tr><td colSpan={6} className="muted">Belum ada faktur</td></tr>
+                      ) : (
+                        invs.map((inv) => (
+                          <tr key={inv.id} data-testid={`po-rel-inv-${inv.id}`}>
+                            <td>{inv.invoice_number || inv.id}</td>
+                            <td>
+                              {String(inv.source_mode || "po").toUpperCase()}
+                              {inv.is_multi_source ? " · multi" : ""}
+                            </td>
+                            <td className="is-num">{formatPcs(inv.po_qty_on_invoice)}</td>
+                            <td data-testid={`po-rel-inv-fin-${inv.id}`}>
+                              {financialStatusLabel(inv.financial_status)}
+                            </td>
+                            <td data-testid={`po-rel-inv-pay-${inv.id}`}>
+                              {paymentStatusLabel(inv.payment_status)}
+                            </td>
+                            <td>
+                              <Link
+                                to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(inv.id)}`}
+                                data-testid={`po-rel-inv-link-${inv.id}`}
+                              >
+                                Lihat
+                              </Link>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-                <table className="ux90-table" data-testid="po-rel-invoice-table" style={{ fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th>No. Faktur</th>
-                      <th>Mode</th>
-                      <th className="is-num">Qty PO</th>
-                      <th>Status faktur</th>
-                      <th>Pembayaran</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invs.length === 0 ? (
-                      <tr><td colSpan={6} className="muted">Belum ada faktur</td></tr>
-                    ) : (
-                      invs.map((inv) => (
-                        <tr key={inv.id} data-testid={`po-rel-inv-${inv.id}`}>
-                          <td>{inv.invoice_number || inv.id}</td>
-                          <td>{String(inv.source_mode || "po").toUpperCase()}{inv.is_multi_source ? " · multi" : ""}</td>
-                          <td className="is-num">{Number(inv.po_qty_on_invoice || 0).toLocaleString("id-ID")}</td>
-                          <td>{financialStatusLabel(inv.financial_status)}</td>
-                          <td>{paymentStatusLabel(inv.payment_status)}</td>
-                          <td>
-                            <Link
-                              to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(inv.id)}`}
-                              data-testid={`po-rel-inv-link-${inv.id}`}
-                            >
-                              Buka
-                            </Link>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
               </div>
-              <details data-testid="po-relation-history" style={{ fontSize: 12 }}>
+
+              <details className="po-doc-relations__history" data-testid="po-relation-history">
                 <summary>Relasi &amp; Kejadian (read-only)</summary>
                 {hist.length === 0 ? (
                   <p className="muted" style={{ margin: "8px 0 0" }}>Belum tercatat</p>
@@ -2049,6 +2067,20 @@ export default function PODetail() {
         })()}
       </section>
 
+      {/* Catatan Produksi: Order Masuk for every Detail PO viewer; all stages with production_note.view. */}
+      <div className="po-order-masuk-tail" hidden={!showProductionNotes}>
+      <ProductionNotesPanel
+        notes={order.notes}
+        visible={showProductionNotes}
+        canAppend={allowAppendProductionNote}
+        canEdit={allowEditProductionNote}
+        busy={busy}
+        onAppend={appendProductionNote}
+        onReplace={replaceProductionNote}
+      />
+      </div>
+
+      <div className="po-order-masuk-tail" hidden={!onOrderMasuk}>
       <section className="panel po-doc-tabs" data-testid="po-doc-tabs" hidden={!onOrderMasuk}>
         <div className="po-doc-tablist po-om-section-head" role="tablist" aria-label="Dokumen dan riwayat">
           <button
