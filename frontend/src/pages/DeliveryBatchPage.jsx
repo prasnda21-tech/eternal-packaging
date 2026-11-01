@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
@@ -38,7 +39,7 @@ export default function DeliveryBatchPage() {
   if (!batch && !err) return <div className="loading">Memuat...</div>;
 
   return (
-    <div className="ship-status-page" data-testid="delivery-batch-page">
+    <div className="ship-status-page delivery-compact" data-testid="delivery-batch-page">
       <div className="ship-status-chrome">
         <header className="ship-status-heading">
           <p className="eyebrow">Produksi · Jadwal Pengiriman</p>

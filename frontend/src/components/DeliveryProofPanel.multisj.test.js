@@ -32,18 +32,66 @@ jest.mock("../lib/auth", () => ({
   }),
 }));
 
-jest.mock("./SignaturePad", () => ({
-  __esModule: true,
-  default: ({ onChange }) => (
-    <button
-      type="button"
-      data-testid="signature-pad-mock"
-      onClick={() => onChange("data:image/png;base64,c2ln")}
-    >
-      sign
-    </button>
-  ),
-}));
+jest.mock("./SignaturePad", () => {
+  const React = require("react");
+  // Controllable deferred restore (simulates delayed image.onload).
+  // When __deferSigRestore is true, "ready" waits until flushDeferredSigRestores().
+  if (!global.__sigRestorePending) global.__sigRestorePending = [];
+  if (typeof global.__deferSigRestore !== "boolean") global.__deferSigRestore = false;
+  global.flushDeferredSigRestores = () => {
+    const q = global.__sigRestorePending.splice(0, global.__sigRestorePending.length);
+    q.forEach((fn) => fn());
+  };
+  return {
+    __esModule: true,
+    default: ({ onChange, value, onRestoreState }) => {
+      const restoreRef = React.useRef(onRestoreState);
+      restoreRef.current = onRestoreState;
+      React.useEffect(() => {
+        let cancelled = false;
+        if (value && String(value).startsWith("data:image/")) {
+          restoreRef.current?.("restoring");
+          const complete = () => {
+            if (!cancelled) restoreRef.current?.("ready");
+          };
+          if (global.__deferSigRestore) {
+            global.__sigRestorePending.push(complete);
+          } else {
+            Promise.resolve().then(complete);
+          }
+        } else {
+          restoreRef.current?.(null);
+        }
+        return () => { cancelled = true; };
+      }, [value]);
+      return (
+        <div
+          data-testid="signature-pad-mock"
+          data-restore-value={value ? "yes" : "no"}
+        >
+          <button
+            type="button"
+            data-testid="signature-pad-mock-sign"
+            onClick={() => onChange?.(value || "data:image/png;base64,c2ln")}
+          >
+            sign
+          </button>
+          <button
+            type="button"
+            data-testid="signature-pad-mock-fail-restore"
+            onClick={() => {
+              onRestoreState?.("failed");
+              onChange?.(null);
+            }}
+          >
+            fail-restore
+          </button>
+          <span data-testid="signature-pad-mock-value">{value || ""}</span>
+        </div>
+      );
+    },
+  };
+});
 
 jest.mock("../lib/imageCompress", () => ({
   __esModule: true,
@@ -204,6 +252,8 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    global.__deferSigRestore = false;
+    global.__sigRestorePending = [];
     URL.createObjectURL = jest.fn((blob) => `blob:mock-${blob?.size || 0}-${Math.random()}`);
     URL.revokeObjectURL = jest.fn();
     global.fetch = jest.fn(() => Promise.resolve({
@@ -214,6 +264,8 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
   });
 
   afterEach(() => {
+    global.__deferSigRestore = false;
+    global.__sigRestorePending = [];
     setSearch("");
   });
 
@@ -478,12 +530,8 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     await flush();
     expect(container.querySelector('[data-testid="proof-p001a"]')).toBeTruthy();
 
-    const pads = container.querySelectorAll('[data-testid="signature-pad-mock"]');
-    expect(pads.length).toBe(2);
-    act(() => {
-      pads[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      pads[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    expect(container.querySelectorAll('[data-testid="signature-pad-mock"]').length).toBe(2);
+    signBothPads(container);
     const name = container.querySelector('[data-testid="recipient-name-input"]');
     act(() => {
       const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
@@ -588,6 +636,338 @@ describe("DeliveryProofPanel multi-SJ desktop exact identity", () => {
     await flush();
     expect(container.querySelector('[data-testid="staged-block"]')).toBeTruthy();
     expect(api.uploadDeliveryProof).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  function typeRecipientName(container, value) {
+    const name = container.querySelector('[data-testid="recipient-name-input"]');
+    expect(name).toBeTruthy();
+    act(() => {
+      const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setValue.call(name, value);
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function signBothPads(container) {
+    const signs = container.querySelectorAll('[data-testid="signature-pad-mock-sign"]');
+    expect(signs.length).toBeGreaterThanOrEqual(2);
+    act(() => {
+      signs[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      signs[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  function padValues(container) {
+    return [...container.querySelectorAll('[data-testid="signature-pad-mock-value"]')]
+      .map((n) => n.textContent || "");
+  }
+
+  test("recipient name draft does not leak across SJ and restores per SJ id", async () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+        proof("p002a", "demo-multisj-photo-002"),
+        proof("p002b", "demo-multisj-photo-002"),
+      ],
+      // Sibling POD for SJ-001 must never prefill SJ-002.
+      delivery_recipient_signature: {
+        id: "sig-001",
+        shipment_id: "demo-multisj-photo-001",
+        recipient_name: "POD Tersimpan A",
+        signature_storage_path: "sig/a.png",
+        recipient_signed_at: "2026-09-16T00:00:00Z",
+      },
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value)
+      .toBe("POD Tersimpan A");
+
+    typeRecipientName(container, "Draft Nama A");
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value).toBe("Draft Nama A");
+
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    expect(container.querySelector('[data-testid="pengiriman-sj-select"]').value)
+      .toBe("demo-multisj-photo-002");
+    // SJ-002 has proofs so name field is visible, but must start empty (no sibling POD/draft).
+    expect(container.querySelector('[data-testid="recipient-name-input"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value).toBe("");
+    expect(container.querySelector('[data-testid="confirm-delivered-hint"]')?.textContent || "")
+      .toMatch(/Nama penerima|Tanda tangan/i);
+
+    typeRecipientName(container, "Draft Nama B");
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value).toBe("Draft Nama A");
+
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value).toBe("Draft Nama B");
+
+    selectSj(container, "demo-multisj-photo-003");
+    await flush();
+    // SJ-003 has 0 proofs → name input gated off; still must not carry B's draft into UI state
+    // when returning after visiting empty SJ.
+    expect(container.querySelector('[data-testid="recipient-name-input"]')).toBeFalsy();
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value).toBe("Draft Nama B");
+    unmount();
+  });
+
+  test("confirm modal cancel does not submit and keeps active SJ name draft", async () => {
+    api.confirmDelivered.mockResolvedValue({ order: demoMultiSjPhotoOrder() });
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+      ],
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    typeRecipientName(container, "Penerima Cancel Test");
+    signBothPads(container);
+    await flush();
+    const btn = container.querySelector('[data-testid="confirm-delivered-button"]');
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(false);
+    await act(async () => { btn.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-action-modal"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="confirm-recipient-name"]').textContent)
+      .toContain("Penerima Cancel Test");
+    await act(async () => {
+      container.querySelector('[data-testid="confirm-cancel"]').click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-action-modal"]')).toBeFalsy();
+    expect(api.confirmDelivered).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="recipient-name-input"]').value)
+      .toBe("Penerima Cancel Test");
+    unmount();
+  });
+
+  test("confirm payload locks active shipment_id and recipient name snapshot", async () => {
+    const base = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+        proof("p002a", "demo-multisj-photo-002"),
+        proof("p002b", "demo-multisj-photo-002"),
+      ],
+    });
+    api.uploadDeliveryRecipientSignature.mockResolvedValue({ order: base });
+    api.uploadDeliveryDriverSignature.mockResolvedValue({ order: base });
+    api.confirmDelivered.mockResolvedValue({
+      order: {
+        ...base,
+        delivery_confirmations: [{ id: "dc1", shipment_id: "demo-multisj-photo-001", recipient_name: "Nama A" }],
+      },
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={base} onUpdated={() => {}} />
+    );
+    await flush();
+    typeRecipientName(container, "Nama A");
+    signBothPads(container);
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="confirm-delivered-button"]').click();
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="confirm-ok"]').click();
+    });
+    await flush();
+    expect(api.confirmDelivered).toHaveBeenCalledTimes(1);
+    const [, payload] = api.confirmDelivered.mock.calls[0];
+    expect(payload.shipment_id).toBe("demo-multisj-photo-001");
+    expect(payload.recipient_name).toBe("Nama A");
+    expect(api.uploadDeliveryRecipientSignature).toHaveBeenCalledWith(
+      base.id,
+      expect.objectContaining({ shipmentId: "demo-multisj-photo-001", recipientName: "Nama A" }),
+    );
+    unmount();
+  });
+
+  test("TTD draft restores onto pad for active SJ only; clear empties draft and re-gates", async () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+        proof("p002a", "demo-multisj-photo-002"),
+        proof("p002b", "demo-multisj-photo-002"),
+      ],
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    typeRecipientName(container, "Nama A");
+    signBothPads(container);
+    await flush();
+    const signedA = padValues(container);
+    expect(signedA[0]).toMatch(/^data:image\//);
+    expect(signedA[1]).toMatch(/^data:image\//);
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    // B must not show A's draft value on pads.
+    expect(padValues(container).every((v) => !v)).toBe(true);
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    // Returning to A restores draft into pad value (visible restore path).
+    const restored = padValues(container);
+    expect(restored[0]).toBe(signedA[0]);
+    expect(restored[1]).toBe(signedA[1]);
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    await act(async () => {
+      container.querySelector('[data-testid="recipient-signature-clear"]').click();
+    });
+    await flush();
+    expect(padValues(container)[0]).toBe("");
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+
+    // Draft for A recipient TTD cleared — switching away and back stays empty for recipient pad.
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    expect(padValues(container)[0]).toBe("");
+    expect(padValues(container)[1]).toBe(signedA[1]); // driver draft still isolated/restored
+    unmount();
+  });
+
+  test("failed TTD restore clears hidden draft and keeps confirm gated", async () => {
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+        proof("p002a", "demo-multisj-photo-002"),
+        proof("p002b", "demo-multisj-photo-002"),
+      ],
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    typeRecipientName(container, "Nama A");
+    signBothPads(container);
+    await flush();
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    await act(async () => {
+      container.querySelectorAll('[data-testid="signature-pad-mock-fail-restore"]')[0]
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(padValues(container)[0]).toBe("");
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+    unmount();
+  });
+
+  test("deferred restore (delayed onload): restoring does not satisfy confirm gate until ready", async () => {
+    global.__deferSigRestore = true;
+    const order = demoMultiSjPhotoOrder({
+      delivery_proofs: [
+        proof("p001a", "demo-multisj-photo-001"),
+        proof("p001b", "demo-multisj-photo-001"),
+        proof("p002a", "demo-multisj-photo-002"),
+        proof("p002b", "demo-multisj-photo-002"),
+      ],
+    });
+    setSearch("?shipment=demo-multisj-photo-001");
+    const { container, unmount } = mount(
+      <DeliveryProofPanel order={order} onUpdated={() => {}} />
+    );
+    await flush();
+    typeRecipientName(container, "Nama A");
+    // Sign via onChange path — ready without restore.
+    global.__deferSigRestore = false;
+    signBothPads(container);
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    // Change value by leaving and returning — draft restore starts with deferred onload.
+    global.__deferSigRestore = true;
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    // Draft value is present but restore still pending → must NOT enable confirm.
+    expect(padValues(container)[0]).toMatch(/^data:image\//);
+    expect(padValues(container)[1]).toMatch(/^data:image\//);
+    expect(global.__sigRestorePending.length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="confirm-delivered-hint"]')?.textContent || "")
+      .toMatch(/Tanda tangan/i);
+
+    await act(async () => {
+      global.flushDeferredSigRestores();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
+
+    // Failed restore while deferred mid-cycle on sibling then back stays gated after fail.
+    global.__deferSigRestore = true;
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+    await act(async () => {
+      container.querySelectorAll('[data-testid="signature-pad-mock-fail-restore"]')[0]
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      // Drop pending ready callbacks for cancelled/failed pad — simulate onload abort.
+      global.__sigRestorePending = [];
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(true);
+
+    // Rapid SJ switch must not leave sibling restore enabling the wrong SJ.
+    global.__deferSigRestore = true;
+    typeRecipientName(container, "Nama A");
+    global.__deferSigRestore = false;
+    signBothPads(container);
+    await flush();
+    global.__deferSigRestore = true;
+    selectSj(container, "demo-multisj-photo-002");
+    await flush();
+    const pendingForB = global.__sigRestorePending.length;
+    selectSj(container, "demo-multisj-photo-001");
+    await flush();
+    // Completing stale B callbacks (if any) must not unlock A incorrectly mid-restore.
+    await act(async () => {
+      // Only complete current pending (A's restore).
+      global.flushDeferredSigRestores();
+    });
+    await flush();
+    expect(pendingForB).toBeGreaterThanOrEqual(0);
+    expect(container.querySelector('[data-testid="pengiriman-sj-select"]').value)
+      .toBe("demo-multisj-photo-001");
+    expect(container.querySelector('[data-testid="confirm-delivered-button"]').disabled).toBe(false);
     unmount();
   });
 });

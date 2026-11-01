@@ -124,11 +124,25 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [previewId, setPreviewId] = useState(null);
-  const [recipientName, setRecipientName] = useState(
-    () => order.delivery_recipient_signature?.recipient_name || ""
-  );
+  // Per-SJ form drafts (name + canvas TTD). Never reuse a sibling SJ's draft/POD name.
+  const formDraftsBySjRef = useRef({});
+  const formLiveRef = useRef({
+    selectionKey,
+    recipientName: "",
+    signatureDataUrl: null,
+    driverSignatureDataUrl: null,
+  });
+  const activeSelectionKeyRef = useRef(selectionKey);
+  const [recipientName, setRecipientName] = useState(() => {
+    const initialShip = findDeliveryShipment(order, selectedPengirimanShipmentId(order, urlShipmentId()));
+    const scoped = signatureForShipment(order.delivery_recipient_signature, order, initialShip);
+    return scoped?.recipient_name || "";
+  });
   const [signatureDataUrl, setSignatureDataUrl] = useState(null);
   const [driverSignatureDataUrl, setDriverSignatureDataUrl] = useState(null);
+  // Canvas must visibly show draft TTD before gate/confirm may use the data URL.
+  const [recipientSigReady, setRecipientSigReady] = useState(false);
+  const [driverSigReady, setDriverSigReady] = useState(false);
   const [savingSig, setSavingSig] = useState(false);
   const [sigPadKey, setSigPadKey] = useState(0);
   const [driverPadKey, setDriverPadKey] = useState(0);
@@ -140,10 +154,13 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const [allocationNotice, setAllocationNotice] = useState("");
 
   useEffect(() => {
-    const n = order.delivery_recipient_signature?.recipient_name;
-    if (n && !recipientName) setRecipientName(n);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order.delivery_recipient_signature?.id]);
+    formLiveRef.current = {
+      selectionKey,
+      recipientName,
+      signatureDataUrl,
+      driverSignatureDataUrl,
+    };
+  }, [selectionKey, recipientName, signatureDataUrl, driverSignatureDataUrl]);
 
   // R2 confirm-delivered requires an explicit warehouse when multiple gudang exist.
   useEffect(() => {
@@ -177,6 +194,17 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   }, [isOpen, order?.branch_id, order?.id]);
 
   useEffect(() => {
+    const prevKey = activeSelectionKeyRef.current;
+    const live = formLiveRef.current;
+    if (prevKey && prevKey !== selectionKey) {
+      formDraftsBySjRef.current[prevKey] = {
+        recipientName: live.recipientName || "",
+        signatureDataUrl: live.signatureDataUrl || null,
+        driverSignatureDataUrl: live.driverSignatureDataUrl || null,
+      };
+    }
+    activeSelectionKeyRef.current = selectionKey;
+
     setStaged((prev) => {
       prev.forEach((s) => { if (s.previewUrl) URL.revokeObjectURL(s.previewUrl); });
       return [];
@@ -192,15 +220,102 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     setConfirming(false);
     setDeletingId(null);
     setPreviewId(null);
-    setSignatureDataUrl(null);
-    setDriverSignatureDataUrl(null);
     setSavingSig(false);
     setSigPadKey((k) => k + 1);
     setDriverPadKey((k) => k + 1);
-    setRecipientName(order.delivery_recipient_signature?.recipient_name || "");
     setStockPreflight(null);
     setStockPreflightErr("");
+
+    const draft = selectionKey ? formDraftsBySjRef.current[selectionKey] : null;
+    const scopedSig = signatureForShipment(order.delivery_recipient_signature, order, activeShipment);
+    // Draft data URLs are not "ready" until SignaturePad paints them onto the canvas.
+    setRecipientSigReady(false);
+    setDriverSigReady(false);
+    if (draft) {
+      setRecipientName(draft.recipientName || "");
+      setSignatureDataUrl(draft.signatureDataUrl || null);
+      setDriverSignatureDataUrl(draft.driverSignatureDataUrl || null);
+    } else {
+      setRecipientName(scopedSig?.recipient_name || "");
+      setSignatureDataUrl(null);
+      setDriverSignatureDataUrl(null);
+    }
   }, [selectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const patchActiveDraft = (patch) => {
+    const key = activeSelectionKeyRef.current;
+    if (!key) return;
+    const prev = formDraftsBySjRef.current[key] || {
+      recipientName: "",
+      signatureDataUrl: null,
+      driverSignatureDataUrl: null,
+    };
+    formDraftsBySjRef.current[key] = { ...prev, ...patch };
+  };
+
+  const onRecipientPadChange = (dataUrl) => {
+    if (activeSelectionKeyRef.current !== selectionKey) return;
+    setSignatureDataUrl(dataUrl || null);
+    setRecipientSigReady(!!dataUrl);
+    patchActiveDraft({ signatureDataUrl: dataUrl || null });
+  };
+
+  const onDriverPadChange = (dataUrl) => {
+    if (activeSelectionKeyRef.current !== selectionKey) return;
+    setDriverSignatureDataUrl(dataUrl || null);
+    setDriverSigReady(!!dataUrl);
+    patchActiveDraft({ driverSignatureDataUrl: dataUrl || null });
+  };
+
+  const onRecipientRestoreState = (state) => {
+    if (activeSelectionKeyRef.current !== selectionKey) return;
+    if (state === "ready") {
+      setRecipientSigReady(true);
+      return;
+    }
+    // "restoring" (and null/failed) must not leave a prior ready flag satisfying the gate
+    // while the canvas is blank or still painting a draft.
+    if (state === "restoring") {
+      setRecipientSigReady(false);
+      return;
+    }
+    if (state === "failed") {
+      setRecipientSigReady(false);
+      setSignatureDataUrl(null);
+      patchActiveDraft({ signatureDataUrl: null });
+      return;
+    }
+    if (state === null) setRecipientSigReady(false);
+  };
+
+  const onDriverRestoreState = (state) => {
+    if (activeSelectionKeyRef.current !== selectionKey) return;
+    if (state === "ready") {
+      setDriverSigReady(true);
+      return;
+    }
+    if (state === "restoring") {
+      setDriverSigReady(false);
+      return;
+    }
+    if (state === "failed") {
+      setDriverSigReady(false);
+      setDriverSignatureDataUrl(null);
+      patchActiveDraft({ driverSignatureDataUrl: null });
+      return;
+    }
+    if (state === null) setDriverSigReady(false);
+  };
+
+  // Hydrate empty input only from the active SJ's saved POD — never a sibling.
+  useEffect(() => {
+    const scoped = signatureForShipment(order.delivery_recipient_signature, order, activeShipment);
+    const n = String(scoped?.recipient_name || "").trim();
+    if (!n) return;
+    if (activeSelectionKeyRef.current !== selectionKey) return;
+    setRecipientName((prev) => (prev && String(prev).trim() ? prev : n));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.delivery_recipient_signature?.id, order.delivery_recipient_signature?.shipment_id, selectionKey]);
 
   const canUpload = hasPerm("delivery.update");
   const shipmentResolved = Boolean(activeShipment) && Boolean(selectedShipmentKey);
@@ -312,16 +427,19 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
     .join("|");
   const readyCount = confirmableProofCount(staged);
   const doneCount = staged.filter((s) => s.status === "done").length;
+  // Only visibly-restored (or freshly drawn) canvas TTD may satisfy the gate — never a hidden draft.
+  const visibleRecipientSig = recipientSigReady ? signatureDataUrl : null;
+  const visibleDriverSig = driverSigReady ? driverSignatureDataUrl : null;
   // Button APPEARS after existing 2-photo rule; submit still needs name + both signatures.
   const deliverButtonVisible = canUpload && shipmentResolved && canConfirmDelivered(proofs) && !mutationLocked;
   const deliverEnabled = deliverButtonVisible && canSubmitConfirmDelivered(
-    proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+    proofs, recipientName, visibleRecipientSig, orderSig, visibleDriverSig, driverSig
   );
   const deliverBlockReason = deliverButtonVisible
     ? (
       confirmDeliveredLoadingBlockReason(order)
       || confirmDeliveredBlockReason(
-        proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+        proofs, recipientName, visibleRecipientSig, orderSig, visibleDriverSig, driverSig
       )
     )
     : null;
@@ -448,6 +566,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       setErr("Pilih Surat Jalan terlebih dahulu.");
       return;
     }
+    const lockedShipId = selectedShipmentKey;
+    const lockedSelectionKey = selectionKey;
     const toUpload = staged.filter((s) => s.status === "ready" || (s.status === "error" && s.file));
     if (toUpload.length === 0) {
       setErr("Belum ada foto siap upload.");
@@ -462,10 +582,14 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       try {
         const res = await api.uploadDeliveryProof(latestOrder.id, s.file, s.note || "", (pct) => {
           setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, progress: pct } : x));
-        }, selectedShipmentKey);
+        }, lockedShipId);
         latestOrder = res.order;
+        // Always push order update (proofs are server-authoritative), but only mutate
+        // staged UI when the user is still on the same SJ.
         onUpdated(res.order);
-        setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "done", progress: 100 } : x));
+        if (activeSelectionKeyRef.current === lockedSelectionKey) {
+          setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "done", progress: 100 } : x));
+        }
       } catch (ex) {
         const msg = proofUploadUserError(ex);
         setStaged((prev) => prev.map((x) => x.id === s.id ? { ...x, status: "error", error: msg } : x));
@@ -518,7 +642,7 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
   const openDeliverConfirm = () => {
     if (!deliverButtonVisible || confirming) return;
     const blocked = confirmDeliveredLoadingBlockReason(order) || confirmDeliveredBlockReason(
-      proofs, recipientName, signatureDataUrl, orderSig, driverSignatureDataUrl, driverSig
+      proofs, recipientName, visibleRecipientSig, orderSig, visibleDriverSig, driverSig
     );
     if (blocked) {
       setErr(blocked);
@@ -528,63 +652,86 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       setErr("Pilih gudang stok sebelum Konfirmasi Terkirim.");
       return;
     }
+    if (!selectedShipmentKey) {
+      setErr("Pilih Surat Jalan terlebih dahulu.");
+      return;
+    }
     setErr("");
+    // Snapshot active SJ identity + visibly-ready form values so a later SJ switch cannot retarget confirm.
     setConfirmDeliver({
       count: proofs.length,
       time: formatDisplayDateTime(new Date().toISOString()),
       actionId: newActionId(),
+      shipmentId: selectedShipmentKey,
+      selectionKey,
       recipientName: (recipientName || orderSig?.recipient_name || "").trim(),
       driverName: driverDisplayName,
       warehouseId: String(deliveryWarehouseId || "").trim(),
+      signatureDataUrl: visibleRecipientSig,
+      driverSignatureDataUrl: visibleDriverSig,
     });
   };
 
-  const ensureSignaturesSaved = async () => {
-    if (!selectedShipmentKey) {
+  const ensureSignaturesSaved = async ({
+    shipmentId,
+    selectionKey: lockedSelectionKey,
+    recipientName: lockedName,
+    signatureDataUrl: lockedRecipientSig,
+    driverSignatureDataUrl: lockedDriverSig,
+    orderSig: lockedOrderSig,
+  } = {}) => {
+    const shipId = String(shipmentId || selectedShipmentKey || "").trim();
+    if (!shipId) {
       throw new Error("Pilih Surat Jalan terlebih dahulu.");
     }
+    const name = String(lockedName || recipientName || lockedOrderSig?.recipient_name || orderSig?.recipient_name || "").trim();
+    const recipientCanvas = lockedRecipientSig !== undefined ? lockedRecipientSig : signatureDataUrl;
+    const driverCanvas = lockedDriverSig !== undefined ? lockedDriverSig : driverSignatureDataUrl;
+    const scopedSig = lockedOrderSig || orderSig;
     let latest = order;
-    const name = (recipientName || orderSig?.recipient_name || "").trim();
-    const recipientImageSaved = orderSig && orderSig.id && orderSig.frozen !== true
-      && (orderSig.signature_storage_path || orderSig.recipient_signed_at);
-    if (!(recipientImageSaved && (!signatureDataUrl || orderSig.recipient_name === name))) {
-      if (!signatureDataUrl && !recipientImageSaved) {
+    const stillActive = () => (
+      !lockedSelectionKey || activeSelectionKeyRef.current === lockedSelectionKey
+    );
+    const recipientImageSaved = scopedSig && scopedSig.id && scopedSig.frozen !== true
+      && (scopedSig.signature_storage_path || scopedSig.recipient_signed_at);
+    if (!(recipientImageSaved && (!recipientCanvas || scopedSig.recipient_name === name))) {
+      if (!recipientCanvas && !recipientImageSaved) {
         throw new Error("Tanda tangan penerima wajib sebelum Konfirmasi Terkirim.");
       }
-      if (signatureDataUrl) {
+      if (recipientCanvas) {
         setSavingSig(true);
         try {
           const res = await api.uploadDeliveryRecipientSignature(latest.id, {
             recipientName: name,
-            signatureDataUrl,
-            shipmentId: selectedShipmentKey,
+            signatureDataUrl: recipientCanvas,
+            shipmentId: shipId,
           });
           latest = res.order;
-          onUpdated(res.order);
+          if (stillActive()) onUpdated(res.order);
         } finally {
           setSavingSig(false);
         }
       }
     }
-    const driverSaved = latest.delivery_driver_signature
-      && latest.delivery_driver_signature.id
-      && latest.delivery_driver_signature.frozen !== true
-      && (latest.delivery_driver_signature.signature_storage_path
-        || latest.delivery_driver_signature.driver_signature_storage_path
-        || latest.delivery_driver_signature.driver_signed_at);
-    if (!driverSaved || driverSignatureDataUrl) {
-      if (!driverSignatureDataUrl && !driverSaved) {
+    const driverShip = findDeliveryShipment(latest, shipId) || activeShipment;
+    const driverScoped = signatureForShipment(latest.delivery_driver_signature, latest, driverShip);
+    const driverOk = !!(driverScoped && driverScoped.id && driverScoped.frozen !== true
+      && (driverScoped.signature_storage_path
+        || driverScoped.driver_signature_storage_path
+        || driverScoped.driver_signed_at));
+    if (!driverOk || driverCanvas) {
+      if (!driverCanvas && !driverOk) {
         throw new Error("Tanda tangan driver/pengirim wajib sebelum Konfirmasi Terkirim.");
       }
-      if (driverSignatureDataUrl) {
+      if (driverCanvas) {
         setSavingSig(true);
         try {
           const res = await api.uploadDeliveryDriverSignature(latest.id, {
-            signatureDataUrl: driverSignatureDataUrl,
-            shipmentId: selectedShipmentKey,
+            signatureDataUrl: driverCanvas,
+            shipmentId: shipId,
           });
           latest = res.order;
-          onUpdated(res.order);
+          if (stillActive()) onUpdated(res.order);
         } finally {
           setSavingSig(false);
         }
@@ -595,22 +742,36 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
   const executeDeliver = async () => {
     if (!confirmDeliver || confirming || uploading || savingSig) return;
-    if (!selectedShipmentKey) {
+    const shipId = String(confirmDeliver.shipmentId || selectedShipmentKey || "").trim();
+    if (!shipId) {
       setErr("Pilih Surat Jalan terlebih dahulu.");
       return;
     }
+    const lockedSelectionKey = confirmDeliver.selectionKey || selectionKey;
+    const lockedName = String(confirmDeliver.recipientName || "").trim();
     setConfirming(true);
     setErr("");
     try {
-      await ensureSignaturesSaved();
+      await ensureSignaturesSaved({
+        shipmentId: shipId,
+        selectionKey: lockedSelectionKey,
+        recipientName: lockedName,
+        signatureDataUrl: confirmDeliver.signatureDataUrl,
+        driverSignatureDataUrl: confirmDeliver.driverSignatureDataUrl,
+        orderSig: signatureForShipment(
+          order.delivery_recipient_signature,
+          order,
+          findDeliveryShipment(order, shipId) || activeShipment,
+        ),
+      });
       const warehouseId = String(
         confirmDeliver.warehouseId || deliveryWarehouseId || ""
       ).trim();
       const selectedWh = deliveryWarehouses.find((w) => w.id === warehouseId);
       const res = await api.confirmDelivered(order.id, {
         action_id: confirmDeliver.actionId,
-        shipment_id: selectedShipmentKey,
-        recipient_name: (recipientName || orderSig?.recipient_name || "").trim(),
+        shipment_id: shipId,
+        recipient_name: lockedName,
         ...(warehouseId ? {
           warehouse_id: warehouseId,
           branch_id: selectedWh?.branch_id || order.branch_id || undefined,
@@ -623,8 +784,14 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
       if (allocMsg) setAllocationNotice(allocMsg);
       onUpdated(res.order);
       setConfirmDeliver(null);
-      setSignatureDataUrl(null);
-      setDriverSignatureDataUrl(null);
+      // Clear draft for confirmed SJ so reload uses server POD name.
+      if (lockedSelectionKey) delete formDraftsBySjRef.current[lockedSelectionKey];
+      if (activeSelectionKeyRef.current === lockedSelectionKey) {
+        setSignatureDataUrl(null);
+        setDriverSignatureDataUrl(null);
+        setRecipientSigReady(false);
+        setDriverSigReady(false);
+      }
     } catch (ex) {
       setErr(proofUploadUserError(ex));
     } finally {
@@ -634,6 +801,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
   const clearSignature = async () => {
     setSignatureDataUrl(null);
+    setRecipientSigReady(false);
+    patchActiveDraft({ signatureDataUrl: null });
     setSigPadKey((k) => k + 1);
     if (orderSig && orderSig.id && orderSig.frozen !== true) {
       try {
@@ -647,6 +816,8 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
 
   const clearDriverSignature = async () => {
     setDriverSignatureDataUrl(null);
+    setDriverSigReady(false);
+    patchActiveDraft({ driverSignatureDataUrl: null });
     setDriverPadKey((k) => k + 1);
     if (driverSig && driverSig.id && driverSig.frozen !== true) {
       try {
@@ -1004,7 +1175,9 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
                 key={sigPadKey}
                 height={160}
                 disabled={confirming || uploading || savingSig}
-                onChange={setSignatureDataUrl}
+                value={signatureDataUrl}
+                onChange={onRecipientPadChange}
+                onRestoreState={onRecipientRestoreState}
               />
               {(signatureDataUrl || (orderSig && !orderSig.frozen)) && (
                 <button
@@ -1033,7 +1206,9 @@ export default function DeliveryProofPanel({ order, onUpdated, isOpen = true }) 
                   key={driverPadKey}
                   height={160}
                   disabled={confirming || uploading || savingSig}
-                  onChange={setDriverSignatureDataUrl}
+                  value={driverSignatureDataUrl}
+                  onChange={onDriverPadChange}
+                  onRestoreState={onDriverRestoreState}
                 />
               </div>
               {(driverSignatureDataUrl || (driverSig && !driverSig.frozen)) && (

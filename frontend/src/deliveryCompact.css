@@ -1,0 +1,408 @@
+/* Desktop Pengiriman design contract. Opt-in per page; never styles the PWA.
+   Tokens match productionCompact (PR #699). Scope: .delivery-compact only. */
+.delivery-compact {
+  --delivery-font: Arial, Helvetica, sans-serif;
+  --delivery-text: 13px;
+  --delivery-caption: 12px;
+  --delivery-title: 19px;
+  --delivery-ink: #182e39;
+  --delivery-muted: #647782;
+  --delivery-border: #d6e2df;
+  --delivery-surface: #ffffff;
+  --delivery-background: #f6f8f9;
+  --delivery-header-bg: #edf3f1;
+  --delivery-green: #075e50;
+  --delivery-green-strong: #054a40;
+  --delivery-green-soft: #e7f2ee;
+  --delivery-danger: #a53f2b;
+  --delivery-warn: #b45309;
+  --delivery-ok: #075e50;
+  --delivery-ctrl-h: 32px;
+  --delivery-row-h: 34px;
+  --ship-ctrl-h: var(--delivery-ctrl-h);
+  --ship-radius: 6px;
+  --ship-border: var(--delivery-border);
+  --ship-head-bg: var(--delivery-header-bg);
+  --ship-head-border: var(--delivery-border);
+  --mod: var(--delivery-green);
+  --mod-strong: var(--delivery-green-strong);
+  --mod-soft: var(--delivery-green-soft);
+  --mod-border: var(--delivery-border);
+  --mod-ink: var(--delivery-ink);
+  --color-input-bg: var(--delivery-surface);
+  --color-input-border: var(--delivery-border);
+  --color-input-hover: var(--delivery-green);
+  --color-input-focus: var(--delivery-green);
+  --color-input-ring: rgba(7, 94, 80, 0.28);
+  font-family: var(--delivery-font);
+  font-size: var(--delivery-text);
+  color: var(--delivery-ink);
+  background: var(--delivery-background);
+}
+.delivery-compact :is(h1,h2,h3,h4,h5,h6,pre,p,div,em,dt,dd,span,a,label,button,input,select,textarea,table,th,td,strong,small,summary) {
+  font-family: var(--delivery-font) !important;
+}
+.delivery-compact :is(.num,.mono) { font-variant-numeric: tabular-nums; }
+.delivery-compact :is(.muted,.small,.subhead,.eyebrow) { color: var(--delivery-muted); }
+
+/* ---- Page chrome ---- */
+.delivery-compact :is(h1,.dp-header h1,.ship-status-heading h1,.iro-hero h1,.page-heading h1) {
+  font-size: var(--delivery-title); line-height: 1.25; letter-spacing: 0; text-transform: none; color: var(--delivery-ink);
+  margin: 0;
+}
+.delivery-compact :is(h2,h3,.panel-head h3,.qty-ops-head h3) {
+  font-size: 14px; line-height: 1.3; letter-spacing: 0; text-transform: none; color: var(--delivery-ink);
+}
+.delivery-compact :is(.page-heading,.work-page-heading,.dp-header,.ship-status-heading,.iro-hero) {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 12px;
+  flex-wrap: nowrap; width: 100%; box-sizing: border-box;
+  margin-bottom: 4px; padding: 0; min-height: 0;
+  background: transparent; border: 0; border-radius: 0; box-shadow: none;
+}
+/* Jadwal/Rencana: judul kiri, aksi kanan, lebar penuh area konten. */
+.delivery-compact.dp-page .dp-header,
+.delivery-compact .dp-header {
+  width: 100%;
+  max-width: none;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+.delivery-compact .dp-header > div:first-child { min-width: 0; flex: 1 1 auto; }
+.delivery-compact .dp-header-actions {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+}
+.delivery-compact .dp-header .subhead {
+  max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.delivery-compact .page-heading::before { display: none; }
+/* Chrome stays column stack; do NOT turn it into a shrinking row flex. */
+.delivery-compact .ship-status-chrome {
+  display: block; width: 100%; box-sizing: border-box;
+}
+.delivery-compact :is(.dp-filters,.ship-status-toolbar,.division-task-toolbar,.division-task-filters,.division-task-scope,.work-divisi-switch) {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
+}
+.delivery-compact :is(.ship-status-toolbar,.dp-filters,.division-task-toolbar) { margin: 0 0 4px; }
+.delivery-compact .dp-filters { padding: 4px 0; }
+.delivery-compact .dp-pager {
+  margin-top: 2px; padding: 2px 0; min-height: 0;
+}
+.delivery-compact.ship-status-page,
+.delivery-compact.dp-page {
+  background: var(--delivery-background);
+  /* Beat .dp-page { --dp-green:#166534 } with higher specificity. */
+  --dp-green: #075e50;
+  --dp-green-strong: #054a40;
+  --dp-green-soft: #e7f2ee;
+}
+
+/* ---- Buttons / tabs / filters ---- */
+.delivery-compact :is(button.primary, .primary, a.primary, .dp-btn-primary, .iro-btn-primary),
+.delivery-compact.dp-page :is(.dp-btn-primary, button.dp-btn-primary),
+.delivery-compact .dp-adv .dp-btn-primary,
+.delivery-compact.ship-status-page .dp-btn-primary {
+  background: var(--delivery-green) !important; border-color: var(--delivery-green) !important; color: #fff !important;
+}
+.delivery-compact :is(button.primary, .primary, a.primary, .dp-btn-primary, .iro-btn-primary):hover:not(:disabled),
+.delivery-compact.dp-page :is(.dp-btn-primary, button.dp-btn-primary):hover:not(:disabled),
+.delivery-compact .dp-adv .dp-btn-primary:hover:not(:disabled) {
+  background: var(--delivery-green-strong) !important; border-color: var(--delivery-green-strong) !important; color: #fff !important;
+}
+.delivery-compact :is(button.ghost, .ghost, a.ghost, .ship-tool-btn, .ship-reset-btn, .ship-icon-btn) {
+  background: var(--delivery-surface); color: var(--delivery-green);
+  border: 1px solid var(--delivery-border);
+}
+.delivery-compact :is(button.ghost, .ghost, a.ghost, .ship-tool-btn, .ship-reset-btn):hover:not(:disabled) {
+  background: var(--delivery-green-soft); border-color: var(--delivery-green); color: var(--delivery-green-strong);
+}
+.delivery-compact :is(
+  button.primary, button.ghost, .primary, .ghost, a.primary, a.ghost,
+  .dp-btn-primary, .iro-btn-primary, .ship-tool-btn, .ship-reset-btn, .ship-icon-btn,
+  .division-task-filters button, .work-divisi-switch a, .work-divisi-switch button,
+  .ds-adv-filter-btn, .dp-adv-filter-btn, .ship-filter-field button
+) {
+  min-height: var(--delivery-ctrl-h);
+  height: auto;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: var(--delivery-caption);
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+.delivery-compact .ship-icon-btn {
+  width: var(--delivery-ctrl-h); padding: 0; display: inline-flex; align-items: center; justify-content: center;
+}
+.delivery-compact :is(button, a, [role="tab"], input, select, textarea):focus-visible {
+  outline: 2px solid var(--delivery-green);
+  outline-offset: 2px;
+}
+.delivery-compact :is(
+  .division-task-filters button.active, .division-task-filters button[aria-pressed="true"],
+  .work-divisi-switch a.active, .work-divisi-switch button.active,
+  .ds-adv-filter-btn.is-active, .dp-adv-filter-btn.is-active,
+  .ship-tool-btn.is-active, .dp-btn-primary.is-pending
+) {
+  background: var(--delivery-green) !important; color: #fff !important; border-color: var(--delivery-green) !important;
+}
+.delivery-compact .division-task-actions { display: flex; gap: 5px; flex-wrap: nowrap; }
+.delivery-compact .division-task-actions :is(a, button) {
+  white-space: nowrap; min-height: var(--delivery-ctrl-h); height: var(--delivery-ctrl-h); padding: 0 8px;
+}
+.delivery-compact :is(.pill,.badge,.status-pill,[data-status]) { font-size: var(--delivery-caption); }
+.delivery-compact :is(.is-urgent,.pill.urgent,.status-urgent,.pill-cancel) { color: var(--delivery-danger); }
+.delivery-compact :is(.is-hold,.pill.hold,.status-hold,.pill-warn) { color: var(--delivery-warn); }
+.delivery-compact :is(.is-ok,.pill.ok,.status-ok,.pill.success,.pill-ok) { color: var(--delivery-ok); }
+.delivery-compact :is(button.danger, .primary.destructive) {
+  background: var(--delivery-danger); border-color: var(--delivery-danger); color: #fff;
+}
+
+/* ---- Inputs ---- */
+.delivery-compact :is(input, select, textarea),
+.delivery-compact .ship-status-toolbar :is(input, select),
+.delivery-compact .dp-search input,
+.delivery-compact .ship-filter-field :is(input, select) {
+  font-family: var(--delivery-font); font-size: var(--delivery-text);
+  min-height: var(--delivery-ctrl-h); border-radius: 6px;
+  border-color: var(--delivery-border); background: var(--delivery-surface); color: var(--delivery-ink);
+}
+.delivery-compact .ship-filter-field span {
+  font: 12px/1.3 var(--delivery-font); letter-spacing: 0; text-transform: none; color: var(--delivery-muted);
+}
+
+/* ---- Tables: pale headers, dense rows, scroll preserved ---- */
+.delivery-compact :is(.prod-table-wrap,.ship-status-grid,.dp-adv-scroll,[data-testid="delivery-schedule-table-wrap"]) {
+  overflow: auto;
+  border: 1px solid var(--delivery-border);
+  border-radius: 7px;
+  background: var(--delivery-surface);
+  -webkit-overflow-scrolling: touch;
+}
+/* Outer wrap on Jadwal may be layout-only; keep inner .dp-adv-scroll as the scrollport. */
+.delivery-compact [data-testid="delivery-schedule-table-wrap"] {
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+.delivery-compact [data-testid="delivery-schedule-table-wrap"] .dp-adv-scroll {
+  overflow: auto;
+  border: 1px solid var(--delivery-border);
+  border-radius: 7px;
+  max-height: none;
+}
+.delivery-compact :is(.prod-table,.ship-table,.dp-adv-table) { font-size: var(--delivery-text); color: var(--delivery-ink); }
+.delivery-compact :is(.prod-table,.ship-table,.dp-adv-table) :is(td,th) {
+  padding: 4px 7px; line-height: 1.25; border-color: var(--delivery-border);
+}
+.delivery-compact :is(.prod-table,.ship-table,.dp-adv-table) th {
+  font-size: var(--delivery-caption); text-transform: none; letter-spacing: 0; font-weight: 600;
+}
+.delivery-compact :is(.prod-table,.ship-table,.dp-adv-table) tbody td {
+  font-size: var(--delivery-text); font-weight: 400;
+  min-height: var(--delivery-row-h); vertical-align: middle;
+}
+.delivery-compact :is(.prod-table,.ship-table,.dp-adv-table) thead { position: sticky; top: 0; z-index: 2; }
+/* thead sticks; th stay static (avoids sticky-th overlay / left-clip artifacts). */
+.delivery-compact :is(.prod-table,.ship-table,.dp-adv-table) thead th,
+.delivery-compact .dp-adv-table thead th,
+.delivery-compact .ship-table thead th {
+  position: static;
+  background: var(--delivery-header-bg) !important;
+  color: var(--delivery-ink) !important;
+  border-bottom: 1px solid var(--delivery-border);
+  box-shadow: inset 0 -1px 0 var(--delivery-border);
+  padding-block: 6px;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  font-size: var(--delivery-caption) !important;
+}
+.delivery-compact .dp-adv-th,
+.delivery-compact .dp-adv-sort { color: var(--delivery-ink) !important; }
+.delivery-compact .dp-adv-sort.is-active { color: var(--delivery-green) !important; }
+.delivery-compact .dp-adv-filter-btn {
+  color: var(--delivery-muted) !important;
+  background: transparent !important;
+}
+.delivery-compact .dp-adv-filter-btn.is-active,
+.delivery-compact .dp-adv-filter-btn:hover {
+  color: var(--delivery-green) !important;
+  background: var(--delivery-green-soft) !important;
+}
+.delivery-compact .dp-adv-resizer:hover { background: rgba(7, 94, 80, 0.25); }
+.delivery-compact .dp-adv-table tbody tr:nth-child(even) { background: #f8faf9; }
+.delivery-compact .dp-adv-table tbody tr:hover { background: var(--delivery-green-soft); }
+/* Rencana already dense — do not inflate padding */
+.delivery-compact.dp-page .dp-adv-table tbody td { padding: 3px 6px; }
+.delivery-compact .dp-pager,
+.delivery-compact .bulk-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  margin-top: 2px; padding: 2px 0; font-size: var(--delivery-caption);
+}
+
+/* ---- Division task tables (SJ / Loading / Kurir): proportional defaults ---- */
+.delivery-compact.division-task-page .prod-table-wrap {
+  overflow: auto;
+}
+.delivery-compact.division-task-page .prod-table {
+  width: 100%;
+  min-width: 1080px;
+  table-layout: fixed;
+}
+.delivery-compact.division-task-page .prod-table thead th,
+.delivery-compact.division-task-page .prod-table tbody td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  vertical-align: middle;
+}
+.delivery-compact.division-task-page .prod-table thead th:nth-child(1),
+.delivery-compact.division-task-page .prod-table tbody td:nth-child(1) {
+  width: 15%; min-width: 10.5rem; white-space: normal; /* No PO + badge wrap */
+}
+.delivery-compact.division-task-page .prod-table thead th:nth-child(2),
+.delivery-compact.division-task-page .prod-table tbody td:nth-child(2) { width: 15%; max-width: 12.5rem; } /* Customer */
+.delivery-compact .division-task-search {
+  border-color: var(--delivery-border);
+  background: var(--delivery-surface);
+  color: var(--delivery-ink);
+  font-family: var(--delivery-font);
+}
+.delivery-compact .division-task-search input {
+  font-family: var(--delivery-font) !important;
+  font-size: var(--delivery-text) !important;
+  color: var(--delivery-ink);
+  border: 0 !important;
+  outline: none !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  padding: 0 0 0 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.delivery-compact .division-task-search input:focus,
+.delivery-compact .division-task-search input:focus-visible {
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
+.delivery-compact .division-task-search:focus-within {
+  border-color: var(--delivery-green);
+  outline: 2px solid rgba(7, 94, 80, 0.28);
+  outline-offset: 1px;
+}
+.delivery-compact.division-task-page .prod-table thead th:nth-child(3),
+.delivery-compact.division-task-page .prod-table tbody td:nth-child(3) { width: 14%; } /* Item */
+.delivery-compact.division-task-page .prod-table thead th:nth-last-child(1),
+.delivery-compact.division-task-page .prod-table tbody td:nth-last-child(1) { width: 9.5rem; white-space: nowrap; } /* Aksi */
+.delivery-compact.division-task-page .prod-table thead th:nth-last-child(2),
+.delivery-compact.division-task-page .prod-table tbody td:nth-last-child(2) { width: 7.5rem; } /* Status */
+.delivery-compact.division-task-page .prod-table thead th:nth-last-child(3),
+.delivery-compact.division-task-page .prod-table tbody td:nth-last-child(3) { width: 12rem; } /* Yang harus diinput */
+.delivery-compact.division-task-page .prod-table tbody td:nth-child(2) {
+  white-space: normal;
+  line-height: 1.3;
+}
+
+/* ---- Optimasi Rute desktop only (exclude mobile shell) ---- */
+.delivery-compact.iro-page:not(.iro-page--mobile) .iro-hero {
+  margin-bottom: 8px;
+}
+.delivery-compact.iro-page:not(.iro-page--mobile) :is(table, .iro-table) thead th {
+  background: var(--delivery-header-bg) !important; color: var(--delivery-ink) !important;
+}
+.delivery-compact.iro-page:not(.iro-page--mobile) .iro-btn-primary {
+  background: var(--delivery-green) !important; border-color: var(--delivery-green) !important; color: #fff !important;
+}
+
+/* ---- Work forms (SJ / Loading / Terkirim) ---- */
+.delivery-compact.production-work-page,
+.delivery-compact[data-testid="po-work-view"] {
+  padding: 6px 8px;
+}
+.delivery-compact :is(.work-panel,.qty-ops-panel,.panel, .packing-panel) {
+  box-shadow: none; border-radius: 7px; background: var(--delivery-surface);
+  border: 1px solid var(--delivery-border); padding: 8px 10px;
+}
+.delivery-compact .work-divisi-switch { margin: 4px 0; gap: 4px; }
+.delivery-compact details summary {
+  cursor: pointer; font-size: var(--delivery-caption); padding: 4px 0; color: var(--delivery-ink);
+}
+.delivery-compact [data-testid="surat-jalan-panel"] .qty-ops-body {
+  display: grid; gap: 8px;
+}
+.delivery-compact [data-testid="surat-jalan-panel"] .sj-upload-row,
+.delivery-compact [data-testid="surat-jalan-panel"] .sj-compact-upload {
+  display: flex; flex-wrap: wrap; align-items: end; gap: 8px 10px;
+}
+.delivery-compact [data-testid="surat-jalan-date-field"] {
+  flex: 0 1 180px; max-width: 200px; margin: 0;
+}
+.delivery-compact [data-testid="surat-jalan-date-field"] input[type="date"] {
+  width: 100%; max-width: 180px;
+}
+.delivery-compact [data-testid="surat-jalan-panel"] .sj-upload-file-row {
+  display: inline-flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; max-width: 280px;
+}
+.delivery-compact [data-testid="surat-jalan-upload-button"],
+.delivery-compact [data-testid="surat-jalan-submit-button"] {
+  width: auto !important; min-width: 0; flex: 0 0 auto;
+}
+.delivery-compact [data-testid="surat-jalan-submit-button"] {
+  max-width: 220px;
+}
+.delivery-compact [data-testid="surat-jalan-compact-upload"] {
+  align-items: flex-end;
+}
+.delivery-compact [data-testid="surat-jalan-date-field"] .muted.small {
+  white-space: nowrap;
+}
+.delivery-compact .sj-file-list { gap: 6px !important; }
+.delivery-compact .sj-file-card {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  padding: 6px 8px; border: 1px solid var(--delivery-border); border-radius: 6px;
+}
+.delivery-compact .sj-file-card [data-testid^="sj-hapus-"],
+.delivery-compact [data-testid^="sj-hapus-"] {
+  color: var(--delivery-danger) !important;
+  border-color: #f0c4bc !important;
+  background: #fff !important;
+}
+.delivery-compact [data-testid="loading-panel"] .qty-ops-body,
+.delivery-compact [data-testid="delivery-proof-panel"] {
+  display: grid; gap: 8px;
+}
+.delivery-compact [data-testid="loading-sj-select-wrap"] {
+  max-width: 320px;
+}
+.delivery-compact [data-testid="delivery-proof-panel"] canvas,
+.delivery-compact [data-testid="delivery-proof-panel"] input[type="file"] {
+  max-width: 100%;
+}
+
+/* ---- Confirm modal when delivery compact is mounted ---- */
+body:has(.delivery-compact) .confirm-action-inner {
+  max-width: 440px; border-radius: 10px; border-color: #d6e2df;
+  font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #182e39;
+}
+body:has(.delivery-compact) .confirm-action-inner .modal-head {
+  padding: 14px 22px; background: #edf3f1;
+}
+body:has(.delivery-compact) .confirm-action-inner .modal-head h3 {
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-size: 16px; letter-spacing: 0; text-transform: none; color: #182e39;
+}
+body:has(.delivery-compact) .confirm-action-inner .confirm-action-body {
+  padding: 16px 22px; font-size: 13px;
+}
+body:has(.delivery-compact) .confirm-action-inner .confirm-action-dl > div {
+  grid-template-columns: 110px 1fr; gap: 10px; align-items: start;
+}
+body:has(.delivery-compact) .confirm-action-inner .delete-modal-actions {
+  padding: 12px 22px 16px; gap: 8px; background: #f6f8f9; border-top-color: #d6e2df;
+}
+body:has(.delivery-compact) .confirm-action-inner .delete-modal-actions .ghost {
+  background: #fff; color: #075e50; border: 1px solid #d6e2df; min-height: 34px;
+}
+body:has(.delivery-compact) .confirm-action-inner .delete-modal-actions .primary {
+  background: #075e50; border-color: #075e50; color: #fff; min-height: 34px;
+}

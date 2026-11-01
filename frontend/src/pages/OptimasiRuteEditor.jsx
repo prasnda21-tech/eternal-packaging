@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowDown, ArrowUp, MapPin, Navigation, Plus, RefreshCw, Save, Sparkles } from "lucide-react";
@@ -234,7 +235,7 @@ export default function OptimasiRuteEditor() {
   }, [mapPoints, stops]);
 
   return (
-    <div className={`iro-page iro-editor${inMobileShell ? " iro-page--mobile" : ""}`} data-testid="iro-editor-page">
+    <div className={`iro-page iro-editor${inMobileShell ? " iro-page--mobile" : " delivery-compact"}`} data-testid="iro-editor-page">
       {inMobileShell ? (
         <MobileTopBar
           title={isNew ? "Buat Rute" : (draft.name || "Detail Rute")}

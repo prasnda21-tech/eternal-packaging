@@ -69,6 +69,40 @@
   display: flex; align-items: center; flex-wrap: wrap; gap: 5px;
 }
 .production-compact :is(.division-task-toolbar,.paint-tabs) { margin: 6px 0; }
+/* Unified task-list search control (not Jadwal Produksi sheet search). */
+.production-compact .division-task-search,
+.production-compact.kp-board-page .division-task-search {
+  display: flex; align-items: center; gap: 0;
+  width: min(100%, 260px); min-width: 200px; max-width: 280px;
+  height: 32px; min-height: 32px; padding: 0 10px 0 8px; box-sizing: border-box;
+  border: 1px solid var(--production-border); border-radius: 6px;
+  background: var(--production-surface); color: var(--production-ink);
+  font-family: var(--production-font);
+}
+.production-compact .division-task-search input,
+.production-compact.kp-board-page .division-task-search input {
+  border: 0 !important; outline: none !important; box-shadow: none !important;
+  min-height: 0 !important; height: 100% !important;
+  padding: 0 0 0 8px !important; background: transparent !important;
+  font-family: var(--production-font) !important; font-size: var(--production-text) !important;
+  color: var(--production-ink); width: 100%;
+}
+.production-compact .division-task-search input:focus,
+.production-compact .division-task-search input:focus-visible,
+.production-compact.kp-board-page .division-task-search input:focus,
+.production-compact.kp-board-page .division-task-search input:focus-visible {
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
+.production-compact .division-task-search:focus-within,
+.production-compact.kp-board-page .division-task-search:focus-within {
+  border-color: var(--production-green);
+  outline: 2px solid rgba(7, 94, 80, 0.28);
+  outline-offset: 1px;
+}
+.production-compact.division-task-page .division-task-po-cell { min-width: 10.5rem; }
 .production-compact :is(.kp-kpi-strip,.paint-kpi-row) {
   display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0;
 }

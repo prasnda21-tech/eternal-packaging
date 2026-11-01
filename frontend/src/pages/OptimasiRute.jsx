@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { MapPinned, Plus, Trash2 } from "lucide-react";
@@ -60,7 +61,7 @@ export default function OptimasiRute() {
   };
 
   return (
-    <div className={`iro-page${inMobileShell ? " iro-page--mobile" : ""}`} data-testid="iro-list-page">
+    <div className={`iro-page${inMobileShell ? " iro-page--mobile" : " delivery-compact"}`} data-testid="iro-list-page">
       {inMobileShell ? <MobileTopBar title="Optimasi Rute" /> : null}
       <div className="iro-hero">
         <div>
