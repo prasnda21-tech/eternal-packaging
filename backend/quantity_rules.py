@@ -1410,10 +1410,13 @@ def shipments_stored(order: dict) -> list:
 
 
 def shipment_is_active(sh: Optional[dict]) -> bool:
-    """Active allocation SJ: not cancelled, superseded, or deleted."""
+    """Active allocation SJ: not cancelled, superseded, deleted, or provisional."""
     if not isinstance(sh, dict):
         return False
     if sh.get("cancelled") or sh.get("is_cancelled") or sh.get("deleted") or sh.get("is_deleted"):
+        return False
+    # Mirror of sales_deliveries.allocation_commit_pending — not operational yet.
+    if sh.get("allocation_commit_pending") is True:
         return False
     if sh.get("superseded") or str(sh.get("superseded_by_shipment_id") or "").strip():
         return False

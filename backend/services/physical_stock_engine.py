@@ -3685,11 +3685,15 @@ async def prepare_confirm_delivered_action(db, order, selected_shipment_id, clie
             "order": None,
         }
     from quantity_rules import canonical_shipment_id, resolve_delivery_shipment
+    from services.sales_delivery_allocations import require_operational_sales_delivery
 
     shipment, err = resolve_delivery_shipment(order, selected_shipment_id)
     if err:
         raise HTTPException(400, err)
     sid = canonical_shipment_id(shipment) if isinstance(shipment, dict) else ""
+    # Canonical SJ must be allocation-committed; do not trust provisional mirrors.
+    if sid:
+        await require_operational_sales_delivery(db, sid, attempt_reconcile=True)
     order_id = str(order.get("id") or "")
     client_token = str(client_action_id or "").strip()
     if client_token:

@@ -38,6 +38,23 @@ import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import LookupSearchSelect from "../components/LookupSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import { deliveryBelumSjMeta } from "../lib/ux90RemainingMeta";
+import {
+  buildCombinedAllocationRows,
+  buildSourceAllocationsPayload,
+  formatSourcePoLabel,
+  lineAllocKey,
+  validateMultiSourceSelection,
+} from "../lib/salesDeliveryMultiSource";
+import {
+  financialStatusLabel,
+  formatRelationEventLabel,
+  fulfillmentRecoveryUi,
+  isPartialFailedOneshot,
+  partialFailedSources,
+  paymentStatusLabel,
+  sharedProofSummary,
+  sortRelationEvents,
+} from "../lib/salesDocumentRelations";
 import "./salesSubmenuDensity.css";
 import "./pengirimanPesananList.css";
 import "./ux90SalesCreate.css";
@@ -123,6 +140,8 @@ export default function PengirimanPesanan() {
   const canPrint = hasPerm("sales.delivery.print") || hasPerm("sales.delivery.view") || hasPerm("sales_order.view") || user?.role === "admin";
   const canDelete = hasPerm("sales.delivery.delete") || hasPerm("sales.delivery.create") || hasPerm("po.edit") || user?.role === "admin";
   const canDeleteLoading = hasPerm(LOADING_DELETE_PERM);
+  const canOneshotLoading = hasPerm("loading.confirm_match") || user?.role === "admin";
+  const canOneshotPod = hasPerm("delivery.update") || user?.role === "admin";
 
   // Navigation mode: 'list' | 'create' | 'detail'
   const queryPoId = searchParams.get("po_id") || "";
@@ -174,6 +193,9 @@ export default function PengirimanPesanan() {
   const [poSummary, setPoSummary] = useState(null);
   const [poSummaryLoading, setPoSummaryLoading] = useState(false);
   const [poSummaryErr, setPoSummaryErr] = useState("");
+  const [multiPoMode, setMultiPoMode] = useState(false);
+  const [selectedPoIds, setSelectedPoIds] = useState(() => (queryPoId ? [queryPoId] : []));
+  const [poSummariesById, setPoSummariesById] = useState({});
 
   // Create Form State
   const [formData, setFormData] = useState({
@@ -199,6 +221,9 @@ export default function PengirimanPesanan() {
   // Detail Modal / View State
   const [selectedDeliveryId, setSelectedDeliveryId] = useState(null);
   const [detailData, setDetailData] = useState(null);
+  const [oneshotBusy, setOneshotBusy] = useState("");
+  const [oneshotErr, setOneshotErr] = useState("");
+  const [oneshotOk, setOneshotOk] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState("");
   const [deliveryFormTab, setDeliveryFormTab] = useState("items");
@@ -408,6 +433,8 @@ export default function PengirimanPesanan() {
     if (!delivId) return;
     setDetailLoading(true);
     setDetailErr("");
+    setOneshotErr("");
+    setOneshotOk("");
     try {
       const data = await api.getSalesDelivery(delivId);
       setDetailData(data);
@@ -418,6 +445,102 @@ export default function PengirimanPesanan() {
       setDetailLoading(false);
     }
   }, []);
+
+  const handleOneshotLoadingAll = useCallback(async () => {
+    const sjId = detailData?.delivery?.id;
+    if (!sjId || oneshotBusy) return;
+    setOneshotBusy("loading");
+    setOneshotErr("");
+    setOneshotOk("");
+    try {
+      const actionId = `sj-load-${sjId}-${Date.now()}`;
+      const res = await api.salesDeliveryLoadingConfirmAll(sjId, { action_id: actionId });
+      setOneshotOk(res?.idempotent ? "Loading semua source sudah lengkap (idempotent)." : "Loading semua source berhasil.");
+      await loadDeliveryDetail(sjId);
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      const msg = typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || e.message || "One-shot Loading gagal");
+      setOneshotErr(msg);
+      if (detailData?.delivery?.id) await loadDeliveryDetail(detailData.delivery.id);
+    } finally {
+      setOneshotBusy("");
+    }
+  }, [detailData, oneshotBusy, loadDeliveryDetail]);
+
+  const handleOneshotPodAll = useCallback(async () => {
+    const sjId = detailData?.delivery?.id;
+    if (!sjId || oneshotBusy) return;
+    setOneshotBusy("pod");
+    setOneshotErr("");
+    setOneshotOk("");
+    try {
+      const actionId = `sj-pod-${sjId}-${Date.now()}`;
+      const res = await api.salesDeliveryConfirmDeliveredAll(sjId, { action_id: actionId });
+      setOneshotOk(res?.idempotent ? "POD semua source sudah lengkap (idempotent)." : "Konfirmasi diterima semua source berhasil.");
+      await loadDeliveryDetail(sjId);
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      const msg = typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || e.message || "One-shot POD gagal");
+      setOneshotErr(msg);
+      if (detailData?.delivery?.id) await loadDeliveryDetail(detailData.delivery.id);
+    } finally {
+      setOneshotBusy("");
+    }
+  }, [detailData, oneshotBusy, loadDeliveryDetail]);
+
+  const handleFulfillmentReconcile = useCallback(async () => {
+    const sjId = detailData?.delivery?.id;
+    if (!sjId || oneshotBusy) return;
+    setOneshotBusy("reconcile");
+    setOneshotErr("");
+    setOneshotOk("");
+    try {
+      const res = await api.salesDeliveryFulfillmentReconcile(sjId, {
+        healer_action_id: `heal-${sjId}-${Date.now()}`,
+      });
+      setOneshotOk(
+        res?.status === "complete"
+          ? "Reconcile: semua source complete — fence dibersihkan."
+          : `Reconcile selesai · status ${res?.status || "updated"}.`,
+      );
+      await loadDeliveryDetail(sjId);
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setOneshotErr(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || e.message || "Reconcile gagal"));
+      if (detailData?.delivery?.id) await loadDeliveryDetail(detailData.delivery.id);
+    } finally {
+      setOneshotBusy("");
+    }
+  }, [detailData, oneshotBusy, loadDeliveryDetail]);
+
+  const handleFulfillmentResume = useCallback(async () => {
+    const sjId = detailData?.delivery?.id;
+    if (!sjId || oneshotBusy) return;
+    const gate = fulfillmentRecoveryUi(detailData?.oneshot_fulfillment, detailData?.delivery);
+    if (!gate.resumeAvailable || gate.manual || gate.inProgress) return;
+    const kind = gate.resumeKind || "loading";
+    setOneshotBusy("resume");
+    setOneshotErr("");
+    setOneshotOk("");
+    try {
+      const res = await api.salesDeliveryFulfillmentResume(sjId, {
+        action_id: `resume-${kind}-${sjId}-${Date.now()}`,
+        kind,
+      });
+      setOneshotOk(
+        res?.ok
+          ? (res?.idempotent ? "Resume: sudah lengkap (idempotent)." : "Lanjutkan sisa berhasil.")
+          : `Resume status: ${res?.status || "selesai"}`,
+      );
+      await loadDeliveryDetail(sjId);
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setOneshotErr(typeof det === "object" ? (det.message || JSON.stringify(det)) : (det || e.message || "Resume gagal"));
+      if (detailData?.delivery?.id) await loadDeliveryDetail(detailData.delivery.id);
+    } finally {
+      setOneshotBusy("");
+    }
+  }, [detailData, oneshotBusy, loadDeliveryDetail]);
 
   const openDeliveryDetail = useCallback((delivery) => {
     if (!delivery?.id) return;
@@ -509,7 +632,58 @@ export default function PengirimanPesanan() {
   // Handle PO selection from dropdown
   const handleSelectPO = (poId) => {
     setSelectedPoId(poId);
+    setSelectedPoIds(poId ? [poId] : []);
     setSearchParams(poId ? { action: "create", po_id: poId } : { action: "create" });
+  };
+
+  const combinedAllocRows = useMemo(
+    () => (multiPoMode ? buildCombinedAllocationRows(poSummariesById) : []),
+    [multiPoMode, poSummariesById],
+  );
+
+  const toggleMultiPoId = async (poId, checked) => {
+    const next = checked
+      ? Array.from(new Set([...selectedPoIds, poId]))
+      : selectedPoIds.filter((id) => id !== poId);
+    setSelectedPoIds(next);
+    if (!checked) {
+      setPoSummariesById((prev) => {
+        const copy = { ...prev };
+        delete copy[poId];
+        return copy;
+      });
+      return;
+    }
+    try {
+      const data = await api.getPoDeliverySummary(poId);
+      setPoSummariesById((prev) => ({ ...prev, [poId]: data }));
+      setFormData((prev) => {
+        const qtys = { ...prev.line_qtys };
+        const notes = { ...prev.line_notes };
+        (data.lines || []).forEach((l) => {
+          const key = lineAllocKey(data.po_id, l.line_idx);
+          qtys[key] = l.remaining_qty;
+          notes[key] = "";
+        });
+        const first = Object.keys(prev.line_qtys || {}).length === 0;
+        return {
+          ...prev,
+          outlet: first ? (data.outlet || prev.outlet) : prev.outlet,
+          recipient: first ? (data.recipient || prev.recipient) : prev.recipient,
+          address: first ? (data.address || prev.address) : prev.address,
+          delivery_zone: first ? (data.delivery_zone || prev.delivery_zone) : prev.delivery_zone,
+          sales: first ? (data.sales || prev.sales) : prev.sales,
+          expedition: first ? (data.expedition || prev.expedition || "Internal fleet") : prev.expedition,
+          line_qtys: qtys,
+          line_notes: notes,
+        };
+      });
+      if (!selectedPoId) setSelectedPoId(poId);
+    } catch (e) {
+      const det = e.response?.data?.detail;
+      setFormErr(typeof det === "object" ? det.message : (det || "Gagal memuat ringkasan PO"));
+      setSelectedPoIds((prev) => prev.filter((id) => id !== poId));
+    }
   };
 
   // Change shipped qty for a specific line item
@@ -538,6 +712,14 @@ export default function PengirimanPesanan() {
 
   // Fill all remaining quantities
   const handleFillAllRemaining = () => {
+    if (multiPoMode) {
+      const qtys = {};
+      combinedAllocRows.forEach((row) => {
+        qtys[row.key] = row.remaining_qty;
+      });
+      setFormData((prev) => ({ ...prev, line_qtys: qtys }));
+      return;
+    }
     if (!poSummary?.lines) return;
     const qtys = {};
     poSummary.lines.forEach((l) => {
@@ -548,6 +730,14 @@ export default function PengirimanPesanan() {
 
   // Clear all line quantities
   const handleClearAllQtys = () => {
+    if (multiPoMode) {
+      const qtys = {};
+      combinedAllocRows.forEach((row) => {
+        qtys[row.key] = 0;
+      });
+      setFormData((prev) => ({ ...prev, line_qtys: qtys }));
+      return;
+    }
     if (!poSummary?.lines) return;
     const qtys = {};
     poSummary.lines.forEach((l) => {
@@ -557,14 +747,33 @@ export default function PengirimanPesanan() {
   };
 
   // Total Qty to ship in current form
-  const customerPhoneAvailable = String(poSummary?.customer_phone || "").trim();
+  const customerPhoneAvailable = String(
+    (multiPoMode
+      ? (poSummariesById[selectedPoIds[0]] || poSummary)?.customer_phone
+      : poSummary?.customer_phone) || "",
+  ).trim();
   const totalShippingQty = useMemo(() => {
+    if (multiPoMode) {
+      return combinedAllocRows.reduce((acc, row) => acc + (formData.line_qtys[row.key] || 0), 0);
+    }
     if (!poSummary?.lines) return 0;
     return poSummary.lines.reduce((acc, l) => acc + (formData.line_qtys[l.line_idx] || 0), 0);
-  }, [poSummary, formData.line_qtys]);
+  }, [multiPoMode, combinedAllocRows, poSummary, formData.line_qtys]);
 
   // Validate if any line exceeds remaining
   const overshipmentErrors = useMemo(() => {
+    if (multiPoMode) {
+      const errs = [];
+      combinedAllocRows.forEach((row) => {
+        const q = formData.line_qtys[row.key] || 0;
+        if (q > row.remaining_qty) {
+          errs.push(
+            `Item '${row.name}' (${row.source_po_number}): kuantitas kirim (${q}) melebihi sisa (${row.remaining_qty} ${row.unit})`,
+          );
+        }
+      });
+      return errs;
+    }
     if (!poSummary?.lines) return [];
     const errs = [];
     poSummary.lines.forEach((l) => {
@@ -574,7 +783,7 @@ export default function PengirimanPesanan() {
       }
     });
     return errs;
-  }, [poSummary, formData.line_qtys]);
+  }, [multiPoMode, combinedAllocRows, poSummary, formData.line_qtys]);
 
   // Submit delivery
   const handleSubmitDelivery = async (e) => {
@@ -582,7 +791,13 @@ export default function PengirimanPesanan() {
     setFormErr("");
     setSuccessMsg("");
 
-    if (!poSummary) {
+    if (multiPoMode) {
+      const mergeErr = validateMultiSourceSelection(poSummariesById);
+      if (mergeErr) {
+        setFormErr(mergeErr);
+        return;
+      }
+    } else if (!poSummary) {
       setFormErr("Silakan pilih Pesanan Penjualan (PO) terlebih dahulu.");
       return;
     }
@@ -602,7 +817,10 @@ export default function PengirimanPesanan() {
       return;
     }
 
-    const customerPhone = String(poSummary.customer_phone || "").trim();
+    const anchorSummary = multiPoMode
+      ? (poSummariesById[selectedPoIds[0]] || Object.values(poSummariesById)[0])
+      : poSummary;
+    const customerPhone = String(anchorSummary?.customer_phone || "").trim();
     const source = phoneSource === "customer" && customerPhone ? "customer" : "manual";
     if (source === "manual") {
       const typed = manualPhone.trim();
@@ -613,33 +831,53 @@ export default function PengirimanPesanan() {
     }
     setPhoneError("");
 
-    // Build payload lines
-    const lineItemsPayload = [];
-    poSummary.lines.forEach((l) => {
-      const q = formData.line_qtys[l.line_idx] || 0;
-      if (q > 0) {
-        lineItemsPayload.push({
-          line_idx: l.line_idx,
-          line_id: l.line_id,
-          qty: q,
-          notes: formData.line_notes[l.line_idx] || "",
-        });
-      }
-    });
-
-    const payload = {
-      po_id: poSummary.po_id,
-      delivery_date: formData.delivery_date,
-      outlet: formData.outlet,
-      recipient: formData.recipient,
-      address: formData.address,
-      delivery_zone: formData.delivery_zone,
-      sales: formData.sales,
-      expedition: formData.expedition,
-      notes: formData.notes,
-      line_items: lineItemsPayload,
-      recipient_phone_source: source,
-    };
+    let payload;
+    if (multiPoMode) {
+      const sourceAllocations = buildSourceAllocationsPayload(
+        combinedAllocRows,
+        formData.line_qtys,
+        formData.line_notes,
+      );
+      payload = {
+        po_id: anchorSummary?.po_id,
+        delivery_date: formData.delivery_date,
+        outlet: formData.outlet,
+        recipient: formData.recipient,
+        address: formData.address,
+        delivery_zone: formData.delivery_zone,
+        sales: formData.sales,
+        expedition: formData.expedition,
+        notes: formData.notes,
+        source_allocations: sourceAllocations,
+        recipient_phone_source: source,
+      };
+    } else {
+      const lineItemsPayload = [];
+      poSummary.lines.forEach((l) => {
+        const q = formData.line_qtys[l.line_idx] || 0;
+        if (q > 0) {
+          lineItemsPayload.push({
+            line_idx: l.line_idx,
+            line_id: l.line_id,
+            qty: q,
+            notes: formData.line_notes[l.line_idx] || "",
+          });
+        }
+      });
+      payload = {
+        po_id: poSummary.po_id,
+        delivery_date: formData.delivery_date,
+        outlet: formData.outlet,
+        recipient: formData.recipient,
+        address: formData.address,
+        delivery_zone: formData.delivery_zone,
+        sales: formData.sales,
+        expedition: formData.expedition,
+        notes: formData.notes,
+        line_items: lineItemsPayload,
+        recipient_phone_source: source,
+      };
+    }
     if (source === "manual") payload.recipient_phone = manualPhone.trim();
     const locationOverride = sjOverridePayload(sjLocationOverride);
     if (locationOverride) payload.delivery_location = locationOverride;
@@ -660,6 +898,9 @@ export default function PengirimanPesanan() {
       void reloadDeliveryListAuthoritative();
       setViewMode("list");
       setSearchParams({});
+      setMultiPoMode(false);
+      setPoSummariesById({});
+      setSelectedPoIds([]);
     } catch (err) {
       const det = err.response?.data?.detail;
       setFormErr(typeof det === "object" ? det.message : (det || "Gagal membuat Pengiriman Pesanan"));
@@ -1006,7 +1247,7 @@ export default function PengirimanPesanan() {
                   <div className="ux90-dlrow ux90-field-po">
                     <label htmlFor="delivery-po-lookup">Ambil dari PO <span className="ux90-req">*</span></label>
                     <div className="ux90-dlrow-control">
-                      {queryPoId ? (
+                      {queryPoId && !multiPoMode ? (
                         <input
                           id="delivery-po-lookup"
                           className="ux90-input"
@@ -1015,6 +1256,22 @@ export default function PengirimanPesanan() {
                           value={poSummary?.po_number ? `${poSummary.po_number}` : queryPoId}
                           data-testid="display-po-number"
                         />
+                      ) : multiPoMode ? (
+                        <div data-testid="multi-po-picker" style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 160, overflow: "auto", border: "1px solid #e5e7eb", borderRadius: 6, padding: 8 }}>
+                          {(availablePOs || []).slice(0, 40).map((p) => (
+                            <label key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                              <input
+                                type="checkbox"
+                                checked={selectedPoIds.includes(p.id)}
+                                disabled={formBusy}
+                                onChange={(ev) => toggleMultiPoId(p.id, ev.target.checked)}
+                                data-testid={`multi-po-check-${p.id}`}
+                              />
+                              <span>{p.po_number} · {p.customer}</span>
+                            </label>
+                          ))}
+                          {!availablePOs.length ? <span className="ux90-hint">Tidak ada PO aktif dengan sisa qty.</span> : null}
+                        </div>
                       ) : (
                         <LookupSearchSelect
                           options={availablePOs}
@@ -1034,6 +1291,31 @@ export default function PengirimanPesanan() {
                           testId="select-po-for-delivery"
                         />
                       )}
+                      {!queryPoId ? (
+                        <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, fontSize: 12 }}>
+                          <input
+                            type="checkbox"
+                            checked={multiPoMode}
+                            disabled={formBusy}
+                            onChange={(ev) => {
+                              const on = ev.target.checked;
+                              setMultiPoMode(on);
+                              setFormErr("");
+                              if (on) {
+                                setPoSummary(null);
+                                setSelectedPoIds([]);
+                                setPoSummariesById({});
+                                void loadActivePOs();
+                              } else {
+                                setPoSummariesById({});
+                                setSelectedPoIds(selectedPoId ? [selectedPoId] : []);
+                              }
+                            }}
+                            data-testid="toggle-multi-po-mode"
+                          />
+                          Gabungkan beberapa PO dalam 1 SJ
+                        </label>
+                      ) : null}
                     </div>
                   </div>
                   <div className="ux90-dlrow">
@@ -1056,7 +1338,11 @@ export default function PengirimanPesanan() {
                         className="ux90-input"
                         type="text"
                         readOnly
-                        value={poSummary?.customer || "-"}
+                        value={
+                          multiPoMode
+                            ? (Object.values(poSummariesById)[0]?.customer || "-")
+                            : (poSummary?.customer || "-")
+                        }
                         data-testid="display-customer"
                       />
                     </div>
@@ -1071,7 +1357,15 @@ export default function PengirimanPesanan() {
                         className="ux90-input"
                         type="text"
                         readOnly
-                        value={poSummary?.suggested_sj_number ? `${poSummary.suggested_sj_number} (#${poSummary.next_shipment_index})` : "(Pilih PO)"}
+                        value={
+                          multiPoMode
+                            ? (Object.values(poSummariesById)[0]?.suggested_sj_number
+                              ? `${Object.values(poSummariesById)[0].suggested_sj_number} (multi-PO)`
+                              : "(Pilih PO)")
+                            : (poSummary?.suggested_sj_number
+                              ? `${poSummary.suggested_sj_number} (#${poSummary.next_shipment_index})`
+                              : "(Pilih PO)")
+                        }
                         data-testid="display-suggested-sj"
                       />
                     </div>
@@ -1130,7 +1424,7 @@ export default function PengirimanPesanan() {
                 style={deliveryFormTab !== "items" ? { display: "none" } : undefined}
               >
                 <div className="ux90-table-head">
-                  {poSummary?.lines?.length > 0 ? (
+                  {(multiPoMode ? combinedAllocRows.length > 0 : poSummary?.lines?.length > 0) ? (
                     <div className="ux90-table-actions">
                       <button type="button" onClick={handleFillAllRemaining} data-testid="btn-fill-all-remaining">+ Tambah Semua Sisa</button>
                       <button type="button" className="is-muted" onClick={handleClearAllQtys} data-testid="btn-clear-all-qtys">Clear</button>
@@ -1139,8 +1433,64 @@ export default function PengirimanPesanan() {
                   <h3>Alokasi Qty Surat Jalan <span className="ux90-req">*</span></h3>
                 </div>
                 <div className="ux90-table-scroll">
-                  {poSummaryLoading ? (
+                  {poSummaryLoading && !multiPoMode ? (
                     <div style={{ padding: 24, textAlign: "center", color: "#64748b" }}>Memuat rincian PO...</div>
+                  ) : multiPoMode ? (
+                    combinedAllocRows.length === 0 ? (
+                      <div className="ux90-empty-alloc" data-testid="delivery-multi-po-empty-hint">
+                        <Package size={28} style={{ opacity: 0.4 }} />
+                        <p style={{ margin: 0 }}>Centang minimal 2 PO di atas untuk alokasi gabungan.</p>
+                      </div>
+                    ) : (
+                      <table className="ux90-table" data-testid="multi-po-alloc-table">
+                        <thead>
+                          <tr>
+                            <th>#</th>
+                            <th>PO Sumber</th>
+                            <th>Produk</th>
+                            <th className="is-num">Sisa</th>
+                            <th className="is-num">Qty Kirim <span className="ux90-req">*</span></th>
+                            <th>Catatan</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {combinedAllocRows.map((row, idx) => {
+                            const qtyVal = formData.line_qtys[row.key] ?? 0;
+                            const isOver = qtyVal > row.remaining_qty;
+                            const isZeroRemaining = row.remaining_qty <= 0;
+                            return (
+                              <tr key={row.key} data-testid={`multi-delivery-line-${row.key}`} style={{ background: isOver ? "#fef2f2" : undefined }}>
+                                <td>{idx + 1}</td>
+                                <td style={{ fontWeight: 600 }}>{row.source_po_number}</td>
+                                <td>{row.name}</td>
+                                <td className="is-num">{row.remaining_qty.toLocaleString("id-ID")} {row.unit}</td>
+                                <td className="is-num">
+                                  <input
+                                    className={`ux90-qty-input${isOver ? " is-over" : ""}`}
+                                    type="number"
+                                    min="0"
+                                    max={row.remaining_qty}
+                                    disabled={isZeroRemaining || formBusy}
+                                    value={qtyVal}
+                                    onChange={(e) => handleLineQtyChange(row.key, e.target.value)}
+                                    data-testid={`input-multi-ship-qty-${row.key}`}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    className="ux90-input"
+                                    type="text"
+                                    disabled={isZeroRemaining || formBusy}
+                                    value={formData.line_notes[row.key] || ""}
+                                    onChange={(e) => handleLineNoteChange(row.key, e.target.value)}
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )
                   ) : !poSummary ? (
                     <div className="ux90-empty-alloc" data-testid="delivery-po-empty-hint">
                       <Package size={28} style={{ opacity: 0.4 }} />
@@ -1606,6 +1956,17 @@ export default function PengirimanPesanan() {
                       <td className="sd-identity">
                         <div className="sd-customer">{d.customer || "-"}</div>
                         <span className="sd-doc is-static" data-testid={`sj-number-${d.sj_number}`}>{d.sj_number}</span>
+                        {(d.is_multi_source || (Array.isArray(d.source_po_ids) && d.source_po_ids.length > 1)) ? (
+                          <span
+                            className="pj-status-badge"
+                            style={{ marginLeft: 6 }}
+                            data-testid={`sj-multipo-badge-${d.id}`}
+                          >
+                            multi-PO · {Array.isArray(d.source_po_ids) && d.source_po_ids.length
+                              ? d.source_po_ids.length
+                              : "2+"} sumber
+                          </span>
+                        ) : null}
                         {d.outlet ? <span className="sd-support">{d.outlet}</span> : null}
                         <span className="sd-support sd-sales" data-testid={`delivery-sales-${d.id}`}>
                           Sales · {deliveryListSalesLabel(d) || "—"}
@@ -1758,7 +2119,8 @@ export default function PengirimanPesanan() {
                     Detail Surat Jalan: <span>{detailData.delivery?.sj_number}</span>
                   </h2>
                   <span className="sd-delivery-detail-sub">
-                    Pengiriman #{detailData.delivery?.shipment_index} dari PO <strong>{detailData.delivery?.po_number}</strong>
+                    Pengiriman #{detailData.delivery?.shipment_index} · {formatSourcePoLabel(detailData.delivery)}
+                    {detailData.delivery?.is_multi_source ? " (multi-PO)" : ` · PO ${detailData.delivery?.po_number}`}
                   </span>
                 </div>
               </div>
@@ -1819,6 +2181,308 @@ export default function PengirimanPesanan() {
                   </div>
                 </div>
               )}
+
+              {Array.isArray(detailData.source_po_summaries) && detailData.source_po_summaries.length > 0 ? (
+                <div data-testid="delivery-source-po-list" style={{ marginBottom: 12 }}>
+                  <div className="sd-delivery-detail-meta-label" style={{ marginBottom: 6 }}>PO Sumber</div>
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {detailData.source_po_summaries.map((src) => (
+                      <li key={src.po_id}>
+                        <Link to={`/po/${src.po_id}`} className="sd-delivery-detail-po-link">
+                          {src.po_number || src.po_id}
+                        </Link>
+                        {" · alokasi SJ "}
+                        {Number(src.allocated_on_this_sj || 0).toLocaleString("id-ID")} pcs
+                        {" · sisa "}
+                        {Number(src.total_remaining || 0).toLocaleString("id-ID")} pcs
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {(() => {
+                const partialFailed = isPartialFailedOneshot(
+                  detailData.oneshot_fulfillment,
+                  detailData.delivery,
+                );
+                const recovery = fulfillmentRecoveryUi(
+                  detailData.oneshot_fulfillment,
+                  detailData.delivery,
+                );
+                const pf = partialFailedSources(detailData.slice_fulfillment);
+                const proof = sharedProofSummary(detailData.oneshot_fulfillment)
+                  || sharedProofSummary({ shared_pod_proof: detailData.delivery?.shared_pod_proof });
+                const relatedInvoices = Array.isArray(detailData.related_invoices)
+                  ? detailData.related_invoices
+                  : [];
+                const hist = sortRelationEvents(detailData.relation_history || []);
+                const oneshotBlocked = partialFailed
+                  || recovery.manual
+                  || recovery.inProgress
+                  || detailData.oneshot_fulfillment?.oneshot_loading_available === false;
+                const oneshotPodBlocked = partialFailed
+                  || recovery.manual
+                  || recovery.inProgress
+                  || detailData.oneshot_fulfillment?.oneshot_pod_available === false;
+                return (
+                  <>
+                    {(partialFailed || recovery.manual || recovery.inProgress || recovery.resumeAvailable) ? (
+                      <div
+                        className="alert-box"
+                        data-testid="sj-partial-failed-banner"
+                        style={{
+                          marginBottom: 12,
+                          background: recovery.manual ? "#fef2f2" : "#fff7ed",
+                          border: recovery.manual ? "1px solid #fca5a5" : "1px solid #fdba74",
+                          color: recovery.manual ? "#991b1b" : "#9a3412",
+                        }}
+                      >
+                        <AlertCircle size={14} />
+                        <span data-testid="sj-recovery-status-text">
+                          {recovery.complete ? (
+                            <>Fulfillment gabungan: complete.</>
+                          ) : recovery.manual ? (
+                            <>Perlu pemeriksaan (manual review). Resume otomatis dinonaktifkan.</>
+                          ) : recovery.inProgress ? (
+                            <>Fulfillment sedang berjalan / fence aktif. Tindakan berisiko dinonaktifkan.</>
+                          ) : (
+                            <>
+                              Fulfillment one-shot: {recovery.status || "partial_failed"}
+                              {detailData.oneshot_fulfillment?.fulfillment_commit_pending
+                                || detailData.delivery?.fulfillment_commit_pending
+                                ? " / commit pending"
+                                : ""}
+                              .
+                            </>
+                          )}
+                          {" "}
+                          {recovery.completeSources.length ? (
+                            <>Complete: {recovery.completeSources.join(", ")}. </>
+                          ) : pf.ok.length ? (
+                            <>Berhasil: {pf.ok.map((s) => s.label).join(", ")}. </>
+                          ) : null}
+                          {recovery.pendingSources.length ? (
+                            <>Pending: {recovery.pendingSources.join(", ")}. </>
+                          ) : pf.pending.length ? (
+                            <>Belum selesai: {pf.pending.map((s) => `${s.label} (${s.state})`).join(", ")}. </>
+                          ) : null}
+                          {recovery.ambiguousSources.length ? (
+                            <>Ambigu: {recovery.ambiguousSources.join(", ")}. </>
+                          ) : null}
+                          {recovery.reason ? <> {recovery.reason}</> : null}
+                        </span>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                          {(recovery.inProgress || partialFailed) && !recovery.manual ? (
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              data-testid="sj-fulfillment-reconcile"
+                              disabled={Boolean(oneshotBusy)}
+                              onClick={handleFulfillmentReconcile}
+                            >
+                              {oneshotBusy === "reconcile" ? "Reconcile…" : "Reconcile fence"}
+                            </button>
+                          ) : null}
+                          {recovery.resumeAvailable && !recovery.manual && !recovery.inProgress ? (
+                            <button
+                              type="button"
+                              className="btn-primary"
+                              data-testid="sj-fulfillment-resume"
+                              disabled={Boolean(oneshotBusy)}
+                              title={recovery.reason || "Lanjutkan hanya source pending"}
+                              onClick={handleFulfillmentResume}
+                            >
+                              {oneshotBusy === "resume"
+                                ? "Melanjutkan sisa…"
+                                : `Lanjutkan sisa (${recovery.resumeKind || "loading"})`}
+                            </button>
+                          ) : null}
+                          {recovery.manual ? (
+                            <span className="muted" data-testid="sj-manual-review-flag">Perlu pemeriksaan — gunakan workflow per-PO</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {relatedInvoices.length > 0 ? (
+                      <div data-testid="sj-related-invoices" style={{ marginBottom: 12 }}>
+                        <div className="sd-delivery-detail-meta-label" style={{ marginBottom: 6 }}>Faktur terkait SJ</div>
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                          {relatedInvoices.map((inv) => (
+                            <li key={inv.id}>
+                              <Link
+                                to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(inv.id)}`}
+                                data-testid={`sj-rel-inv-link-${inv.id}`}
+                              >
+                                {inv.invoice_number || inv.id}
+                              </Link>
+                              {" · "}
+                              {financialStatusLabel(inv.financial_status)}
+                              {" · "}
+                              {paymentStatusLabel(inv.payment_status)}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {proof ? (
+                      <div data-testid="sj-shared-proof-summary" style={{ marginBottom: 12, fontSize: 13 }}>
+                        <div className="sd-delivery-detail-meta-label" style={{ marginBottom: 4 }}>Bukti POD bersama</div>
+                        <div>
+                          Ref: <strong>{proof.reference}</strong>
+                          {" · Penerima: "}
+                          {proof.recipient_name}
+                          {" · Foto: "}
+                          {proof.photo_count}
+                          {proof.has_signature ? " · ada tanda tangan" : ""}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {detailData.delivery?.is_multi_source || (detailData.slice_fulfillment?.sources || []).length > 1 ? (
+                      <div
+                        className="sd-delivery-detail-kpi"
+                        data-testid="sj-oneshot-fulfillment-panel"
+                        style={{ marginBottom: 12, display: "block" }}
+                      >
+                        <div className="sd-delivery-detail-meta-label" style={{ marginBottom: 8 }}>
+                          Fulfillment SJ gabungan
+                          {" · "}
+                          <strong data-testid="sj-combined-status">
+                            {detailData.slice_fulfillment?.complete
+                              ? "LENGKAP"
+                              : detailData.slice_fulfillment?.loading_complete && !detailData.slice_fulfillment?.pod_complete
+                                ? "LOADING OK · POD SEBAGIAN"
+                                : "SEBAGIAN / BELUM LENGKAP"}
+                          </strong>
+                          {detailData.oneshot_fulfillment?.fulfillment_last_status ? (
+                            <span className="muted" data-testid="sj-fulfillment-last-status">
+                              {" · last: "}
+                              {detailData.oneshot_fulfillment.fulfillment_last_status}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="ux90-table-wrap" style={{ marginBottom: 8 }}>
+                          <table className="ux90-table" data-testid="sj-slice-status-table">
+                            <thead>
+                              <tr>
+                                <th>PO</th>
+                                <th className="is-num">Alokasi</th>
+                                <th>Loading</th>
+                                <th>POD</th>
+                                <th className="is-num">Belum diterima</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(detailData.slice_fulfillment?.sources || []).map((s) => {
+                                const remain = Math.max(
+                                  0,
+                                  Number(s.slice_qty || 0) - Number(s.delivered_qty || 0),
+                                );
+                                const poMeta = (detailData.source_po_summaries || []).find(
+                                  (x) => String(x.po_id) === String(s.source_po_id),
+                                );
+                                return (
+                                  <tr key={s.source_po_id}>
+                                    <td>
+                                      <Link to={`/po/${s.source_po_id}`} className="sd-delivery-detail-po-link">
+                                        {poMeta?.po_number || s.po_number || s.source_po_id}
+                                      </Link>
+                                      {!s.has_mirror ? " · mirror hilang" : ""}
+                                    </td>
+                                    <td className="is-num">{Number(s.slice_qty || 0).toLocaleString("id-ID")}</td>
+                                    <td>{s.loading_complete ? "OK" : `Parsial (${Number(s.loading_qty || 0)})`}</td>
+                                    <td>{s.delivered ? "OK" : "Belum"}</td>
+                                    <td className="is-num">{remain.toLocaleString("id-ID")}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        {detailData.oneshot_fulfillment?.reason ? (
+                          <p className="ux90-hint" data-testid="sj-oneshot-blocked-reason" style={{ margin: "0 0 8px" }}>
+                            One-shot gabungan: {detailData.oneshot_fulfillment.reason}
+                          </p>
+                        ) : null}
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            data-testid="sj-loading-confirm-all"
+                            disabled={
+                              Boolean(oneshotBusy)
+                              || !canOneshotLoading
+                              || oneshotBlocked
+                            }
+                            title={
+                              oneshotBlocked
+                                ? (detailData.oneshot_fulfillment?.reason
+                                  || (partialFailed
+                                    ? "One-shot dinonaktifkan karena recovery diperlukan"
+                                    : "One-shot Loading tidak tersedia"))
+                                : "Konfirmasi Loading semua source PO"
+                            }
+                            onClick={handleOneshotLoadingAll}
+                          >
+                            {oneshotBusy === "loading" ? "Memproses Loading…" : "Konfirmasi Loading Semua"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            data-testid="sj-confirm-delivered-all"
+                            disabled={
+                              Boolean(oneshotBusy)
+                              || !canOneshotPod
+                              || oneshotPodBlocked
+                            }
+                            title={
+                              oneshotPodBlocked
+                                ? (detailData.oneshot_fulfillment?.reason
+                                  || (partialFailed
+                                    ? "One-shot dinonaktifkan karena recovery diperlukan"
+                                    : "One-shot POD tidak tersedia"))
+                                : "Konfirmasi diterima semua source PO"
+                            }
+                            onClick={handleOneshotPodAll}
+                          >
+                            {oneshotBusy === "pod" ? "Memproses POD…" : "Konfirmasi Diterima Semua"}
+                          </button>
+                        </div>
+                        {oneshotErr ? (
+                          <div className="alert-box error" data-testid="sj-oneshot-error" style={{ marginTop: 8 }}>
+                            <AlertCircle size={14} /> <span>{oneshotErr}</span>
+                          </div>
+                        ) : null}
+                        {oneshotOk ? (
+                          <div className="alert-box success" data-testid="sj-oneshot-success" style={{ marginTop: 8 }}>
+                            <CheckCircle2 size={14} /> <span>{oneshotOk}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <details data-testid="sj-relation-history" style={{ fontSize: 12, marginBottom: 12 }}>
+                      <summary>Relasi &amp; Kejadian (read-only)</summary>
+                      {hist.length === 0 ? (
+                        <p className="muted" style={{ margin: "8px 0 0" }}>Belum tercatat</p>
+                      ) : (
+                        <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                          {hist.map((ev, idx) => (
+                            <li key={`${ev.at}-${ev.kind}-${idx}`}>
+                              <span className="muted">{ev.at || "Belum tercatat"}</span>
+                              {" · "}
+                              {formatRelationEventLabel(ev)}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </details>
+                  </>
+                );
+              })()}
 
               <div className="sd-delivery-detail-meta">
                 <div>

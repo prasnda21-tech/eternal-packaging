@@ -28,6 +28,15 @@ import { terkirimQtySummary } from "../lib/deliveryHistory";
 import { trackingShareFromLink } from "../lib/liveTrackingLink";
 import { trackingQrDataUrl } from "../lib/trackingQr";
 import { aksiPoSalesDeliveryState } from "../lib/aksiPoSalesDelivery";
+import {
+  financialStatusLabel,
+  formatRelationEventLabel,
+  paymentStatusLabel,
+  poQtySummary,
+  sliceLoadingLabel,
+  slicePodLabel,
+  sortRelationEvents,
+} from "../lib/salesDocumentRelations";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import {
   accordionIndexForFocus,
@@ -1863,6 +1872,156 @@ export default function PODetail() {
         onAppend={appendProductionNote}
         onReplace={replaceProductionNote}
       />
+      <section
+        className="panel"
+        data-testid="po-document-relations"
+        hidden={!onOrderMasuk}
+        style={{ marginBottom: 12 }}
+      >
+        <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Relasi Dokumen</h3>
+        {(() => {
+          const rel = order.document_relations || {};
+          const qty = poQtySummary(rel);
+          const sjs = Array.isArray(rel.sales_deliveries) ? rel.sales_deliveries : [];
+          const invs = Array.isArray(rel.invoices) ? rel.invoices : [];
+          const hist = sortRelationEvents(order.relation_history || []);
+          return (
+            <>
+              <div className="ux90-table-wrap" data-testid="po-rel-qty-summary" style={{ marginBottom: 10 }}>
+                <table className="ux90-table" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th>Ordered</th>
+                      <th>Shipped</th>
+                      <th>Loaded</th>
+                      <th>Delivered</th>
+                      <th>Invoiced</th>
+                      <th>Sisa kirim</th>
+                      <th>Sisa faktur</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>{qty.ordered.toLocaleString("id-ID")}</td>
+                      <td>{qty.shipped.toLocaleString("id-ID")}</td>
+                      <td>{qty.loaded.toLocaleString("id-ID")}</td>
+                      <td>{qty.delivered.toLocaleString("id-ID")}</td>
+                      <td>{qty.invoiced.toLocaleString("id-ID")}</td>
+                      <td>{qty.remaining_delivery.toLocaleString("id-ID")}</td>
+                      <td>{qty.remaining_invoiceable.toLocaleString("id-ID")}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div className="ux90-table-wrap" style={{ marginBottom: 10 }}>
+                <div className="ux90-table-head">
+                  <h4 style={{ margin: 0, fontSize: 13 }}>Surat Jalan terkait</h4>
+                </div>
+                <table className="ux90-table" data-testid="po-rel-sj-table" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th>No. SJ</th>
+                      <th className="is-num">Qty PO</th>
+                      <th>Loading</th>
+                      <th>POD</th>
+                      <th>Status</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sjs.length === 0 ? (
+                      <tr><td colSpan={6} className="muted">Belum ada SJ aktif</td></tr>
+                    ) : (
+                      sjs.map((sj) => (
+                        <tr key={sj.id} data-testid={`po-rel-sj-${sj.id}`}>
+                          <td>
+                            {sj.sj_number || sj.id}
+                            {sj.is_multi_source ? (
+                              <span className="pj-status-badge" style={{ marginLeft: 6 }} data-testid={`po-rel-sj-multipo-${sj.id}`}>
+                                multi-PO
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="is-num">{Number(sj.po_qty_on_sj || 0).toLocaleString("id-ID")}</td>
+                          <td>{sliceLoadingLabel(sj)}</td>
+                          <td>{slicePodLabel(sj)}</td>
+                          <td>{sj.is_cancelled ? "Dibatalkan" : (sj.status || "aktif")}</td>
+                          <td>
+                            <Link
+                              to={`/penjualan/pengiriman-pesanan?sj_id=${encodeURIComponent(sj.id)}`}
+                              data-testid={`po-rel-sj-link-${sj.id}`}
+                            >
+                              Buka
+                            </Link>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="ux90-table-wrap" style={{ marginBottom: 10 }}>
+                <div className="ux90-table-head">
+                  <h4 style={{ margin: 0, fontSize: 13 }}>Faktur terkait</h4>
+                </div>
+                <table className="ux90-table" data-testid="po-rel-invoice-table" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th>No. Faktur</th>
+                      <th>Mode</th>
+                      <th className="is-num">Qty PO</th>
+                      <th>Status faktur</th>
+                      <th>Pembayaran</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invs.length === 0 ? (
+                      <tr><td colSpan={6} className="muted">Belum ada faktur</td></tr>
+                    ) : (
+                      invs.map((inv) => (
+                        <tr key={inv.id} data-testid={`po-rel-inv-${inv.id}`}>
+                          <td>{inv.invoice_number || inv.id}</td>
+                          <td>{String(inv.source_mode || "po").toUpperCase()}{inv.is_multi_source ? " · multi" : ""}</td>
+                          <td className="is-num">{Number(inv.po_qty_on_invoice || 0).toLocaleString("id-ID")}</td>
+                          <td>{financialStatusLabel(inv.financial_status)}</td>
+                          <td>{paymentStatusLabel(inv.payment_status)}</td>
+                          <td>
+                            <Link
+                              to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(inv.id)}`}
+                              data-testid={`po-rel-inv-link-${inv.id}`}
+                            >
+                              Buka
+                            </Link>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <details data-testid="po-relation-history" style={{ fontSize: 12 }}>
+                <summary>Relasi &amp; Kejadian (read-only)</summary>
+                {hist.length === 0 ? (
+                  <p className="muted" style={{ margin: "8px 0 0" }}>Belum tercatat</p>
+                ) : (
+                  <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                    {hist.map((ev, idx) => (
+                      <li key={`${ev.at}-${ev.kind}-${idx}`} data-testid={`po-rel-event-${idx}`}>
+                        <span className="muted">{ev.at || "Belum tercatat"}</span>
+                        {" · "}
+                        {formatRelationEventLabel(ev)}
+                        {ev.actor ? ` · ${ev.actor}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </details>
+            </>
+          );
+        })()}
+      </section>
+
       <section className="panel po-doc-tabs" data-testid="po-doc-tabs" hidden={!onOrderMasuk}>
         <div className="po-doc-tablist po-om-section-head" role="tablist" aria-label="Dokumen dan riwayat">
           <button
