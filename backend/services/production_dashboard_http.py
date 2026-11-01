@@ -1,12 +1,15 @@
 """Read-only Production Dashboard routes. No order, stock, or finance writes."""
 from __future__ import annotations
 
-from typing import Optional
+from calendar import monthrange
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from services.branch_access import resolve_branch_access
+from services.dashboard_today import wib_today
 from services.division_tasks import division_tasks_read_pipeline
 from services.finance_widget_layout import LayoutError
 from services.po_late_tracking import branch_mongo_scope
@@ -16,9 +19,344 @@ from services.production_dashboard_urgent_requests import (
     PERM_MONITOR as URGENT_REQUESTS_MONITOR_PERM,
     list_dashboard_urgent_requests,
 )
+from services.production_schedule_scope import (
+    LEAN_SCOPE_SCAN_PROJECTION,
+    build_schedule_list_filter_clause,
+    default_scope_candidate_clause,
+    order_matches_default_production_schedule_scope,
+)
 from services.production_widget_layout import get_production_layout, reset_production_layout, save_production_layout
 from services.sales_user_mapping import sales_owner_match
 from services import urgent_requests as urg
+
+# Per-response page size stays at the existing dashboard limit (not raised).
+SCHEDULE_PAGE_LIMIT = 1000
+# Internal lean scan batch — not a response cap.
+_SCOPE_SCAN_BATCH = 250
+# Hard stop so a pathological candidate pool cannot scan forever in one request.
+_SCOPE_SCAN_DOC_CAP = 5000
+# Light poll reconcile: max ids hydrated in one /dashboard/production?ids= call.
+RECONCILE_IDS_PER_REQUEST = 150
+
+
+def parse_reconcile_ids(raw: Optional[Any], *, limit: int = RECONCILE_IDS_PER_REQUEST) -> Tuple[List[str], bool]:
+    """Parse additive reconcile ids (list or comma-separated). Preserves order, dedupes.
+
+    Returns ``(ids_capped, truncated)``. Truncation is explicit so callers never
+    silently treat an over-budget request as fully reconciled.
+    """
+    values: List[str] = []
+    if raw is None or raw == "":
+        return [], False
+    if isinstance(raw, (list, tuple)):
+        chunks = raw
+    else:
+        chunks = str(raw).split(",")
+    seen = set()
+    for chunk in chunks:
+        oid = str(chunk or "").strip()
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        values.append(oid)
+    cap = max(0, int(limit or 0))
+    if cap <= 0:
+        return [], bool(values)
+    if len(values) > cap:
+        return values[:cap], True
+    return values, False
+
+
+async def fetch_production_schedule_orders_by_ids(
+    db,
+    base_q: Dict[str, Any],
+    projection: Optional[Dict[str, Any]],
+    ids: List[str],
+    *,
+    limit: int = RECONCILE_IDS_PER_REQUEST,
+) -> Dict[str, Any]:
+    """Hydrate specific PO ids inside the caller's access/cancelled base query.
+
+    Explicit reconcile contract:
+    - ``found_ids``: returned and visible under ``base_q``
+    - ``missing_ids``: requested in this batch but not visible under ``base_q``
+      (cancelled when excluded, access revoked, or absent). Only these may be
+      dropped by the client — never ids that were not requested.
+    """
+    requested, truncated = parse_reconcile_ids(ids, limit=limit)
+    if not requested:
+        return {
+            "orders": [],
+            "requested_ids": [],
+            "found_ids": [],
+            "missing_ids": [],
+            "reconcile_truncated": bool(truncated),
+            "read_limit": int(limit or 0),
+            "matched_count": 0,
+            "mode": "reconcile",
+        }
+    proj = projection if projection is not None else {"_id": 0}
+    match_q = {"$and": [base_q, {"id": {"$in": requested}}]}
+    docs = await db.orders.find(match_q, proj).to_list(len(requested))
+    by_id = {str(d.get("id")): d for d in docs if d.get("id") is not None}
+    found_ids = [oid for oid in requested if oid in by_id]
+    missing_ids = [oid for oid in requested if oid not in by_id]
+    orders = [by_id[oid] for oid in found_ids]
+    return {
+        "orders": orders,
+        "requested_ids": requested,
+        "found_ids": found_ids,
+        "missing_ids": missing_ids,
+        "reconcile_truncated": bool(truncated),
+        "read_limit": int(limit or 0),
+        "matched_count": len(found_ids),
+        "mode": "reconcile",
+    }
+
+
+def wib_month_date_bounds(now: Optional[datetime] = None) -> Tuple[str, str]:
+    """Inclusive YYYY-MM-DD bounds for the current Asia/Jakarta calendar month."""
+    day = wib_today(now)
+    start = date(day.year, day.month, 1)
+    end = date(day.year, day.month, monthrange(day.year, day.month)[1])
+    return start.isoformat(), end.isoformat()
+
+
+def production_schedule_month_clause(month_start: str, month_end: str) -> dict:
+    """Match order-level or split work_date inside the WIB month window."""
+    return {
+        "$or": [
+            {"work_date": {"$gte": month_start, "$lte": month_end}},
+            {"operator_splits.work_date": {"$gte": month_start, "$lte": month_end}},
+        ]
+    }
+
+
+def normalize_schedule_scope(value: Optional[str]) -> str:
+    raw = (value or "").strip().lower()
+    return "all" if raw == "all" else "default"
+
+
+def encode_schedule_cursor(scan_after_id: str) -> str:
+    return str(scan_after_id or "")
+
+
+def decode_schedule_cursor(cursor: Optional[str]) -> str:
+    return str(cursor or "").strip()
+
+
+async def _hydrate_orders_by_ids(db, ids: List[str], projection: Optional[Dict[str, Any]]) -> List[dict]:
+    if not ids:
+        return []
+    proj = projection if projection is not None else {"_id": 0}
+    docs = await db.orders.find({"id": {"$in": ids}}, proj).to_list(len(ids))
+    by_id = {str(d.get("id")): d for d in docs if d.get("id") is not None}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _merge_base_with_list_filters(
+    base_q: Dict[str, Any],
+    list_filter: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not list_filter:
+        return dict(base_q)
+    return {"$and": [base_q, list_filter]}
+
+
+async def fetch_production_schedule_orders_page(
+    db,
+    base_q: Dict[str, Any],
+    projection: Optional[Dict[str, Any]],
+    *,
+    limit: int = SCHEDULE_PAGE_LIMIT,
+    schedule_scope: str = "default",
+    cursor: Optional[str] = None,
+    now: Optional[datetime] = None,
+    q: Optional[str] = None,
+    work_date_from: Optional[str] = None,
+    work_date_to: Optional[str] = None,
+    deadline_from: Optional[str] = None,
+    deadline_to: Optional[str] = None,
+    refresh: bool = False,
+) -> Dict[str, Any]:
+    """Return one page of schedule rows with qty-based default scope (not stage).
+
+    ``schedule_scope=default``: scan candidate pool ordered by ``id``, keep rows
+    that match work_date/qty unfinished semantics, hydrate up to ``limit``.
+    ``schedule_scope=all``: id-ordered window over the filtered catalog (histori).
+
+    Additive list filters (``q``, work_date / deadline ranges) narrow ``base_q``
+    without changing access/cancelled rules. ``refresh=True`` still returns one
+    page from the start cursor so clients can reconcile without restaging all
+    history.
+
+    Never claims ``scope_complete`` while ``next_cursor`` remains. Population
+    ``matched_count`` is the filtered catalog size so callers can warn when the
+    read window is incomplete.
+    """
+    cap = max(0, int(limit or 0))
+    scope = normalize_schedule_scope(schedule_scope)
+    list_filter = build_schedule_list_filter_clause(
+        q=q,
+        work_date_from=work_date_from,
+        work_date_to=work_date_to,
+        deadline_from=deadline_from,
+        deadline_to=deadline_to,
+    )
+    effective_base = _merge_base_with_list_filters(base_q, list_filter)
+    population_matched = await db.orders.count_documents(effective_base)
+    if cap <= 0:
+        return {
+            "orders": [],
+            "matched_count": population_matched,
+            "candidate_count": 0,
+            "next_cursor": None,
+            "scope_complete": True,
+            "schedule_scope": scope,
+            "read_limit": 0,
+            "scan_capped": False,
+            "refresh": bool(refresh),
+        }
+
+    today = wib_today(now)
+    today_key = today.isoformat()
+    month_start, month_end = wib_month_date_bounds(now)
+    # Refresh snapshots always restart from the head of the stream.
+    scan_after = "" if refresh else decode_schedule_cursor(cursor)
+
+    if scope == "all":
+        page_q: Dict[str, Any] = dict(effective_base)
+        if scan_after:
+            page_q = {"$and": [effective_base, {"id": {"$gt": scan_after}}]}
+        proj = projection if projection is not None else {"_id": 0}
+        # Stable id order for cursor paging (deadline alone is not unique).
+        docs = await db.orders.find(page_q, proj).sort([("id", 1)]).to_list(cap + 1)
+        page_docs = docs[:cap]
+        has_more = len(docs) > cap
+        next_cursor = encode_schedule_cursor(str(page_docs[-1].get("id"))) if has_more and page_docs else None
+        return {
+            "orders": page_docs,
+            "matched_count": population_matched,
+            "candidate_count": population_matched,
+            "next_cursor": next_cursor,
+            "scope_complete": not has_more,
+            "schedule_scope": scope,
+            "read_limit": cap,
+            "scan_capped": False,
+            "refresh": bool(refresh),
+        }
+
+    candidate_q = {
+        "$and": [effective_base, default_scope_candidate_clause(month_start, month_end)],
+    }
+    candidate_count = await db.orders.count_documents(candidate_q)
+
+    matched_ids: List[str] = []
+    scanned = 0
+    last_scan_id = scan_after
+    exhausted = False
+    scan_capped = False
+    while len(matched_ids) < cap and scanned < _SCOPE_SCAN_DOC_CAP:
+        batch_q: Dict[str, Any] = candidate_q
+        if last_scan_id:
+            batch_q = {"$and": [candidate_q, {"id": {"$gt": last_scan_id}}]}
+        batch = await db.orders.find(batch_q, LEAN_SCOPE_SCAN_PROJECTION).sort("id", 1).to_list(
+            _SCOPE_SCAN_BATCH
+        )
+        if not batch:
+            exhausted = True
+            break
+        stopped_for_page = False
+        for lean in batch:
+            scanned += 1
+            oid = lean.get("id")
+            if oid is None:
+                continue
+            last_scan_id = str(oid)
+            if order_matches_default_production_schedule_scope(lean, today_key=today_key):
+                matched_ids.append(str(oid))
+                if len(matched_ids) >= cap:
+                    stopped_for_page = True
+                    break
+        if stopped_for_page:
+            # Remaining docs in this batch were not examined — peek decides has_more.
+            break
+        if len(batch) < _SCOPE_SCAN_BATCH:
+            exhausted = True
+            break
+        if scanned >= _SCOPE_SCAN_DOC_CAP:
+            scan_capped = True
+            break
+
+    # Peek whether more *matching* candidates remain (lean projection required).
+    has_more = False
+    if exhausted:
+        has_more = False
+    elif scan_capped:
+        has_more = True
+    elif last_scan_id:
+        peek_after = last_scan_id
+        peek_scanned = 0
+        while peek_scanned < _SCOPE_SCAN_DOC_CAP:
+            peek_q = {"$and": [candidate_q, {"id": {"$gt": peek_after}}]}
+            peek = await db.orders.find(peek_q, LEAN_SCOPE_SCAN_PROJECTION).sort("id", 1).to_list(
+                _SCOPE_SCAN_BATCH
+            )
+            if not peek:
+                exhausted = True
+                break
+            for lean in peek:
+                peek_scanned += 1
+                oid = lean.get("id")
+                if oid is not None:
+                    peek_after = str(oid)
+                if order_matches_default_production_schedule_scope(lean, today_key=today_key):
+                    has_more = True
+                    break
+            if has_more:
+                break
+            if len(peek) < _SCOPE_SCAN_BATCH:
+                exhausted = True
+                break
+        if not has_more and not exhausted and peek_scanned >= _SCOPE_SCAN_DOC_CAP:
+            # More candidates may remain beyond the peek budget — keep cursor.
+            has_more = True
+            scan_capped = True
+
+    orders = await _hydrate_orders_by_ids(db, matched_ids, projection)
+    next_cursor = encode_schedule_cursor(last_scan_id) if has_more and last_scan_id else None
+    scope_complete = next_cursor is None
+    return {
+        "orders": orders,
+        "matched_count": population_matched,
+        "candidate_count": candidate_count,
+        "next_cursor": next_cursor,
+        "scope_complete": scope_complete,
+        "schedule_scope": scope,
+        "read_limit": cap,
+        "scan_capped": bool(scan_capped),
+        "refresh": bool(refresh),
+    }
+
+
+async def fetch_production_schedule_orders(
+    db,
+    base_q: Dict[str, Any],
+    projection: Optional[Dict[str, Any]],
+    limit: int,
+    now: Optional[datetime] = None,
+) -> Tuple[List[dict], int]:
+    """Backward-compatible single-page helper (default scope, no cursor)."""
+    page = await fetch_production_schedule_orders_page(
+        db,
+        base_q,
+        projection,
+        limit=limit,
+        schedule_scope="default",
+        cursor=None,
+        now=now,
+    )
+    return page["orders"], int(page["matched_count"])
 
 
 class LayoutSaveBody(BaseModel):
