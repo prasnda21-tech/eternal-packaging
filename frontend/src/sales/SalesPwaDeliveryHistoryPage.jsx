@@ -329,16 +329,26 @@ export default function SalesPwaDeliveryHistoryPage() {
 
         <div className="spwa-hist-scroll" data-testid="sales-hist-scroll">
           <table className="spwa-hist-table" data-testid="sales-hist-table">
+            <colgroup>
+              <col className="spwa-hist-col-date" />
+              <col className="spwa-hist-col-customer" />
+              <col className="spwa-hist-col-po" />
+              <col className="spwa-hist-col-sj" />
+              <col className="spwa-hist-col-item" />
+              <col className="spwa-hist-col-qty" />
+              <col className="spwa-hist-col-status" />
+              <col className="spwa-hist-col-action" />
+            </colgroup>
             <thead>
               <tr>
-                <th>Tanggal</th>
-                <th>Customer</th>
-                <th>No. PO</th>
-                <th>No. SJ</th>
-                <th>Nama Barang</th>
-                <th>Qty</th>
-                <th>Status</th>
-                <th>Aksi</th>
+                <th scope="col">Tanggal</th>
+                <th scope="col">Customer</th>
+                <th scope="col">No. PO</th>
+                <th scope="col">No. SJ</th>
+                <th scope="col">Nama Barang</th>
+                <th scope="col">Qty</th>
+                <th scope="col">Status</th>
+                <th scope="col">Aksi</th>
               </tr>
               <tr className="spwa-column-filters spwa-hist-desktop-filters">
                 <th>
@@ -433,17 +443,17 @@ export default function SalesPwaDeliveryHistoryPage() {
               )}
               {rows.map((row) => (
                 <tr key={row.id} data-testid={`sales-hist-row-${row.id}`}>
-                  <td>{formatHistoryDay(row.confirmed_day || row.confirmed_at)}</td>
-                  <td>
+                  <td className="spwa-hist-cell-text">{formatHistoryDay(row.confirmed_day || row.confirmed_at)}</td>
+                  <td className="spwa-hist-cell-text">
                     <div className="spwa-cust">{row.customer || "—"}</div>
                     {row.outlet ? <div className="spwa-po">{row.outlet}</div> : null}
                   </td>
-                  <td className="mono">{row.po_number || "—"}</td>
-                  <td className="mono">{row.sj_number || "—"}</td>
-                  <td>{row.item_name || "—"}</td>
-                  <td className="mono">{formatHistoryQty(row.qty, row.unit)}</td>
+                  <td className="mono spwa-hist-cell-text">{row.po_number || "—"}</td>
+                  <td className="mono spwa-hist-cell-text">{row.sj_number || "—"}</td>
+                  <td className="spwa-hist-cell-text">{row.item_name || "—"}</td>
+                  <td className="mono spwa-hist-cell-text">{formatHistoryQty(row.qty, row.unit)}</td>
                   <td><span className="spwa-hist-status" data-testid={`sales-hist-status-${row.id}`}>{row.status_label || "Terkirim"}</span></td>
-                  <td>
+                  <td className="spwa-hist-col-action">
                     <button
                       type="button"
                       className="spwa-hist-action"

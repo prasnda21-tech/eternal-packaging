@@ -195,9 +195,15 @@ describe("SalesPwaDeliveryHistoryPage", () => {
     expect(src).toMatch(/defaultHistoryFilters/);
     expect(src).toMatch(/sales-hist-preset-\$\{preset\.id\}/);
     expect(src).toMatch(/id: "month"/);
+    expect(src).toMatch(/spwa-hist-col-po/);
     expect(css).toMatch(/\.spwa-hist-mobile-filters\s*\{[^}]*grid-template-rows:\s*auto auto/s);
     expect(css).toMatch(/\.spwa-hist-desktop-filters\s*\{[^}]*display:\s*none/s);
     expect(css).toMatch(/\.spwa-hist-scroll\s*\{[^}]*overflow-x:\s*auto/s);
+    expect(css).toMatch(/\.spwa-hist-scroll\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(css).toMatch(/\.spwa-hist-table\s*\{[^}]*table-layout:\s*auto/s);
+    expect(css).not.toMatch(/\.spwa-hist-table\s*\{[^}]*table-layout:\s*fixed/s);
+    expect(css).toMatch(/\.spwa-hist-table th,\s*\.spwa-hist-table td\s*\{[^}]*border-right:\s*1px solid/s);
+    expect(css).toMatch(/\.spwa-hist-table th\s*\{[^}]*position:\s*sticky/s);
     expect(css).toMatch(/\.spwa-hist-toolbar\s*\{[^}]*flex-direction:\s*column/s);
   });
 });
