@@ -7,7 +7,9 @@ describe("Jadwal Produksi PO click", () => {
     const cells = fs.readFileSync(path.join(__dirname, "../components/ProductionScheduleSheetCells.jsx"), "utf8");
     expect(src).toMatch(/productionSchedulePoHref/);
     expect(src).toMatch(/stage:\s*["']penjadwalan["']/);
+    expect(src).toMatch(/capturePoOpenFromList/);
     expect(cells).toMatch(/prod-po-link/);
+    expect(cells).toMatch(/state=\{poLinkState\}/);
     expect(src).toMatch(/prod-card-/);
     expect(src).not.toMatch(/schedulePoHref/);
     expect(src).not.toMatch(/status-pengiriman/);

@@ -3266,6 +3266,8 @@ async def approve_design(order_id: str, payload: ApprovalPayload, user=Depends(c
         order["design_approved_by"] = None
         order["design_approved_by_name"] = None
         order["design_approved_at"] = None
+        from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+        invalidate_delivery_sla_stamp(order, now=now_iso())
         order.setdefault("design_approval_history", []).append({
             "action": "revoke",
             "by_email": user.get("email"),
@@ -3312,6 +3314,8 @@ async def approve_payment(order_id: str, payload: ApprovalPayload, user=Depends(
         order["payment_approved_by"] = None
         order["payment_approved_by_name"] = None
         order["payment_approved_at"] = None
+        from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+        invalidate_delivery_sla_stamp(order, now=now_iso())
         order.setdefault("payment_approval_history", []).append({
             "action": "revoke",
             "by_email": user.get("email"),
@@ -3433,12 +3437,14 @@ async def rollback_stage(order_id: str, payload: RollbackPayload, user=Depends(c
     order.setdefault("rollback_history", []).append(entry)
     order["current_stage"] = payload.to_stage
     # If rolling back TO design/approval region, invalidate downstream approval if dependencies broken
+    gate_reset = False
     if payload.to_stage <= 1:  # rolled back to before Approval Design
         if order.get("design_status") == "Approved":
             order["design_status"] = "Waiting"
             order["design_approved_by"] = None
             order["design_approved_by_name"] = None
             order["design_approved_at"] = None
+            gate_reset = True
             order.setdefault("design_approval_history", []).append({
                 "action": "reset-on-rollback", "by_email": user.get("email"), "by_name": user.get("name"),
                 "at": now_iso(), "note": f"Rollback ke {STAGES[payload.to_stage]}",
@@ -3449,10 +3455,14 @@ async def rollback_stage(order_id: str, payload: RollbackPayload, user=Depends(c
             order["payment_approved_by"] = None
             order["payment_approved_by_name"] = None
             order["payment_approved_at"] = None
+            gate_reset = True
             order.setdefault("payment_approval_history", []).append({
                 "action": "reset-on-rollback", "by_email": user.get("email"), "by_name": user.get("name"),
                 "at": now_iso(), "note": f"Rollback ke {STAGES[payload.to_stage]}",
             })
+    if gate_reset:
+        from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+        invalidate_delivery_sla_stamp(order, now=now_iso())
     add_timeline(order, payload.to_stage, user, note=f"Rollback dari {entry['from_stage_label']} → {entry['to_stage_label']}: {reason}")
     await _persist_order(order)
     await _audit_po(order, "workflow.rollback", user, before={"stage": from_stage}, after={"stage": payload.to_stage}, note=reason)
@@ -5583,6 +5593,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, view: Optional
             order["design_approved_by"] = None
             order["design_approved_by_name"] = None
             order["design_approved_at"] = None
+            from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+            invalidate_delivery_sla_stamp(order, now=now_iso())
             order.setdefault("design_approval_history", []).append({
                 "action": "reset-on-new-upload",
                 "by_email": user.get("email"),
@@ -5612,6 +5624,8 @@ async def add_attachment(order_id: str, payload: AttachmentInput, view: Optional
             order["payment_approved_by"] = None
             order["payment_approved_by_name"] = None
             order["payment_approved_at"] = None
+            from services.tanggal_pengiriman import invalidate_delivery_sla_stamp
+            invalidate_delivery_sla_stamp(order, now=now_iso())
             order.setdefault("payment_approval_history", []).append({
                 "action": "reset-on-new-upload",
                 "by_email": user.get("email"),
@@ -9200,25 +9214,81 @@ async def production_dashboard(
     include_cancelled: bool = False,
     include_completed: bool = True,
     view: Optional[str] = None,
+    schedule_scope: Optional[str] = "default",
+    cursor: Optional[str] = None,
+    q: Optional[str] = None,
+    work_date_from: Optional[str] = None,
+    work_date_to: Optional[str] = None,
+    deadline_from: Optional[str] = None,
+    deadline_to: Optional[str] = None,
+    refresh: bool = False,
+    ids: Optional[str] = None,
     user=Depends(require_perm("schedule.view")),
 ):
-    """Return Jadwal Produksi rows (real Mongo data). Filters/search happen on
-    the client. Excluding cancelled by default; explicit flag to include.
+    """Return Jadwal Produksi rows (real Mongo data).
+
+    Client filters still apply for rendering. Additive server params ``q``,
+    ``work_date_from``/``work_date_to``, and ``deadline_from``/``deadline_to``
+    narrow the Mongo window so search/histori can find rows beyond the staged
+    client cache. Excluding cancelled by default; explicit flag to include.
 
     Optional `view=summary` is additive: same canonical rows via a lean
     projection (no file bytes). Default (no view) keeps the full-document
     load for desktop /produksi.
+
+    ``schedule_scope=default`` pages qty/work_date default-scope rows (not
+    stage&lt;14). ``schedule_scope=all`` pages the filtered catalog for histori.
+    ``refresh=true`` returns one head page for discovery. ``ids`` (comma-
+    separated) is an additive reconcile mode: hydrate those POs under the same
+    access/cancelled scope and return explicit ``found_ids`` / ``missing_ids``.
+    Per-response page cap stays ``_PRODUCTION_DASHBOARD_LIMIT``; reconcile id
+    batches stay smaller. Clients may follow ``next_cursor`` for internal staged
+    fetch without UI pagination.
     """
-    from services.production_dashboard_http import order_access_scope, scoped_read_meta
-    q: dict = {}
+    from services.production_dashboard_http import (
+        RECONCILE_IDS_PER_REQUEST,
+        fetch_production_schedule_orders_by_ids,
+        fetch_production_schedule_orders_page,
+        normalize_schedule_scope,
+        order_access_scope,
+        parse_reconcile_ids,
+        scoped_read_meta,
+    )
+    access_q: dict = {}
     if not include_cancelled:
-        q["cancelled"] = {"$ne": True}
-    q.update(await order_access_scope(db, user))
-    schedule_matched = await db.orders.count_documents(q)
-    if (view or "").strip().lower() == "summary":
-        orders = await db.orders.find(q, _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
+        access_q["cancelled"] = {"$ne": True}
+    access_q.update(await order_access_scope(db, user))
+    projection = (
+        _PRODUCTION_DASHBOARD_SUMMARY_PROJECTION
+        if (view or "").strip().lower() == "summary"
+        else {"_id": 0}
+    )
+    reconcile_ids, _ = parse_reconcile_ids(ids, limit=RECONCILE_IDS_PER_REQUEST)
+    if reconcile_ids:
+        page = await fetch_production_schedule_orders_by_ids(
+            db,
+            access_q,
+            projection,
+            reconcile_ids,
+            limit=RECONCILE_IDS_PER_REQUEST,
+        )
     else:
-        orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(_PRODUCTION_DASHBOARD_LIMIT)
+        page = await fetch_production_schedule_orders_page(
+            db,
+            access_q,
+            projection,
+            limit=_PRODUCTION_DASHBOARD_LIMIT,
+            schedule_scope=normalize_schedule_scope(schedule_scope),
+            cursor=cursor,
+            q=q,
+            work_date_from=work_date_from,
+            work_date_to=work_date_to,
+            deadline_from=deadline_from,
+            deadline_to=deadline_to,
+            refresh=bool(refresh),
+        )
+    orders = page["orders"]
+    schedule_matched = int(page["matched_count"])
     schedule_fetched = len(orders)
     _dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
@@ -9227,14 +9297,53 @@ async def production_dashboard(
         _apply_hold_snapshot(o)
         # Batch 1: attach delivery deadline snapshot (source of truth sama).
         _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
-    if not include_completed:
+    # Reconcile must return current qty even when stage≥14 so the client can
+    # drop prior-month 100% rows; include_completed only gates list pages.
+    if not include_completed and not reconcile_ids:
         orders = [o for o in orders if o.get("current_stage", 0) < 14]
     rows = [_production_row(o) for o in orders]
+    read_limit = int(page.get("read_limit") or (
+        RECONCILE_IDS_PER_REQUEST if reconcile_ids else _PRODUCTION_DASHBOARD_LIMIT
+    ))
+    meta = scoped_read_meta(schedule_matched, schedule_fetched, read_limit)
+    if reconcile_ids:
+        if page.get("reconcile_truncated") or page.get("missing_ids") is None:
+            # Truncation is incomplete; missing_ids alone is an expected contract.
+            pass
+        if page.get("reconcile_truncated"):
+            meta["completeness"] = "incomplete"
+        return {
+            "rows": rows,
+            "generated_at": now_iso(),
+            "total": len(rows),
+            "schedule_scope": normalize_schedule_scope(schedule_scope),
+            "mode": "reconcile",
+            "requested_ids": list(page.get("requested_ids") or []),
+            "found_ids": list(page.get("found_ids") or []),
+            "missing_ids": list(page.get("missing_ids") or []),
+            "reconcile_truncated": bool(page.get("reconcile_truncated")),
+            "candidate_count": int(page.get("matched_count") or 0),
+            "next_cursor": None,
+            "scope_complete": not bool(page.get("reconcile_truncated")),
+            "scan_capped": False,
+            "refresh": False,
+            **meta,
+        }
+    # Never claim complete while more scope pages remain, or the lean scan capped.
+    if page.get("next_cursor") or not page.get("scope_complete", False) or page.get("scan_capped"):
+        meta["completeness"] = "incomplete"
     return {
         "rows": rows,
         "generated_at": now_iso(),
         "total": len(rows),
-        **scoped_read_meta(schedule_matched, schedule_fetched, _PRODUCTION_DASHBOARD_LIMIT),
+        "schedule_scope": page.get("schedule_scope") or normalize_schedule_scope(schedule_scope),
+        "candidate_count": int(page.get("candidate_count") or 0),
+        "next_cursor": page.get("next_cursor"),
+        "scope_complete": bool(page.get("scope_complete")),
+        "scan_capped": bool(page.get("scan_capped")),
+        "refresh": bool(page.get("refresh")),
+        "mode": "page",
+        **meta,
     }
 
 
@@ -17972,6 +18081,7 @@ register_production_dashboard_routes(
     attach_deadline=_attach_deadline_snapshot,
     get_deadline_settings=_get_delivery_deadline_settings,
     now_iso=now_iso,
+    require_opt_in_perm=_require_opt_in_perm,
     Depends=Depends,
 )
 from services.dashboard_rincian_http import register_dashboard_rincian_routes
@@ -19989,6 +20099,7 @@ async def seed():
     PHASE_B_ROLE_TOP_UPS = {
         "head_production": [
             "dashboard.production.view", "dashboard.production.export",
+            "dashboard.production.urgent_requests.view",
             # Req 13 + Req 16 top-ups (idempotent)
             "schedule.work_date.view", "schedule.work_date.edit",
             "dashboard.production.input", "dashboard.production.edit",

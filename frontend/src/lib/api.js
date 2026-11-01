@@ -933,6 +933,7 @@ export const api = {
   productionAnalytics: (days = 7) => client.get(`/dashboard/produksi/analytics`, { params: { days } }).then((r) => r.data),
   productionBranchOutput: (days = 7) => client.get(`/dashboard/produksi/branch-output`, { params: { days } }).then((r) => r.data),
   productionOperatorAnalytics: (days = 7) => client.get(`/dashboard/produksi/operator-analytics`, { params: { days } }).then((r) => r.data),
+  productionUrgentRequests: (params = {}) => client.get(`/dashboard/produksi/urgent-requests`, { params }).then((r) => r.data),
   productionDashboardLayout: () => client.get(`/dashboard/produksi/layout`).then((r) => r.data),
   saveProductionDashboardLayout: (body) => client.put(`/dashboard/produksi/layout`, body).then((r) => r.data),
   resetProductionDashboardLayout: () => client.post(`/dashboard/produksi/layout/reset`).then((r) => r.data),

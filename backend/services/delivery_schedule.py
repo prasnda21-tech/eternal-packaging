@@ -453,9 +453,10 @@ def schedule_row(
     sh = shipment if isinstance(shipment, dict) else None
     batch_date = shipment_delivery_date(sh)
     sla_public = _public_delivery_sla(order, lead_time_days, today, holidays=holidays)
-    tanggal = batch_date or sla_public.get("date") or effective_delivery_date(
+    # Operational Tanggal Pengiriman (manual/reschedule) wins over customer estimation.
+    tanggal = batch_date or effective_delivery_date(
         order, lead_time_days, holidays=holidays,
-    )
+    ) or sla_public.get("date")
     code = schedule_status_code(
         order, today, lead_time_days, schedule_date=tanggal, holidays=holidays,
     )

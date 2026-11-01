@@ -6,6 +6,7 @@ import {
   currentHeadline,
   documentRows,
   documentTiles,
+  formatEstimasiPengiriman,
   formatTrackingDate,
   hasApprovalCta,
   itemLineLabel,
@@ -20,6 +21,22 @@ import {
 } from "./customerTracking";
 
 describe("customer tracking status labels", () => {
+  test("estimasi display never falls back to legacy deadline", () => {
+    expect(formatEstimasiPengiriman({
+      date: "2026-11-07", source: "automatic", final: true, display_state: "final",
+    }).text).toMatch(/07/);
+    expect(formatEstimasiPengiriman({
+      source: "non_final", final: false, display_state: "menunggu_approval",
+    }).text).toBe("Menunggu Approval");
+    expect(formatEstimasiPengiriman({
+      source: "non_final", final: false, display_state: "belum_dijadwalkan",
+    }).text).toBe("Belum Dijadwalkan");
+    expect(formatEstimasiPengiriman({
+      date: "2026-11-07", source: "urgent_manual", final: true, display_state: "final",
+    }).source).toBe("urgent_manual");
+    expect(formatEstimasiPengiriman(undefined).text).toBe("—");
+  });
+
   test("maps the three public statuses only", () => {
     expect(trackingStatusLabel("completed")).toBe("Selesai");
     expect(trackingStatusLabel("in_progress")).toBe("Proses");

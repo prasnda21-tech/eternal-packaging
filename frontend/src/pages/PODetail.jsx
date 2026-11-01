@@ -1211,27 +1211,37 @@ export default function PODetail() {
             <div className="po-info-pair" data-testid="header-tanggal-pengiriman">
               <span className="lbl">Tanggal Pengiriman</span>
               <strong data-testid="detail-tanggal-pengiriman">
-                {(
-                  order.tanggal_pengiriman
-                  || order.effective_delivery_date
-                  || order.delivery_deadline_effective
-                  || order.scheduled_delivery_date
-                  || order.delivery_deadline_manual
-                ) ? formatDate(
-                  order.tanggal_pengiriman
-                  || order.effective_delivery_date
-                  || order.delivery_deadline_effective
-                  || order.scheduled_delivery_date
-                  || order.delivery_deadline_manual
-                ) : "—"}
-                {order.tanggal_pengiriman_source === "manual" || order.delivery_deadline_source === "manual" ? (
-                  <span className="muted small"> Manual</span>
-                ) : order.delivery_sla_effective?.contract === "legacy_working_days"
-                  || order.delivery_sla_effective?.contract === "legacy_calendar" ? (
-                  <span className="muted small"> Otomatis (Legacy · Hari Kerja)</span>
-                ) : (order.tanggal_pengiriman || order.delivery_deadline_effective) ? (
-                  <span className="muted small"> Otomatis</span>
-                ) : null}
+                {(() => {
+                  const sla = order.delivery_sla_effective || {};
+                  if (sla.display_state === "menunggu_approval" || (sla.final === false && sla.display_state !== "belum_dijadwalkan")) {
+                    return "Menunggu Approval";
+                  }
+                  if (sla.display_state === "belum_dijadwalkan") {
+                    return "Belum Dijadwalkan";
+                  }
+                  if (sla.final && sla.date) {
+                    return formatDate(sla.date);
+                  }
+                  const fallback = (
+                    order.tanggal_pengiriman
+                    || order.effective_delivery_date
+                    || order.delivery_deadline_effective
+                  );
+                  return fallback ? formatDate(fallback) : "—";
+                })()}
+                {(() => {
+                  const sla = order.delivery_sla_effective || {};
+                  if (sla.source === "urgent_manual") {
+                    return <span className="muted small"> Manual Urgent</span>;
+                  }
+                  if (sla.source === "automatic" && (sla.contract === "legacy_working_days" || sla.contract === "legacy_calendar")) {
+                    return <span className="muted small"> Otomatis (Legacy · Hari Kerja)</span>;
+                  }
+                  if (sla.source === "automatic" && sla.final) {
+                    return <span className="muted small"> Otomatis</span>;
+                  }
+                  return null;
+                })()}
                 {(() => {
                   const notice = legacyEstimateNotice(order.delivery_sla_effective);
                   if (!notice) return null;
@@ -1242,6 +1252,23 @@ export default function PODetail() {
                       title={notice.title}
                     >
                       {notice.text}
+                    </span>
+                  );
+                })()}
+                {(() => {
+                  const jadwal = order.delivery_sla_effective?.jadwal_ulang
+                    || (
+                      order.tanggal_pengiriman_source === "manual"
+                      && order.priority !== "urgent"
+                      && order.tanggal_pengiriman
+                      && order.tanggal_pengiriman !== order.delivery_sla_effective?.date
+                        ? order.tanggal_pengiriman
+                        : null
+                    );
+                  if (!jadwal) return null;
+                  return (
+                    <span className="muted small" data-testid="detail-jadwal-ulang">
+                      {" "}· Jadwal ulang {formatDate(jadwal)}
                     </span>
                   );
                 })()}

@@ -8,6 +8,7 @@ import ProductionSchedule from "./ProductionSchedule";
 
 jest.mock("react-router-dom", () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
+  useLocation: () => ({ pathname: "/produksi", search: "" }),
 }), { virtual: true });
 
 jest.mock("../lib/auth", () => ({
@@ -136,6 +137,7 @@ describe("ProductionSchedule visual hierarchy", () => {
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
   });
 

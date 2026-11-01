@@ -36,6 +36,7 @@ import { productionWidgetAllowed, productionWidgetMeta } from "./productionWidge
 import { placeWidget, removeWidget } from "./productionWidgetLayout";
 import { formatIdDate } from "../../lib/dashboardRincianPresentation";
 import { productionUpdatedLabel } from "./productionFormat";
+import UrgentRequestsWidget from "./UrgentRequestsWidget";
 
 const DELIVERY_PLAN_PATH = "/produksi/rencana-jadwal-kirim";
 
@@ -74,6 +75,7 @@ const GLYPH = {
   komposisi: PieChart,
   output_cabang: MapPin,
   delivery_qty: Truck,
+  urgent_requests: Flame,
   sim_output: BarChart3,
   sim_workflow: Workflow,
   sim_operator: Users,
@@ -99,6 +101,7 @@ const TONE = {
   komposisi: "analytics",
   output_cabang: "info",
   delivery_qty: "warn",
+  urgent_requests: "warn",
   sim_output: "analytics",
   sim_workflow: "info",
   sim_operator: "analytics",
@@ -134,6 +137,7 @@ const CAPTION = {
   komposisi: "Snapshot konfirmasi, satuan terpisah",
   output_cabang: "Lokasi aktual adalah default",
   delivery_qty: "Monitoring sisa qty berdasarkan tanggal rencana",
+  urgent_requests: "Monitoring pengajuan urgent",
   sim_output: "Fixture visual, satuan pcs",
   sim_workflow: "Fixture visual, bukan status sah",
   sim_operator: "Fixture visual, satuan pcs",
@@ -1141,6 +1145,18 @@ function BranchBody({ model, controls }) {
 
 function CardBody({ id, model, tone, onRetry, controls, editing, hasPerm }) {
   const status = model?.status || "loading";
+  if (id === "urgent_requests") {
+    if (status === "forbidden") return <Quiet status="forbidden" />;
+    if (status === "loading") return <Quiet status="loading" />;
+    if (status === "error") return <Quiet status="error" onRetry={onRetry} />;
+    return (
+      <UrgentRequestsWidget
+        model={model}
+        editing={editing}
+        fetchList={controls?.urgentRequestsApi}
+      />
+    );
+  }
   if (status === "loading" || status === "error" || status === "forbidden") return <Quiet status={status} onRetry={onRetry} />;
   if (id === "output_hari_ini") return <OutputToday model={model} />;
   if (id === "delivery_qty") {
@@ -1414,6 +1430,7 @@ export default function ProductionWidgetBoard({ widgets, models, editing, hasPer
               menuFor === widget.widget_id ? "is-menu" : "",
               widget.widget_id === "delivery_qty" ? "is-delivery-qty" : "",
               widget.widget_id === "delivery_qty" && widget.h < 6 ? "is-delivery-tight" : "",
+              widget.widget_id === "urgent_requests" ? "is-urgent-requests" : "",
               cardDrillPath ? "is-drillable" : "",
               cardDrillLocked ? "is-drill-locked" : "",
             ].filter(Boolean).join(" ")}

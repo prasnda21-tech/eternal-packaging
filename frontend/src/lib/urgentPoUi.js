@@ -17,6 +17,7 @@ export const URGENT_DISPLAY = {
 
 export const REQUEST_STATUS = {
   PENDING: "pending",
+  APPROVING: "approving",
   APPROVED: "approved",
   REJECTED: "rejected",
   CANCELLED: "cancelled",
@@ -95,7 +96,7 @@ export function classifyUrgentDisplay({ priority, request } = {}) {
   const isUrgent = String(priority || "").toLowerCase() === "urgent";
   const status = request?.status ? String(request.status).toLowerCase() : "";
 
-  if (status === REQUEST_STATUS.PENDING) {
+  if (status === REQUEST_STATUS.PENDING || status === REQUEST_STATUS.APPROVING) {
     return URGENT_DISPLAY.PENDING_REQUEST;
   }
   if (isUrgent && status === REQUEST_STATUS.APPROVED) {

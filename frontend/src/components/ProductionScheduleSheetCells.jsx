@@ -261,11 +261,18 @@ function StatusCell({ row }) {
 }
 
 function cellContent(col, ctx) {
-  const { row, variant, qtyProg, cetakProg, isToday, poHref } = ctx;
+  const { row, variant, qtyProg, cetakProg, isToday, poHref, poLinkState, onPoOpen } = ctx;
   switch (col.key) {
     case "po":
       return variant === "desktop" && poHref ? (
-        <Link to={poHref} data-testid={`prod-po-link-${row.po_number}`}>{row.po_number}</Link>
+        <Link
+          to={poHref}
+          state={poLinkState}
+          onClick={onPoOpen}
+          data-testid={`prod-po-link-${row.po_number}`}
+        >
+          {row.po_number}
+        </Link>
       ) : row.po_number;
     case "customer":
       if (variant === "mobile") {
@@ -526,10 +533,12 @@ export default function ProductionScheduleSheetCells({
   cetakProg,
   isToday,
   poHref,
+  poLinkState,
+  onPoOpen,
   opsBadge,
   columns,
 }) {
-  const ctx = { row, variant, qtyProg, cetakProg, isToday, poHref, opsBadge };
+  const ctx = { row, variant, qtyProg, cetakProg, isToday, poHref, poLinkState, onPoOpen, opsBadge };
   return (Array.isArray(columns) && columns.length ? columns : PRODUCTION_SCHEDULE_TABLE_COLS).map((col) => {
     const { classExtra, testids } = cellExtras(col, ctx);
     const todayStyle = col.key === "customer" && variant !== "mobile" && isToday

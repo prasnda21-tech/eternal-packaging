@@ -76,6 +76,7 @@ describe("date-column Hari Ini shortcuts stay independent", () => {
   test("reset date fields restore unfiltered dummy set", () => {
     const filtered = applyProductionFilters(rows, {
       ...FILTER_DEFAULTS,
+      today: NOW,
       workDateFrom: "",
       workDateTo: "",
       dateFrom: "",

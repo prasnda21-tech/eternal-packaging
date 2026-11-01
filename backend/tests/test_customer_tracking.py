@@ -13,6 +13,7 @@ from services.customer_tracking import (
     is_public_payload_safe,
     mask_token,
     new_tracking_token,
+    public_order_summary,
     public_payload,
     strip_tracking_secret,
 )
@@ -71,6 +72,34 @@ class TestPublicPayload:
             assert set(row.keys()) <= {"stage", "status", "label"}
             assert "stage" in row and "status" in row
             assert row["status"] in ALLOWED_STATUSES
+
+    def test_estimasi_uses_resolver_not_legacy_deadline(self):
+        order = _print_po(
+            deadline="2026-01-01",
+            estimated_delivery="2026-01-02",
+            design_approved_at="2026-09-14T10:00:00+07:00",
+            payment_approved_at="2026-09-15T10:00:00+07:00",
+            design_status="Approved",
+            payment_status="Approved",
+        )
+        summary = public_order_summary(order, lead_time_days=3, holidays=[])
+        assert "deadline" not in summary
+        assert "estimated_delivery" not in summary
+        est = summary["estimasi"]
+        assert est["final"] is True
+        assert est["source"] == "automatic"
+        assert est["date"] == "2026-09-18"
+        assert is_public_payload_safe(public_payload(order, lead_time_days=3, holidays=[]))
+
+    def test_estimasi_non_final_when_gates_incomplete(self):
+        summary = public_order_summary(
+            _print_po(deadline="2026-12-31", design_approved_at="2026-09-14T10:00:00+07:00"),
+            lead_time_days=3,
+            holidays=[],
+        )
+        assert summary["estimasi"]["final"] is False
+        assert summary["estimasi"]["display_state"] == "menunggu_approval"
+        assert "date" not in summary["estimasi"]
 
     def test_reschedule_snippet_is_date_only(self):
         payload = public_payload(_print_po(

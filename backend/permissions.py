@@ -220,8 +220,8 @@ PERMISSION_CATALOG = [
     ("Catatan Produksi", "production_note.edit", "Edit Catatan Produksi"),
     ("Prioritas", "urgent.manage", "Set/hapus urgent (legacy — tidak lagi mengubah prioritas)"),
     ("Prioritas", "urgent.request", "Ajukan Urgent PO"),
-    ("Prioritas", "urgent.review", "Lihat daftar/detail pengajuan Urgent"),
-    ("Prioritas", "urgent.approve", "Setujui / tolak pengajuan Urgent"),
+    ("Prioritas", "urgent.review", "Review Pengajuan Urgent"),
+    ("Prioritas", "urgent.approve", "Setujui / Tolak Pengajuan Urgent"),
     ("Prioritas", "urgent.notify", "Terima notifikasi pengajuan Urgent (aplikasi)"),
     ("Prioritas", "urgent.email_notify", "Terima email pengajuan Urgent (Phase B)"),
     ("PO", "buffer_stock.manage", "Set/hapus Buffer Stock"),
@@ -233,6 +233,11 @@ PERMISSION_CATALOG = [
     ("Dashboard Produksi", "dashboard.production.view", "Lihat Dashboard Produksi"),
     ("Dashboard Produksi", "dashboard.production.operator_analytics", "Lihat analitik operator Dashboard Produksi"),
     ("Dashboard Produksi", "dashboard.production.branch_output", "Lihat output produksi per cabang"),
+    (
+        "Dashboard Produksi",
+        "dashboard.production.urgent_requests.view",
+        "Lihat Pengajuan Urgent Dashboard",
+    ),
     ("Dashboard Keuangan", "dashboard.finance.view", "Lihat Dashboard Keuangan"),
     ("Dashboard Penjualan", "dashboard.sales.view", "Lihat Dashboard Penjualan"),
     ("Dashboard Owner", "dashboard.owner.view", "Lihat Dashboard Owner (read-only)"),
@@ -479,9 +484,12 @@ OPT_IN_ONLY_PERMISSIONS = frozenset({
 })
 
 # Opt-in even for Direktur full-access /auth/me — must be explicit override or
-# role_permissions entry. API already uses _require_opt_in_perm for these.
+# role_permissions / builtin ROLE_DEFAULT re-add (see merge_director_must_opt_in).
+# API already uses _require_opt_in_perm for these.
 # Sales cancel/edit must match write-path / lifecycle capability: never implied by
-# Direktur full-access alone. Phase A urgent.* keys stay OFF until granted.
+# Direktur full-access alone. urgent.request/notify/email stay OFF until granted.
+# urgent.review/approve stay in this set so per-user False overrides still work,
+# while Direktur/Holding builtin ROLE_DEFAULT re-add supplies Owner initial grants.
 DIRECTOR_MUST_OPT_IN_PERMISSIONS = frozenset({
     "sales.invoice.cancel",
     "sales.receipt.cancel",
@@ -933,6 +941,7 @@ ROLE_DEFAULT_PERMISSIONS = {
         "users.view", "audit.view",
         "dashboard.production.view", "dashboard.production.input", "dashboard.production.edit",
         "dashboard.production.export",
+        "dashboard.production.urgent_requests.view",
         "work_panel.view", "settings.work_panel.view", "settings.work_panel.manage",
         "customer_approval.view", "customer_approval.manage", "customer_approval.settings",
         "delivery.deadline.edit", "delivery.deadline.settings",
@@ -1121,10 +1130,28 @@ for _role, _keys in list(ROLE_DEFAULT_PERMISSIONS.items()):
 
 # Holding team is an explicit Owner-approved grantee for unmatched purge.
 # Re-added after the OPT_IN strip so admin/operator defaults stay clean.
-# Direktur receives it via director_full_permission_set() (ALL_PERMISSIONS).
+# Direktur receives purge via director_full_permission_set() (ALL_PERMISSIONS).
 ROLE_DEFAULT_PERMISSIONS["holding_team"] = sorted(
     set(ROLE_DEFAULT_PERMISSIONS.get("holding_team", []))
     | {"cash_bank.reconcile.purge_unmatched"}
+)
+
+# Owner policy: Direktur + Holding start with Urgent dashboard monitor + review/approve.
+# Re-added after OPT_IN strip. Does not rewrite stored role_permissions documents;
+# customized roles keep their saved lists until an admin toggles Hak Akses.
+# Kepala Produksi keeps monitor only (no review/approve) — never re-added here.
+# Note: urgent.review unlocks legacy GET /urgent-requests (unscoped list) — intentional
+# for org-wide leadership, not for production branch operators.
+_URGENT_LEADERSHIP_DEFAULTS = frozenset({
+    "dashboard.production.urgent_requests.view",
+    "urgent.review",
+    "urgent.approve",
+})
+ROLE_DEFAULT_PERMISSIONS["holding_team"] = sorted(
+    set(ROLE_DEFAULT_PERMISSIONS.get("holding_team", [])) | _URGENT_LEADERSHIP_DEFAULTS
+)
+ROLE_DEFAULT_PERMISSIONS["direktur_utama"] = sorted(
+    set(ROLE_DEFAULT_PERMISSIONS.get("direktur_utama", [])) | _URGENT_LEADERSHIP_DEFAULTS
 )
 
 ROLE_LABELS = {
@@ -1150,8 +1177,9 @@ DIRECTOR_FULL_ACCESS_ROLE = "direktur_utama"
 def director_full_permission_set() -> set:
     """Every registered permission except keys that remain true opt-in for Direktur.
 
-    All Phase A ``urgent.*`` keys stay out until explicitly granted via
-    permissions_override or an audited role_permissions document.
+    Phase A ``urgent.*`` keys stay out of the raw full set. ``urgent.review`` /
+    ``urgent.approve`` can still land via ``merge_director_must_opt_in`` when the
+    builtin ROLE_DEFAULT (or stored role_permissions) lists them.
     """
     return set(ALL_PERMISSIONS) - DIRECTOR_MUST_OPT_IN_PERMISSIONS
 
@@ -1162,9 +1190,16 @@ def merge_director_must_opt_in(
     override: dict | None,
     role_defaults_override: dict | None = None,
 ) -> set:
-    """Add DIRECTOR_MUST_OPT_IN keys only when explicitly granted."""
+    """Add DIRECTOR_MUST_OPT_IN keys when explicitly granted or builtin-defaulted.
+
+    Priority: per-user False deny → per-user True → stored role_permissions →
+    builtin ROLE_DEFAULT_PERMISSIONS (post OPT_IN re-add). Does not invent grants
+    for roles whose builtin list omits the key.
+    """
     out = set(base or [])
     override = override or {}
+    builtin = set(ROLE_DEFAULT_PERMISSIONS.get(role) or [])
+    stored = set((role_defaults_override or {}).get(role) or []) if role_defaults_override else set()
     for perm in DIRECTOR_MUST_OPT_IN_PERMISSIONS:
         if override.get(perm) is False:
             out.discard(perm)
@@ -1172,7 +1207,14 @@ def merge_director_must_opt_in(
         if override.get(perm) is True:
             out.add(perm)
             continue
-        if role_defaults_override and perm in set(role_defaults_override.get(role) or []):
+        if role_defaults_override is not None and role in role_defaults_override:
+            # Customized role doc replaces builtins entirely for that role.
+            if perm in stored:
+                out.add(perm)
+            else:
+                out.discard(perm)
+            continue
+        if perm in builtin:
             out.add(perm)
     return out
 

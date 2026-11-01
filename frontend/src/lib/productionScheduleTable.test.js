@@ -70,6 +70,7 @@ describe("productionDashboardRequestParams", () => {
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
     expect(productionDashboardRequestParams({
       includeCancelled: true,
@@ -78,6 +79,7 @@ describe("productionDashboardRequestParams", () => {
       include_cancelled: true,
       include_completed: false,
       view: "summary",
+      schedule_scope: "default",
     });
     expect(productionDashboardRequestParams({
       includeCompleted: false,
@@ -86,6 +88,25 @@ describe("productionDashboardRequestParams", () => {
       include_cancelled: false,
       include_completed: true,
       view: "summary",
+      schedule_scope: "all",
+    });
+    expect(productionDashboardRequestParams({
+      scheduleScope: "all",
+    })).toEqual({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+      schedule_scope: "all",
+    });
+    expect(productionDashboardRequestParams({
+      ...FILTER_DEFAULTS,
+      q: "Outlet A",
+    })).toEqual({
+      include_cancelled: false,
+      include_completed: true,
+      view: "summary",
+      schedule_scope: "default",
+      q: "Outlet A",
     });
   });
 });
