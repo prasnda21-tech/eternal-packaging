@@ -13,6 +13,11 @@ DELIVERY_QTY_PERM = (
     "schedule.view",
     "nav.delivery_schedule",
 )
+URGENT_REQUESTS_PERM = (
+    "dashboard.production.urgent_requests.view",
+    "urgent.review",
+    "urgent.approve",
+)
 
 READY_IDS = (
     "perlu_produksi",
@@ -49,6 +54,7 @@ READY.update({
     "komposisi": PERM,
     "output_cabang": BRANCH_PERM,
     "delivery_qty": DELIVERY_QTY_PERM,
+    "urgent_requests": URGENT_REQUESTS_PERM,
 })
 
 # min_w, max_w, min_h, max_h, default_w, default_h
@@ -76,6 +82,7 @@ SIZES = {
     "komposisi": (6, 12, 4, 8, 6, 5),
     "output_cabang": (6, 12, 4, 8, 6, 5),
     "delivery_qty": (6, 12, 5, 9, 7, 7),
+    "urgent_requests": (6, 12, 4, 10, 12, 6),
 }
 
 PRODUCTION_SPEC = {

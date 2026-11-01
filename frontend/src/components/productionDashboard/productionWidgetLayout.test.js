@@ -50,15 +50,24 @@ test("missing production permission leaves the board empty", () => {
   expect(defaultLayout(allow("dashboard.finance.view"))).toEqual([]);
 });
 
-test("catalog keeps twenty-five widgets and leaves qc and machines pending", () => {
-  expect(PRODUCTION_WIDGETS).toHaveLength(23);
+test("catalog keeps twenty-six widgets and leaves qc and machines pending", () => {
+  expect(PRODUCTION_WIDGETS).toHaveLength(24);
   expect(PENDING_WIDGETS).toHaveLength(2);
-  expect(PRODUCTION_WIDGETS.length + PENDING_WIDGETS.length).toBe(25);
+  expect(PRODUCTION_WIDGETS.length + PENDING_WIDGETS.length).toBe(26);
   expect(PRODUCTION_WIDGETS.map((item) => item.id)).toEqual(expect.arrayContaining([
-    "kesiapan", "target_produksi", "po_terlambat", "target_realisasi", "aging", "ketepatan", "bottleneck", "delivery_qty",
+    "kesiapan", "target_produksi", "po_terlambat", "target_realisasi", "aging", "ketepatan", "bottleneck", "delivery_qty", "urgent_requests",
   ]));
   const defaults = defaultLayout(allow("dashboard.production.view", "delivery.schedule.view")).map((item) => item.widget_id);
   expect(defaults).toEqual(expect.arrayContaining(["po_terlambat"]));
-  expect(defaults).not.toEqual(expect.arrayContaining(["kesiapan", "target_produksi", "bottleneck", "komposisi", "output_cabang", "delivery_qty"]));
+  expect(defaults).not.toEqual(expect.arrayContaining(["kesiapan", "target_produksi", "bottleneck", "komposisi", "output_cabang", "delivery_qty", "urgent_requests"]));
   expect(PENDING_WIDGETS.map((item) => item.id)).toEqual(["qc_reject", "utilisasi_mesin"]);
+});
+
+test("urgent requests widget accepts monitor perm or review/approve, not production view alone", () => {
+  const { productionWidgetAllowed } = require("./productionWidgetCatalog");
+  expect(productionWidgetAllowed("urgent_requests", allow("dashboard.production.view"))).toBe(false);
+  expect(productionWidgetAllowed("urgent_requests", allow("dashboard.production.urgent_requests.view"))).toBe(true);
+  expect(productionWidgetAllowed("urgent_requests", allow("urgent.review"))).toBe(true);
+  expect(productionWidgetAllowed("urgent_requests", allow("urgent.approve"))).toBe(true);
+  expect(productionWidgetAllowed("po_urgent", allow("dashboard.production.view"))).toBe(true);
 });

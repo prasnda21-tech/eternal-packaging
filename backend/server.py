@@ -17648,6 +17648,7 @@ register_production_dashboard_routes(
     attach_deadline=_attach_deadline_snapshot,
     get_deadline_settings=_get_delivery_deadline_settings,
     now_iso=now_iso,
+    require_opt_in_perm=_require_opt_in_perm,
     Depends=Depends,
 )
 from services.dashboard_rincian_http import register_dashboard_rincian_routes
@@ -19665,6 +19666,7 @@ async def seed():
     PHASE_B_ROLE_TOP_UPS = {
         "head_production": [
             "dashboard.production.view", "dashboard.production.export",
+            "dashboard.production.urgent_requests.view",
             # Req 13 + Req 16 top-ups (idempotent)
             "schedule.work_date.view", "schedule.work_date.edit",
             "dashboard.production.input", "dashboard.production.edit",
