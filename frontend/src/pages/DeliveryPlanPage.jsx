@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { RefreshCw, RotateCcw, Search, X } from "lucide-react";
@@ -438,7 +439,7 @@ export default function DeliveryPlanPage() {
   ], []);
 
   return (
-    <div className="dp-page" data-testid="delivery-plan-page">
+    <div className="dp-page delivery-compact" data-testid="delivery-plan-page">
       <header className="dp-header">
         <div>
           <p className="eyebrow">Produksi · Pengiriman</p>

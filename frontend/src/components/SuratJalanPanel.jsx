@@ -170,42 +170,44 @@ export default function SuratJalanPanel({
         ) : (
           <>
             {allowUpload && <p className="muted small" data-testid="sj-file-only-note">File Surat Jalan</p>}
-            <label className="ship-filter-field" data-testid="surat-jalan-date-field">
-              <span>Tanggal pengiriman</span>
-              <input
-                type="date"
-                value={deliveryDate}
-                onChange={(e) => { setDeliveryDate(e.target.value); setErr(""); }}
-                disabled={uploading}
-                data-testid="surat-jalan-delivery-date"
-              />
-              <span className="muted small">Kosong = pengiriman hari ini.</span>
-            </label>
-            {allowUpload && (
-              <>
-                <div className="sj-upload-file-row">
+            <div className="sj-compact-upload" data-testid="surat-jalan-compact-upload">
+              <label className="ship-filter-field" data-testid="surat-jalan-date-field">
+                <span>Tanggal pengiriman</span>
+                <input
+                  type="date"
+                  value={deliveryDate}
+                  onChange={(e) => { setDeliveryDate(e.target.value); setErr(""); }}
+                  disabled={uploading}
+                  data-testid="surat-jalan-delivery-date"
+                />
+                <span className="muted small">Kosong = pengiriman hari ini.</span>
+              </label>
+              {allowUpload && (
+                <>
+                  <div className="sj-upload-file-row">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={pickFile}
+                      disabled={uploading}
+                      data-testid="surat-jalan-upload-button"
+                    >
+                      <Upload size={16} /> {file ? "Ganti File" : "Pilih File"}
+                    </button>
+                    {file && <span className="muted small" data-testid="surat-jalan-chosen-name">{file.name}</span>}
+                  </div>
                   <button
                     type="button"
                     className="primary"
-                    onClick={pickFile}
-                    disabled={uploading}
-                    data-testid="surat-jalan-upload-button"
+                    onClick={openConfirm}
+                    disabled={uploading || !file}
+                    data-testid="surat-jalan-submit-button"
                   >
-                    <Upload size={16} /> {file ? "Ganti File" : "Pilih File"}
+                    Upload Surat Jalan
                   </button>
-                  {file && <span className="muted small" data-testid="surat-jalan-chosen-name">{file.name}</span>}
-                </div>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={openConfirm}
-                  disabled={uploading || !file}
-                  data-testid="surat-jalan-submit-button"
-                >
-                  Upload Surat Jalan
-                </button>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </>
         )}
 

@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Filter, RefreshCw, RotateCcw, Search, X } from "lucide-react";
@@ -632,7 +633,7 @@ export default function DeliverySchedulePage() {
   }, [canOptimize, canSetLocation, listNavState]);
 
   return (
-    <div className="ship-status-page dp-page" data-testid="delivery-schedule-page">
+    <div className="ship-status-page dp-page delivery-compact" data-testid="delivery-schedule-page">
       <div className="ship-status-chrome">
         <header className="dp-header">
           <div>

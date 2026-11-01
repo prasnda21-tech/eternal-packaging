@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
@@ -339,7 +340,7 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
 
   if (!allowed) {
     return (
-      <div className={isMobile ? "mapp-page" : "page"} data-testid={rootTestId}>
+      <div className={isMobile ? "mapp-page" : "page delivery-compact"} data-testid={rootTestId}>
         {isMobile ? <MobileTopBar title="Optimasi Rute" onBack={() => window.history.back()} /> : null}
         <div className="mds-card" style={{ margin: isMobile ? 12 : 0 }}>
           <div className="mds-card-bd">
@@ -355,7 +356,7 @@ export default function DeliveryRouteReviewContent({ backPath, shell = "desktop"
   }
 
   return (
-    <div className={isMobile ? "mapp-page" : "page"} data-testid={rootTestId}>
+    <div className={isMobile ? "mapp-page" : "page delivery-compact"} data-testid={rootTestId}>
       {isMobile ? (
         <MobileTopBar title="Optimasi Rute" onBack={() => window.history.back()} />
       ) : (

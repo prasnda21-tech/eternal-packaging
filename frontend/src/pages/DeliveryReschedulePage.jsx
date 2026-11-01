@@ -1,3 +1,4 @@
+import "../deliveryCompact.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
@@ -57,7 +58,7 @@ export default function DeliveryReschedulePage() {
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
 
   return (
-    <div className="ship-status-page" data-testid="delivery-reschedule-page">
+    <div className="ship-status-page delivery-compact" data-testid="delivery-reschedule-page">
       <div className="ship-status-chrome">
         <header className="ship-status-heading">
           <p className="eyebrow">Produksi</p>

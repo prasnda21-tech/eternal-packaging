@@ -5171,8 +5171,23 @@ html:has(.ship-status-page) #root{
 .form-access-table th,.form-access-table td{text-align:center;vertical-align:middle}
 .form-access-table th:first-child,.form-access-table td:first-child{text-align:left}
 .division-task-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px}
-.division-task-search{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--surface);min-width:min(100%,280px)}
-.division-task-search input{border:0;outline:0;font:13px inherit;width:100%;background:transparent}
+.division-task-search{display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:6px;padding:0 10px 0 8px;background:var(--surface);min-width:min(100%,240px);max-width:280px;width:min(100%,260px);height:32px;min-height:32px;box-sizing:border-box}
+.division-task-search svg{flex:0 0 auto;color:var(--soft,#647782);pointer-events:none}
+.division-task-search input{border:0!important;outline:0!important;box-shadow:none!important;font:13px Arial,Helvetica,sans-serif;width:100%;min-width:0;min-height:0!important;height:100%;padding:0 0 0 8px!important;background:transparent!important;color:inherit;box-sizing:border-box}
+.division-task-search input:focus,
+.division-task-search input:focus-visible{
+  outline:none!important;
+  outline-width:0!important;
+  box-shadow:none!important;
+  border:0!important;
+}
+/* Single focus indicator on the whole search control (icon + input). */
+.division-task-search:focus-within{border-color:#075e50;outline:2px solid rgba(7,94,80,.28);outline-offset:1px}
+.division-task-po-cell{vertical-align:middle}
+.division-task-po-stack{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;min-width:0;max-width:100%}
+.division-task-po-number{white-space:nowrap}
+.division-task-po-badges{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0;max-width:100%}
+.division-task-po-badges .po-identity-badges,.division-task-po-badges .prod-priority-badges{display:inline-flex;flex-wrap:wrap;gap:4px;max-width:100%}
 .division-task-filters,.division-task-scope{display:flex;flex-wrap:wrap;gap:6px}
 .division-task-actions{display:flex;flex-wrap:wrap;gap:6px}
 .division-task-page .prod-priority-badges{margin-left:4px}

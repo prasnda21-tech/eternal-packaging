@@ -145,11 +145,12 @@ export default function KepalaProduksiKpiDetailPage() {
 
       <div className="division-task-toolbar kp-detail-toolbar">
         <label className="division-task-search">
-          <Search size={14} />
+          <Search size={14} aria-hidden="true" />
           <input
             value={q}
             onChange={(e) => { setQ(e.target.value); setPage(1); }}
-            placeholder="Cari No PO / Customer / Item"
+            placeholder="Cari PO, customer, item"
+            aria-label="Cari PO, customer, item"
             data-testid="kp-kpi-detail-search"
           />
         </label>

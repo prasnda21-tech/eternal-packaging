@@ -1,4 +1,5 @@
 import "../productionCompact.css";
+import "../deliveryCompact.css";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { RefreshCw, Search } from "lucide-react";
@@ -126,7 +127,7 @@ export default function DivisionTaskPage() {
 
   return (
     <div
-      className={"prod-page division-task-page" + (["designer", "kepala-produksi", "screener", "helper", "operator", "packing"].includes(slug) ? " production-compact" : "") + (isKepala ? " kp-board-page" : "")}
+      className={"prod-page division-task-page" + (["designer", "kepala-produksi", "screener", "helper", "operator", "packing"].includes(slug) ? " production-compact" : "") + (["surat-jalan", "loading", "delivery"].includes(slug) ? " delivery-compact" : "") + (isKepala ? " kp-board-page" : "")}
       data-testid="division-task-page"
     >
       <div className="page-heading">
@@ -170,11 +171,12 @@ export default function DivisionTaskPage() {
 
       <div className="division-task-toolbar">
         <label className="division-task-search">
-          <Search size={14} />
+          <Search size={14} aria-hidden="true" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Cari No PO / Customer / Item"
+            placeholder="Cari PO, customer, item"
+            aria-label="Cari PO, customer, item"
             data-testid="division-task-search"
           />
         </label>
@@ -389,12 +391,14 @@ export default function DivisionTaskPage() {
                 </tr>
               ) : (
                 <tr key={t.task_id} data-testid={`division-task-row-${t.order_number}`}>
-                  <td className="mono">
-                    <span>{t.order_number}</span>
-                    {" "}
-                    <ProductionSchedulePriorityBadges row={t} testIdPrefix={`division-task-priority-${t.task_id || t.order_number}`} />
-                    {" "}
-                    <PoIdentityBadges order={t} testIdPrefix={`division-task-po-${t.order_number || t.task_id}`} omitUrgent />
+                  <td className="mono division-task-po-cell">
+                    <div className="division-task-po-stack">
+                      <span className="division-task-po-number">{t.order_number}</span>
+                      <span className="division-task-po-badges">
+                        <ProductionSchedulePriorityBadges row={t} testIdPrefix={`division-task-priority-${t.task_id || t.order_number}`} />
+                        <PoIdentityBadges order={t} testIdPrefix={`division-task-po-${t.order_number || t.task_id}`} omitUrgent />
+                      </span>
+                    </div>
                   </td>
                   <td>{t.customer_name || "—"}</td>
                   <td>{t.item || "—"}</td>
