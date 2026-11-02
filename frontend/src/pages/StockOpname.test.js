@@ -41,7 +41,7 @@ describe("Stock Opname operational workflow", () => {
       "Satuan Dasar",
       "Stock Buku",
       "Qty Pesanan",
-      "Stock Fisik",
+      "Hasil Hitung Fisik",
       "Qty Tersedia Setelah Opname",
       "Status Hitung",
     ]) {
@@ -52,15 +52,29 @@ describe("Stock Opname operational workflow", () => {
     expect(src).toMatch(/bukan hitungan fisik gudang/);
     expect(src).toMatch(/Stock Fisik − Stock Buku/);
     expect(src).toMatch(/Selisih/);
-    expect(src).toMatch(/Adjustment \(perkiraan\)/);
+    expect(src).toMatch(/Adjustment \(target − buku\)/);
+    expect(src).toMatch(/Saldo Buku Sekarang/);
+    expect(src).toMatch(/Net Mutasi Setelah Hitung/);
+    expect(src).toMatch(/Target Saldo Sekarang/);
   });
 
   test("create payload carries explicit mode freeze|operational and defaults freeze", () => {
     expect(src).toMatch(/data-testid="opname-create-mode"/);
-    expect(src).toMatch(/createMode === "operational" \? "operational" : "freeze"/);
     expect(src).toMatch(/useState\("freeze"\)/);
-    expect(src).toMatch(/mode: createMode === "operational" \? "operational" : "freeze"/);
+    expect(src).toMatch(/physical_count_period_start_at/);
+    expect(src).toMatch(/physical_count_period_end_at/);
+    expect(src).toMatch(/default_physical_count_at/);
+    expect(src).toMatch(/opname-create-start-date/);
+    expect(src).toMatch(/opname-create-end-time/);
+    expect(src).toMatch(/Tanggal Mulai/);
+    expect(src).toMatch(/Jam Akhir/);
+    expect(src).toMatch(/Hasil fisik dianggap posisi pada waktu akhir/);
+    expect(src).toMatch(/Date\.now\(\) \+ 60_000/);
+    expect(src).toMatch(/toleransi jam/);
     expect(src).toMatch(/Never silently change mode/);
+    expect(src).toMatch(/operationalCreate \? "operational" : "freeze"/);
+    expect(src).toMatch(/formatWibPeriod/);
+    expect(src).toMatch(/opname-history-period/);
   });
 
   test("count payload separates physical_count_qty, physical_count_at, and imported_at", () => {

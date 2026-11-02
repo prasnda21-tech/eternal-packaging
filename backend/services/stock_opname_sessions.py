@@ -108,8 +108,12 @@ def session_mode(doc: Optional[dict]) -> str:
     return MODE_FREEZE
 
 
-def parse_physical_count_at(value: Any) -> Optional[str]:
-    """Parse explicit physical count time. Blank → None. Invalid → HTTP 400."""
+def parse_physical_count_at(value: Any, *, reject_future: bool = True) -> Optional[str]:
+    """Parse explicit physical count time. Blank → None. Invalid → HTTP 400.
+
+    Stores UTC ISO. Blank is not now and not import time. Future wall-clock is rejected
+    (small clock skew tolerance) so Owner cannot post a count "in the future".
+    """
     if value is None or value == "":
         return None
     text = str(value).strip()
@@ -122,7 +126,94 @@ def parse_physical_count_at(value: Any) -> Optional[str]:
         raise HTTPException(400, "Waktu hitung fisik tidak valid. Gunakan ISO-8601.") from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat()
+    utc = parsed.astimezone(timezone.utc)
+    if reject_future:
+        # 60s skew: laptop/server clock drift must not block an otherwise-valid count.
+        # Accept up to now+60s (inclusive of the boundary). Reject only beyond that.
+        if utc > datetime.now(timezone.utc) + timedelta(seconds=60):
+            raise HTTPException(
+                400,
+                "Waktu hitung fisik terlalu jauh di masa depan (toleransi jam ±60 detik). "
+                "Isi tanggal/jam hitung aktual (WIB), disimpan sebagai UTC.",
+            )
+    return utc.isoformat()
+
+
+def resolve_count_period(payload: Optional[dict], *, mode: str) -> tuple[Optional[str], Optional[str]]:
+    """Owner physical-count period (UTC ISO start/end).
+
+    Operational create: both mulai and akhir required; akhir seeds line default
+    physical_count_at. Start is execution-window metadata only — never used to
+    drop ledger history from net-after-count (net still uses line count time).
+
+    Freeze: optional; ignored for freeze adjustment formula.
+    Legacy docs may lack start — callers must not invent one when reading.
+    """
+    payload = payload or {}
+    start_raw = (
+        payload.get("physical_count_period_start_at")
+        if payload.get("physical_count_period_start_at") not in (None, "")
+        else payload.get("count_period_start_at")
+    )
+    end_raw = (
+        payload.get("physical_count_period_end_at")
+        if payload.get("physical_count_period_end_at") not in (None, "")
+        else payload.get("count_period_end_at")
+    )
+    if end_raw in (None, ""):
+        end_raw = payload.get("default_physical_count_at")
+    if end_raw in (None, ""):
+        end_raw = payload.get("physical_count_at")
+    start = parse_physical_count_at(start_raw)
+    end = parse_physical_count_at(end_raw)
+    if mode == MODE_OPERATIONAL:
+        if not start or not end:
+            raise HTTPException(
+                400,
+                "Mode Operational wajib mengisi Tanggal/Jam Mulai dan Tanggal/Jam Akhir "
+                "pelaksanaan hitung fisik (WIB) secara eksplisit. Waktu impor/sistem bukan pengganti.",
+            )
+        if start > end:
+            raise HTTPException(
+                400,
+                "Tanggal/Jam Mulai tidak boleh setelah Tanggal/Jam Akhir.",
+            )
+    elif start and end and start > end:
+        raise HTTPException(
+            400,
+            "Tanggal/Jam Mulai tidak boleh setelah Tanggal/Jam Akhir.",
+        )
+    return start, end
+
+
+def resolve_session_default_count_at(payload: Optional[dict], *, mode: str) -> Optional[str]:
+    """Backward-compatible: default line count time = period end (akhir)."""
+    _start, end = resolve_count_period(payload, mode=mode)
+    return end
+
+
+def assert_count_at_within_period(
+    count_at: Optional[str],
+    *,
+    period_start: Optional[str],
+    period_end: Optional[str],
+) -> None:
+    """Line physical_count_at must sit inside Owner period when period bounds exist.
+
+    Missing start on legacy sessions: only enforce upper bound if end is known.
+    """
+    if not count_at:
+        return
+    if period_start and count_at < period_start:
+        raise HTTPException(
+            400,
+            "Waktu hitung barang di luar periode pelaksanaan (sebelum Tanggal/Jam Mulai).",
+        )
+    if period_end and count_at > period_end:
+        raise HTTPException(
+            400,
+            "Waktu hitung barang di luar periode pelaksanaan (setelah Tanggal/Jam Akhir).",
+        )
 
 
 def present_opname_line(line: dict, *, mode: str = MODE_FREEZE) -> dict:
@@ -167,7 +258,14 @@ def present_opname_line(line: dict, *, mode: str = MODE_FREEZE) -> dict:
     counted = int(count)
     row["physical_count_qty"] = counted
     if mode == MODE_OPERATIONAL and row.get("target_qty") is not None:
-        book = int(row.get("book_qty_at_posting") if row.get("book_qty_at_posting") is not None else row.get("book_qty") or 0)
+        # Preview/confirm: adjustment = target − saldo buku sekarang (live or posting).
+        # Never use cutoff book_qty alone when live/posting book is available.
+        if row.get("book_qty_at_posting") is not None:
+            book = int(row["book_qty_at_posting"])
+        elif row.get("book_qty_live") is not None:
+            book = int(row["book_qty_live"])
+        else:
+            book = int(row.get("book_qty") or 0)
         target = int(row.get("target_qty") or 0)
         row["difference_qty"] = target - book if row.get("difference_qty") is None else int(row.get("difference_qty"))
         row["qty_tersedia_setelah"] = _tersedia_after(target)
@@ -430,7 +528,13 @@ async def _warehouse_branch(db, *, branch_id: str, warehouse_id: str) -> tuple:
     return branch, warehouse
 
 
-def _line_snapshot(master: dict, book_qty: int, base_uom: str) -> dict:
+def _line_snapshot(
+    master: dict,
+    book_qty: int,
+    base_uom: str,
+    *,
+    default_physical_count_at: Optional[str] = None,
+) -> dict:
     return {
         "line_id": str(uuid.uuid4()),
         "master_item_id": master.get("id"),
@@ -440,7 +544,8 @@ def _line_snapshot(master: dict, book_qty: int, base_uom: str) -> dict:
         "book_qty": int(book_qty),
         "physical_count_qty": None,
         "difference_qty": None,
-        "physical_count_at": None,
+        # Seed session default; per-line override still allowed. Never use import stamp.
+        "physical_count_at": default_physical_count_at,
         "imported_at": None,
         "counted_at": None,
         "counted_by": None,
@@ -449,7 +554,14 @@ def _line_snapshot(master: dict, book_qty: int, base_uom: str) -> dict:
     }
 
 
-async def _book_lines(db, session, *, branch_id: str, warehouse_id: str) -> List[dict]:
+async def _book_lines(
+    db,
+    session,
+    *,
+    branch_id: str,
+    warehouse_id: str,
+    default_physical_count_at: Optional[str] = None,
+) -> List[dict]:
     from services.physical_stock import (
         BALANCE_COLLECTION,
         MASTER_ITEMS_COLLECTION,
@@ -495,7 +607,14 @@ async def _book_lines(db, session, *, branch_id: str, warehouse_id: str) -> List
     for mid in selected:
         master = by_id.get(mid) or {"id": mid}
         base = units.get(mid) or str(master.get("unit") or "PCS").strip().upper() or "PCS"
-        lines.append(_line_snapshot(master, book.get(mid, 0), base))
+        lines.append(
+            _line_snapshot(
+                master,
+                book.get(mid, 0),
+                base,
+                default_physical_count_at=default_physical_count_at,
+            )
+        )
     lines.sort(key=lambda row: (
         str(row.get("item_code") or ""),
         str(row.get("item_name") or ""),
@@ -532,6 +651,9 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
         warehouse_id=payload.get("warehouse_id"),
     )
     mode = _normalize_mode(payload.get("mode"))
+    period_start, period_end = resolve_count_period(payload, mode=mode)
+    # Default line seed = akhir periode (not mulai). Mulai never drives net-after-count.
+    default_count_at = period_end
     key = str(payload.get("idempotency_key") or "").strip()
     if key:
         existing = await db[COLLECTION].find_one({"idempotency_key": key}, {"_id": 0})
@@ -539,6 +661,12 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
             if existing.get("warehouse_id") != warehouse["id"] or existing.get("branch_id") != branch["id"]:
                 raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
             if session_mode(existing) != mode:
+                raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+            if str(existing.get("default_physical_count_at") or "") != str(default_count_at or ""):
+                raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+            if str(existing.get("physical_count_period_start_at") or "") != str(period_start or ""):
+                raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
+            if str(existing.get("physical_count_period_end_at") or "") != str(period_end or ""):
                 raise HTTPException(409, "Idempotency key sudah digunakan dengan payload yang berbeda")
             return _public(existing)
     active = await db[COLLECTION].find_one(
@@ -558,6 +686,12 @@ async def create_stock_opname_session(db, payload: Optional[dict], user: dict) -
         "warehouse_name": warehouse.get("name") or "",
         "mode": mode,
         "status": STATUS_DRAFT,
+        # Owner count execution window (UTC). Distinct from created_at and
+        # freeze cutoff_at / freeze block start. Not used as freeze formula input.
+        # default_physical_count_at mirrors akhir (line seed); mulai is metadata only.
+        "physical_count_period_start_at": period_start,
+        "physical_count_period_end_at": period_end,
+        "default_physical_count_at": default_count_at,
         "cutoff_at": None,
         "created_at": stamp,
         "created_by": _actor(user),
@@ -794,17 +928,30 @@ async def start_stock_opname_cutoff(db, session_id: str, user: dict) -> dict:
             return _public(current)
         if current.get("status") != STATUS_DRAFT:
             raise HTTPException(400, "Cutoff hanya dapat dimulai dari draf.")
+        # Operational: seed line.physical_count_at from session default (Owner WIB→UTC).
+        # Freeze: leave None — freeze uses cutoff book − count, not net-after-count.
+        default_count_at = (
+            parse_physical_count_at(
+                current.get("default_physical_count_at")
+                or current.get("physical_count_period_end_at"),
+                reject_future=True,
+            )
+            if session_mode(current) == MODE_OPERATIONAL
+            else None
+        )
         lines = await _book_lines(
             db,
             mongo_session,
             branch_id=str(current.get("branch_id") or ""),
             warehouse_id=current["warehouse_id"],
+            default_physical_count_at=default_count_at,
         )
         cutoff_at = _now()
         result = await db[COLLECTION].update_one(
             {"id": current["id"], "status": STATUS_DRAFT},
             {"$set": {
                 "status": STATUS_COUNTING,
+                # cutoff_at = session book snapshot / freeze-block start — NOT physical count time.
                 "cutoff_at": cutoff_at,
                 "lines": lines,
                 "updated_at": cutoff_at,
@@ -855,6 +1002,23 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
     actor = _actor(user)
     stamp = _now()
     session_count_at = parse_physical_count_at(payload.get("physical_count_at"))
+    if session_count_at is None and mode == MODE_OPERATIONAL:
+        session_count_at = parse_physical_count_at(
+            raw_doc.get("default_physical_count_at")
+            or raw_doc.get("physical_count_period_end_at"),
+            reject_future=True,
+        )
+    period_start = parse_physical_count_at(
+        raw_doc.get("physical_count_period_start_at"), reject_future=False,
+    ) if raw_doc.get("physical_count_period_start_at") else None
+    period_end = parse_physical_count_at(
+        raw_doc.get("physical_count_period_end_at") or raw_doc.get("default_physical_count_at"),
+        reject_future=False,
+    ) if (raw_doc.get("physical_count_period_end_at") or raw_doc.get("default_physical_count_at")) else None
+    if session_count_at and mode == MODE_OPERATIONAL:
+        assert_count_at_within_period(
+            session_count_at, period_start=period_start, period_end=period_end,
+        )
     source = str(payload.get("source") or "").strip().lower()
     is_import = source == "import"
     for raw in incoming:
@@ -882,10 +1046,22 @@ async def record_stock_opname_counts(db, session_id: str, payload: Optional[dict
             if is_import:
                 line["imported_at"] = stamp
         # Explicit count time only — never copy import/system stamp into physical_count_at.
+        # Import qty-only must not clear an already-valid line or session default time.
         if "physical_count_at" in raw:
-            line["physical_count_at"] = parse_physical_count_at(raw.get("physical_count_at"))
-        elif session_count_at is not None:
+            line_time = parse_physical_count_at(raw.get("physical_count_at"))
+            if mode == MODE_OPERATIONAL and line_time:
+                assert_count_at_within_period(
+                    line_time, period_start=period_start, period_end=period_end,
+                )
+            line["physical_count_at"] = line_time
+        elif session_count_at is not None and not line.get("physical_count_at"):
             line["physical_count_at"] = session_count_at
+        if mode == MODE_OPERATIONAL and line.get("physical_count_at"):
+            assert_count_at_within_period(
+                str(line["physical_count_at"]),
+                period_start=period_start,
+                period_end=period_end,
+            )
         if "note" in raw or "reason" in raw:
             line["note"] = str(raw.get("note") if "note" in raw else raw.get("reason") or "").strip()
         line["book_qty"] = book
@@ -911,6 +1087,21 @@ async def submit_stock_opname_review(db, session_id: str, user: dict) -> dict:
     if doc["status"] != STATUS_COUNTING:
         raise HTTPException(400, "Review hanya dapat diajukan dari status COUNTING.")
     _require_complete(doc.get("lines") or [])
+    if session_mode(doc) == MODE_OPERATIONAL:
+        # Fail before REVIEW so preview always has unambiguous count times.
+        lines_for_time = [dict(line) for line in (doc.get("lines") or [])]
+        _require_operational_count_times(
+            lines_for_time,
+            period_start=doc.get("physical_count_period_start_at"),
+            period_end=doc.get("physical_count_period_end_at") or doc.get("default_physical_count_at"),
+        )
+        # Persist normalized UTC times if parser cleaned them (no invented stamps).
+        stamp_norm = _now()
+        await db[COLLECTION].update_one(
+            {"id": doc["id"], "status": STATUS_COUNTING},
+            {"$set": {"lines": lines_for_time, "updated_at": stamp_norm}},
+        )
+        doc = await get_stock_opname_session(db, session_id, user=user)
     stamp = _now()
     result = await db[COLLECTION].update_one(
         {"id": doc["id"], "status": STATUS_COUNTING},
@@ -950,12 +1141,20 @@ def _retryable(exc: BaseException) -> bool:
     return getattr(exc, "code", None) in (112, 251)
 
 
-def _require_operational_count_times(lines: List[dict]) -> None:
+def _require_operational_count_times(
+    lines: List[dict],
+    *,
+    period_start: Optional[str] = None,
+    period_end: Optional[str] = None,
+) -> None:
     """Reject confirm when any line lacks an unambiguous physical_count_at.
 
     Import/system stamps (imported_at / counted_at) are never used as fallback.
+    When Owner period exists, each line time must lie inside mulai–akhir.
     """
     ambiguous = []
+    start = parse_physical_count_at(period_start, reject_future=False) if period_start else None
+    end = parse_physical_count_at(period_end, reject_future=False) if period_end else None
     for line in lines:
         try:
             count_at = parse_physical_count_at(line.get("physical_count_at"))
@@ -965,6 +1164,7 @@ def _require_operational_count_times(lines: List[dict]) -> None:
         if not count_at:
             ambiguous.append(str(line.get("item_code") or line.get("master_item_id") or "?"))
             continue
+        assert_count_at_within_period(count_at, period_start=start, period_end=end)
         line["physical_count_at"] = count_at
     if ambiguous:
         raise HTTPException(
@@ -1060,7 +1260,12 @@ async def _confirm_once(db, doc: dict, confirmation_key: str, user: dict) -> dic
             _require_complete(lines)
             mode = session_mode(current)
             if mode == MODE_OPERATIONAL:
-                _require_operational_count_times(lines)
+                _require_operational_count_times(
+                    lines,
+                    period_start=current.get("physical_count_period_start_at"),
+                    period_end=current.get("physical_count_period_end_at")
+                    or current.get("default_physical_count_at"),
+                )
                 lines = await _prepare_operational_lines(db, mongo_session, current, lines)
             else:
                 for line in lines:
@@ -1188,7 +1393,12 @@ async def _confirm_standalone(db, doc: dict, confirmation_key: str, user: dict) 
     _require_complete(lines)
     mode = session_mode(claimed)
     if mode == MODE_OPERATIONAL:
-        _require_operational_count_times(lines)
+        _require_operational_count_times(
+            lines,
+            period_start=claimed.get("physical_count_period_start_at"),
+            period_end=claimed.get("physical_count_period_end_at")
+            or claimed.get("default_physical_count_at"),
+        )
         lines = await _prepare_operational_lines(db, None, claimed, lines)
     else:
         for line in lines:

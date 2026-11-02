@@ -1,7 +1,10 @@
 import {
   STOCK_OPNAME_TZ_LABEL,
+  combineWibDateAndTime,
   formatWibDateTime,
+  formatWibPeriod,
   isoToWibLocalInput,
+  splitWibLocalInput,
   wibLocalInputToIso,
 } from "./stockOpnameTime";
 
@@ -25,9 +28,21 @@ describe("stockOpnameTime WIB conversion", () => {
     expect(isoToWibLocalInput(wibLocalInputToIso(local))).toBe(local);
   });
 
-  test("format and timezone label are explicit", () => {
+  test("format and timezone label are explicit DD/MM/YYYY 24h", () => {
     expect(STOCK_OPNAME_TZ_LABEL).toMatch(/WIB/);
     expect(formatWibDateTime("2026-10-12T03:00:00.000Z")).toBe("12/10/2026 10:00 WIB");
     expect(formatWibDateTime("")).toBe("—");
+  });
+
+  test("combine/split date+time and period formatting", () => {
+    expect(combineWibDateAndTime("2026-10-30", "18:00")).toBe("2026-10-30T11:00:00.000Z");
+    expect(combineWibDateAndTime("2026-10-30", "")).toBeNull();
+    expect(splitWibLocalInput("2026-10-30T18:00")).toEqual({ date: "2026-10-30", time: "18:00" });
+    expect(formatWibPeriod("2026-10-30T01:00:00.000Z", "2026-10-30T11:00:00.000Z")).toBe(
+      "30/10/2026 08:00 WIB – 30/10/2026 18:00 WIB",
+    );
+    // Legacy: no invented start
+    expect(formatWibPeriod(null, "2026-10-30T11:00:00.000Z")).toBe("s/d 30/10/2026 18:00 WIB");
+    expect(formatWibPeriod(null, null)).toBe("—");
   });
 });
