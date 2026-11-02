@@ -22,9 +22,10 @@ describe("Phase 3 — capability-gated one-save UI", () => {
     expect(penerimaan).not.toMatch(/sales_receipt_edit_revision_enabled/);
   });
 
-  test("manual Finalisasi/Post/Reverse gated by capability", () => {
+  test("manual Post/Reverse gated by capability; Finalisasi removed (one-click save)", () => {
     expect(faktur).toMatch(/!hideLegacyManualAccounting/);
-    expect(faktur).toMatch(/btn-finalize-invoice/);
+    expect(faktur).not.toMatch(/btn-finalize-invoice/);
+    expect(faktur).toMatch(/Simpan & Finalisasi/);
     expect(faktur).toMatch(/btn-post-accounting/);
     expect(faktur).toMatch(/btn-reverse-accounting/);
     expect(penerimaan).toMatch(/showLegacyPostReverse/);

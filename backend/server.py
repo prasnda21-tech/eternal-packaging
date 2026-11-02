@@ -11452,6 +11452,7 @@ from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
+    create_and_finalize_sales_invoice as _create_and_finalize_sales_invoice,
     generate_sales_invoice_pdf_bytes,
     invoice_pdf_presentation,
     proforma_availability as _proforma_availability,
@@ -11461,6 +11462,7 @@ from services.sales_invoices import (
     get_sales_invoice_detail as _get_sales_invoice_detail,
     get_sales_invoice_detail_for_user as _get_sales_invoice_detail_for_user,
     update_sales_invoice as _update_sales_invoice,
+    update_draft_and_finalize_sales_invoice as _update_draft_and_finalize_sales_invoice,
     delete_sales_invoice as _delete_sales_invoice,
     bulk_delete_sales_invoices as _bulk_delete_sales_invoices,
     finalize_sales_invoice as _finalize_sales_invoice,
@@ -11657,6 +11659,7 @@ class SalesDeliveryCreatePayload(BaseModel):
 class SalesInvoiceLineItemInput(BaseModel):
     line_idx: int = 0
     line_id: Optional[str] = None
+    invoice_line_id: Optional[str] = None
     source_po_id: Optional[str] = None
     source_po_line_id: Optional[str] = None
     source_po_line_idx: Optional[int] = None
@@ -11665,6 +11668,7 @@ class SalesInvoiceLineItemInput(BaseModel):
     quantity: Optional[Union[int, float, str]] = None
     invoice_qty: Optional[Union[int, float, str]] = None
     unit_price: Optional[Union[int, float, str]] = None
+    sj_line_qty: Optional[Union[int, float, str]] = None
 
 
 class SalesInvoiceOtherChargeInput(BaseModel):
@@ -11686,6 +11690,8 @@ class SalesInvoiceCreatePayload(BaseModel):
     ppn_percent: Optional[Union[int, float, str]] = 0
     notes: Optional[str] = ""
     idempotency_key: Optional[str] = None
+    # UI one-click Simpan Faktur: create then finalize via existing lifecycle.
+    finalize_on_save: Optional[bool] = False
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
     other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
@@ -11701,6 +11707,8 @@ class SalesInvoiceUpdatePayload(BaseModel):
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
     other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
     idempotency_key: Optional[str] = None
+    # UI draft Simpan & Finalisasi: update then finalize. Omit = draft-only update.
+    finalize_on_save: Optional[bool] = False
 
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):
@@ -14232,11 +14240,16 @@ async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user
 
     When ``auto_sales_invoice_lifecycle_enabled`` is ON, eligible creates also
     finalize and first-time post. Financial success requires a posted journal.
-    Flag default OFF preserves legacy draft-only create.
+
+    When the auto flag is OFF:
+    - ``finalize_on_save=true`` (UI Simpan Faktur) → create then finalize.
+      Does not post a journal and does not set payment_status to LUNAS.
+    - otherwise → legacy draft-only create (compat for tests/integrations).
     """
     await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    data = payload.model_dump()
     if await _is_auto_sales_invoice_lifecycle_enabled(db):
-        result = await _create_sales_invoice_auto_lifecycle(db, payload.model_dump(), user)
+        result = await _create_sales_invoice_auto_lifecycle(db, data, user)
         body = {
             "invoice": result["invoice"],
             "message": result["message"],
@@ -14252,7 +14265,13 @@ async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user
             int(result.get("http_status") or 409),
             body,
         )
-    inv = await _create_sales_invoice(db, payload.model_dump(), user)
+    if bool(data.get("finalize_on_save")):
+        inv = await _create_and_finalize_sales_invoice(db, data, user)
+        return {
+            "invoice": inv,
+            "message": "Faktur Penjualan berhasil disimpan dan difinalisasi",
+        }
+    inv = await _create_sales_invoice(db, data, user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
 
 
@@ -14430,9 +14449,19 @@ async def get_sales_invoice_markup_pdf_endpoint(id: str, markup_id: str, user=De
 
 @api_router.put("/sales-invoices/{id}")
 async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
-    """Update draft qty, unit prices, or notes. Qty is rechecked against the latest PO."""
+    """Update draft (or revision). With ``finalize_on_save`` also finalizes the draft."""
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
-    inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
+    data = payload.model_dump()
+    if bool(data.get("finalize_on_save")):
+        inv = await _update_draft_and_finalize_sales_invoice(db, id, data, user)
+        status = str((inv or {}).get("financial_status") or "").lower()
+        if status == "finalized":
+            return {
+                "invoice": inv,
+                "message": "Faktur Penjualan berhasil disimpan dan difinalisasi",
+            }
+        return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
+    inv = await _update_sales_invoice(db, id, data, user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
 
 
@@ -19796,7 +19825,22 @@ async def seed():
     await db.sales_invoices.create_index("created_at")
     await db.sales_invoices.create_index("invoice_date")
     await db.sales_invoices.create_index("financial_status")
-    
+    # Durable create idempotency (partial unique + intent). Safe no-op when duplicates block.
+    try:
+        from services.sales_invoice_create_idempotency import (
+            ensure_sales_invoice_create_idempotency_indexes as _ensure_inv_create_idem,
+        )
+        _idem_report = await _ensure_inv_create_idem(db)
+        if _idem_report.get("errors"):
+            logging.getLogger(__name__).warning(
+                "sales invoice create idempotency indexes incomplete: %s",
+                _idem_report,
+            )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "sales invoice create idempotency index ensure failed"
+        )
+
     await db.sales_receipts.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
     await db.sales_receipts.create_index("invoice_id")
