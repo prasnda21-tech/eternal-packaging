@@ -1367,3 +1367,33 @@ async def test_other_charges_retry_after_financial_mismatch_keeps_proposal(index
     assert row["fingerprint"] == first_fp
     assert [c["id"] for c in row["proposed"]["other_charges"]] == first_ids
     assert await _posted_count(db, invoice_id) == 1
+
+
+@pytest.mark.anyio
+async def test_revision_applies_qty_via_identity_keys_and_legacy_line_id(indexes):
+    """Regression: posted revision must apply qty for legacy line_idx payloads.
+
+    Model C match keys prefer invoice_line_id / source_po_line_id. Legacy rows that
+    only store PO line_id must still revise via line_idx without treating line_id as
+    source identity (which would ignore the payload qty).
+    """
+    from services.sales_invoices import _invoice_line_match_key
+    from services.sales_invoice_allocations import _line_identity_key
+
+    db = server.db
+    await _enable(db)
+    invoice_id, po_id = await _seed(db, invoice_date="2026-09-09", qty=2)
+    inv = await db.sales_invoices.find_one({"id": invoice_id}, {"_id": 0})
+    line = (inv.get("lines") or [])[0]
+    assert line.get("line_id") == "l0"
+    assert not line.get("source_po_line_id")
+    assert not line.get("invoice_line_id")
+    assert _invoice_line_match_key(line, invoice=inv, fallback_idx=0) == ("idx", "0")
+    assert _line_identity_key(line, inv) == (po_id, "", "")
+
+    detail = await revise_posted_sales_invoice(
+        db, invoice_id, _payload(qty=3, invoice_date="2026-09-15", key="legacy-qty"), ADMIN,
+    )
+    assert detail["grand_total"] == 3000
+    assert detail["lines"][0]["quantity"] == 3
+    assert await _posted_count(db, invoice_id) == 1

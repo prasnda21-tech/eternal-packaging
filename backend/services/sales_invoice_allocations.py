@@ -1217,8 +1217,13 @@ async def adjust_sj_line_billing_qty(
 
 
 def _line_identity_key(line: dict, invoice: Optional[dict] = None) -> Tuple[str, str, str]:
+    """Billing identity for Model C lines only (explicit source_po_line_id).
+
+    Legacy single-PO rows may still store PO line_id without source_* fields.
+    Those must not enter counter rebalance — they never claimed billing capacity.
+    """
     po = _norm(line.get("source_po_id") or (invoice or {}).get("po_id"))
-    lid = _norm(line.get("source_po_line_id") or line.get("line_id"))
+    lid = _norm(line.get("source_po_line_id"))
     sj = _norm(line.get("source_sj_id"))
     return (po, lid, sj)
 

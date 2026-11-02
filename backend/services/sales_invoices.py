@@ -1947,14 +1947,19 @@ def _parse_draft_invoice_qty(raw: Any) -> int:
 
 
 def _invoice_line_match_key(line: dict, *, invoice: Optional[dict] = None, fallback_idx: int = 0) -> Tuple[str, ...]:
-    """Stable match key for draft edit. Prefer invoice_line_id, then source identity, else line_idx."""
+    """Stable match key for draft edit. Prefer invoice_line_id, then source identity, else line_idx.
+
+    Source identity requires explicit source_po_line_id (Model C). Do not treat legacy
+    line_id as source identity — that would break line_idx-only revision payloads on
+    single-PO invoices that still store PO line_id without source_* fields.
+    """
     if not isinstance(line, dict):
         return ("idx", str(fallback_idx))
     iid = str(line.get("invoice_line_id") or "").strip()
     if iid:
         return ("iid", iid)
     po = str(line.get("source_po_id") or (invoice or {}).get("po_id") or "").strip()
-    lid = str(line.get("source_po_line_id") or line.get("line_id") or "").strip()
+    lid = str(line.get("source_po_line_id") or "").strip()
     sj = str(line.get("source_sj_id") or "").strip()
     if po and lid:
         return ("src", po, lid, sj)
