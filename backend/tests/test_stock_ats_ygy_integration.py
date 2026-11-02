@@ -252,11 +252,32 @@ class AtsYgyIntegrationTests(unittest.TestCase):
         self.assertEqual(other["ats_cutover_status"], "SKIPPED")
         self.assertEqual(other["stock_dapat_dijual"], -50000)
 
-    def test_mode_b_branch_token_50(self):
-        self.assertTrue(order_matches_ygy_mode_b({"accurate_branch_id": "50"}))
-        self.assertTrue(order_matches_ygy_mode_b({"raw_branch_token": "50"}))
-        self.assertTrue(order_matches_ygy_mode_b({"branch_id": YGY_BRANCH_ID}))
-        self.assertFalse(order_matches_ygy_mode_b({"branch_id": "other", "accurate_branch_id": "99"}))
+    def test_mode_b_uses_official_attribution_settings(self):
+        settings = {
+            "enabled": False,
+            "org_branch_id": YGY_BRANCH_ID,
+            "accurate_live_branch_map": {
+                "enabled": True,
+                "org_branch_id": YGY_BRANCH_ID,
+                "accurate_branch_ids": ["50"],
+                "allowed_sources": ["accurate_live"],
+                "require_accurate_id": True,
+            },
+        }
+        live = {
+            "branch_id": "50",
+            "import_source": "accurate_live",
+            "accurate_id": "acc-1",
+        }
+        self.assertTrue(order_matches_ygy_mode_b(live, settings))
+        self.assertTrue(order_matches_ygy_mode_b({"branch_id": YGY_BRANCH_ID}, settings))
+        # Hardcoded token fields alone are no longer enough without Mode B config.
+        self.assertFalse(order_matches_ygy_mode_b({"accurate_branch_id": "50"}, settings))
+        self.assertFalse(order_matches_ygy_mode_b({"raw_branch_token": "50"}, settings))
+        self.assertFalse(order_matches_ygy_mode_b({"branch_id": "50"}, settings))
+        self.assertFalse(
+            order_matches_ygy_mode_b({"branch_id": "other", "accurate_branch_id": "99"}, settings)
+        )
 
     def test_explicit_event_map_and_gaps(self):
         self.assertEqual(mapped_kind("NEW_PO_LINE_RESERVE"), "RESERVE")

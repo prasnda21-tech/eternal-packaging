@@ -5,17 +5,17 @@ Baseline draft is Owner-defined free blank stock (not physical/opname).
 Overlay READY only when evidence_complete and projector succeeds.
 Otherwise fail closed with explicit coverage gaps (no invented ATS).
 
-Mode B: Accurate branch token "50" maps to YGY org for order filtering —
-do not rely on ERP branch UUID alone (RO proved UUID-only → 0 orders).
+Mode B attribution uses services.mode_b_legacy_demand (Accurate Live map
+and/or historical digit rules from active app_settings) — never hardcoded
+branch token sets in this module.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from services.stock_ats_cutover import (
     Baseline,
@@ -30,11 +30,40 @@ from services.stock_ats_cutover import (
 YGY_WAREHOUSE_ID = "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24"
 YGY_WAREHOUSE_CODE = "YGY-MAIN"
 YGY_BRANCH_ID = "5c92529c-3df8-4d9f-b290-a5c94fa51903"
-# Mode B — Accurate org/branch token observed on live orders for Jogja.
-ACCURATE_BRANCH_TOKENS_YGY = frozenset({"50", "YGY", "YOGYA", "YOGYAKARTA", "JOGJA"})
 
 CUTOFF_AT = "2026-11-02T23:22:00+07:00"
 CUTOFF_AT_UTC = "2026-11-02T16:22:00Z"
+
+LEDGER_COLLECTION = "physical_stock_ledger"
+MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
+MOVEMENT_PURCHASE_RECEIPT = "PURCHASE_RECEIPT"
+MOVEMENT_PURCHASE_RETURN = "PURCHASE_RETURN"
+MOVEMENT_SALES_DELIVERY = "SALES_DELIVERY"
+MOVEMENT_STOCK_OPNAME_ADJUSTMENT = "STOCK_OPNAME_ADJUSTMENT"
+MOVEMENT_MANUAL_ADJUSTMENT = "MANUAL_ADJUSTMENT"
+MOVEMENT_WAREHOUSE_TRANSFER_OUT = "WAREHOUSE_TRANSFER_OUT"
+MOVEMENT_WAREHOUSE_TRANSFER_IN = "WAREHOUSE_TRANSFER_IN"
+MOVEMENT_REVERSAL = "REVERSAL"
+MOVEMENT_PRODUCTION_CONSUMPTION = "PRODUCTION_CONSUMPTION"
+MOVEMENT_PRODUCTION_OUTPUT = "PRODUCTION_OUTPUT"
+
+# Post-cutoff ledger kinds with explicit ATS policy in this adapter.
+_MAPPED_LEDGER_KINDS = frozenset({
+    MOVEMENT_SALES_DELIVERY,
+    MOVEMENT_PURCHASE_RECEIPT,
+    MOVEMENT_REVERSAL,
+})
+# Present on YGY WH after cutoff → evidence incomplete until Owner maps them.
+_UNMAPPED_LEDGER_KINDS = frozenset({
+    MOVEMENT_PURCHASE_RETURN,
+    MOVEMENT_STOCK_OPNAME_ADJUSTMENT,
+    MOVEMENT_MANUAL_ADJUSTMENT,
+    MOVEMENT_WAREHOUSE_TRANSFER_OUT,
+    MOVEMENT_WAREHOUSE_TRANSFER_IN,
+    MOVEMENT_PRODUCTION_CONSUMPTION,
+    MOVEMENT_PRODUCTION_OUTPUT,
+    MOVEMENT_OPENING_BALANCE,
+})
 
 REASON_ATS_COVERAGE_GAP = "ATS_EVENT_COVERAGE_GAP"
 REASON_ATS_NOT_IN_BASELINE = "ATS_NOT_IN_BASELINE_FILE"
@@ -111,28 +140,15 @@ def baseline_for_master(master_item_id: str, *, batch_id: str = "ygy-ats-2026-11
     )
 
 
-def order_matches_ygy_mode_b(order: dict) -> bool:
-    """True when order belongs to YGY org under Mode B (token 50) or ERP branch id."""
-    if not isinstance(order, dict):
-        return False
-    br = str(order.get("branch_id") or "").strip()
-    cab = str(order.get("cabang_id") or "").strip()
-    if br == YGY_BRANCH_ID or cab == YGY_BRANCH_ID:
-        return True
-    tokens = {
-        str(order.get("raw_branch_token") or "").strip().upper(),
-        str(order.get("accurate_branch_id") or "").strip().upper(),
-        str(order.get("branch_code") or "").strip().upper(),
-        cab.upper(),
-        br.upper(),
-    }
-    # Accurate often stores numeric branch as string "50"
-    if "50" in {str(order.get("raw_branch_token") or "").strip(),
-                str(order.get("accurate_branch_id") or "").strip(),
-                str(order.get("branch_code") or "").strip(),
-                cab, br}:
-        return True
-    return bool(tokens & ACCURATE_BRANCH_TOKENS_YGY)
+def order_matches_ygy_mode_b(order: dict, settings: Optional[dict] = None) -> bool:
+    """True when Mode B attributes the order to YGY org branch.
+
+    Uses official order_attributed_to_branch + active/sanitized settings.
+    Without settings, only exact org UUID match counts (fail-closed).
+    """
+    from services.mode_b_legacy_demand import order_attributed_to_branch
+
+    return order_attributed_to_branch(order, YGY_BRANCH_ID, settings)
 
 
 def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_complete: bool) -> List[str]:
@@ -154,6 +170,486 @@ def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_compl
         "map only post-cutoff mutations with warehouse_id==YGY-MAIN"
     )
     return gaps
+
+
+def _reservation_key(order_id: str, line: dict, line_idx: int) -> str:
+    lid = str(line.get("line_id") or line.get("id") or "").strip()
+    if lid:
+        return f"{order_id}:{lid}"
+    return f"{order_id}:idx:{int(line_idx)}"
+
+
+def _order_cancelled(order: dict) -> bool:
+    if order.get("cancelled") or order.get("is_cancelled"):
+        return True
+    status = str(order.get("status") or order.get("status_label") or "").strip().lower()
+    return status in ("cancelled", "dibatalkan", "void")
+
+
+def _line_cancelled(line: dict) -> bool:
+    return bool(line.get("cancelled") or line.get("is_cancelled"))
+
+
+def _parse_event_time(value: Any) -> Optional[Any]:
+    from services.mode_b_legacy_demand import parse_iso_datetime
+
+    return parse_iso_datetime(value)
+
+
+def _qty_abs(value: Any) -> Decimal:
+    try:
+        qty = quantity(value)
+    except CutoverError:
+        return Decimal(0)
+    return abs(qty)
+
+
+def _empty_master_pack() -> Dict[str, Any]:
+    return {
+        "events": [],
+        "reservations_at_cutoff": [],
+        "evidence_complete": True,
+        "gaps": [],
+        "skipped": [],
+    }
+
+
+def _append_gap(pack: dict, message: str) -> None:
+    if message not in pack["gaps"]:
+        pack["gaps"].append(message)
+    pack["evidence_complete"] = False
+
+
+def _append_skip(pack: dict, message: str) -> None:
+    pack["skipped"].append(message)
+
+
+async def collect_ats_stream_for_ygy(
+    db,
+    *,
+    master_item_ids: Sequence[str],
+    as_of: str,
+    warehouse_id: str = YGY_WAREHOUSE_ID,
+    branch_id: str = YGY_BRANCH_ID,
+) -> Dict[str, Any]:
+    """Build post-cutoff ATS events from official orders + YGY WH ledger.
+
+    Adoption: reservations_at_cutoff is always empty unless a future Owner
+    snapshot supplies WH-proven keys. Pre-cutoff PO ship/cancel never become
+    ISSUE_FREE / RELEASE (would re-cut or inflate baseline).
+
+    evidence_complete is True only when every post-cutoff YGY ledger row for
+    that master is mapped or intentionally skipped under adoption — never
+    forced True to hide unmapped movements.
+    """
+    from services.mode_b_legacy_demand import (
+        filter_orders_for_branch,
+        get_mode_b_legacy_demand_settings,
+        mongo_order_branch_clauses,
+    )
+
+    mids = [str(m).strip() for m in master_item_ids if str(m or "").strip()]
+    wid = str(warehouse_id or "").strip()
+    bid = str(branch_id or "").strip() or YGY_BRANCH_ID
+    as_of_dt = timestamp(as_of)
+    cutoff_dt = timestamp(CUTOFF_AT)
+
+    by_master: Dict[str, Dict[str, Any]] = {mid: _empty_master_pack() for mid in mids}
+    if wid != YGY_WAREHOUSE_ID:
+        for pack in by_master.values():
+            _append_gap(pack, f"ATS_WAREHOUSE_SCOPE: collector refused non-YGY warehouse {wid}")
+        return {
+            "by_master": by_master,
+            "reservations_at_cutoff": [],
+            "mode_b_settings": None,
+            "cutoff_at": CUTOFF_AT,
+            "as_of": as_of,
+            "warehouse_id": wid,
+        }
+
+    if not mids:
+        return {
+            "by_master": {},
+            "reservations_at_cutoff": [],
+            "mode_b_settings": None,
+            "cutoff_at": CUTOFF_AT,
+            "as_of": as_of,
+            "warehouse_id": wid,
+        }
+
+    settings = await get_mode_b_legacy_demand_settings(db)
+    elig = eligible_rows()
+    unit_by_mid = {
+        mid: str((elig.get(mid) or {}).get("satuan") or "PCS")
+        for mid in mids
+    }
+
+    order_query: Dict[str, Any] = {"$or": mongo_order_branch_clauses(bid, settings)}
+    raw_orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
+    orders = filter_orders_for_branch(raw_orders, bid, settings)
+    order_by_id = {
+        str(o.get("id") or "").strip(): o
+        for o in orders
+        if str(o.get("id") or "").strip()
+    }
+
+    # Post-cutoff reservation identities (empty opening snapshot).
+    post_cutoff_keys: Dict[str, Dict[str, Any]] = {}
+    raw_events: List[dict] = []  # pending Event fields before sequence assign
+
+    for order in orders:
+        oid = str(order.get("id") or "").strip()
+        if not oid:
+            continue
+        created = _parse_event_time(order.get("created_at") or order.get("imported_at"))
+        if created is None:
+            for idx, line in enumerate(order.get("line_items") or []):
+                if not isinstance(line, dict):
+                    continue
+                mid = str(line.get("master_item_id") or "").strip()
+                if mid in by_master:
+                    _append_gap(
+                        by_master[mid],
+                        f"ORDER_TIME_UNPARSEABLE:{oid}: cannot classify pre/post cutoff",
+                    )
+            continue
+        is_post = created > cutoff_dt
+        for idx, line in enumerate(order.get("line_items") or []):
+            if not isinstance(line, dict):
+                continue
+            mid = str(line.get("master_item_id") or "").strip()
+            if mid not in by_master:
+                continue
+            ordered = _qty_abs(line.get("quantity"))
+            if ordered <= 0:
+                continue
+            key = _reservation_key(oid, line, idx)
+            unit = unit_by_mid.get(mid) or "PCS"
+            if is_post:
+                # New PO after cutoff → RESERVE free blank.
+                post_cutoff_keys[key] = {
+                    "master_item_id": mid,
+                    "ordered_qty": ordered,
+                    "unit": unit,
+                    "order_id": oid,
+                    "created_at": created.isoformat(),
+                }
+                occurred = created.isoformat()
+                if created.tzinfo is not None and created.utcoffset() is not None:
+                    # Prefer original order string when parseable with tz.
+                    raw_created = str(order.get("created_at") or order.get("imported_at") or "").strip()
+                    if raw_created:
+                        occurred = raw_created
+                raw_events.append({
+                    "event_id": f"reserve:{key}",
+                    "warehouse_id": wid,
+                    "master_item_id": mid,
+                    "unit": unit,
+                    "occurred_at": occurred,
+                    "kind": mapped_kind("NEW_PO_LINE_RESERVE"),
+                    "qty": ordered,
+                    "reservation_key": key,
+                    "reverses_event_id": "",
+                    "business_code": "NEW_PO_LINE_RESERVE",
+                })
+            # else: pre-cutoff line — no opening reservation under adoption
+
+    # YGY warehouse ledger after cutoff (canonical physical mutations).
+    ledger_docs = await db[LEDGER_COLLECTION].find(
+        {
+            "warehouse_id": wid,
+            "master_item_id": {"$in": mids},
+        },
+        {"_id": 0},
+    ).to_list(50000)
+
+    ship_event_by_movement: Dict[str, str] = {}
+    shipped_qty_by_key: Dict[str, Decimal] = {}
+    reversal_docs: List[dict] = []
+
+    def _ledger_in_window(doc: dict) -> Optional[tuple]:
+        mid = str(doc.get("master_item_id") or "").strip()
+        if mid not in by_master:
+            return None
+        pack = by_master[mid]
+        occurred_raw = str(doc.get("occurred_at") or doc.get("created_at") or "").strip()
+        occurred_dt = _parse_event_time(occurred_raw)
+        if occurred_dt is None:
+            _append_gap(pack, f"LEDGER_TIME_UNPARSEABLE:{doc.get('id')}")
+            return None
+        if occurred_dt <= cutoff_dt or occurred_dt > as_of_dt:
+            return None
+        movement_id = str(doc.get("id") or "").strip()
+        mtype = str(doc.get("movement_type") or "").strip()
+        if not movement_id:
+            _append_gap(pack, f"LEDGER_MISSING_ID:{mtype}")
+            return None
+        return mid, pack, unit_by_mid.get(mid) or "PCS", mtype, occurred_raw, movement_id
+
+    # Pass 1: non-reversal mapped/unmapped ledger rows.
+    for doc in ledger_docs:
+        mtype = str(doc.get("movement_type") or "").strip()
+        if mtype == MOVEMENT_REVERSAL:
+            reversal_docs.append(doc)
+            continue
+        parsed = _ledger_in_window(doc)
+        if parsed is None:
+            continue
+        mid, pack, unit, mtype, occurred_raw, movement_id = parsed
+        meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        qty = _qty_abs(doc.get("qty_delta"))
+
+        if mtype in _UNMAPPED_LEDGER_KINDS:
+            _append_gap(
+                pack,
+                f"UNMAPPED_LEDGER:{mtype}:{movement_id}: explicit ATS policy required",
+            )
+            continue
+        if mtype not in _MAPPED_LEDGER_KINDS:
+            _append_gap(
+                pack,
+                f"UNKNOWN_LEDGER:{mtype or 'EMPTY'}:{movement_id}: unclassified movement",
+            )
+            continue
+
+        if mtype == MOVEMENT_PURCHASE_RECEIPT:
+            if qty <= 0:
+                _append_gap(pack, f"PURCHASE_RECEIPT_BAD_QTY:{movement_id}")
+                continue
+            raw_events.append({
+                "event_id": f"recv:{movement_id}",
+                "warehouse_id": wid,
+                "master_item_id": mid,
+                "unit": unit,
+                "occurred_at": occurred_raw,
+                "kind": mapped_kind("PURCHASE_RECEIPT_UNRESERVED"),
+                "qty": qty,
+                "reservation_key": "",
+                "reverses_event_id": "",
+                "business_code": "PURCHASE_RECEIPT_UNRESERVED",
+            })
+            continue
+
+        if mtype == MOVEMENT_SALES_DELIVERY:
+            if qty <= 0:
+                _append_gap(pack, f"SALES_DELIVERY_BAD_QTY:{movement_id}")
+                continue
+            oid = str(meta.get("order_id") or "").strip()
+            line_id = str(meta.get("line_id") or "").strip()
+            raw_idx = meta.get("line_idx")
+            key = ""
+            if oid and line_id:
+                key = f"{oid}:{line_id}"
+            elif oid and raw_idx is not None and str(raw_idx).strip() != "":
+                try:
+                    key = f"{oid}:idx:{int(raw_idx)}"
+                except (TypeError, ValueError):
+                    key = ""
+            if key and key in post_cutoff_keys:
+                ship_eid = f"ship:{movement_id}"
+                ship_event_by_movement[movement_id] = ship_eid
+                shipped_qty_by_key[key] = shipped_qty_by_key.get(key, Decimal(0)) + qty
+                raw_events.append({
+                    "event_id": ship_eid,
+                    "warehouse_id": wid,
+                    "master_item_id": mid,
+                    "unit": unit,
+                    "occurred_at": occurred_raw,
+                    "kind": mapped_kind("SHIP_AGAINST_RESERVATION"),
+                    "qty": qty,
+                    "reservation_key": key,
+                    "reverses_event_id": "",
+                    "business_code": "SHIP_AGAINST_RESERVATION",
+                })
+                continue
+
+            # Pre-cutoff / adoption: do NOT ISSUE_FREE (would re-cut baseline).
+            order = order_by_id.get(oid) if oid else None
+            if order is not None:
+                created = _parse_event_time(
+                    order.get("created_at") or order.get("imported_at")
+                )
+                if created is not None and created <= cutoff_dt:
+                    _append_skip(
+                        pack,
+                        f"SKIP_OLD_PO_SHIP:{movement_id}:order={oid}:key={key or '-'}",
+                    )
+                    continue
+            _append_gap(
+                pack,
+                f"UNATTRIBUTED_OR_UNRESERVED_SHIP:{movement_id}:order={oid or '-'}"
+                f": refuse inferred ISSUE_FREE",
+            )
+            continue
+
+    # Pass 2: reversals after ships are known — never invent RELEASE/inflate.
+    mapped_ship_ids = set(ship_event_by_movement.keys())
+    for doc in reversal_docs:
+        parsed = _ledger_in_window(doc)
+        if parsed is None:
+            continue
+        mid, pack, unit, _mtype, occurred_raw, movement_id = parsed
+        ref = str(doc.get("reference_id") or "").strip()
+        if ref and ref in mapped_ship_ids:
+            ship_eid = ship_event_by_movement[ref]
+            raw_events.append({
+                "event_id": f"rev:{movement_id}",
+                "warehouse_id": wid,
+                "master_item_id": mid,
+                "unit": unit,
+                "occurred_at": occurred_raw,
+                "kind": mapped_kind("LEDGER_REVERSAL"),
+                "qty": Decimal(0),
+                "reservation_key": "",
+                "reverses_event_id": ship_eid,
+                "business_code": "LEDGER_REVERSAL",
+            })
+        else:
+            _append_skip(
+                pack,
+                f"SKIP_REVERSAL_WITHOUT_MAPPED_SHIP:{movement_id}:ref={ref}",
+            )
+
+    # Cancel / release remaining only for post-cutoff reservations.
+    for key, info in post_cutoff_keys.items():
+        mid = info["master_item_id"]
+        pack = by_master[mid]
+        order = order_by_id.get(info["order_id"])
+        if order is None:
+            continue
+        cancelled = _order_cancelled(order)
+        # Line-level cancel: find matching line
+        line_cancelled = False
+        cancel_time_raw = str(
+            order.get("cancelled_at") or order.get("updated_at") or ""
+        ).strip()
+        for idx, line in enumerate(order.get("line_items") or []):
+            if not isinstance(line, dict):
+                continue
+            if _reservation_key(info["order_id"], line, idx) != key:
+                continue
+            if _line_cancelled(line):
+                line_cancelled = True
+                cancel_time_raw = str(
+                    line.get("cancelled_at")
+                    or order.get("cancelled_at")
+                    or order.get("updated_at")
+                    or ""
+                ).strip()
+            break
+        if not (cancelled or line_cancelled):
+            continue
+        cancel_dt = _parse_event_time(cancel_time_raw)
+        if cancel_dt is None or cancel_dt <= cutoff_dt or cancel_dt > as_of_dt:
+            if cancel_dt is None and (cancelled or line_cancelled):
+                _append_gap(
+                    pack,
+                    f"CANCEL_TIME_UNPARSEABLE:{key}: cannot RELEASE remaining",
+                )
+            continue
+        shipped = shipped_qty_by_key.get(key, Decimal(0))
+        remaining = info["ordered_qty"] - shipped
+        if remaining < 0:
+            _append_gap(
+                pack,
+                f"OVERSHIP_VS_RESERVE:{key}:shipped={shipped}:ordered={info['ordered_qty']}",
+            )
+            continue
+        if remaining == 0:
+            continue
+        raw_events.append({
+            "event_id": f"release:{key}",
+            "warehouse_id": wid,
+            "master_item_id": mid,
+            "unit": info["unit"],
+            "occurred_at": cancel_time_raw,
+            "kind": mapped_kind("CANCEL_OR_RELEASE_REMAINING"),
+            "qty": remaining,
+            "reservation_key": key,
+            "reverses_event_id": "",
+            "business_code": "CANCEL_OR_RELEASE_REMAINING",
+        })
+
+    # Also: cancel of pre-cutoff PO must not RELEASE (empty opening reservations).
+    for order in orders:
+        oid = str(order.get("id") or "").strip()
+        created = _parse_event_time(order.get("created_at") or order.get("imported_at"))
+        if created is None or created > cutoff_dt:
+            continue
+        if not (_order_cancelled(order) or any(
+            isinstance(ln, dict) and _line_cancelled(ln)
+            for ln in (order.get("line_items") or [])
+        )):
+            continue
+        cancel_dt = _parse_event_time(
+            order.get("cancelled_at") or order.get("updated_at")
+        )
+        if cancel_dt is None or cancel_dt <= cutoff_dt or cancel_dt > as_of_dt:
+            continue
+        for idx, line in enumerate(order.get("line_items") or []):
+            if not isinstance(line, dict):
+                continue
+            mid = str(line.get("master_item_id") or "").strip()
+            if mid not in by_master:
+                continue
+            key = _reservation_key(oid, line, idx)
+            if key in post_cutoff_keys:
+                continue
+            _append_skip(
+                by_master[mid],
+                f"SKIP_OLD_PO_CANCEL_NO_OPENING_RESERVATION:{key}: refuse RELEASE inflate",
+            )
+
+    # Assign canonical sequences per master (time, event_id).
+    events_by_mid: Dict[str, List[dict]] = {mid: [] for mid in mids}
+    for raw in raw_events:
+        events_by_mid.setdefault(raw["master_item_id"], []).append(raw)
+
+    for mid, pending in events_by_mid.items():
+        pack = by_master[mid]
+        pending_sorted = sorted(
+            pending,
+            key=lambda e: (timestamp(e["occurred_at"]), e["event_id"]),
+        )
+        built: List[Event] = []
+        for seq, raw in enumerate(pending_sorted):
+            # Drop events outside (cutoff, as_of] — projector would ignore too,
+            # but keep stream tight for evidence.
+            try:
+                ot = timestamp(raw["occurred_at"])
+            except CutoverError:
+                _append_gap(pack, f"EVENT_TIME_INVALID:{raw.get('event_id')}")
+                continue
+            if not (cutoff_dt < ot <= as_of_dt):
+                continue
+            built.append(
+                Event(
+                    event_id=raw["event_id"],
+                    warehouse_id=raw["warehouse_id"],
+                    master_item_id=raw["master_item_id"],
+                    unit=raw["unit"],
+                    occurred_at=raw["occurred_at"],
+                    sequence=seq,
+                    kind=raw["kind"],
+                    qty=quantity(raw["qty"]),
+                    reservation_key=raw.get("reservation_key") or "",
+                    reverses_event_id=raw.get("reverses_event_id") or "",
+                )
+            )
+        pack["events"] = built
+        pack["reservations_at_cutoff"] = []
+
+    return {
+        "by_master": by_master,
+        "reservations_at_cutoff": [],
+        "mode_b_settings": settings,
+        "cutoff_at": CUTOFF_AT,
+        "as_of": as_of,
+        "warehouse_id": wid,
+        "branch_id": bid,
+        "post_cutoff_reservation_count": len(post_cutoff_keys),
+        "order_count": len(orders),
+    }
 
 
 def project_master_ats(
@@ -225,10 +721,13 @@ def apply_ats_overlay_to_ssi_row(
     reservations_at_cutoff: Iterable[Reservation] = (),
     events: Iterable[Event] = (),
     evidence_complete: bool = False,
+    coverage_gaps: Optional[Sequence[str]] = None,
+    skipped: Optional[Sequence[str]] = None,
 ) -> dict:
     """Overlay stock_dapat_dijual / qty_siap_jual for YGY ATS when enabled.
 
     Never mutates physical_qty / balances. Leaves polos/tercetak verification alone.
+    evidence_complete must come from the collector — never force True to hide gaps.
     """
     if not ats_ygy_enabled():
         row["ats_cutover_status"] = "OFF"
@@ -251,6 +750,8 @@ def apply_ats_overlay_to_ssi_row(
     row["ats_cutover_reason"] = result.get("reason")
     row["ats_cutover_source"] = SOURCE_ATS
     row["ats_cutover_cutoff_at"] = result.get("cutoff_at") or CUTOFF_AT
+    if skipped:
+        row["ats_cutover_skipped"] = list(skipped)
     if result.get("status") == "READY":
         qty = result.get("available_qty")
         row["stock_dapat_dijual"] = qty
@@ -271,10 +772,13 @@ def apply_ats_overlay_to_ssi_row(
         row["qty_siap_jual_status"] = "UNVERIFIED"
         row["qty_siap_jual_reason"] = REASON_ATS_COVERAGE_GAP
         row["qty_siap_jual_note"] = result.get("error") or "ATS evidence incomplete"
-        row["ats_coverage_gaps"] = coverage_gaps_for_live_ro(
-            has_stock_allocations=False,
-            event_stream_complete=False,
-        )
+        if coverage_gaps:
+            row["ats_coverage_gaps"] = list(coverage_gaps)
+        else:
+            row["ats_coverage_gaps"] = coverage_gaps_for_live_ro(
+                has_stock_allocations=False,
+                event_stream_complete=False,
+            )
     # EXCLUDED: leave legacy SSI figures; do not force zero
     return row
 
