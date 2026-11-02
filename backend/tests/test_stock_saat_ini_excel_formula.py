@@ -20,6 +20,39 @@ from services.stock_saat_ini_excel import (
 from services.physical_stock import aggregate_operational_orders
 
 
+def test_proven_print_delivery_is_preserved_when_operator_count_is_lower():
+    row = compute_excel_columns(
+        stock_book=200, qty_tercetak=800,
+        cetak_delivered_proven=1000, print_delivery_proven=True,
+    )
+    assert row["cetak_sudah_dikirim"] == 1000
+    assert row["cetak_sudah_dikirim_status"] == STATUS_READY
+    assert row["qty_tercetak"] == 800
+    assert row["tercetak_belum_kirim"] is None
+    assert row["qty_polos"] is None
+    assert row["qty_polos_reason"] == "PRINT_DELIVERY_EXCEEDS_COMPLETION"
+    mapped = apply_excel_fields_to_catalog_row({}, row)
+    assert "melebihi" in mapped["qty_polos_gudang_note"]
+
+
+def test_print_delivery_equal_to_completion_has_zero_printed_remaining():
+    row = compute_excel_columns(
+        stock_book=200, qty_tercetak=1000,
+        cetak_delivered_proven=1000, print_delivery_proven=True,
+    )
+    assert row["tercetak_belum_kirim"] == 0
+    assert row["qty_polos"] == 200
+
+
+def test_proven_print_delivery_stays_visible_without_operator_history():
+    row = compute_excel_columns(
+        stock_book=200, qty_tercetak=None,
+        cetak_delivered_proven=1000, print_delivery_proven=True,
+    )
+    assert row["cetak_sudah_dikirim"] == 1000
+    assert row["qty_polos"] is None
+
+
 def test_owner_excel_example_with_proven_print_delivery():
     """Stock masuk 10k, PO 32k, operator 8k, cetak kirim 4k → Owner numbers."""
     row = compute_excel_columns(
