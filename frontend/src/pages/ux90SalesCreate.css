@@ -4549,6 +4549,13 @@
 
 
 /* ========== Faktur CREATE unified workspace + proportion polish ========== */
+/*
+ * Scroll owner: .ux90-fp-create[data-gate-only="false"]
+ * Must beat earlier .fp-invoice-page.sd-form-mode .ux90-fp-create { overflow:hidden }
+ * and .fp-invoice-page.sd-form-mode .ux90-fp-filled.ux90-fp-doc-host { overflow:hidden }.
+ * Page shell stays overflow:hidden; SJ/multi-PO lists keep their own max-height scroll.
+ */
+.fp-invoice-page.sd-form-mode .ux90-fp-create[data-gate-only="false"],
 .ux90-fp-create[data-gate-only="false"] {
   justify-content: flex-start !important;
   align-items: stretch !important;
@@ -4560,7 +4567,8 @@
   overflow-y: auto !important;
 }
 
-.ux90-fp-create > .ux90-fp-filled.ux90-fp-doc-host {
+.fp-invoice-page.sd-form-mode .ux90-fp-create[data-gate-only="false"] > .ux90-fp-filled.ux90-fp-doc-host,
+.ux90-fp-create[data-gate-only="false"] > .ux90-fp-filled.ux90-fp-doc-host {
   flex: 0 1 auto !important;
   min-height: 0 !important;
   height: auto !important;
@@ -4570,6 +4578,7 @@
   overflow: visible !important;
 }
 
+.fp-invoice-page.sd-form-mode .ux90-fp-create[data-gate-only="false"] .ux90-fp-doc.ux90-fp-unified,
 .ux90-fp-doc.ux90-fp-unified {
   display: flex !important;
   flex-direction: column !important;
