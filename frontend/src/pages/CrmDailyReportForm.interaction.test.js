@@ -110,6 +110,8 @@ describe("CrmDailyReportForm interaction", () => {
       sales_catalog: [
         { id: "sm-ayub", sales_name: "Sholahudin Al - Ayubi", user_id: "sales-ayub", active: true },
         { id: "sm-euis", sales_name: "Euis Risnawati", user_id: "sales-euis", active: true },
+        { id: "sm-fahdo", sales_name: "Fahdo Pratama", user_id: "sales-fahdo", active: true },
+        { id: "sm-offline", sales_name: "Sales Offline", user_id: "", active: true },
       ],
     });
     api.crmDailyReportCustomers.mockResolvedValue({ customers: [] });
@@ -123,6 +125,24 @@ describe("CrmDailyReportForm interaction", () => {
           sales_user_id: "sales-ayub",
           sales_label_resolved: "Sholahudin Al - Ayubi",
           sales: "Sholahudin Al - Ayubi",
+        },
+        {
+          id: "ord-2",
+          po_number: "PO/TEST/002",
+          customer: "Toko Alpha",
+          sales_verified: true,
+          sales_user_id: "sales-fahdo",
+          sales_label_resolved: "Fahdo Pratama",
+          sales: "Fahdo Pratama",
+        },
+        {
+          id: "ord-3",
+          po_number: "PO/TEST/003",
+          customer: "Toko Alpha",
+          sales_verified: false,
+          sales_user_id: "",
+          sales_label_resolved: "Label Historis",
+          sales: "Label Historis",
         },
       ],
     });
@@ -245,6 +265,67 @@ describe("CrmDailyReportForm interaction", () => {
       container.querySelector('[data-testid="cdr-sales-back-to-list"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="cdr-sales"]')).toBeTruthy();
+    // Clearing PO drops prior Sales so it is not shown as verified.
+    expect(container.querySelector('[data-testid="cdr-sales"]').value).toBe("");
+    expect(container.querySelector('[data-testid="cdr-sales"]').disabled).toBe(false);
+  });
+
+  test("changing PO replaces Sales/Master and does not keep prior Master", async () => {
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+
+    const po = container.querySelector('[data-testid="cdr-po-search"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(po, "PO/TEST/001");
+      po.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-po-results"] button')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="cdr-sales"]').value).toMatch(/Ayubi|Ayub/i);
+
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-po-clear"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="cdr-sales"]').value).toBe("");
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(po, "PO/TEST/002");
+      po.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      const btn = [...container.querySelectorAll('[data-testid="cdr-po-results"] button')]
+        .find((el) => /PO\/TEST\/002/.test(el.textContent || ""));
+      expect(btn).toBeTruthy();
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="cdr-sales"]').value).toBe("Fahdo Pratama");
+    expect(container.querySelector('[data-testid="cdr-sales"]').disabled).toBe(true);
+
+    const wa = container.querySelector('[data-testid="cdr-whatsapp"]');
+    await act(async () => {
+      const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setInput.call(wa, "081200011122");
+      wa.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="crm-daily-report-form"]')
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    const payload = api.createCrmDailyReport.mock.calls[0][0];
+    expect(payload.order_id).toBe("ord-2");
+    expect(payload.sales_label).toBe("Fahdo Pratama");
+    expect(payload.sales_user_id).toBe("sales-fahdo");
+    expect(payload.sales_master_id).toBe("sm-fahdo");
+    expect(payload.sales_master_id).not.toBe("sm-ayub");
   });
 
   test("save uses Simpan Laporan only and posts payload", async () => {
@@ -284,6 +365,46 @@ describe("CrmDailyReportForm interaction", () => {
     expect(payload.sales_user_id).toBe("sales-ayub");
     expect(payload.sales_source).toBe("existing");
     expect(payload.status_customer).toBe("New");
+  });
+
+  test("Master Sales without Eternal account posts as existing, not manual", async () => {
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+
+    const wa = container.querySelector('[data-testid="cdr-whatsapp"]');
+    const sales = container.querySelector('[data-testid="cdr-sales"]');
+    await act(async () => {
+      const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setInput.call(wa, "081299988877");
+      wa.dispatchEvent(new Event("input", { bubbles: true }));
+      setInput.call(sales, "Offline");
+      sales.dispatchEvent(new Event("input", { bubbles: true }));
+      sales.dispatchEvent(new Event("focus", { bubbles: true }));
+    });
+    await flush();
+    const salesBtn = [...container.querySelectorAll('[data-testid="cdr-sales-results"] button')]
+      .find((btn) => /Sales Offline/.test(btn.textContent || ""));
+    expect(salesBtn).toBeTruthy();
+    expect(salesBtn.textContent).toMatch(/tanpa akun Eternal/);
+    await act(async () => {
+      salesBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="cdr-sales-manual-box"]')).toBeFalsy();
+
+    await act(async () => {
+      const form = container.querySelector('[data-testid="crm-daily-report-form"]');
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(api.createCrmDailyReport).toHaveBeenCalled();
+    const payload = api.createCrmDailyReport.mock.calls[0][0];
+    expect(payload.sales_master_id).toBe("sm-offline");
+    expect(payload.sales_label).toBe("Sales Offline");
+    expect(payload.sales_user_id).toBeNull();
+    expect(payload.sales_source).toBe("existing");
   });
 
   test("create draft survives remount (list/tab navigation) and clears after success", async () => {

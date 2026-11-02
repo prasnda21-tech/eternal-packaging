@@ -168,8 +168,11 @@ def public_doc(doc: Optional[dict]) -> Optional[dict]:
     if "complaint_category" not in out:
         out["complaint_category"] = _text(doc.get("complaint_category"))
     # Legacy free-text sales are not treated as verified existing users.
+    # Master-linked rows without Eternal account remain verified (existing).
     if "sales_source" not in out or not _text(out.get("sales_source")):
         if _text(doc.get("sales_user_id")):
+            out["sales_source"] = SALES_SOURCE_EXISTING
+        elif _text(doc.get("sales_master_id")) and _text(doc.get("sales_label")):
             out["sales_source"] = SALES_SOURCE_EXISTING
         elif _text(doc.get("sales_label")):
             out["sales_source"] = SALES_SOURCE_LEGACY
@@ -533,10 +536,12 @@ async def _resolve_sales_assignment(
     sales_label: Any,
     sales_source: Any,
     existing: Optional[dict] = None,
+    verified_master: Optional[dict] = None,
 ) -> Tuple[str, Optional[str], str, str]:
     """Validate and normalize Sales for a CRM daily report.
 
     Returns (sales_label, sales_user_id, sales_source, sales_note).
+    verified_master: active Master Sales already validated for branch access.
     """
     canon = await _canonical_sales_map(db)
     payload_uid = _text(sales_user_id) or None
@@ -544,12 +549,17 @@ async def _resolve_sales_assignment(
     source = _text(sales_source).lower()
     has_po = bool(order)
     po_uid, po_label = await _po_verified_sales(db, order, canon)
+    master = verified_master if isinstance(verified_master, dict) else None
+    master_uid = _text((master or {}).get("user_id")) or None
+    master_label = _text((master or {}).get("label") or "")
 
     if has_po and po_uid:
         if source == SALES_SOURCE_MANUAL:
             raise HTTPException(400, "Input Manual Sales tidak diizinkan ketika PO dipilih")
         if payload_uid and payload_uid != po_uid:
             raise HTTPException(400, "Sales laporan harus sesuai Sales pada PO yang dipilih")
+        # PO identity wins. Stale preferred sales_master_id on edit merge is ignored here;
+        # exact-only attach runs after resolution.
         return po_label or canon[po_uid]["label"], po_uid, SALES_SOURCE_EXISTING, ""
 
     if has_po and not po_uid:
@@ -560,9 +570,8 @@ async def _resolve_sales_assignment(
         po_raw_label = exact_sales_label(order.get("sales"))
         po_raw_uid = _text(order.get("sales_user_id")) or None
         if po_raw_label:
-            # Unmapped PO sales: keep Accurate label; never silently substitute another Sales.
-            if payload_uid and payload_uid in canon and canon[payload_uid]["label"] != po_raw_label:
-                raise HTTPException(400, "Sales laporan harus sesuai Sales pada PO yang dipilih")
+            # Unmapped PO sales: keep Accurate label. Ignore stale client sales_user_id /
+            # preferred Master from a prior PO — historical PO identity wins.
             kept_uid = po_raw_uid if po_raw_uid and po_raw_uid in canon else None
             kept_source = SALES_SOURCE_EXISTING if kept_uid else SALES_SOURCE_LEGACY
             return (
@@ -570,6 +579,21 @@ async def _resolve_sales_assignment(
                 kept_uid,
                 kept_source,
                 "Sales PO belum terpetakan ke daftar terverifikasi / Master Sales",
+            )
+        # PO has no sales label — allow verified Master (user optional) or mapped user.
+        # Reject unrelated Master substitution only when payload explicitly claims a different label.
+        if master and master_label:
+            if payload_label and payload_label != master_label:
+                raise HTTPException(400, "Sales laporan harus sesuai Master Sales yang dipilih")
+            if payload_uid and master_uid and payload_uid != master_uid:
+                raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+            if payload_uid and not master_uid:
+                raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+            return (
+                master_label,
+                master_uid,
+                SALES_SOURCE_EXISTING,
+                "PO tidak memiliki Sales terverifikasi; Sales dipilih dari Master Sales",
             )
         if not payload_uid or payload_uid not in canon:
             raise HTTPException(
@@ -582,6 +606,19 @@ async def _resolve_sales_assignment(
             SALES_SOURCE_EXISTING,
             "PO tidak memiliki Sales terverifikasi; Sales dipilih dari daftar",
         )
+
+    # No PO — verified Master Sales is canonical (Eternal account optional).
+    if master and master_label:
+        if source == SALES_SOURCE_MANUAL:
+            raise HTTPException(
+                400,
+                "Master Sales terverifikasi bukan input manual; pilih ulang dari daftar",
+            )
+        if payload_uid and master_uid and payload_uid != master_uid:
+            raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+        if payload_uid and not master_uid:
+            raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+        return master_label, master_uid, SALES_SOURCE_EXISTING, ""
 
     # No PO — explicit manual only for TIDAK ORDER.
     if source == SALES_SOURCE_MANUAL:
@@ -709,7 +746,18 @@ async def _payload_master_sales(db, payload_master_id: Optional[str], user: dict
     from services import sales_master as sm
     from services.sales_user_mapping import exact_sales_label
 
-    master = await sm.require_active_sales(db, mid, user=user)
+    try:
+        master = await sm.require_active_sales(db, mid, user=user)
+    except HTTPException as exc:
+        detail = str(exc.detail or "")
+        low = detail.lower()
+        if exc.status_code == 400 and ("tidak ditemukan" in low or "not found" in low):
+            raise HTTPException(400, "Master Sales tidak valid atau tidak ditemukan") from exc
+        if exc.status_code == 400 and "nonaktif" in low:
+            raise HTTPException(400, "Master Sales nonaktif tidak dapat dipilih") from exc
+        if exc.status_code == 403:
+            raise HTTPException(403, "Master Sales tidak tersedia untuk cabang Anda") from exc
+        raise
     return {
         "id": master["id"],
         "label": exact_sales_label(master.get("sales_name")),
@@ -917,28 +965,40 @@ async def build_normalized_doc(
     sales_user_id = core["sales_user_id"]
     sales_source = core["sales_source"]
     preferred_master_id = core["sales_master_id"]
-    master_in = await _payload_master_sales(db, preferred_master_id, user)
-    if master_in and not order:
-        # Master Sales feeds label/uid; sales_source rules remain those from main.
-        if sales_source == SALES_SOURCE_MANUAL:
+
+    # PO with its own Sales snapshot/uid is authoritative. Ignore client/merged
+    # preferred sales_master_id so a prior Master cannot survive PO change/edit.
+    from services.sales_user_mapping import exact_sales_label as _exact_sales_label
+
+    po_authoritative = bool(
+        order
+        and (
+            _text(order.get("sales_user_id"))
+            or _exact_sales_label(order.get("sales"))
+        )
+    )
+    if po_authoritative:
+        preferred_master_id = None
+        master_in = None
+    else:
+        master_in = await _payload_master_sales(db, preferred_master_id, user)
+        # Free-text manual must not carry a Master id (prevents spoofed verification).
+        if sales_source == SALES_SOURCE_MANUAL and master_in and not order:
+            raise HTTPException(
+                400,
+                "Input Manual Sales tidak boleh menyertakan sales_master_id; "
+                "pilih Master dari daftar atau kosongkan Master id",
+            )
+        if master_in and not order:
+            # Verified Master is never free-text manual. Account (user_id) is optional.
             sales_label = master_in["label"]
-            sales_user_id = None
-            sales_source = SALES_SOURCE_MANUAL
             preferred_master_id = master_in["id"]
-        elif master_in["user_id"]:
-            sales_label = master_in["label"]
+            if sales_user_id and master_in["user_id"] and sales_user_id != master_in["user_id"]:
+                raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+            if sales_user_id and not master_in["user_id"]:
+                raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
             sales_user_id = master_in["user_id"]
-            sales_source = sales_source or SALES_SOURCE_EXISTING
-            preferred_master_id = master_in["id"]
-        elif core["status_order"] == STATUS_ORDER_NO and sales_source in ("", SALES_SOURCE_MANUAL):
-            # Active Master Sales without user mapping → manual-allowed snapshot.
-            sales_label = master_in["label"]
-            sales_user_id = None
-            sales_source = SALES_SOURCE_MANUAL
-            preferred_master_id = master_in["id"]
-        else:
-            sales_label = master_in["label"]
-            preferred_master_id = master_in["id"]
+            sales_source = SALES_SOURCE_EXISTING
 
     sales_label, sales_user_id, sales_source, sales_note = await _resolve_sales_assignment(
         db,
@@ -948,22 +1008,16 @@ async def build_normalized_doc(
         sales_label=sales_label,
         sales_source=sales_source,
         existing=existing,
+        verified_master=None if po_authoritative else master_in,
     )
-    # PO wins identity; Master Sales attach is exact-only and never changes sales_source.
+    # Attach Master only from authoritative Sales identity (exact label/uid).
+    # Never pass stale preferred_id when PO already owns Sales identity.
     sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
         db,
         sales_label=sales_label,
         sales_user_id=sales_user_id,
-        preferred_id=None if order else preferred_master_id,
+        preferred_id=None if po_authoritative else preferred_master_id,
     )
-    if order:
-        # Still try exact attach from PO-resolved label/uid (including preferred if exact).
-        sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
-            db,
-            sales_label=sales_label,
-            sales_user_id=sales_user_id,
-            preferred_id=preferred_master_id,
-        )
 
     no_order_reason_id, no_order_reason = await _resolve_no_order_fields(
         db,
