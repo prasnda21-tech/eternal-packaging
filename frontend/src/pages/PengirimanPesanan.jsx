@@ -1343,7 +1343,7 @@ export default function PengirimanPesanan() {
                         readOnly
                         value={
                           multiPoMode
-                            ? (Object.values(poSummariesById)[0]?.customer || "-")
+                            ? ((poSummariesById[selectedPoIds[0]] || Object.values(poSummariesById)[0])?.customer || "-")
                             : (poSummary?.customer || "-")
                         }
                         data-testid="display-customer"
@@ -1362,9 +1362,12 @@ export default function PengirimanPesanan() {
                         readOnly
                         value={
                           multiPoMode
-                            ? (Object.values(poSummariesById)[0]?.suggested_sj_number
-                              ? `${Object.values(poSummariesById)[0].suggested_sj_number} (multi-PO)`
-                              : "(Pilih PO)")
+                            ? (() => {
+                                const anchor = poSummariesById[selectedPoIds[0]] || Object.values(poSummariesById)[0];
+                                return anchor?.suggested_sj_number
+                                  ? `${anchor.suggested_sj_number} (multi-PO)`
+                                  : "(Pilih PO)";
+                              })()
                             : (poSummary?.suggested_sj_number
                               ? `${poSummary.suggested_sj_number} (#${poSummary.next_shipment_index})`
                               : "(Pilih PO)")
@@ -1765,7 +1768,12 @@ export default function PengirimanPesanan() {
             <button
               type="submit"
               className="ux90-btn-primary primary"
-              disabled={formBusy || !poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0}
+              disabled={
+                formBusy
+                || (multiPoMode ? selectedPoIds.length < 2 || combinedAllocRows.length === 0 : !poSummary)
+                || totalShippingQty <= 0
+                || overshipmentErrors.length > 0
+              }
               data-testid="btn-submit-delivery-order"
             >
               {formBusy ? "Memproses..." : "Simpan / Terbitkan SJ"}
