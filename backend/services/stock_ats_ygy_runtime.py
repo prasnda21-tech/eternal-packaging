@@ -169,6 +169,11 @@ def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_compl
         "reservations_at_cutoff empty unless Owner supplies WH-proven opening reservations; "
         "map only post-cutoff mutations with warehouse_id==YGY-MAIN"
     )
+    gaps.append(
+        "OLD_PO_CANCEL_SKIP_CONSEQUENCE: refusing RELEASE on pre-cutoff cancel avoids "
+        "inflating ATS, but free stock may remain UNDERSTATED because commitment was "
+        "already absorbed into the Owner baseline and is not restored by cancel"
+    )
     return gaps
 
 
@@ -224,6 +229,87 @@ def _append_skip(pack: dict, message: str) -> None:
     pack["skipped"].append(message)
 
 
+def _norm_unit(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _line_transaction_unit(line: dict) -> str:
+    return _norm_unit(
+        line.get("unit")
+        or line.get("satuan")
+        or line.get("transaction_uom")
+        or line.get("uom")
+    )
+
+
+def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) -> Dict[str, Any]:
+    """Return YGY-MAIN allocation qty only when unit/warehouse evidence is clear.
+
+    Does not invent YGY scope from branch attribution alone.
+    """
+    from services.stock_allocation import is_inventory_line, qty_num
+
+    if not is_inventory_line(line):
+        return {"qty": Decimal(0), "gap": None, "skip_non_inventory": True}
+    allocs = line.get("stock_allocations")
+    if not isinstance(allocs, list) or not allocs:
+        return {
+            "qty": Decimal(0),
+            "gap": "RESERVE_NO_WAREHOUSE_ALLOCATION: post-cutoff inventory line "
+            "lacks stock_allocations — refuse inventing YGY-MAIN reserve",
+            "skip_non_inventory": False,
+        }
+    line_unit = _line_transaction_unit(line)
+    base_unit = _norm_unit(baseline_unit)
+    if line_unit and base_unit and line_unit != base_unit:
+        return {
+            "qty": Decimal(0),
+            "gap": f"UNIT_MISMATCH_LINE:{line_unit}!={base_unit}",
+            "skip_non_inventory": False,
+        }
+    ygy_qty = Decimal(0)
+    other_wh = False
+    ambiguous = False
+    for entry in allocs:
+        if not isinstance(entry, dict):
+            ambiguous = True
+            continue
+        wid = str(entry.get("warehouse_id") or "").strip()
+        if not wid:
+            ambiguous = True
+            continue
+        alloc_unit = _norm_unit(entry.get("unit") or line_unit or base_unit)
+        if base_unit and alloc_unit and alloc_unit != base_unit:
+            return {
+                "qty": Decimal(0),
+                "gap": f"UNIT_MISMATCH_ALLOCATION:{alloc_unit}!={base_unit}",
+                "skip_non_inventory": False,
+            }
+        qty = qty_num(entry.get("qty") if entry.get("qty") is not None else entry.get("quantity"))
+        if qty <= 0:
+            continue
+        if wid == warehouse_id:
+            ygy_qty += quantity(qty)
+        else:
+            other_wh = True
+    if ambiguous and ygy_qty <= 0:
+        return {
+            "qty": Decimal(0),
+            "gap": "ALLOCATION_AMBIGUOUS: missing/invalid warehouse_id on allocation rows",
+            "skip_non_inventory": False,
+        }
+    if ygy_qty > 0:
+        return {"qty": ygy_qty, "gap": None, "skip_non_inventory": False}
+    if other_wh:
+        # Explicit other-warehouse demand — do not cut YGY ATS.
+        return {"qty": Decimal(0), "gap": None, "skip_non_inventory": False, "other_wh_only": True}
+    return {
+        "qty": Decimal(0),
+        "gap": "RESERVE_NO_YGY_ALLOCATION_QTY: allocations present but none for YGY-MAIN",
+        "skip_non_inventory": False,
+    }
+
+
 async def collect_ats_stream_for_ygy(
     db,
     *,
@@ -234,9 +320,16 @@ async def collect_ats_stream_for_ygy(
 ) -> Dict[str, Any]:
     """Build post-cutoff ATS events from official orders + YGY WH ledger.
 
+    RESERVE requires YGY-MAIN stock_allocations evidence (qty + matching unit);
+    branch attribution alone never invents a YGY warehouse reserve.
+
     Adoption: reservations_at_cutoff is always empty unless a future Owner
     snapshot supplies WH-proven keys. Pre-cutoff PO ship/cancel never become
-    ISSUE_FREE / RELEASE (would re-cut or inflate baseline).
+    ISSUE_FREE / RELEASE (would re-cut or inflate baseline). Skipping old-PO
+    cancel does NOT prove free stock is correct — baseline may stay understated.
+
+    REVERSAL maps any previously mapped event (SHIP / PURCHASE_RECEIPT / …);
+    unknown reference_id is an explicit coverage gap.
 
     evidence_complete is True only when every post-cutoff YGY ledger row for
     that master is mapped or intentionally skipped under adoption — never
@@ -283,6 +376,16 @@ async def collect_ats_stream_for_ygy(
         mid: str((elig.get(mid) or {}).get("satuan") or "PCS")
         for mid in mids
     }
+    # Master item_type for SERVICE/NON_INVENTORY gating when line omits type.
+    master_type_docs = await db.master_items.find(
+        {"id": {"$in": mids}},
+        {"_id": 0, "id": 1, "item_type": 1, "unit": 1},
+    ).to_list(max(len(mids), 1))
+    master_type_by_id = {
+        str(d.get("id") or "").strip(): str(d.get("item_type") or "").strip().upper()
+        for d in master_type_docs
+        if str(d.get("id") or "").strip()
+    }
 
     order_query: Dict[str, Any] = {"$or": mongo_order_branch_clauses(bid, settings)}
     raw_orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
@@ -293,7 +396,7 @@ async def collect_ats_stream_for_ygy(
         if str(o.get("id") or "").strip()
     }
 
-    # Post-cutoff reservation identities (empty opening snapshot).
+    # Post-cutoff reservation identities — only YGY-MAIN allocation evidence.
     post_cutoff_keys: Dict[str, Dict[str, Any]] = {}
     raw_events: List[dict] = []  # pending Event fields before sequence assign
 
@@ -320,39 +423,60 @@ async def collect_ats_stream_for_ygy(
             mid = str(line.get("master_item_id") or "").strip()
             if mid not in by_master:
                 continue
-            ordered = _qty_abs(line.get("quantity"))
-            if ordered <= 0:
+            pack = by_master[mid]
+            # Enrich item_type from master when line omits it.
+            line_for_type = dict(line)
+            if not str(line_for_type.get("item_type") or "").strip():
+                mt = master_type_by_id.get(mid) or ""
+                if mt:
+                    line_for_type["item_type"] = mt
+            if not is_post:
+                continue
+            baseline_unit = unit_by_mid.get(mid) or "PCS"
+            alloc = _ygy_allocation_qty(
+                line_for_type, warehouse_id=wid, baseline_unit=baseline_unit,
+            )
+            if alloc.get("skip_non_inventory"):
+                _append_skip(
+                    pack,
+                    f"SKIP_NON_INVENTORY_LINE:{oid}:{_reservation_key(oid, line, idx)}",
+                )
+                continue
+            if alloc.get("gap"):
+                _append_gap(pack, f"{alloc['gap']}:order={oid}")
+                continue
+            reserved_qty = quantity(alloc["qty"])
+            if reserved_qty <= 0:
+                if alloc.get("other_wh_only"):
+                    _append_skip(
+                        pack,
+                        f"SKIP_OTHER_WAREHOUSE_ALLOCATION:{oid}:"
+                        f"{_reservation_key(oid, line, idx)}: no YGY-MAIN cut",
+                    )
                 continue
             key = _reservation_key(oid, line, idx)
-            unit = unit_by_mid.get(mid) or "PCS"
-            if is_post:
-                # New PO after cutoff → RESERVE free blank.
-                post_cutoff_keys[key] = {
-                    "master_item_id": mid,
-                    "ordered_qty": ordered,
-                    "unit": unit,
-                    "order_id": oid,
-                    "created_at": created.isoformat(),
-                }
-                occurred = created.isoformat()
-                if created.tzinfo is not None and created.utcoffset() is not None:
-                    # Prefer original order string when parseable with tz.
-                    raw_created = str(order.get("created_at") or order.get("imported_at") or "").strip()
-                    if raw_created:
-                        occurred = raw_created
-                raw_events.append({
-                    "event_id": f"reserve:{key}",
-                    "warehouse_id": wid,
-                    "master_item_id": mid,
-                    "unit": unit,
-                    "occurred_at": occurred,
-                    "kind": mapped_kind("NEW_PO_LINE_RESERVE"),
-                    "qty": ordered,
-                    "reservation_key": key,
-                    "reverses_event_id": "",
-                    "business_code": "NEW_PO_LINE_RESERVE",
-                })
-            # else: pre-cutoff line — no opening reservation under adoption
+            unit = baseline_unit
+            post_cutoff_keys[key] = {
+                "master_item_id": mid,
+                "reserved_qty": reserved_qty,
+                "unit": unit,
+                "order_id": oid,
+                "created_at": created.isoformat(),
+            }
+            raw_created = str(order.get("created_at") or order.get("imported_at") or "").strip()
+            occurred = raw_created or created.isoformat()
+            raw_events.append({
+                "event_id": f"reserve:{key}",
+                "warehouse_id": wid,
+                "master_item_id": mid,
+                "unit": unit,
+                "occurred_at": occurred,
+                "kind": mapped_kind("NEW_PO_LINE_RESERVE"),
+                "qty": reserved_qty,
+                "reservation_key": key,
+                "reverses_event_id": "",
+                "business_code": "NEW_PO_LINE_RESERVE",
+            })
 
     # YGY warehouse ledger after cutoff (canonical physical mutations).
     ledger_docs = await db[LEDGER_COLLECTION].find(
@@ -363,8 +487,10 @@ async def collect_ats_stream_for_ygy(
         {"_id": 0},
     ).to_list(50000)
 
-    ship_event_by_movement: Dict[str, str] = {}
-    shipped_qty_by_key: Dict[str, Decimal] = {}
+    # movement_id → mapped ATS event_id (ship / recv / …)
+    mapped_event_by_movement: Dict[str, str] = {}
+    # Ships for RELEASE net calc: list of {movement_id, key, qty, occurred_at}
+    ship_rows: List[dict] = []
     reversal_docs: List[dict] = []
 
     def _ledger_in_window(doc: dict) -> Optional[tuple]:
@@ -384,7 +510,18 @@ async def collect_ats_stream_for_ygy(
         if not movement_id:
             _append_gap(pack, f"LEDGER_MISSING_ID:{mtype}")
             return None
-        return mid, pack, unit_by_mid.get(mid) or "PCS", mtype, occurred_raw, movement_id
+        return mid, pack, unit_by_mid.get(mid) or "PCS", mtype, occurred_raw, movement_id, occurred_dt
+
+    def _ledger_unit_ok(pack: dict, meta: dict, baseline_unit: str, movement_id: str) -> bool:
+        tx_unit = _norm_unit(meta.get("unit") or meta.get("satuan") or meta.get("uom"))
+        base = _norm_unit(baseline_unit)
+        if tx_unit and base and tx_unit != base:
+            _append_gap(
+                pack,
+                f"UNIT_MISMATCH_LEDGER:{movement_id}:{tx_unit}!={base}",
+            )
+            return False
+        return True
 
     # Pass 1: non-reversal mapped/unmapped ledger rows.
     for doc in ledger_docs:
@@ -395,7 +532,7 @@ async def collect_ats_stream_for_ygy(
         parsed = _ledger_in_window(doc)
         if parsed is None:
             continue
-        mid, pack, unit, mtype, occurred_raw, movement_id = parsed
+        mid, pack, unit, mtype, occurred_raw, movement_id, occurred_dt = parsed
         meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
         qty = _qty_abs(doc.get("qty_delta"))
 
@@ -411,13 +548,17 @@ async def collect_ats_stream_for_ygy(
                 f"UNKNOWN_LEDGER:{mtype or 'EMPTY'}:{movement_id}: unclassified movement",
             )
             continue
+        if not _ledger_unit_ok(pack, meta, unit, movement_id):
+            continue
 
         if mtype == MOVEMENT_PURCHASE_RECEIPT:
             if qty <= 0:
                 _append_gap(pack, f"PURCHASE_RECEIPT_BAD_QTY:{movement_id}")
                 continue
+            recv_eid = f"recv:{movement_id}"
+            mapped_event_by_movement[movement_id] = recv_eid
             raw_events.append({
-                "event_id": f"recv:{movement_id}",
+                "event_id": recv_eid,
                 "warehouse_id": wid,
                 "master_item_id": mid,
                 "unit": unit,
@@ -447,8 +588,15 @@ async def collect_ats_stream_for_ygy(
                     key = ""
             if key and key in post_cutoff_keys:
                 ship_eid = f"ship:{movement_id}"
-                ship_event_by_movement[movement_id] = ship_eid
-                shipped_qty_by_key[key] = shipped_qty_by_key.get(key, Decimal(0)) + qty
+                mapped_event_by_movement[movement_id] = ship_eid
+                ship_rows.append({
+                    "movement_id": movement_id,
+                    "event_id": ship_eid,
+                    "key": key,
+                    "qty": qty,
+                    "occurred_at": occurred_dt,
+                    "occurred_raw": occurred_raw,
+                })
                 raw_events.append({
                     "event_id": ship_eid,
                     "warehouse_id": wid,
@@ -482,16 +630,21 @@ async def collect_ats_stream_for_ygy(
             )
             continue
 
-    # Pass 2: reversals after ships are known — never invent RELEASE/inflate.
-    mapped_ship_ids = set(ship_event_by_movement.keys())
+    # Pass 2: reversals of ANY mapped event (ship, purchase receipt, …).
+    # Unknown reference_id → explicit gap (never silent skip).
+    reverse_at_by_movement: Dict[str, Any] = {}
     for doc in reversal_docs:
         parsed = _ledger_in_window(doc)
         if parsed is None:
             continue
-        mid, pack, unit, _mtype, occurred_raw, movement_id = parsed
+        mid, pack, unit, _mtype, occurred_raw, movement_id, occurred_dt = parsed
         ref = str(doc.get("reference_id") or "").strip()
-        if ref and ref in mapped_ship_ids:
-            ship_eid = ship_event_by_movement[ref]
+        if not ref:
+            _append_gap(pack, f"REVERSAL_MISSING_REFERENCE:{movement_id}")
+            continue
+        target_eid = mapped_event_by_movement.get(ref)
+        if target_eid:
+            reverse_at_by_movement[ref] = occurred_dt
             raw_events.append({
                 "event_id": f"rev:{movement_id}",
                 "warehouse_id": wid,
@@ -501,16 +654,19 @@ async def collect_ats_stream_for_ygy(
                 "kind": mapped_kind("LEDGER_REVERSAL"),
                 "qty": Decimal(0),
                 "reservation_key": "",
-                "reverses_event_id": ship_eid,
+                "reverses_event_id": target_eid,
                 "business_code": "LEDGER_REVERSAL",
             })
         else:
-            _append_skip(
+            _append_gap(
                 pack,
-                f"SKIP_REVERSAL_WITHOUT_MAPPED_SHIP:{movement_id}:ref={ref}",
+                f"REVERSAL_UNKNOWN_REFERENCE:{movement_id}:ref={ref}: "
+                "not mapped to ATS event (incl. skipped old-PO / unmapped kinds)",
             )
 
-    # Cancel / release remaining only for post-cutoff reservations.
+    # Cancel / release remaining only for post-cutoff YGY reservations.
+    # Remaining = reserved − NET shipped at/before cancel (ships reversed at/before
+    # cancel do not consume reservation).
     for key, info in post_cutoff_keys.items():
         mid = info["master_item_id"]
         pack = by_master[mid]
@@ -518,7 +674,6 @@ async def collect_ats_stream_for_ygy(
         if order is None:
             continue
         cancelled = _order_cancelled(order)
-        # Line-level cancel: find matching line
         line_cancelled = False
         cancel_time_raw = str(
             order.get("cancelled_at") or order.get("updated_at") or ""
@@ -547,12 +702,22 @@ async def collect_ats_stream_for_ygy(
                     f"CANCEL_TIME_UNPARSEABLE:{key}: cannot RELEASE remaining",
                 )
             continue
-        shipped = shipped_qty_by_key.get(key, Decimal(0))
-        remaining = info["ordered_qty"] - shipped
+        net_shipped = Decimal(0)
+        for ship in ship_rows:
+            if ship["key"] != key:
+                continue
+            if ship["occurred_at"] > cancel_dt:
+                continue
+            rev_at = reverse_at_by_movement.get(ship["movement_id"])
+            if rev_at is not None and rev_at <= cancel_dt:
+                continue  # reversed before/at cancel → not consuming reservation
+            net_shipped += quantity(ship["qty"])
+        remaining = quantity(info["reserved_qty"]) - net_shipped
         if remaining < 0:
             _append_gap(
                 pack,
-                f"OVERSHIP_VS_RESERVE:{key}:shipped={shipped}:ordered={info['ordered_qty']}",
+                f"OVERSHIP_VS_RESERVE:{key}:net_shipped={net_shipped}:"
+                f"reserved={info['reserved_qty']}",
             )
             continue
         if remaining == 0:
@@ -570,7 +735,8 @@ async def collect_ats_stream_for_ygy(
             "business_code": "CANCEL_OR_RELEASE_REMAINING",
         })
 
-    # Also: cancel of pre-cutoff PO must not RELEASE (empty opening reservations).
+    # Pre-cutoff cancel: refuse RELEASE inflate. Explicit consequence: free ATS
+    # may remain understated because baseline already absorbed old commitment.
     for order in orders:
         oid = str(order.get("id") or "").strip()
         created = _parse_event_time(order.get("created_at") or order.get("imported_at"))
@@ -597,7 +763,9 @@ async def collect_ats_stream_for_ygy(
                 continue
             _append_skip(
                 by_master[mid],
-                f"SKIP_OLD_PO_CANCEL_NO_OPENING_RESERVATION:{key}: refuse RELEASE inflate",
+                f"SKIP_OLD_PO_CANCEL_NO_OPENING_RESERVATION:{key}: refuse RELEASE inflate; "
+                "CONSEQUENCE: free ATS may remain UNDERSTATED vs true free stock — "
+                "pre-cutoff commitment was adopted into baseline and cancel cannot restore it",
             )
 
     # Assign canonical sequences per master (time, event_id).

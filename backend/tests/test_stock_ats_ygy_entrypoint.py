@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -27,6 +28,7 @@ from services.physical_stock import (  # noqa: E402
     LEDGER_COLLECTION,
     MASTER_ITEMS_COLLECTION,
     MOVEMENT_PURCHASE_RECEIPT,
+    MOVEMENT_REVERSAL,
     MOVEMENT_SALES_DELIVERY,
     WAREHOUSES_COLLECTION,
     ensure_indexes,
@@ -39,6 +41,7 @@ from services.stock_ats_ygy_runtime import (  # noqa: E402
     YGY_WAREHOUSE_ID,
     collect_ats_stream_for_ygy,
     order_matches_ygy_mode_b,
+    project_master_ats,
 )
 from services.warehouse_stock_standalone import (  # noqa: E402
     set_warehouse_stock_standalone_enabled,
@@ -64,10 +67,14 @@ def anyio_backend():
 
 
 @pytest.fixture
-async def db():
+async def db(monkeypatch):
     assert "preview" not in TEST_DB
     prev_mode = os.environ.get("ETERNAL_ATS_YGY_MODE")
     os.environ["ETERNAL_ATS_YGY_MODE"] = "draft_read"
+    # Catalog ATS as_of uses physical_stock.now_iso — freeze after all fixture events.
+    import services.physical_stock as physical_stock_mod
+
+    monkeypatch.setattr(physical_stock_mod, "now_iso", lambda: AS_OF_LATER)
     client = AsyncIOMotorClient(MONGO_URL)
     database = client[TEST_DB]
     await client.drop_database(TEST_DB)
@@ -138,6 +145,18 @@ async def _seed_master_wh(db, *, physical_qty: float = -19300):
     return item, branch, wh
 
 
+OTHER_WH_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _ygy_alloc(qty: int, *, unit: str = "PCS", warehouse_id: str = YGY_WAREHOUSE_ID):
+    return [{
+        "allocation_id": f"sa-{uuid.uuid4().hex[:8]}",
+        "warehouse_id": warehouse_id,
+        "qty": qty,
+        "unit": unit,
+    }]
+
+
 async def _insert_delivery(
     db,
     *,
@@ -147,6 +166,7 @@ async def _insert_delivery(
     qty: int,
     occurred_at: str,
     movement_id: str | None = None,
+    unit: str = "PCS",
 ):
     mid = movement_id or f"sd-{uuid.uuid4().hex[:10]}"
     await db[LEDGER_COLLECTION].insert_one({
@@ -168,9 +188,31 @@ async def _insert_delivery(
             "line_id": line_id,
             "line_idx": line_idx,
             "confirmation_id": f"conf-{mid}",
+            "unit": unit,
         },
     })
     return mid
+
+
+async def _insert_reversal(db, *, original_id: str, occurred_at: str, qty_delta: int = 0):
+    rid = f"rev-{uuid.uuid4().hex[:10]}"
+    await db[LEDGER_COLLECTION].insert_one({
+        "id": rid,
+        "master_item_id": MID_100032,
+        "branch_id": YGY_BRANCH_ID,
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "movement_type": MOVEMENT_REVERSAL,
+        "qty_delta": int(qty_delta) if qty_delta else 1,  # physical sign unused by ATS REVERSE qty=0
+        "reference_type": "physical_stock_ledger",
+        "reference_id": original_id,
+        "reason": "reversal",
+        "actor_id": "t",
+        "occurred_at": occurred_at,
+        "created_at": occurred_at,
+        "idempotency_key": f"reversal:{original_id}",
+        "metadata": {},
+    })
+    return rid
 
 
 async def _catalog_row(db, *, q: str = "100032"):
@@ -281,6 +323,7 @@ async def test_entrypoint_old_po_cancel_does_not_inflate(db):
     assert pack["evidence_complete"] is True
     assert not any(e.kind == "RELEASE" for e in pack["events"])
     assert any("SKIP_OLD_PO_CANCEL" in s for s in pack["skipped"])
+    assert any("UNDERSTATED" in s for s in pack["skipped"])
     _, row = await _catalog_row(db)
     assert row["ats_cutover_status"] == "READY"
     assert row["stock_dapat_dijual"] == 20000.0
@@ -300,7 +343,10 @@ async def test_entrypoint_new_po_reserve_and_ship_reserved(db):
             "line_id": "ln-new",
             "master_item_id": MID_100032,
             "quantity": 2000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
             "production_process": "non_print",
+            "stock_allocations": _ygy_alloc(2000),
         }],
     })
     _, row1 = await _catalog_row(db)
@@ -331,6 +377,9 @@ async def test_entrypoint_new_po_cancel_releases_remaining(db):
             "line_id": "ln-newc",
             "master_item_id": MID_100032,
             "quantity": 2000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(2000),
         }],
     })
     await _insert_delivery(
@@ -363,7 +412,7 @@ async def test_entrypoint_purchase_receipt_receive_free(db):
         "occurred_at": AFTER,
         "created_at": AFTER,
         "idempotency_key": f"purchase-receipt:pr-1:{uuid.uuid4().hex[:6]}",
-        "metadata": {},
+        "metadata": {"unit": "PCS"},
     })
     _, row = await _catalog_row(db)
     assert row["ats_cutover_status"] == "READY"
@@ -415,6 +464,9 @@ async def test_list_detail_export_same_ats_projection(db):
             "line_id": "ln-p",
             "master_item_id": MID_100032,
             "quantity": 2000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(2000),
         }],
     })
     list_cat = await list_physical_stock_catalog(
@@ -439,3 +491,162 @@ async def test_list_detail_export_same_ats_projection(db):
     ):
         assert a[key] == b[key] == c[key]
     assert a["stock_dapat_dijual"] == 18000.0
+
+
+async def test_entrypoint_other_warehouse_po_does_not_cut_ygy_ats(db):
+    await _seed_master_wh(db)
+    await db[WAREHOUSES_COLLECTION].insert_one({
+        "id": OTHER_WH_ID,
+        "branch_id": YGY_BRANCH_ID,
+        "code": "YGY-OTHER",
+        "name": "Other WH",
+        "active": True,
+        "is_operational": True,
+    })
+    oid = f"so-oth-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-oth",
+            "master_item_id": MID_100032,
+            "quantity": 4000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(4000, warehouse_id=OTHER_WH_ID),
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert pack["evidence_complete"] is True
+    assert not any(e.kind == "RESERVE" for e in pack["events"])
+    assert any("SKIP_OTHER_WAREHOUSE_ALLOCATION" in s for s in pack["skipped"])
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "READY"
+    assert row["stock_dapat_dijual"] == 20000.0
+
+
+async def test_entrypoint_unit_mismatch_is_gap_not_ready(db):
+    await _seed_master_wh(db)
+    oid = f"so-uom-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-uom",
+            "master_item_id": MID_100032,
+            "quantity": 2000,
+            "unit": "BOX",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(2000, unit="BOX"),
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert pack["evidence_complete"] is False
+    assert any("UNIT_MISMATCH" in g for g in pack["gaps"])
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "UNAVAILABLE"
+    assert row["stock_dapat_dijual"] is None
+    assert row["physical_qty"] == -19300
+
+
+async def test_entrypoint_receive_then_reversal_restores_ats(db):
+    await _seed_master_wh(db)
+    pr_id = f"pr-{uuid.uuid4().hex[:8]}"
+    await db[LEDGER_COLLECTION].insert_one({
+        "id": pr_id,
+        "master_item_id": MID_100032,
+        "branch_id": YGY_BRANCH_ID,
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "movement_type": MOVEMENT_PURCHASE_RECEIPT,
+        "qty_delta": 500,
+        "reference_type": "purchase_receipt",
+        "reference_id": "pr-line-1",
+        "reason": "receipt",
+        "actor_id": "t",
+        "occurred_at": AFTER,
+        "created_at": AFTER,
+        "idempotency_key": f"purchase-receipt:{pr_id}",
+        "metadata": {"unit": "PCS"},
+    })
+    await _insert_reversal(
+        db,
+        original_id=pr_id,
+        occurred_at=(CUTOFF + timedelta(hours=2)).isoformat(),
+        qty_delta=-500,
+    )
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert pack["evidence_complete"] is True
+    kinds = [e.kind for e in pack["events"]]
+    assert "RECEIVE_FREE" in kinds
+    assert "REVERSE" in kinds
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "READY"
+    assert row["stock_dapat_dijual"] == 20000.0
+
+
+async def test_entrypoint_reserve_ship_reverse_cancel_returns_baseline(db):
+    await _seed_master_wh(db)
+    oid = f"so-rsc-{uuid.uuid4().hex[:6]}"
+    t_reserve = AFTER
+    t_ship = (CUTOFF + timedelta(hours=1, minutes=30)).isoformat()
+    t_rev = (CUTOFF + timedelta(hours=2)).isoformat()
+    t_cancel = (CUTOFF + timedelta(hours=3)).isoformat()
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": t_reserve,
+        "cancelled": True,
+        "cancelled_at": t_cancel,
+        "line_items": [{
+            "line_id": "ln-rsc",
+            "master_item_id": MID_100032,
+            "quantity": 2000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(2000),
+        }],
+    })
+    ship_id = await _insert_delivery(
+        db, order_id=oid, line_id="ln-rsc", line_idx=0, qty=500, occurred_at=t_ship,
+    )
+    await _insert_reversal(db, original_id=ship_id, occurred_at=t_rev, qty_delta=500)
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert pack["evidence_complete"] is True
+    kinds = [e.kind for e in pack["events"]]
+    assert kinds.count("RESERVE") == 1
+    assert kinds.count("SHIP_RESERVED") == 1
+    assert kinds.count("REVERSE") == 1
+    assert kinds.count("RELEASE") == 1
+    # RELEASE must restore full reserved qty (net ship after reverse = 0)
+    release = next(e for e in pack["events"] if e.kind == "RELEASE")
+    assert str(release.qty) == "2000"
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "READY"
+    assert row["stock_dapat_dijual"] == 20000.0
+    projected = project_master_ats(
+        master_item_id=MID_100032,
+        as_of=AS_OF_LATER,
+        reservations_at_cutoff=pack["reservations_at_cutoff"],
+        events=pack["events"],
+        evidence_complete=True,
+    )
+    assert projected["status"] == "READY"
+    assert projected["available_qty"] == 20000.0
+    rem = projected.get("remaining_reservations") or {}
+    assert all(Decimal(v) == 0 for v in rem.values())

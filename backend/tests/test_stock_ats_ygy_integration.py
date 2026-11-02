@@ -289,6 +289,8 @@ class AtsYgyIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(any("ZERO_STOCK_ALLOCATIONS" in g for g in gaps))
         self.assertTrue(any("ADOPTION_POLICY" in g for g in gaps))
+        self.assertTrue(any("OLD_PO_CANCEL_SKIP_CONSEQUENCE" in g for g in gaps))
+        self.assertTrue(any("UNDERSTATED" in g for g in gaps))
 
     def test_mode_off_does_not_override(self):
         os.environ["ETERNAL_ATS_YGY_MODE"] = "off"
