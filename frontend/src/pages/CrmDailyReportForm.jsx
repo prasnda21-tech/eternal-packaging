@@ -14,6 +14,7 @@ import {
   SALES_SOURCE_LEGACY,
   SALES_SOURCE_MANUAL,
   STATUS_ORDER_OPTIONS,
+  assessCrmPoCustomerLink,
   buildCrmDailyDraftSnapshot,
   canCreateCrmDailyReport,
   canEditOwnCrmDailyReport,
@@ -81,10 +82,16 @@ export default function CrmDailyReportForm() {
   const [toast, setToast] = useState("");
   const [customerQ, setCustomerQ] = useState("");
   const [customerHits, setCustomerHits] = useState([]);
+  const [customerSearchLoading, setCustomerSearchLoading] = useState(false);
+  const [customerSearchError, setCustomerSearchError] = useState("");
+  const [customerSearchTick, setCustomerSearchTick] = useState(0);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [poQ, setPoQ] = useState("");
   const [poHits, setPoHits] = useState([]);
+  const [poSearchError, setPoSearchError] = useState("");
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [identityNote, setIdentityNote] = useState("");
+  const [pendingLegacyOrder, setPendingLegacyOrder] = useState(null);
   const [salesOptions, setSalesOptions] = useState([]);
   const [salesQ, setSalesQ] = useState("");
   const [salesOpen, setSalesOpen] = useState(false);
@@ -214,27 +221,59 @@ export default function CrmDailyReportForm() {
   }, [customerQ, draftKey, draftPersistReady, form, mode, poQ, salesQ, selectedCustomer, selectedOrder]);
 
   useEffect(() => {
-    if (form.status_customer !== "Repeat" || mode !== "edit") return undefined;
+    if (form.status_customer !== "Repeat" || mode !== "edit") {
+      setCustomerSearchLoading(false);
+      setCustomerSearchError("");
+      return undefined;
+    }
+    let cancelled = false;
+    setCustomerSearchLoading(true);
+    setCustomerSearchError("");
     const handle = window.setTimeout(() => {
       api.crmDailyReportCustomers({ q: customerQ })
-        .then((r) => setCustomerHits(r.customers || []))
-        .catch(() => setCustomerHits([]));
+        .then((r) => {
+          if (cancelled) return;
+          setCustomerHits(Array.isArray(r.customers) ? r.customers : []);
+          setCustomerSearchLoading(false);
+          setCustomerSearchError("");
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setCustomerHits([]);
+          setCustomerSearchLoading(false);
+          setCustomerSearchError(errText(err) || "Gagal memuat customer master");
+        });
     }, 150);
-    return () => window.clearTimeout(handle);
-  }, [customerQ, form.status_customer, mode]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [customerQ, form.status_customer, mode, customerSearchTick]);
 
   useEffect(() => {
     if (mode !== "edit") return undefined;
+    let cancelled = false;
     const handle = window.setTimeout(() => {
       const params = { q: poQ };
       if (form.status_customer === "Repeat" && form.customer_id) {
         params.customer_id = form.customer_id;
       }
       api.crmDailyReportOrders(params)
-        .then((r) => setPoHits(r.orders || []))
-        .catch(() => setPoHits([]));
+        .then((r) => {
+          if (cancelled) return;
+          setPoHits(Array.isArray(r.orders) ? r.orders : []);
+          setPoSearchError("");
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setPoHits([]);
+          setPoSearchError(errText(err) || "Gagal memuat daftar PO");
+        });
     }, 150);
-    return () => window.clearTimeout(handle);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
   }, [poQ, form.customer_id, form.status_customer, mode]);
 
   // Operational sales identity from Master Sales catalog (meta.sales_catalog).
@@ -264,79 +303,235 @@ export default function CrmDailyReportForm() {
 
   const reporterName = meta?.reporter?.name || user?.name || "—";
 
-  const applyOrderSelection = (order) => {
-    if (!order) {
-      setSelectedOrder(null);
-      setForm((prev) => ({
-        ...prev,
-        order_id: "",
-        po_number: "",
-        sales_locked_from_po: false,
-        sales_note: "",
-        // Drop PO-derived Sales/Master so a prior selection cannot look verified.
-        sales_master_id: "",
-        sales_user_id: "",
-        sales_label: "",
-        sales_choice: "",
-        sales_source: "",
-      }));
-      setSalesQ("");
-      setPoQ("");
-      return;
-    }
-    setSelectedOrder(order);
-    setPoQ(order.po_number || "");
+  const applySalesFromOrder = (order, prev) => {
     const verified = Boolean(order.sales_verified && (order.sales_user_id || order.sales_label_resolved));
     const catalog = meta?.sales_catalog || [];
+    // Always clear stale Master before applying PO Sales identity (#718).
+    const next = { ...prev, sales_master_id: "" };
+    if (verified) {
+      next.sales_user_id = order.sales_user_id || "";
+      next.sales_label = order.sales_label_resolved || order.sales || "";
+      next.sales_source = SALES_SOURCE_EXISTING;
+      next.sales_choice = order.sales_user_id || "";
+      next.sales_locked_from_po = true;
+      next.sales_note = "Sales mengikuti PO yang dipilih";
+      next.sales_master_id = matchSalesMasterId(catalog, {
+        userId: next.sales_user_id,
+        label: next.sales_label,
+      });
+      setSalesQ(next.sales_label);
+      return next;
+    }
+    const rawLabel = String(order.sales_label_resolved || order.sales || "").trim();
+    if (rawLabel) {
+      next.sales_user_id = "";
+      next.sales_label = rawLabel;
+      next.sales_source = SALES_SOURCE_LEGACY;
+      next.sales_choice = "";
+      next.sales_locked_from_po = true;
+      next.sales_note = "Sales PO belum terpetakan; label Accurate dipertahankan";
+      next.sales_master_id = matchSalesMasterId(catalog, { label: rawLabel });
+      setSalesQ(rawLabel);
+      return next;
+    }
+    // Blank PO Sales — clear prior Sales so unrelated Master is not shown (#718).
+    next.sales_locked_from_po = false;
+    next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
+    next.sales_master_id = "";
+    next.sales_source = "";
+    next.sales_choice = "";
+    next.sales_user_id = "";
+    next.sales_label = "";
+    setSalesQ("");
+    return next;
+  };
+
+  const bindCustomerFromMaster = (customer) => {
+    if (!customer?.id) return;
+    setSelectedCustomer(customer);
+    setCustomerQ(customer.name || "");
+    setForm((prev) => ({
+      ...prev,
+      status_customer: "Repeat",
+      customer_id: customer.id,
+      outlet_name: customer.name || "",
+      whatsapp: customer.phone || "",
+    }));
+    setErrors((prev) => {
+      if (!prev.customer_id && !prev.order_id) return prev;
+      const n = { ...prev };
+      delete n.customer_id;
+      delete n.order_id;
+      return n;
+    });
+  };
+
+  const clearOrderSelection = () => {
+    setSelectedOrder(null);
+    setPendingLegacyOrder(null);
+    setIdentityNote("");
+    setPoQ("");
+    setSalesQ("");
+    setForm((prev) => ({
+      ...prev,
+      order_id: "",
+      po_number: "",
+      sales_locked_from_po: false,
+      sales_note: "",
+      // Drop PO-derived Sales/Master so a prior selection cannot look verified (#718).
+      sales_master_id: "",
+      sales_user_id: "",
+      sales_label: "",
+      sales_choice: "",
+      sales_source: "",
+      legacy_po_customer_confirmed: false,
+      legacy_po_needs_confirm: false,
+    }));
+  };
+
+  const commitOrderSelection = (order, { bindCustomer = null, legacyNeedsConfirm = false, legacyConfirmed = false, note = "" } = {}) => {
+    setPendingLegacyOrder(null);
+    setSelectedOrder(order);
+    setPoQ(order.po_number || "");
+    setIdentityNote(note || "");
+    if (bindCustomer?.id) {
+      bindCustomerFromMaster(bindCustomer);
+    }
     setForm((prev) => {
-      const next = {
+      let next = {
         ...prev,
         order_id: order.id || "",
         po_number: order.po_number || "",
-        // Always clear stale Master before applying PO Sales identity.
+        legacy_po_needs_confirm: Boolean(legacyNeedsConfirm),
+        legacy_po_customer_confirmed: Boolean(legacyConfirmed),
+        // Always clear stale Master before applying PO Sales identity (#718).
         sales_master_id: "",
       };
-      if (verified) {
-        next.sales_user_id = order.sales_user_id || "";
-        next.sales_label = order.sales_label_resolved || order.sales || "";
-        next.sales_source = SALES_SOURCE_EXISTING;
-        next.sales_choice = order.sales_user_id || "";
-        next.sales_locked_from_po = true;
-        next.sales_note = "Sales mengikuti PO yang dipilih";
-        next.sales_master_id = matchSalesMasterId(catalog, {
-          userId: next.sales_user_id,
-          label: next.sales_label,
-        });
-        setSalesQ(next.sales_label);
-      } else {
-        const rawLabel = String(order.sales_label_resolved || order.sales || "").trim();
-        if (rawLabel) {
-          // Unmapped PO: keep Accurate label; do not silently substitute another Sales.
-          next.sales_user_id = "";
-          next.sales_label = rawLabel;
-          next.sales_source = SALES_SOURCE_LEGACY;
-          next.sales_choice = "";
-          next.sales_locked_from_po = true;
-          next.sales_note = "Sales PO belum terpetakan; label Accurate dipertahankan";
-          next.sales_master_id = matchSalesMasterId(catalog, { label: rawLabel });
-          setSalesQ(rawLabel);
-        } else {
-          // Blank PO Sales — clear prior Sales so unrelated Master is not shown.
-          next.sales_locked_from_po = false;
-          next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
-          next.sales_master_id = "";
-          next.sales_source = "";
-          next.sales_choice = "";
-          next.sales_user_id = "";
-          next.sales_label = "";
-          setSalesQ("");
-        }
+      if (bindCustomer?.id) {
+        next = {
+          ...next,
+          status_customer: "Repeat",
+          customer_id: bindCustomer.id,
+          outlet_name: bindCustomer.name || "",
+          whatsapp: bindCustomer.phone || "",
+        };
       }
-      return next;
+      return applySalesFromOrder(order, next);
     });
     setErrors((prev) => {
       const n = { ...prev };
       delete n.sales_label;
+      delete n.order_id;
+      delete n.customer_id;
+      return n;
+    });
+  };
+
+  const applyOrderSelection = (order) => {
+    if (!order) {
+      clearOrderSelection();
+      return;
+    }
+    const selectedCid = form.status_customer === "Repeat" ? form.customer_id : "";
+    const assessment = assessCrmPoCustomerLink({
+      order,
+      selectedCustomerId: selectedCid,
+      statusCustomer: form.status_customer === "Repeat" ? "Repeat" : form.status_customer,
+      legacyConfirmed: Boolean(form.legacy_po_customer_confirmed),
+    });
+
+    if (form.status_customer === "Repeat") {
+      if (assessment.action === "reject") {
+        setIdentityNote(assessment.reason);
+        setToast(assessment.reason);
+        setPendingLegacyOrder(null);
+        return;
+      }
+      if (assessment.action === "confirm_legacy") {
+        setPendingLegacyOrder(order);
+        setIdentityNote(assessment.reason);
+        return;
+      }
+      const legacyNeeds = !String(order.customer_id || "").trim() && Boolean(selectedCid);
+      commitOrderSelection(order, {
+        bindCustomer: assessment.bindCustomer,
+        legacyNeedsConfirm: legacyNeeds || Boolean(assessment.reason && !assessment.bindCustomer && !selectedCid && !order.customer_id),
+        legacyConfirmed: legacyNeeds ? Boolean(form.legacy_po_customer_confirmed) : false,
+        note: assessment.reason,
+      });
+      return;
+    }
+
+    // New / other: optional PO, no master auto-bind from name.
+    commitOrderSelection(order, { note: "" });
+  };
+
+  const confirmLegacyPoIdentity = () => {
+    const order = pendingLegacyOrder || selectedOrder;
+    if (!order) return;
+    commitOrderSelection(order, {
+      legacyNeedsConfirm: true,
+      legacyConfirmed: true,
+      note: "Identitas PO legacy dikonfirmasi secara eksplisit",
+    });
+  };
+
+  const selectRepeatCustomer = (customer) => {
+    if (!customer?.id) return;
+    const order = selectedOrder;
+    if (order) {
+      const assessment = assessCrmPoCustomerLink({
+        order,
+        selectedCustomerId: customer.id,
+        statusCustomer: "Repeat",
+        legacyConfirmed: false,
+      });
+      if (assessment.action === "reject") {
+        setIdentityNote(assessment.reason);
+        setToast(assessment.reason);
+        return;
+      }
+      if (assessment.action === "confirm_legacy") {
+        setSelectedCustomer(customer);
+        setCustomerQ(customer.name || "");
+        setForm((prev) => ({
+          ...prev,
+          status_customer: "Repeat",
+          customer_id: customer.id,
+          outlet_name: customer.name || "",
+          whatsapp: customer.phone || "",
+          legacy_po_needs_confirm: true,
+          legacy_po_customer_confirmed: false,
+        }));
+        setPendingLegacyOrder(order);
+        setIdentityNote(assessment.reason);
+        setErrors((prev) => {
+          if (!prev.customer_id) return prev;
+          const n = { ...prev };
+          delete n.customer_id;
+          return n;
+        });
+        return;
+      }
+    }
+    setSelectedCustomer(customer);
+    setCustomerQ(customer.name || "");
+    setForm((prev) => ({
+      ...prev,
+      status_customer: "Repeat",
+      customer_id: customer.id,
+      outlet_name: customer.name || "",
+      whatsapp: customer.phone || "",
+      legacy_po_needs_confirm: false,
+      legacy_po_customer_confirmed: false,
+    }));
+    setIdentityNote("");
+    setPendingLegacyOrder(null);
+    setErrors((prev) => {
+      if (!prev.customer_id && !prev.order_id) return prev;
+      const n = { ...prev };
+      delete n.customer_id;
+      delete n.order_id;
       return n;
     });
   };
@@ -629,14 +824,44 @@ export default function CrmDailyReportForm() {
           <Field label="Status Customer" required error={errors.status_customer}>
             <div className="cdr-toggle" role="group" aria-label="Status Customer">
               <button type="button" className={form.status_customer === "New" ? "is-on" : ""} data-testid="cdr-status-new" onClick={() => {
-                patch("status_customer", "New");
+                setForm((prev) => ({
+                  ...prev,
+                  status_customer: "New",
+                  customer_id: "",
+                  legacy_po_customer_confirmed: false,
+                  legacy_po_needs_confirm: false,
+                }));
                 setSelectedCustomer(null);
-                patch("customer_id", "");
+                setPendingLegacyOrder(null);
+                setIdentityNote("");
+                setCustomerSearchError("");
+                setErrors((prev) => {
+                  if (!prev.status_customer && !prev.customer_id && !prev.order_id) return prev;
+                  const n = { ...prev };
+                  delete n.status_customer;
+                  delete n.customer_id;
+                  delete n.order_id;
+                  return n;
+                });
               }}>New</button>
               <button type="button" className={form.status_customer === "Repeat" ? "is-on" : ""} data-testid="cdr-status-repeat" onClick={() => {
-                patch("status_customer", "Repeat");
-                patch("outlet_name", "");
-                patch("whatsapp", "");
+                setForm((prev) => ({
+                  ...prev,
+                  status_customer: "Repeat",
+                  outlet_name: "",
+                  whatsapp: "",
+                  legacy_po_customer_confirmed: false,
+                  legacy_po_needs_confirm: Boolean(selectedOrder && !String(selectedOrder.customer_id || "").trim()),
+                }));
+                setIdentityNote("");
+                setPendingLegacyOrder(null);
+                setErrors((prev) => {
+                  if (!prev.status_customer && !prev.whatsapp) return prev;
+                  const n = { ...prev };
+                  delete n.status_customer;
+                  delete n.whatsapp;
+                  return n;
+                });
               }}>Repeat</button>
             </div>
           </Field>
@@ -719,28 +944,45 @@ export default function CrmDailyReportForm() {
                   Terpilih: {selectedCustomer.name} · {selectedCustomer.phone || "—"}
                 </p>
               )}
+              {customerSearchLoading ? (
+                <p className="cdr-hint" data-testid="cdr-customer-loading">Memuat customer master…</p>
+              ) : null}
+              {customerSearchError ? (
+                <div className="cdr-search-error" data-testid="cdr-customer-error">
+                  <p>{customerSearchError}</p>
+                  <button
+                    type="button"
+                    className="ghost"
+                    data-testid="cdr-customer-retry"
+                    onClick={() => setCustomerSearchTick((n) => n + 1)}
+                  >
+                    Coba lagi
+                  </button>
+                </div>
+              ) : null}
               <ul className="cdr-customer-results" id={listId} data-testid="cdr-customer-results">
-                {customerHits.map((c) => (
+                {!customerSearchLoading && !customerSearchError && customerHits.map((c) => (
                   <li key={c.id}>
                     <button
                       type="button"
-                      onClick={() => {
-                        setSelectedCustomer(c);
-                        patch("customer_id", c.id);
-                        patch("outlet_name", c.name || "");
-                        patch("whatsapp", c.phone || "");
-                        setCustomerQ(c.name || "");
-                      }}
+                      onClick={() => selectRepeatCustomer(c)}
                     >
                       {c.name} · {c.phone || "—"}{c.city ? ` · ${c.city}` : ""}
                     </button>
                   </li>
                 ))}
+                {!customerSearchLoading && !customerSearchError && !customerHits.length ? (
+                  <li className="cdr-empty-hit" data-testid="cdr-customer-empty">
+                    {customerQ.trim()
+                      ? "Customer master aktif tidak ditemukan"
+                      : "Ketik untuk mencari, atau fokus untuk melihat customer aktif"}
+                  </li>
+                ) : null}
               </ul>
             </Field>
           )}
 
-          <Field label="Nomor PO (opsional)" wide>
+          <Field label="Nomor PO (opsional)" wide error={errors.order_id}>
             <input
               value={poQ}
               onChange={(e) => {
@@ -764,6 +1006,27 @@ export default function CrmDailyReportForm() {
                 </button>
               </p>
             )}
+            {identityNote ? (
+              <p className="cdr-hint" data-testid="cdr-identity-note">{identityNote}</p>
+            ) : null}
+            {pendingLegacyOrder || (form.legacy_po_needs_confirm && !form.legacy_po_customer_confirmed && form.customer_id && form.order_id) ? (
+              <div className="cdr-legacy-confirm" data-testid="cdr-legacy-po-confirm">
+                <p>PO tanpa customer_id canonical. Konfirmasi identitas pelanggan secara eksplisit (bukan dari kemiripan nama).</p>
+                <p data-testid="cdr-legacy-po-names">
+                  Nama di PO: {(pendingLegacyOrder || selectedOrder)?.customer || "—"}
+                  {" · "}
+                  Master terpilih: {selectedCustomer?.name || form.outlet_name || "—"}
+                </p>
+                <button type="button" className="primary" data-testid="cdr-legacy-po-confirm-btn" onClick={confirmLegacyPoIdentity}>
+                  Konfirmasi identitas pelanggan
+                </button>
+              </div>
+            ) : null}
+            {poSearchError ? (
+              <div className="cdr-search-error" data-testid="cdr-po-error">
+                <p>{poSearchError}</p>
+              </div>
+            ) : null}
             <ul className="cdr-customer-results" id={poListId} data-testid="cdr-po-results">
               {poHits.map((order) => (
                 <li key={order.id}>
@@ -776,7 +1039,7 @@ export default function CrmDailyReportForm() {
                   </button>
                 </li>
               ))}
-              {!poHits.length && poQ.trim() ? (
+              {!poHits.length && poQ.trim() && !poSearchError ? (
                 <li className="cdr-empty-hit">Tidak ada PO yang cocok</li>
               ) : null}
             </ul>

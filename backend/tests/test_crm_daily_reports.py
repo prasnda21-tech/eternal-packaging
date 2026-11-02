@@ -800,6 +800,109 @@ async def test_sales_po_picker_autofill_manual_and_validation():
 
 
 @pytest.mark.anyio
+@pytest.mark.anyio
+async def test_crm_customer_search_active_only_and_po_identity_guards():
+    import server
+    crm = _user("crm")
+    await _prepare(server.db, [crm])
+    active = await _seed_customer(server.db, name="KOMMU SPACE KUDUS", phone="081211100001")
+    inactive = await _seed_customer(server.db, name="KOMMU SPACE UNS", phone="081211100002")
+    await server.db[CUSTOMERS].update_one({"id": inactive["id"]}, {"$set": {"is_active": False}})
+    cirebon = await _seed_customer(server.db, name="KOMMU SPACE CIREBON", phone="081211100003")
+
+    order_ok = await _seed_order(
+        server.db,
+        po_number="PO/CRM/ID/OK",
+        customer_id=cirebon["id"],
+        customer=cirebon["name"],
+        sales=SALES_AYUB_LABEL,
+        sales_user_id=SALES_AYUB_ID,
+    )
+    order_legacy = await _seed_order(
+        server.db,
+        po_number="PO/CRM/ID/LEGACY",
+        customer_id="",
+        customer="KOMMU SPACE CIREBON",
+        sales=SALES_AYUB_LABEL,
+        sales_user_id=SALES_AYUB_ID,
+    )
+    order_mismatch = await _seed_order(
+        server.db,
+        po_number="PO/CRM/ID/MISMATCH",
+        customer_id=active["id"],
+        customer=active["name"],
+        sales=SALES_AYUB_LABEL,
+        sales_user_id=SALES_AYUB_ID,
+    )
+
+    async with await _client(crm) as client:
+        customers = await client.get("/api/crm-daily-reports/customers", params={"q": "KOMMU SPACE"})
+        assert customers.status_code == 200
+        names = {row["name"] for row in customers.json()["customers"]}
+        assert active["name"] in names
+        assert cirebon["name"] in names
+        assert inactive["name"] not in names
+
+        orders = await client.get("/api/crm-daily-reports/orders", params={"q": "PO/CRM/ID"})
+        assert orders.status_code == 200
+        by_po = {row["po_number"]: row for row in orders.json()["orders"]}
+        assert by_po["PO/CRM/ID/OK"]["customer_master_status"] == "active"
+        assert by_po["PO/CRM/ID/OK"]["customer_master"]["id"] == cirebon["id"]
+        assert by_po["PO/CRM/ID/LEGACY"]["customer_master_status"] == "none"
+        assert by_po["PO/CRM/ID/LEGACY"]["customer_id"] in (None, "")
+
+        # Matching canonical IDs accepted
+        ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cirebon["id"],
+            order_id=order_ok["id"],
+            po_number=order_ok["po_number"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+        ))
+        assert ok.status_code == 200, ok.text
+
+        # Mismatch rejected
+        mismatch = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cirebon["id"],
+            order_id=order_mismatch["id"],
+            po_number=order_mismatch["po_number"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+        ))
+        assert mismatch.status_code == 400
+        assert "tidak sesuai" in mismatch.text.lower()
+
+        # Legacy without confirm rejected
+        legacy_no = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cirebon["id"],
+            order_id=order_legacy["id"],
+            po_number=order_legacy["po_number"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+        ))
+        assert legacy_no.status_code == 400
+        assert "legacy" in legacy_no.text.lower()
+
+        # Legacy with explicit confirm accepted — does not mutate PO
+        before = await server.db.orders.find_one({"id": order_legacy["id"]})
+        legacy_ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cirebon["id"],
+            order_id=order_legacy["id"],
+            po_number=order_legacy["po_number"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+            legacy_po_customer_confirmed=True,
+        ))
+        assert legacy_ok.status_code == 200, legacy_ok.text
+        after = await server.db.orders.find_one({"id": order_legacy["id"]})
+        assert after.get("customer_id") == before.get("customer_id")
+        assert after.get("customer") == before.get("customer")
+
+@pytest.mark.anyio
 async def test_master_sales_without_eternal_account_order_and_guards():
     """Active Master Sales may be selected without Eternal user_id.
 

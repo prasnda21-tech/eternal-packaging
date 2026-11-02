@@ -3,10 +3,15 @@ import {
   CRM_DAILY_DRAFT_PREFIX,
   NO_ORDER_REASON_LAINNYA,
   NO_ORDER_REASON_PRESETS,
+  PO_CUSTOMER_MASTER_ACTIVE,
+  PO_CUSTOMER_MASTER_INACTIVE,
+  PO_CUSTOMER_MASTER_MISSING,
+  PO_CUSTOMER_MASTER_NONE,
   SALES_MANUAL_CHOICE,
   SALES_SOURCE_EXISTING,
   SALES_SOURCE_MANUAL,
   STATUS_ORDER_OPTIONS,
+  assessCrmPoCustomerLink,
   buildCrmDailyDraftSnapshot,
   canAccessCrmDailyReport,
   canCreateCrmDailyReport,
@@ -261,5 +266,115 @@ describe("crmDailyReport helpers", () => {
     clearCrmDailyDraft(keyB);
     expect(readCrmDailyDraft(keyB)).toBeNull();
     expect(writeCrmDailyDraft("", buildCrmDailyDraftSnapshot(emptyCrmDailyReportForm(), {}))).toBe(false);
+  });
+
+  test("assessCrmPoCustomerLink binds active master on PO-first and rejects mismatch", () => {
+    const activeOrder = {
+      id: "ord-a",
+      po_number: "PO/A",
+      customer_id: "c-a",
+      customer: "KOMMU SPACE CIREBON",
+      customer_master_status: PO_CUSTOMER_MASTER_ACTIVE,
+      customer_master: { id: "c-a", name: "KOMMU SPACE CIREBON", phone: "0812", city: "Cirebon" },
+    };
+    const bind = assessCrmPoCustomerLink({
+      order: activeOrder,
+      selectedCustomerId: "",
+      statusCustomer: "Repeat",
+    });
+    expect(bind.action).toBe("allow");
+    expect(bind.bindCustomer.id).toBe("c-a");
+    expect(bind.bindCustomer.name).toBe("KOMMU SPACE CIREBON");
+
+    const mismatch = assessCrmPoCustomerLink({
+      order: activeOrder,
+      selectedCustomerId: "c-other",
+      statusCustomer: "Repeat",
+    });
+    expect(mismatch.action).toBe("reject");
+    expect(mismatch.reason).toMatch(/tidak sesuai/i);
+
+    const inactive = assessCrmPoCustomerLink({
+      order: {
+        ...activeOrder,
+        customer_master_status: PO_CUSTOMER_MASTER_INACTIVE,
+        customer_master: { id: "c-a", name: "X", is_active: false },
+      },
+      selectedCustomerId: "",
+      statusCustomer: "Repeat",
+    });
+    expect(inactive.action).toBe("reject");
+    expect(inactive.reason).toMatch(/nonaktif/i);
+
+    const missing = assessCrmPoCustomerLink({
+      order: {
+        id: "ord-m",
+        customer_id: "gone",
+        customer_master_status: PO_CUSTOMER_MASTER_MISSING,
+        customer_master: null,
+      },
+      selectedCustomerId: "",
+      statusCustomer: "Repeat",
+    });
+    expect(missing.action).toBe("reject");
+
+    const legacy = assessCrmPoCustomerLink({
+      order: {
+        id: "ord-l",
+        customer_id: "",
+        customer: "KOMMU SPACE CIREBON",
+        customer_master_status: PO_CUSTOMER_MASTER_NONE,
+      },
+      selectedCustomerId: "c-a",
+      statusCustomer: "Repeat",
+    });
+    expect(legacy.action).toBe("confirm_legacy");
+    expect(legacy.requireLegacyConfirm).toBe(true);
+
+    const legacyConfirmed = assessCrmPoCustomerLink({
+      order: {
+        id: "ord-l",
+        customer_id: "",
+        customer_master_status: PO_CUSTOMER_MASTER_NONE,
+      },
+      selectedCustomerId: "c-a",
+      statusCustomer: "Repeat",
+      legacyConfirmed: true,
+    });
+    expect(legacyConfirmed.action).toBe("allow");
+
+    // Same name prefix must not auto-merge distinct masters.
+    const kudus = {
+      id: "ord-k",
+      customer_id: "c-kudus",
+      customer: "KOMMU SPACE KUDUS",
+      customer_master_status: PO_CUSTOMER_MASTER_ACTIVE,
+      customer_master: { id: "c-kudus", name: "KOMMU SPACE KUDUS", phone: "0813" },
+    };
+    expect(assessCrmPoCustomerLink({
+      order: kudus,
+      selectedCustomerId: "c-uns",
+      statusCustomer: "Repeat",
+    }).action).toBe("reject");
+  });
+
+  test("legacy PO confirm required on validate + payload flag", () => {
+    const form = {
+      ...emptyCrmDailyReportForm("2026-04-16"),
+      status_customer: "Repeat",
+      customer_id: "c-a",
+      order_id: "ord-l",
+      po_number: "PO/LEGACY",
+      sales_user_id: "u1",
+      sales_label: "Ayub",
+      sales_source: SALES_SOURCE_EXISTING,
+      legacy_po_needs_confirm: true,
+      legacy_po_customer_confirmed: false,
+    };
+    expect(validateCrmDailyReportForm(form).order_id).toMatch(/legacy/i);
+    form.legacy_po_customer_confirmed = true;
+    expect(validateCrmDailyReportForm(form).order_id).toBeFalsy();
+    const payload = toCrmDailyReportPayload(form);
+    expect(payload.legacy_po_customer_confirmed).toBe(true);
   });
 });

@@ -41,6 +41,112 @@ export const SALES_MANUAL_CHOICE = "__manual__";
 export const MANUAL_SALES_MAX_LEN = 80;
 export const CRM_OTHER_OPTION_ID = "__other__";
 
+/** Master status for PO.customer_id relative to sales_customers. */
+export const PO_CUSTOMER_MASTER_ACTIVE = "active";
+export const PO_CUSTOMER_MASTER_INACTIVE = "inactive";
+export const PO_CUSTOMER_MASTER_MISSING = "missing";
+export const PO_CUSTOMER_MASTER_NONE = "none";
+
+/**
+ * Assess PO ↔ Repeat customer identity without fuzzy name matching.
+ * Returns { action: allow|reject|confirm_legacy, reason, bindCustomer, requireLegacyConfirm }.
+ */
+export function assessCrmPoCustomerLink({
+  order,
+  selectedCustomerId = "",
+  statusCustomer = "Repeat",
+  legacyConfirmed = false,
+} = {}) {
+  if (!order || statusCustomer !== "Repeat") {
+    return {
+      action: "allow",
+      reason: "",
+      bindCustomer: null,
+      requireLegacyConfirm: false,
+    };
+  }
+
+  const orderCid = String(order.customer_id || "").trim();
+  const selectedCid = String(selectedCustomerId || "").trim();
+  const masterStatus = String(
+    order.customer_master_status
+      || (orderCid ? PO_CUSTOMER_MASTER_MISSING : PO_CUSTOMER_MASTER_NONE),
+  );
+  const master = order.customer_master && typeof order.customer_master === "object"
+    ? order.customer_master
+    : null;
+
+  if (selectedCid) {
+    if (orderCid && orderCid !== selectedCid) {
+      return {
+        action: "reject",
+        reason: "PO tidak sesuai dengan customer terpilih",
+        bindCustomer: null,
+        requireLegacyConfirm: false,
+      };
+    }
+    if (!orderCid) {
+      if (legacyConfirmed) {
+        return {
+          action: "allow",
+          reason: "",
+          bindCustomer: null,
+          requireLegacyConfirm: false,
+        };
+      }
+      return {
+        action: "confirm_legacy",
+        reason: "PO legacy tanpa customer_id. Konfirmasi bahwa pelanggan laporan sama dengan pelanggan pada PO (bukan dari kemiripan nama).",
+        bindCustomer: null,
+        requireLegacyConfirm: true,
+      };
+    }
+    return {
+      action: "allow",
+      reason: "",
+      bindCustomer: null,
+      requireLegacyConfirm: false,
+    };
+  }
+
+  // PO-first: no Repeat customer selected yet.
+  if (!orderCid || masterStatus === PO_CUSTOMER_MASTER_NONE) {
+    return {
+      action: "allow",
+      reason: "PO legacy tanpa customer_id. Pilih customer master secara eksplisit; jangan mengandalkan nama.",
+      bindCustomer: null,
+      requireLegacyConfirm: false,
+    };
+  }
+  if (masterStatus === PO_CUSTOMER_MASTER_ACTIVE && master?.id) {
+    return {
+      action: "allow",
+      reason: "",
+      bindCustomer: {
+        id: String(master.id),
+        name: String(master.name || order.customer || "").trim(),
+        phone: String(master.phone || "").trim(),
+        city: String(master.city || "").trim(),
+      },
+      requireLegacyConfirm: false,
+    };
+  }
+  if (masterStatus === PO_CUSTOMER_MASTER_INACTIVE) {
+    return {
+      action: "reject",
+      reason: "PO terhubung ke customer master yang nonaktif. Aktifkan master atau pilih PO lain.",
+      bindCustomer: null,
+      requireLegacyConfirm: false,
+    };
+  }
+  return {
+    action: "reject",
+    reason: "customer_id PO tidak ditemukan di Master Pelanggan aktif.",
+    bindCustomer: null,
+    requireLegacyConfirm: false,
+  };
+}
+
 export function canUseManualSales(form) {
   return form?.status_order === "TIDAK ORDER" && !String(form?.order_id || "").trim();
 }
@@ -150,6 +256,8 @@ export function emptyCrmDailyReportForm(todayWib = "") {
     issue_category_id: "",
     issue_description: "",
     notes: "",
+    legacy_po_customer_confirmed: false,
+    legacy_po_needs_confirm: false,
   };
 }
 
@@ -204,6 +312,11 @@ export function formFromCrmDailyReport(report) {
     issue_category_id: report?.issue_category_id || "",
     issue_description: report?.issue_description || "",
     notes: report?.notes || "",
+    // Existing linked rows are treated as already confirmed for same-day re-save.
+    legacy_po_customer_confirmed: Boolean(
+      report?.order_id && report?.customer_id && report?.status_customer === "Repeat",
+    ),
+    legacy_po_needs_confirm: false,
   };
 }
 
@@ -219,11 +332,22 @@ export function validateCrmDailyReportForm(form) {
     errors.customer_id = "Pilih customer dari master untuk Repeat";
   }
 
+  const hasPo = Boolean(String(form.order_id || "").trim() || String(form.po_number || "").trim());
+  if (
+    form.status_customer === "Repeat"
+    && hasPo
+    && String(form.customer_id || "").trim()
+    && form.legacy_po_needs_confirm
+    && !form.legacy_po_customer_confirmed
+  ) {
+    errors.order_id = "Konfirmasi identitas pelanggan untuk PO legacy sebelum menyimpan";
+  }
+
   const salesSource = String(form.sales_source || "").trim();
   const salesUserId = String(form.sales_user_id || "").trim();
   const salesLabel = String(form.sales_label || "").trim();
   const salesMasterId = String(form.sales_master_id || "").trim();
-  const hasPo = Boolean(String(form.order_id || "").trim());
+  const hasPoForSales = Boolean(String(form.order_id || "").trim());
   if (salesSource === SALES_SOURCE_MANUAL || form.sales_choice === SALES_MANUAL_CHOICE) {
     if (!canUseManualSales(form)) {
       errors.sales_label = "Input Manual hanya untuk TIDAK ORDER tanpa PO";
@@ -241,7 +365,7 @@ export function validateCrmDailyReportForm(form) {
   } else if (salesMasterId && salesLabel) {
     // Verified Master Sales — Eternal account optional.
   } else if (!salesUserId) {
-    errors.sales_label = hasPo && form.sales_note
+    errors.sales_label = hasPoForSales && form.sales_note
       ? "Pilih Sales dari daftar (PO tanpa Sales terverifikasi)"
       : "Sales / Siapa yang Menjual wajib dipilih";
   }
@@ -331,6 +455,13 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
     issue_description: form.has_issue ? String(form.issue_description || "").trim() : "",
     notes: String(form.notes || "").trim(),
   };
+  if (
+    payload.status_customer === "Repeat"
+    && payload.order_id
+    && form.legacy_po_needs_confirm
+  ) {
+    payload.legacy_po_customer_confirmed = Boolean(form.legacy_po_customer_confirmed);
+  }
   if (clientSubmitId) payload.client_submit_id = clientSubmitId;
   return payload;
 }
@@ -383,10 +514,25 @@ function sanitizeDraftOrder(raw) {
   const id = String(raw.id || "").trim();
   const po = String(raw.po_number || "").trim();
   if (!id && !po) return null;
+  const customerId = String(raw.customer_id || "").trim();
+  const masterStatus = String(raw.customer_master_status || "").trim();
+  const masterRaw = raw.customer_master && typeof raw.customer_master === "object"
+    ? raw.customer_master
+    : null;
   return {
     id,
     po_number: po.slice(0, 80),
     customer: String(raw.customer || "").slice(0, 200),
+    customer_id: customerId.slice(0, 80),
+    customer_master_status: masterStatus.slice(0, 20),
+    customer_master: masterRaw && masterRaw.id
+      ? {
+        id: String(masterRaw.id).slice(0, 80),
+        name: String(masterRaw.name || "").slice(0, 200),
+        phone: String(masterRaw.phone || "").slice(0, 40),
+        city: String(masterRaw.city || "").slice(0, 80),
+      }
+      : null,
     sales_verified: Boolean(raw.sales_verified),
     sales_user_id: String(raw.sales_user_id || "").slice(0, 80),
     sales_label_resolved: String(raw.sales_label_resolved || raw.sales || "").slice(0, 120),

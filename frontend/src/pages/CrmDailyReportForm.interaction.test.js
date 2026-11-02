@@ -558,6 +558,125 @@ describe("CrmDailyReportForm interaction", () => {
     expect(container.querySelector('[data-testid="cdr-notes"]').value).toBe("from-draft");
   });
 
+  test("Repeat customer API failure shows retry and does not look like empty", async () => {
+    api.crmDailyReportCustomers.mockRejectedValueOnce({
+      response: { data: { detail: "customer service down" } },
+    });
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-status-repeat"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-customer-error"]')).toBeTruthy();
+    expect(container.textContent).toMatch(/customer service down|Gagal memuat/i);
+    expect(container.querySelector('[data-testid="cdr-customer-empty"]')).toBeNull();
+
+    api.crmDailyReportCustomers.mockResolvedValueOnce({
+      customers: [{ id: "c1", name: "KOMMU SPACE KUDUS", phone: "0812", city: "Kudus" }],
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-customer-retry"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-customer-error"]')).toBeNull();
+    expect(container.querySelector('[data-testid="cdr-customer-results"]').textContent)
+      .toMatch(/KOMMU SPACE KUDUS/);
+  });
+
+  test("PO-first auto-selects active master; mismatch and legacy require explicit confirm", async () => {
+    api.crmDailyReportCustomers.mockResolvedValue({
+      customers: [
+        { id: "c-cirebon", name: "KOMMU SPACE CIREBON", phone: "08121", city: "Cirebon" },
+        { id: "c-kudus", name: "KOMMU SPACE KUDUS", phone: "08122", city: "Kudus" },
+      ],
+    });
+    api.crmDailyReportOrders.mockResolvedValue({
+      orders: [
+        {
+          id: "ord-cirebon",
+          po_number: "PO/CIREBON/1",
+          customer: "KOMMU SPACE CIREBON",
+          customer_id: "c-cirebon",
+          customer_master_status: "active",
+          customer_master: { id: "c-cirebon", name: "KOMMU SPACE CIREBON", phone: "08121", city: "Cirebon" },
+          sales_verified: true,
+          sales_user_id: "sales-ayub",
+          sales_label_resolved: "Sholahudin Al - Ayubi",
+          sales: "Sholahudin Al - Ayubi",
+        },
+        {
+          id: "ord-legacy",
+          po_number: "PO/LEGACY/1",
+          customer: "KOMMU SPACE CIREBON",
+          customer_id: "",
+          customer_master_status: "none",
+          customer_master: null,
+          sales_verified: true,
+          sales_user_id: "sales-ayub",
+          sales_label_resolved: "Sholahudin Al - Ayubi",
+          sales: "Sholahudin Al - Ayubi",
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-status-repeat"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const poButtons = () => [...container.querySelectorAll('[data-testid="cdr-po-results"] button')];
+    await act(async () => {
+      poButtons().find((b) => b.textContent.includes("PO/CIREBON/1"))
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-customer-selected"]').textContent)
+      .toMatch(/KOMMU SPACE CIREBON/);
+
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-po-clear"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Customer-first then legacy PO → confirm required (no silent name bind)
+    const customerBtn = [...container.querySelectorAll('[data-testid="cdr-customer-results"] button')]
+      .find((b) => b.textContent.includes("KOMMU SPACE KUDUS"));
+    await act(async () => {
+      customerBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      poButtons().find((b) => b.textContent.includes("PO/LEGACY/1"))
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-legacy-po-confirm"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="cdr-legacy-po-names"]').textContent)
+      .toMatch(/Nama di PO:\s*KOMMU SPACE CIREBON/);
+    expect(container.querySelector('[data-testid="cdr-legacy-po-names"]').textContent)
+      .toMatch(/Master terpilih:\s*KOMMU SPACE KUDUS/);
+    await act(async () => {
+      container.querySelector('[data-testid="cdr-legacy-po-confirm-btn"]')
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="cdr-po-selected"]').textContent)
+      .toMatch(/PO\/LEGACY\/1/);
+    expect(container.querySelector('[data-testid="cdr-customer-selected"]').textContent)
+      .toMatch(/KOMMU SPACE KUDUS/);
+  });
+
   test("manual sales + reason Lainnya restore from draft", async () => {
     writeCrmDailyDraft(
       crmDailyDraftStorageKey({ id: "u1" }, "create"),

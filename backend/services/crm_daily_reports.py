@@ -480,6 +480,8 @@ async def _resolve_po(
     customer_id: str,
     user: dict,
     perms: set,
+    legacy_po_customer_confirmed: bool = False,
+    existing: Optional[dict] = None,
 ) -> Optional[dict]:
     oid = _text(order_id)
     po = _text(po_number)
@@ -509,6 +511,20 @@ async def _resolve_po(
     order_cid = _text(order.get("customer_id"))
     if customer_id and order_cid and order_cid != customer_id:
         raise HTTPException(400, "PO tidak sesuai dengan customer laporan")
+    # Legacy PO (no canonical customer_id): require explicit identity confirmation
+    # when linking to a Repeat master. Already-linked same-day edits stay editable.
+    if customer_id and not order_cid:
+        already_linked = False
+        if existing:
+            already_linked = (
+                _text(existing.get("order_id")) == _text(order.get("id"))
+                and _text(existing.get("customer_id")) == customer_id
+            )
+        if not legacy_po_customer_confirmed and not already_linked:
+            raise HTTPException(
+                400,
+                "PO legacy tanpa customer_id memerlukan konfirmasi identitas pelanggan",
+            )
     return order
 
 
@@ -735,6 +751,7 @@ def _assert_payload_core(payload: dict, *, require_complaint_category: bool = Tr
         "outlet_name": _text(payload.get("outlet_name")),
         "whatsapp": _text(payload.get("whatsapp")),
         "client_submit_id": _text(payload.get("client_submit_id")),
+        "legacy_po_customer_confirmed": _boolish(payload.get("legacy_po_customer_confirmed")),
     }
 
 
@@ -959,6 +976,8 @@ async def build_normalized_doc(
         customer_id=customer_id or "",
         user=user,
         perms=perms,
+        legacy_po_customer_confirmed=bool(core.get("legacy_po_customer_confirmed")),
+        existing=existing,
     )
 
     sales_label = core["sales_label"]
@@ -1287,7 +1306,7 @@ async def update_report(db, report_id: str, payload: dict, user: dict, perms: se
                 "status_order", "no_order_reason_id", "no_order_reason",
                 "has_complaint", "complaint_category_id", "complaint_category", "complaint_description",
                 "has_issue", "issue_category_id", "issue_description", "notes",
-                "report_date"):
+                "report_date", "legacy_po_customer_confirmed"):
         if key in payload:
             merged[key] = payload.get(key)
 
@@ -1383,15 +1402,59 @@ async def search_orders_for_report(
             "order_date": 1,
         },
     ).sort([("order_date", -1), ("created_at", -1)]).to_list(max(1, min(int(limit or 20), 50)))
+    order_cids = sorted({
+        _text(row.get("customer_id"))
+        for row in rows
+        if _text(row.get("customer_id"))
+    })
+    masters_by_id: Dict[str, dict] = {}
+    if order_cids:
+        master_rows = await db[SALES_CUSTOMERS].find(
+            {"id": {"$in": order_cids}},
+            {"_id": 0, "id": 1, "name": 1, "phone": 1, "city": 1, "is_active": 1},
+        ).to_list(len(order_cids))
+        masters_by_id = {
+            _text(doc.get("id")): doc
+            for doc in master_rows
+            if _text(doc.get("id"))
+        }
     canon = await _canonical_sales_map(db)
     out = []
     for row in rows:
         uid, label = await _po_verified_sales(db, row, canon)
+        order_cid = _text(row.get("customer_id"))
+        master = masters_by_id.get(order_cid) if order_cid else None
+        if not order_cid:
+            master_status = "none"
+            customer_master = None
+        elif not master:
+            master_status = "missing"
+            customer_master = None
+        elif not customer_is_active(master):
+            master_status = "inactive"
+            customer_master = {
+                "id": master.get("id"),
+                "name": master.get("name") or "",
+                "phone": master.get("phone") or "",
+                "city": master.get("city") or "",
+                "is_active": False,
+            }
+        else:
+            master_status = "active"
+            customer_master = {
+                "id": master.get("id"),
+                "name": master.get("name") or "",
+                "phone": master.get("phone") or "",
+                "city": master.get("city") or "",
+                "is_active": True,
+            }
         item = {
             "id": row.get("id"),
             "po_number": row.get("po_number"),
             "customer": row.get("customer"),
-            "customer_id": row.get("customer_id"),
+            "customer_id": order_cid or None,
+            "customer_master_status": master_status,
+            "customer_master": customer_master,
             "sales": row.get("sales") or "",
             "sales_user_id": row.get("sales_user_id"),
             "order_date": row.get("order_date"),
