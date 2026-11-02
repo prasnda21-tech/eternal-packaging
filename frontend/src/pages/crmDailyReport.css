@@ -603,6 +603,44 @@ body.cdr-col-resizing{
   cursor:pointer;
 }
 .cdr-customer-results li button:hover{background:#f0fdf4}
+.cdr-search-error{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px;
+  margin:0;
+  padding:7px 9px;
+  background:#fef2f2;
+  border:1px solid #fecaca;
+  border-radius:8px;
+  color:#991b1b;
+  font-size:11px;
+}
+.cdr-search-error p{margin:0;flex:1 1 auto}
+.cdr-legacy-confirm{
+  display:grid;
+  gap:8px;
+  margin:0;
+  padding:8px 10px;
+  background:#fff7ed;
+  border:1px solid #fdba74;
+  border-radius:8px;
+  color:#9a3412;
+  font-size:11px;
+}
+.cdr-legacy-confirm p{margin:0}
+.cdr-legacy-confirm .primary{
+  justify-self:start;
+  height:30px;
+  padding:0 10px;
+  border-radius:7px;
+  border:1px solid var(--cdr-primary);
+  background:var(--cdr-primary);
+  color:#fff;
+  font-size:11px;
+  font-weight:650;
+  cursor:pointer;
+}
 .cdr-ringkas{
   display:flex;
   flex-wrap:wrap;
