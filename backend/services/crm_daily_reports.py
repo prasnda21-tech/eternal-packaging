@@ -570,10 +570,8 @@ async def _resolve_sales_assignment(
         po_raw_label = exact_sales_label(order.get("sales"))
         po_raw_uid = _text(order.get("sales_user_id")) or None
         if po_raw_label:
-            # Unmapped PO sales: keep Accurate label; never silently substitute another Sales.
-            if payload_uid and payload_uid in canon and canon[payload_uid]["label"] != po_raw_label:
-                raise HTTPException(400, "Sales laporan harus sesuai Sales pada PO yang dipilih")
-            # Ignore stale/unrelated preferred Master on edit — PO historical label wins.
+            # Unmapped PO sales: keep Accurate label. Ignore stale client sales_user_id /
+            # preferred Master from a prior PO — historical PO identity wins.
             kept_uid = po_raw_uid if po_raw_uid and po_raw_uid in canon else None
             kept_source = SALES_SOURCE_EXISTING if kept_uid else SALES_SOURCE_LEGACY
             return (
@@ -967,24 +965,40 @@ async def build_normalized_doc(
     sales_user_id = core["sales_user_id"]
     sales_source = core["sales_source"]
     preferred_master_id = core["sales_master_id"]
-    master_in = await _payload_master_sales(db, preferred_master_id, user)
-    # Free-text manual must not carry a Master id (prevents spoofed verification).
-    if sales_source == SALES_SOURCE_MANUAL and master_in and not order:
-        raise HTTPException(
-            400,
-            "Input Manual Sales tidak boleh menyertakan sales_master_id; "
-            "pilih Master dari daftar atau kosongkan Master id",
+
+    # PO with its own Sales snapshot/uid is authoritative. Ignore client/merged
+    # preferred sales_master_id so a prior Master cannot survive PO change/edit.
+    from services.sales_user_mapping import exact_sales_label as _exact_sales_label
+
+    po_authoritative = bool(
+        order
+        and (
+            _text(order.get("sales_user_id"))
+            or _exact_sales_label(order.get("sales"))
         )
-    if master_in and not order:
-        # Verified Master is never free-text manual. Account (user_id) is optional.
-        sales_label = master_in["label"]
-        preferred_master_id = master_in["id"]
-        if sales_user_id and master_in["user_id"] and sales_user_id != master_in["user_id"]:
-            raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
-        if sales_user_id and not master_in["user_id"]:
-            raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
-        sales_user_id = master_in["user_id"]
-        sales_source = SALES_SOURCE_EXISTING
+    )
+    if po_authoritative:
+        preferred_master_id = None
+        master_in = None
+    else:
+        master_in = await _payload_master_sales(db, preferred_master_id, user)
+        # Free-text manual must not carry a Master id (prevents spoofed verification).
+        if sales_source == SALES_SOURCE_MANUAL and master_in and not order:
+            raise HTTPException(
+                400,
+                "Input Manual Sales tidak boleh menyertakan sales_master_id; "
+                "pilih Master dari daftar atau kosongkan Master id",
+            )
+        if master_in and not order:
+            # Verified Master is never free-text manual. Account (user_id) is optional.
+            sales_label = master_in["label"]
+            preferred_master_id = master_in["id"]
+            if sales_user_id and master_in["user_id"] and sales_user_id != master_in["user_id"]:
+                raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+            if sales_user_id and not master_in["user_id"]:
+                raise HTTPException(400, "sales_user_id tidak sesuai Master Sales yang dipilih")
+            sales_user_id = master_in["user_id"]
+            sales_source = SALES_SOURCE_EXISTING
 
     sales_label, sales_user_id, sales_source, sales_note = await _resolve_sales_assignment(
         db,
@@ -994,23 +1008,16 @@ async def build_normalized_doc(
         sales_label=sales_label,
         sales_source=sales_source,
         existing=existing,
-        verified_master=master_in,
+        verified_master=None if po_authoritative else master_in,
     )
-    # PO wins identity; Master Sales attach is exact-only and never changes sales_source.
+    # Attach Master only from authoritative Sales identity (exact label/uid).
+    # Never pass stale preferred_id when PO already owns Sales identity.
     sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
         db,
         sales_label=sales_label,
         sales_user_id=sales_user_id,
-        preferred_id=None if order else preferred_master_id,
+        preferred_id=None if po_authoritative else preferred_master_id,
     )
-    if order:
-        # Still try exact attach from PO-resolved label/uid (including preferred if exact).
-        sales_master_id, sales_master_unmapped = await _attach_sales_master_ref(
-            db,
-            sales_label=sales_label,
-            sales_user_id=sales_user_id,
-            preferred_id=preferred_master_id,
-        )
 
     no_order_reason_id, no_order_reason = await _resolve_no_order_fields(
         db,

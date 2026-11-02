@@ -273,7 +273,14 @@ export default function CrmDailyReportForm() {
         po_number: "",
         sales_locked_from_po: false,
         sales_note: "",
+        // Drop PO-derived Sales/Master so a prior selection cannot look verified.
+        sales_master_id: "",
+        sales_user_id: "",
+        sales_label: "",
+        sales_choice: "",
+        sales_source: "",
       }));
+      setSalesQ("");
       setPoQ("");
       return;
     }
@@ -286,6 +293,8 @@ export default function CrmDailyReportForm() {
         ...prev,
         order_id: order.id || "",
         po_number: order.po_number || "",
+        // Always clear stale Master before applying PO Sales identity.
+        sales_master_id: "",
       };
       if (verified) {
         next.sales_user_id = order.sales_user_id || "";
@@ -312,16 +321,15 @@ export default function CrmDailyReportForm() {
           next.sales_master_id = matchSalesMasterId(catalog, { label: rawLabel });
           setSalesQ(rawLabel);
         } else {
+          // Blank PO Sales — clear prior Sales so unrelated Master is not shown.
           next.sales_locked_from_po = false;
           next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
           next.sales_master_id = "";
-          if (prev.sales_source === SALES_SOURCE_MANUAL || prev.sales_choice === SALES_MANUAL_CHOICE) {
-            next.sales_source = "";
-            next.sales_choice = "";
-            next.sales_user_id = "";
-            next.sales_label = "";
-            setSalesQ("");
-          }
+          next.sales_source = "";
+          next.sales_choice = "";
+          next.sales_user_id = "";
+          next.sales_label = "";
+          setSalesQ("");
         }
       }
       return next;

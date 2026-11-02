@@ -1083,3 +1083,209 @@ async def test_master_sales_without_eternal_account_order_and_guards():
         ))
         assert cross.status_code == 403
         assert "cabang" in cross.text.lower()
+
+
+@pytest.mark.anyio
+async def test_po_change_does_not_retain_stale_sales_master_id():
+    """Edit/create with PO: sales_master_id follows authoritative PO only.
+
+    Covers stale preferred Master on edit merge, spoofed client Master,
+    unresolved PO-B snapshot, same-PO edit, no-PO Master-without-account,
+    and save/readback.
+    """
+    import server
+    from services import sales_master as sm
+
+    crm = _user("crm", uid="crm-stale-master")
+    await _prepare(server.db, [crm])
+    await sm.ensure_indexes(server.db)
+    await server.db[sm.COLLECTION].delete_many({})
+
+    # Canonical Eternal users for Ayub + Fahdo
+    fahdo_id = "sales-fahdo-test"
+    fahdo_label = "Fahdo Pratama"
+    await server.db.users.delete_many({"id": fahdo_id})
+    await server.db.users.insert_one({
+        "id": fahdo_id,
+        "email": "fahdo@eternal.com",
+        "name": "Fahdo",
+        "employee_id": "EMP-0099",
+        "role": "sales_eternal",
+        "status": "active",
+        "permissions_override": {},
+    })
+    mapping = await server.db.app_settings.find_one({"key": "sales_user_mapping"})
+    entries = list((mapping or {}).get("entries") or [])
+    entries = [e for e in entries if e.get("user_id") != fahdo_id]
+    entries.append({"label": fahdo_label, "user_id": fahdo_id})
+    await server.db.app_settings.update_one(
+        {"key": "sales_user_mapping"},
+        {"$set": {"entries": entries}},
+        upsert=True,
+    )
+
+    master_ayub = await sm.create_sales_master(server.db, {
+        "sales_name": SALES_AYUB_LABEL,
+        "user_id": SALES_AYUB_ID,
+        "branch_ids": [],
+    }, crm)
+    master_fahdo = await sm.create_sales_master(server.db, {
+        "sales_name": fahdo_label,
+        "user_id": fahdo_id,
+        "branch_ids": [],
+    }, crm)
+    master_offline = await sm.create_sales_master(server.db, {
+        "sales_name": "Sales Offline Stale",
+        "branch_ids": [],
+    }, crm)
+
+    cust = await _seed_customer(server.db, name="Outlet Stale", phone="081255500001")
+    po_a = await _seed_order(
+        server.db,
+        po_number="PO/CRM/STALE/A",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales=SALES_AYUB_LABEL,
+        sales_user_id=SALES_AYUB_ID,
+    )
+    po_b = await _seed_order(
+        server.db,
+        po_number="PO/CRM/STALE/B",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales=fahdo_label,
+        sales_user_id=fahdo_id,
+    )
+    po_b_unmapped = await _seed_order(
+        server.db,
+        po_number="PO/CRM/STALE/B2",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales="Label Historis Fahdo",
+        sales_user_id=None,
+    )
+
+    async with await _client(crm) as client:
+        # A) Create on PO-A (Ayub), then edit to PO-B (Fahdo)
+        created = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081255511101",
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=po_a["id"],
+            po_number=po_a["po_number"],
+            sales_master_id=master_ayub["id"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+            sales_source="existing",
+        ))
+        assert created.status_code == 200, created.text
+        report = created.json()["report"]
+        assert report["sales_user_id"] == SALES_AYUB_ID
+        assert report["sales_master_id"] == master_ayub["id"]
+        rid = report["id"]
+
+        switched = await client.patch(f"/api/crm-daily-reports/{rid}", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=po_b["id"],
+            po_number=po_b["po_number"],
+            # Spoof/stale: keep Ayub Master id from prior selection
+            sales_master_id=master_ayub["id"],
+            sales_user_id=fahdo_id,
+            sales_label=fahdo_label,
+            sales_source="existing",
+        ))
+        assert switched.status_code == 200, switched.text
+        body = switched.json()["report"]
+        assert body["sales_user_id"] == fahdo_id
+        assert body["sales_label"] == fahdo_label
+        assert body["sales_master_id"] == master_fahdo["id"]
+        assert body["sales_master_id"] != master_ayub["id"]
+
+        # F) Save/readback matches authoritative resolution
+        fetched = await client.get(f"/api/crm-daily-reports/{rid}")
+        assert fetched.status_code == 200
+        got = fetched.json()["report"]
+        assert got["sales_label"] == fahdo_label
+        assert got["sales_user_id"] == fahdo_id
+        assert got["sales_master_id"] == master_fahdo["id"]
+
+        # D) Edit without changing PO — identity stays consistent
+        same_po = await client.patch(f"/api/crm-daily-reports/{rid}", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=po_b["id"],
+            po_number=po_b["po_number"],
+            sales_master_id=master_fahdo["id"],
+            sales_user_id=fahdo_id,
+            sales_label=fahdo_label,
+            sales_source="existing",
+            notes="same-po-edit",
+        ))
+        assert same_po.status_code == 200, same_po.text
+        assert same_po.json()["report"]["sales_master_id"] == master_fahdo["id"]
+        assert same_po.json()["report"]["sales_user_id"] == fahdo_id
+        assert same_po.json()["report"]["notes"] == "same-po-edit"
+
+        # B) Switch to PO with unresolved historical label → keep snapshot, null Master
+        hist = await client.patch(f"/api/crm-daily-reports/{rid}", json=_new_payload(
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=po_b_unmapped["id"],
+            po_number=po_b_unmapped["po_number"],
+            sales_master_id=master_fahdo["id"],  # stale preferred
+            sales_user_id=fahdo_id,
+            sales_label=fahdo_label,
+            sales_source="existing",
+        ))
+        assert hist.status_code == 200, hist.text
+        hist_body = hist.json()["report"]
+        assert hist_body["sales_label"] == "Label Historis Fahdo"
+        assert hist_body["sales_user_id"] in (None, "")
+        assert hist_body["sales_master_id"] in (None, "")
+        assert hist_body["sales_master_id"] != master_fahdo["id"]
+        assert hist_body["sales_master_id"] != master_ayub["id"]
+        assert hist_body["sales_source"] == "legacy"
+
+        # C) Direct API spoofed sales_master_id on PO-linked create is ignored
+        spoof = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081255511102",
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=po_b["id"],
+            po_number=po_b["po_number"],
+            sales_master_id=master_ayub["id"],
+            sales_user_id=fahdo_id,
+            sales_label=fahdo_label,
+            sales_source="existing",
+        ))
+        assert spoof.status_code == 200, spoof.text
+        spoof_body = spoof.json()["report"]
+        assert spoof_body["sales_user_id"] == fahdo_id
+        assert spoof_body["sales_label"] == fahdo_label
+        assert spoof_body["sales_master_id"] == master_fahdo["id"]
+        assert spoof_body["sales_master_id"] != master_ayub["id"]
+
+        # E) No-PO verified Master without Eternal account still works
+        no_po = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081255511103",
+            sales_master_id=master_offline["id"],
+            sales_user_id=None,
+            sales_label=master_offline["sales_name"],
+            sales_source="existing",
+            order_id=None,
+            po_number="",
+        ))
+        assert no_po.status_code == 200, no_po.text
+        assert no_po.json()["report"]["sales_master_id"] == master_offline["id"]
+        assert no_po.json()["report"]["sales_user_id"] in (None, "")
+        assert no_po.json()["report"]["sales_source"] == "existing"
+
+        # G) Mapping / PO ownership unchanged
+        mapping_after = await server.db.app_settings.find_one({"key": "sales_user_mapping"})
+        assert any(e.get("user_id") == SALES_AYUB_ID for e in (mapping_after or {}).get("entries") or [])
+        assert any(e.get("user_id") == fahdo_id for e in (mapping_after or {}).get("entries") or [])
+        po_a_after = await server.db.orders.find_one({"id": po_a["id"]})
+        po_b_after = await server.db.orders.find_one({"id": po_b["id"]})
+        assert po_a_after["sales_user_id"] == SALES_AYUB_ID
+        assert po_b_after["sales_user_id"] == fahdo_id
