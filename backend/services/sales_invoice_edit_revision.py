@@ -270,7 +270,11 @@ async def _proposed_fields(
     from services.sales_invoice_dates import SalesInvoiceDateError, persist_sales_invoice_date
     from services.sales_invoices import (
         FINANCIAL_FINALIZED,
+        MSG_INVOICE_LINE_DUPLICATE,
+        MSG_INVOICE_LINE_UNKNOWN,
+        MSG_INVOICE_QTY_INVALID,
         _explicit_draft_qty_by_line,
+        _invoice_line_match_key,
         _parse_non_negative_price,
         assert_invoice_qty_within_po,
         normalize_other_charges,
@@ -280,26 +284,36 @@ async def _proposed_fields(
 
     existing_lines = invoice.get("lines") or []
     input_lines = payload.get("lines") or payload.get("line_items") or []
-    explicit_qty = _explicit_draft_qty_by_line(existing_lines, input_lines)
-    input_by_idx = {}
+    # Same identity keys as update_sales_invoice / _explicit_draft_qty_by_line
+    # (invoice_line_id → source PO+line+SJ → line_idx). Do not index by bare int.
+    explicit_qty = _explicit_draft_qty_by_line(existing_lines, input_lines, invoice=invoice)
+    input_by_key = {}
     seen = set()
     for fallback, inp in enumerate(input_lines):
-        line_idx = int(inp.get("line_idx", fallback))
-        if line_idx in seen:
-            raise HTTPException(400, "Baris faktur duplikat.")
-        seen.add(line_idx)
-        input_by_idx[line_idx] = inp
+        if not isinstance(inp, dict):
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+        key = _invoice_line_match_key(inp, invoice=invoice, fallback_idx=fallback)
+        if key in seen:
+            raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
+        seen.add(key)
+        input_by_key[key] = inp
 
     updated_lines = []
     subtotal = 0.0
     total_qty = 0
     for idx, el in enumerate(existing_lines):
-        line_idx = int(el.get("line_idx", idx))
-        qty = explicit_qty[line_idx] if line_idx in explicit_qty else int(el.get("quantity") or 0)
+        key = _invoice_line_match_key(el, invoice=invoice, fallback_idx=idx)
+        if key in explicit_qty:
+            qty = explicit_qty[key]
+        else:
+            try:
+                qty = int(el.get("quantity") or 0)
+            except (TypeError, ValueError):
+                qty = 0
         if qty <= 0:
-            raise HTTPException(400, "Qty faktur harus lebih besar dari 0.")
-        if line_idx in input_by_idx and input_by_idx[line_idx].get("unit_price") not in (None, ""):
-            unit_price = _parse_non_negative_price(input_by_idx[line_idx].get("unit_price"), "Harga satuan")
+            raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
+        if key in input_by_key and input_by_key[key].get("unit_price") not in (None, ""):
+            unit_price = _parse_non_negative_price(input_by_key[key].get("unit_price"), "Harga satuan")
         else:
             unit_price = _parse_non_negative_price(el.get("unit_price", 0), "Harga satuan")
         line_subtotal = round(float(Decimal(str(qty)) * Decimal(str(unit_price))), 2)

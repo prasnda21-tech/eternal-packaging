@@ -3390,6 +3390,33 @@ export default function PesananPenjualan() {
                           />
                         </SoField>
 
+                        {newCustomer ? (
+                          <>
+                            <SoField field="customer_email" label="Email Pelanggan">
+                              <input
+                                id="so-customer_email"
+                                type="email"
+                                className="so-line-input"
+                                value={formData.customer_email || ""}
+                                onChange={(e) => setFormData((p) => ({ ...p, customer_email: e.target.value }))}
+                                placeholder="opsional"
+                                data-testid="input-customer-email"
+                              />
+                            </SoField>
+                            <SoField field="customer_city" label="Kota">
+                              <input
+                                id="so-customer_city"
+                                type="text"
+                                className="so-line-input"
+                                value={formData.customer_city || ""}
+                                onChange={(e) => setFormData((p) => ({ ...p, customer_city: e.target.value }))}
+                                placeholder="opsional"
+                                data-testid="input-customer-city"
+                              />
+                            </SoField>
+                          </>
+                        ) : null}
+
                         <SoField field="address" label="Alamat Lengkap Pengiriman" required={newCustomer} error={fieldHasError("address")} className="so-create-field-address">
                           <textarea
                             id="so-address"

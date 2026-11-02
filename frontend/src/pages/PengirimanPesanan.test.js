@@ -216,16 +216,21 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/deliveryStatusCountsFromResponse/);
     expect(src).not.toMatch(/deliveryListSalesLabel\(d\) \|\| d\.created_by/);
 
-    // Detail modal PO Progress Summary
+    // Detail modal SJ KPI (canonical multi-PO qty) + legacy testid aliases
+    expect(src).toMatch(/data-testid="delivery-sj-kpi-summary"/);
+    expect(src).toMatch(/TOTAL QTY SJ/);
+    expect(src).toMatch(/JUMLAH PO SUMBER/);
+    expect(src).toMatch(/QTY DITERIMA/);
+    expect(src).toMatch(/LOADING \/ POD/);
+    expect(src).toMatch(/detail-total-sj-qty/);
+    expect(src).toMatch(/sj-source-alloc-table/);
     expect(src).toMatch(/data-testid="delivery-po-progress-summary"/);
-    expect(src).toMatch(/TOTAL QTY PO/);
-    expect(src).toMatch(/SUDAH DIBUAT SURAT JALAN/);
-    expect(src).toMatch(/SISA/);
-    expect(src).toMatch(/STATUS/);
     expect(src).toMatch(/detail-total-po-qty/);
     expect(src).toMatch(/detail-cumulative-sj-qty/);
     expect(src).toMatch(/detail-remaining-po-qty/);
     expect(src).toMatch(/detail-delivery-status/);
+    expect(src).toMatch(/sj-loading-confirm-all/);
+    expect(src).toMatch(/sj-confirm-delivered-all/);
   });
 });
 

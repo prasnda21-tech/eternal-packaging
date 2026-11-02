@@ -39,6 +39,8 @@ export function resolveTanggalPengirimanInput(order) {
 export function buildPoInfoUpdatePayload(draft) {
   const payload = {
     address: draft?.address ?? "",
+    recipient: draft?.recipient ?? "",
+    customer_phone: draft?.customer_phone ?? "",
     estimated_delivery: draft?.estimated_delivery || "",
   };
   // Empty string clears manual override → automatic latest approval + 3 days.
@@ -50,6 +52,8 @@ export function buildPoInfoUpdatePayload(draft) {
 
 export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
   const [address, setAddress] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const [tanggalPengiriman, setTanggalPengiriman] = useState("");
   const [estimatedDelivery, setEstimatedDelivery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -58,6 +62,8 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
   useEffect(() => {
     if (!open || !order) return;
     setAddress(order.address || "");
+    setRecipient(order.recipient || "");
+    setCustomerPhone(order.customer_phone || "");
     setTanggalPengiriman(resolveTanggalPengirimanInput(order));
     setEstimatedDelivery(toDateInputValue(order.estimated_delivery));
     setErr("");
@@ -75,6 +81,8 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
     if (busy) return;
     const payload = buildPoInfoUpdatePayload({
       address,
+      recipient,
+      customer_phone: customerPhone,
       tanggal_pengiriman: tanggalPengiriman,
       estimated_delivery: estimatedDelivery,
     });
@@ -89,7 +97,11 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
       onSaved?.(res.order || res);
       onClose?.();
     } catch (e) {
-      setErr(formatApiError(e) || e.response?.data?.detail || "Gagal menyimpan Informasi PO");
+      const detail = e.response?.data?.detail;
+      const msg = formatApiError(e)
+        || (typeof detail === "string" ? detail : null)
+        || "Gagal menyimpan Informasi PO";
+      setErr(msg);
     } finally {
       setBusy(false);
     }
@@ -116,6 +128,26 @@ export default function EditPoInfoModal({ open, order, onClose, onSaved }) {
               onChange={(e) => setAddress(e.target.value)}
               data-testid="edit-po-info-address"
               placeholder="Alamat pengiriman"
+            />
+          </label>
+          <label className="edit-po-info-field">
+            <span>Penerima</span>
+            <input
+              type="text"
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              data-testid="edit-po-info-recipient"
+              placeholder="Nama penerima"
+            />
+          </label>
+          <label className="edit-po-info-field">
+            <span>No. HP Penerima</span>
+            <input
+              type="text"
+              value={customerPhone}
+              onChange={(e) => setCustomerPhone(e.target.value)}
+              data-testid="edit-po-info-customer-phone"
+              placeholder="mis. 0812-3456-7890"
             />
           </label>
           <label className="edit-po-info-field">

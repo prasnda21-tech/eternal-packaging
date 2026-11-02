@@ -51,6 +51,7 @@ describe("Edit Informasi PO — Informasi PO card", () => {
     expect(detail).toMatch(/data-testid="detail-address"/);
     expect(detail).toMatch(/data-testid="detail-estimated-delivery"/);
     expect(detail).toMatch(/data-testid="detail-tanggal-pengiriman"/);
+    expect(detail).toMatch(/customer_phone/);
     expect(detail).not.toMatch(/DeliveryDeadlinePanel/);
     expect(detail).not.toMatch(/data-testid="detail-deadline"/);
   });
@@ -63,21 +64,24 @@ describe("Edit Informasi PO — Informasi PO card", () => {
     expect(outletSrc).toMatch(/saveDeliveryOutlet/);
   });
 
-  test("modal form only exposes Alamat / Tanggal Pengiriman / Estimasi Kirim + Batal/Simpan", () => {
+  test("modal form exposes Alamat / Penerima / HP / Tanggal Pengiriman / Estimasi + Batal/Simpan", () => {
     expect(modalSrc).toMatch(/edit-po-info-address/);
+    expect(modalSrc).toMatch(/edit-po-info-recipient/);
+    expect(modalSrc).toMatch(/edit-po-info-customer-phone/);
     expect(modalSrc).toMatch(/edit-po-info-tanggal-pengiriman/);
     expect(modalSrc).toMatch(/edit-po-info-estimated-delivery/);
     expect(modalSrc).toMatch(/edit-po-info-cancel/);
     expect(modalSrc).toMatch(/edit-po-info-save/);
     expect(modalSrc).toMatch(/>Alamat</);
+    expect(modalSrc).toMatch(/>Penerima</);
+    expect(modalSrc).toMatch(/No\. HP Penerima/);
     expect(modalSrc).toMatch(/>Tanggal Pengiriman</);
     expect(modalSrc).toMatch(/>Estimasi Kirim</);
     expect(modalSrc).not.toMatch(/>Deadline</);
     expect(modalSrc).not.toMatch(/edit-po-info-deadline/);
-    expect(modalSrc).not.toMatch(/Customer/);
-    expect(modalSrc).not.toMatch(/Ekspedisi/);
     expect(modalSrc).not.toMatch(/current_stage/);
     expect(modalSrc).not.toMatch(/delivery_location/);
+    expect(modalSrc).not.toMatch(/Ekspedisi/);
   });
 });
 
@@ -89,9 +93,11 @@ describe("Edit Informasi PO — helpers", () => {
     expect(toDateInputValue(null)).toBe("");
   });
 
-  test("buildPoInfoUpdatePayload is field-scoped to canonical keys", () => {
+  test("buildPoInfoUpdatePayload includes shipping contact + schedule fields", () => {
     const payload = buildPoInfoUpdatePayload({
       address: "Jl. Baru 1",
+      recipient: "Siti",
+      customer_phone: "081234",
       tanggal_pengiriman: "2026-09-20",
       estimated_delivery: "2026-09-18",
       customer: "SHOULD_NOT_APPEAR",
@@ -99,12 +105,16 @@ describe("Edit Informasi PO — helpers", () => {
     });
     expect(payload).toEqual({
       address: "Jl. Baru 1",
+      recipient: "Siti",
+      customer_phone: "081234",
       tanggal_pengiriman: "2026-09-20",
       estimated_delivery: "2026-09-18",
     });
     expect(Object.keys(payload).sort()).toEqual([
       "address",
+      "customer_phone",
       "estimated_delivery",
+      "recipient",
       "tanggal_pengiriman",
     ]);
   });
@@ -131,6 +141,8 @@ describe("Edit Informasi PO — modal behavior", () => {
   const order = {
     id: "ord-info-1",
     address: "Jl. Lama No. 1",
+    recipient: "Budi",
+    customer_phone: "0811111111",
     delivery_deadline_manual: "2026-09-10T00:00:00+07:00",
     delivery_deadline_source: "manual",
     tanggal_pengiriman: "2026-09-10",
@@ -141,12 +153,16 @@ describe("Edit Informasi PO — modal behavior", () => {
     current_stage: 3,
   };
 
-  test("CASE 1 — open editor shows persisted alamat/tanggal pengiriman/estimasi", async () => {
+  test("CASE 1 — open editor shows alamat/penerima/HP/tanggal/estimasi", async () => {
     await act(async () => {
       root.render(<EditPoInfoModal open order={order} onClose={() => {}} onSaved={() => {}} />);
     });
     expect(container.querySelector('[data-testid="edit-po-info-address"]').value).toBe(
       "Jl. Lama No. 1"
+    );
+    expect(container.querySelector('[data-testid="edit-po-info-recipient"]').value).toBe("Budi");
+    expect(container.querySelector('[data-testid="edit-po-info-customer-phone"]').value).toBe(
+      "0811111111"
     );
     expect(container.querySelector('[data-testid="edit-po-info-tanggal-pengiriman"]').value).toBe(
       "2026-09-10"
@@ -163,6 +179,7 @@ describe("Edit Informasi PO — modal behavior", () => {
     });
     await act(async () => {
       setInputValue(container.querySelector('[data-testid="edit-po-info-address"]'), "DRAFT ONLY");
+      setInputValue(container.querySelector('[data-testid="edit-po-info-recipient"]'), "DRAFT");
     });
     await act(async () => {
       container.querySelector('[data-testid="edit-po-info-cancel"]').click();
@@ -171,11 +188,13 @@ describe("Edit Informasi PO — modal behavior", () => {
     expect(mockUpdateOrderInfo).not.toHaveBeenCalled();
   });
 
-  test("CASE 3–6 — Save sends only canonical fields (combined)", async () => {
+  test("CASE 3–6 — Save sends shipping + schedule fields only", async () => {
     mockUpdateOrderInfo.mockResolvedValue({
       order: {
         ...order,
         address: "Jl. Baru No. 9",
+        recipient: "Siti",
+        customer_phone: "089999",
         tanggal_pengiriman: "2026-09-20",
         estimated_delivery: "2026-09-19T00:00:00+00:00",
       },
@@ -188,6 +207,8 @@ describe("Edit Informasi PO — modal behavior", () => {
 
     await act(async () => {
       setInputValue(container.querySelector('[data-testid="edit-po-info-address"]'), "Jl. Baru No. 9");
+      setInputValue(container.querySelector('[data-testid="edit-po-info-recipient"]'), "Siti");
+      setInputValue(container.querySelector('[data-testid="edit-po-info-customer-phone"]'), "089999");
       setInputValue(container.querySelector('[data-testid="edit-po-info-tanggal-pengiriman"]'), "2026-09-20");
       setInputValue(
         container.querySelector('[data-testid="edit-po-info-estimated-delivery"]'),
@@ -202,6 +223,8 @@ describe("Edit Informasi PO — modal behavior", () => {
     expect(mockUpdateOrderInfo).toHaveBeenCalledTimes(1);
     expect(mockUpdateOrderInfo).toHaveBeenCalledWith("ord-info-1", {
       address: "Jl. Baru No. 9",
+      recipient: "Siti",
+      customer_phone: "089999",
       tanggal_pengiriman: "2026-09-20",
       estimated_delivery: "2026-09-19",
     });
@@ -212,6 +235,42 @@ describe("Edit Informasi PO — modal behavior", () => {
     expect(sent.deadline).toBeUndefined();
     expect(onSaved).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  test("CASE 7 — missing estimasi shows clear validation error", async () => {
+    await act(async () => {
+      root.render(<EditPoInfoModal open order={order} onClose={() => {}} onSaved={() => {}} />);
+    });
+    await act(async () => {
+      setInputValue(container.querySelector('[data-testid="edit-po-info-estimated-delivery"]'), "");
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="edit-po-info-save"]').click();
+    });
+    expect(mockUpdateOrderInfo).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="edit-po-info-error"]').textContent).toMatch(
+      /Estimasi kirim wajib/i
+    );
+  });
+
+  test("CASE 8 — API error surfaces detail message", async () => {
+    mockUpdateOrderInfo.mockRejectedValue({
+      response: {
+        data: {
+          detail:
+            "Data pengiriman tidak dapat diubah karena SJ aktif sudah memiliki proses Loading/Pengiriman.",
+        },
+      },
+    });
+    await act(async () => {
+      root.render(<EditPoInfoModal open order={order} onClose={() => {}} onSaved={() => {}} />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="edit-po-info-save"]').click();
+    });
+    const errEl = container.querySelector('[data-testid="edit-po-info-error"]');
+    expect(errEl).toBeTruthy();
+    expect(errEl.textContent.toLowerCase()).toMatch(/loading|sj|pengiriman/);
   });
 
   test("CASE 9 — Edit Lokasi remains a separate canonical path", () => {

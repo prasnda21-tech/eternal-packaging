@@ -1054,6 +1054,16 @@ export const api = {
   getPoDeliverySummary: (poId) => client.get(`/sales-deliveries/po/${encodeURIComponent(poId)}/summary`).then((r) => r.data),
   createSalesDelivery: (payload) => client.post(`/sales-deliveries`, payload).then((r) => r.data),
   salesDeliveryPdfUrl: (id) => `${API}/sales-deliveries/${encodeURIComponent(id)}/pdf`,
+  salesDeliveryLoadingConfirmAll: (id, payload = {}) =>
+    client.post(`/sales-deliveries/${encodeURIComponent(id)}/loading-confirm-all`, payload).then((r) => r.data),
+  salesDeliveryConfirmDeliveredAll: (id, payload = {}) =>
+    client.post(`/sales-deliveries/${encodeURIComponent(id)}/confirm-delivered-all`, payload).then((r) => r.data),
+  salesDeliveryFulfillmentRecovery: (id) =>
+    client.get(`/sales-deliveries/${encodeURIComponent(id)}/fulfillment-recovery`).then((r) => r.data),
+  salesDeliveryFulfillmentReconcile: (id, payload = {}) =>
+    client.post(`/sales-deliveries/${encodeURIComponent(id)}/fulfillment-reconcile`, payload).then((r) => r.data),
+  salesDeliveryFulfillmentResume: (id, payload = {}) =>
+    client.post(`/sales-deliveries/${encodeURIComponent(id)}/fulfillment-resume`, payload).then((r) => r.data),
   // ---- Sales Invoice (Faktur Penjualan) ----
 
   downloadSalesInvoicePdf: (id) => client.get(`/sales-invoices/${encodeURIComponent(id)}/pdf`, { responseType: "blob" }).then((r) => r.data),

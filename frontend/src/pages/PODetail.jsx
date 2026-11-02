@@ -28,6 +28,18 @@ import { terkirimQtySummary } from "../lib/deliveryHistory";
 import { trackingShareFromLink } from "../lib/liveTrackingLink";
 import { trackingQrDataUrl } from "../lib/trackingQr";
 import { aksiPoSalesDeliveryState } from "../lib/aksiPoSalesDelivery";
+import {
+  financialStatusLabel,
+  formatPcs,
+  formatRelationEventLabel,
+  paymentStatusLabel,
+  PO_RELATION_QTY_KPI,
+  poQtySummary,
+  sjDocumentAllocationStatusLabel,
+  sliceLoadingLabel,
+  slicePodLabel,
+  sortRelationEvents,
+} from "../lib/salesDocumentRelations";
 import useAutoRefresh from "../lib/useAutoRefresh";
 import {
   accordionIndexForFocus,
@@ -1159,6 +1171,12 @@ export default function PODetail() {
               <span className="lbl">Penerima</span>
               <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
             </div>
+            <div className="po-info-pair">
+              <span className="lbl">No. HP Penerima</span>
+              <strong data-testid="detail-customer-phone">
+                {order.customer_phone || <span className="po-info-empty">—</span>}
+              </strong>
+            </div>
           </div>
           <div className="po-info-col">
             <div className="po-info-pair">
@@ -1879,6 +1897,182 @@ export default function PODetail() {
       </div>
       </section>
 
+      {/* Relasi Dokumen: available on every PO stage (read-only; uses existing document_relations). */}
+      <section
+        className="panel po-doc-relations"
+        data-testid="po-document-relations"
+        style={{ marginBottom: 12 }}
+      >
+        <h3 className="po-doc-relations__title">Relasi Dokumen</h3>
+        {(() => {
+          const rel = order.document_relations || {};
+          const qty = poQtySummary(rel);
+          const sjs = Array.isArray(rel.sales_deliveries) ? rel.sales_deliveries : [];
+          const invs = Array.isArray(rel.invoices) ? rel.invoices : [];
+          const hist = sortRelationEvents(order.relation_history || []);
+          const allocBadgeClass = (label) => {
+            if (label === "Dibatalkan") return "is-danger";
+            if (label === "Alokasi lengkap") return "is-alloc";
+            if (label === "Alokasi sebagian") return "is-partial";
+            return "is-muted";
+          };
+          return (
+            <>
+              <div className="po-doc-relations__kpi-grid" data-testid="po-rel-qty-summary">
+                {PO_RELATION_QTY_KPI.map((item) => (
+                  <div
+                    key={item.key}
+                    className="po-doc-relations__kpi"
+                    data-testid={`po-rel-kpi-${item.key}`}
+                  >
+                    <span className="po-doc-relations__kpi-label">{item.label}</span>
+                    <span className="po-doc-relations__kpi-value">{formatPcs(qty[item.key])}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="po-doc-relations__block">
+                <h4 className="po-doc-relations__block-title">Surat Jalan terkait</h4>
+                <div className="po-doc-relations__table-wrap">
+                  <table className="po-doc-relations__table" data-testid="po-rel-sj-table">
+                    <thead>
+                      <tr>
+                        <th>Nomor SJ</th>
+                        <th>Sumber</th>
+                        <th className="is-num">Qty PO dalam SJ</th>
+                        <th>Status dokumen</th>
+                        <th>Loading</th>
+                        <th>Penerimaan (POD)</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sjs.length === 0 ? (
+                        <tr><td colSpan={7} className="muted">Belum ada SJ aktif</td></tr>
+                      ) : (
+                        sjs.map((sj) => {
+                          const docLabel = sjDocumentAllocationStatusLabel(sj);
+                          return (
+                            <tr key={sj.id} data-testid={`po-rel-sj-${sj.id}`}>
+                              <td>
+                                <Link
+                                  to={`/penjualan/pengiriman-pesanan?sj_id=${encodeURIComponent(sj.id)}`}
+                                  data-testid={`po-rel-sj-link-${sj.id}`}
+                                >
+                                  {sj.sj_number || sj.id}
+                                </Link>
+                              </td>
+                              <td>
+                                {sj.is_multi_source ? (
+                                  <span
+                                    className="po-doc-relations__badge is-multi"
+                                    data-testid={`po-rel-sj-multipo-${sj.id}`}
+                                  >
+                                    multi-PO
+                                    {sj.source_po_count ? ` · ${sj.source_po_count}` : ""}
+                                  </span>
+                                ) : (
+                                  <span className="po-doc-relations__badge is-muted">1 PO</span>
+                                )}
+                              </td>
+                              <td className="is-num">{formatPcs(sj.po_qty_on_sj)}</td>
+                              <td>
+                                <span
+                                  className={`po-doc-relations__badge ${allocBadgeClass(docLabel)}`}
+                                  data-testid={`po-rel-sj-doc-status-${sj.id}`}
+                                >
+                                  {docLabel}
+                                </span>
+                              </td>
+                              <td data-testid={`po-rel-sj-loading-${sj.id}`}>{sliceLoadingLabel(sj)}</td>
+                              <td data-testid={`po-rel-sj-pod-${sj.id}`}>{slicePodLabel(sj)}</td>
+                              <td>
+                                <Link
+                                  to={`/penjualan/pengiriman-pesanan?sj_id=${encodeURIComponent(sj.id)}`}
+                                  data-testid={`po-rel-sj-lihat-${sj.id}`}
+                                >
+                                  Lihat
+                                </Link>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="po-doc-relations__block">
+                <h4 className="po-doc-relations__block-title">Faktur terkait</h4>
+                <div className="po-doc-relations__table-wrap">
+                  <table className="po-doc-relations__table" data-testid="po-rel-invoice-table">
+                    <thead>
+                      <tr>
+                        <th>Nomor Faktur</th>
+                        <th>Mode</th>
+                        <th className="is-num">Qty dari PO ini</th>
+                        <th>Status Faktur</th>
+                        <th>Status Pembayaran</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invs.length === 0 ? (
+                        <tr><td colSpan={6} className="muted">Belum ada faktur</td></tr>
+                      ) : (
+                        invs.map((inv) => (
+                          <tr key={inv.id} data-testid={`po-rel-inv-${inv.id}`}>
+                            <td>{inv.invoice_number || inv.id}</td>
+                            <td>
+                              {String(inv.source_mode || "po").toUpperCase()}
+                              {inv.is_multi_source ? " · multi" : ""}
+                            </td>
+                            <td className="is-num">{formatPcs(inv.po_qty_on_invoice)}</td>
+                            <td data-testid={`po-rel-inv-fin-${inv.id}`}>
+                              {financialStatusLabel(inv.financial_status)}
+                            </td>
+                            <td data-testid={`po-rel-inv-pay-${inv.id}`}>
+                              {paymentStatusLabel(inv.payment_status)}
+                            </td>
+                            <td>
+                              <Link
+                                to={`/penjualan/faktur-penjualan?invoice_id=${encodeURIComponent(inv.id)}`}
+                                data-testid={`po-rel-inv-link-${inv.id}`}
+                              >
+                                Lihat
+                              </Link>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <details className="po-doc-relations__history" data-testid="po-relation-history">
+                <summary>Relasi &amp; Kejadian (read-only)</summary>
+                {hist.length === 0 ? (
+                  <p className="muted" style={{ margin: "8px 0 0" }}>Belum tercatat</p>
+                ) : (
+                  <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                    {hist.map((ev, idx) => (
+                      <li key={`${ev.at}-${ev.kind}-${idx}`} data-testid={`po-rel-event-${idx}`}>
+                        <span className="muted">{ev.at || "Belum tercatat"}</span>
+                        {" · "}
+                        {formatRelationEventLabel(ev)}
+                        {ev.actor ? ` · ${ev.actor}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </details>
+            </>
+          );
+        })()}
+      </section>
+
       {/* Catatan Produksi: Order Masuk for every Detail PO viewer; all stages with production_note.view. */}
       <div className="po-order-masuk-tail" hidden={!showProductionNotes}>
       <ProductionNotesPanel
@@ -1890,6 +2084,9 @@ export default function PODetail() {
         onAppend={appendProductionNote}
         onReplace={replaceProductionNote}
       />
+      </div>
+
+      <div className="po-order-masuk-tail" hidden={!onOrderMasuk}>
       <section className="panel po-doc-tabs" data-testid="po-doc-tabs" hidden={!onOrderMasuk}>
         <div className="po-doc-tablist po-om-section-head" role="tablist" aria-label="Dokumen dan riwayat">
           <button

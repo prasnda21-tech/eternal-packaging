@@ -78,12 +78,25 @@ def customer_payment_label(invoice: Optional[dict]) -> str:
 
 
 def invoice_exclusive_to_order(invoice: Optional[dict], order: Optional[dict]) -> bool:
-    """True only when the invoice cannot describe another order or customer."""
+    """True only when the invoice cannot describe another order or customer.
+
+    Multi-source Model C invoices are fail-closed for public tracking until an
+    explicit per-order authorization mapping exists.
+    """
     invoice = invoice or {}
     order = order or {}
     order_id = _norm(order.get("id"))
     po_number = _norm(order.get("po_number"))
     if not order_id:
+        return False
+    source_po_ids = invoice.get("source_po_ids")
+    if isinstance(source_po_ids, list):
+        normalized = {_norm(x) for x in source_po_ids if _norm(x)}
+        if len(normalized) > 1:
+            return False
+        if normalized and order_id not in normalized:
+            return False
+    if invoice.get("is_multi_source") is True:
         return False
     if _norm(invoice.get("po_id")) != order_id:
         return False

@@ -1194,10 +1194,22 @@ async def cancel_sales_delivery_document_standalone(
     if not isinstance(delivery, dict) or not str(delivery.get("id") or "").strip():
         raise PhysicalStockValidationError("Surat Jalan tidak ditemukan")
     delivery_id = str(delivery["id"])
+    # Stage 3 / Stage 2 parity: never cancel an SJ that still has active invoice billing.
+    from services.sales_invoice_allocations import assert_sales_delivery_not_invoiced
+    from fastapi import HTTPException as _HTTPException
+
+    try:
+        await assert_sales_delivery_not_invoiced(db, delivery_id)
+    except _HTTPException as exc:
+        # Preserve HTTP semantics for callers that map PhysicalStock* errors;
+        # re-raise FastAPI HTTPException so DELETE endpoint returns 409.
+        raise
     actor = _as_text(actor_id, "actor_id")
     note = str(reason or "").strip() or "Pembatalan Surat Jalan"
     identity = _sales_delivery_identity_tokens(delivery)
-    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    from services.sales_delivery_allocations import delivery_source_po_ids
+    source_po_ids = delivery_source_po_ids(delivery)
+    po_id = source_po_ids[0] if source_po_ids else str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
 
     fresh = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0})
     if not fresh:
@@ -1206,6 +1218,8 @@ async def cancel_sales_delivery_document_standalone(
         "cancelled", "dibatalkan", "deleted",
     ):
         order = await db.orders.find_one({"id": po_id}, {"_id": 0}) if po_id else None
+        from services.sales_delivery_allocations import release_delivery_allocations
+        allocation_release = await release_delivery_allocations(db, fresh)
         return {
             "id": delivery_id,
             "sj_number": fresh.get("sj_number", delivery_id),
@@ -1214,9 +1228,11 @@ async def cancel_sales_delivery_document_standalone(
             "replayed": True,
             "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
             "order_id": po_id or None,
+            "source_po_ids": source_po_ids,
             "qty_delivered": (order or {}).get("qty_delivered"),
             "delivery_status": (order or {}).get("delivery_status"),
             "engine": MODE_WAREHOUSE_STANDALONE,
+            "allocation_release": allocation_release,
         }
 
     confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(db, fresh)
@@ -1248,68 +1264,74 @@ async def cancel_sales_delivery_document_standalone(
     )
 
     order_patch: Dict[str, Any] = {}
-    if po_id:
-        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
-        if order:
-            shipments = []
-            for sh in order.get("shipments") or []:
-                if not isinstance(sh, dict):
-                    continue
-                row = dict(sh)
-                if _shipment_matches_delivery(row, identity):
-                    row["is_cancelled"] = True
-                    row["cancelled"] = True
-                    row["status"] = "cancelled"
-                    row["sj_status"] = "cancelled"
-                    row["cancelled_at"] = cancelled_at
-                shipments.append(row)
-            confirmations = []
-            for rec in order.get("delivery_confirmations") or []:
-                if not isinstance(rec, dict):
-                    continue
-                row = dict(rec)
-                linked = False
-                for field in (
-                    "shipment_id", "surat_jalan_id", "sj_number",
-                    "sales_delivery_id", "delivery_id",
-                ):
-                    token = str(row.get(field) or "").strip()
-                    if token and token in identity:
-                        linked = True
-                        break
-                if linked:
-                    row["is_cancelled"] = True
-                    row["cancelled"] = True
-                    row["cancelled_at"] = cancelled_at
-                confirmations.append(row)
-            files = []
-            for entry in order.get("surat_jalan_files") or []:
-                if not isinstance(entry, dict):
-                    continue
-                file_row = dict(entry)
-                # Preserve PDF history; only deactivate this system-generated SJ.
-                if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
-                    str(file_row.get("id") or "") == delivery_id
-                    or str(file_row.get("shipment_id") or "") == delivery_id
-                ):
-                    file_row["cancelled"] = True
-                    file_row["status"] = "cancelled"
-                    file_row["cancelled_at"] = cancelled_at
-                files.append(file_row)
-            order["shipments"] = shipments
-            order["surat_jalan_files"] = files
-            order["delivery_confirmations"] = confirmations
-            recomputed = _recompute_order_delivery_after_cancel(order)
-            order_patch = {
-                "shipments": shipments,
-                "surat_jalan_files": files,
-                "delivery_confirmations": confirmations,
-                "qty_delivered": recomputed["qty_delivered"],
-                "delivery_status": recomputed["delivery_status"],
-                "current_stage": recomputed["current_stage"],
-                "updated_at": cancelled_at,
-            }
-            await db.orders.update_one({"id": po_id}, {"$set": order_patch})
+    for src_po in source_po_ids or ([po_id] if po_id else []):
+        order = await db.orders.find_one({"id": src_po}, {"_id": 0})
+        if not order:
+            continue
+        shipments = []
+        for sh in order.get("shipments") or []:
+            if not isinstance(sh, dict):
+                continue
+            row = dict(sh)
+            if _shipment_matches_delivery(row, identity):
+                row["is_cancelled"] = True
+                row["cancelled"] = True
+                row["status"] = "cancelled"
+                row["sj_status"] = "cancelled"
+                row["cancelled_at"] = cancelled_at
+            shipments.append(row)
+        confirmations = []
+        for rec in order.get("delivery_confirmations") or []:
+            if not isinstance(rec, dict):
+                continue
+            row = dict(rec)
+            linked = False
+            for field in (
+                "shipment_id", "surat_jalan_id", "sj_number",
+                "sales_delivery_id", "delivery_id",
+            ):
+                token = str(row.get(field) or "").strip()
+                if token and token in identity:
+                    linked = True
+                    break
+            if linked:
+                row["is_cancelled"] = True
+                row["cancelled"] = True
+                row["cancelled_at"] = cancelled_at
+            confirmations.append(row)
+        files = []
+        for entry in order.get("surat_jalan_files") or []:
+            if not isinstance(entry, dict):
+                continue
+            file_row = dict(entry)
+            # Preserve PDF history; only deactivate this system-generated SJ.
+            if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
+                str(file_row.get("id") or "") == delivery_id
+                or str(file_row.get("shipment_id") or "") == delivery_id
+            ):
+                file_row["cancelled"] = True
+                file_row["status"] = "cancelled"
+                file_row["cancelled_at"] = cancelled_at
+            files.append(file_row)
+        order["shipments"] = shipments
+        order["surat_jalan_files"] = files
+        order["delivery_confirmations"] = confirmations
+        recomputed = _recompute_order_delivery_after_cancel(order)
+        patch = {
+            "shipments": shipments,
+            "surat_jalan_files": files,
+            "delivery_confirmations": confirmations,
+            "qty_delivered": recomputed["qty_delivered"],
+            "delivery_status": recomputed["delivery_status"],
+            "current_stage": recomputed["current_stage"],
+            "updated_at": cancelled_at,
+        }
+        await db.orders.update_one({"id": src_po}, {"$set": patch})
+        if src_po == po_id:
+            order_patch = patch
+
+    from services.sales_delivery_allocations import release_delivery_allocations
+    allocation_release = await release_delivery_allocations(db, fresh)
 
     return {
         "id": delivery_id,
@@ -1323,10 +1345,12 @@ async def cancel_sales_delivery_document_standalone(
             "reversal_movement_ids": all_reversal_ids,
         },
         "order_id": po_id or None,
+        "source_po_ids": source_po_ids,
         "qty_delivered": order_patch.get("qty_delivered"),
         "delivery_status": order_patch.get("delivery_status"),
         "current_stage": order_patch.get("current_stage"),
         "engine": MODE_WAREHOUSE_STANDALONE,
+        "allocation_release": allocation_release,
     }
 
 

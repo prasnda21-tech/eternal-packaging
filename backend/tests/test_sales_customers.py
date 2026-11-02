@@ -85,6 +85,15 @@ def test_customer_name_normalization():
     assert normalize_customer_name("   ") == ""
 
 
+async def _ensure_ygy_branch(db):
+    """Single active YGY branch so resolve_write_branch can auto-pick without user branch."""
+    await db.branches.update_one(
+        {"code": "YGY"},
+        {"$setOnInsert": {"id": "test-ygy-cust", "name": "Yogyakarta", "active": True, "code": "YGY"}},
+        upsert=True,
+    )
+
+
 @pytest.mark.anyio
 async def test_manual_customer_crud_and_duplicate_prevention():
     import server
@@ -188,6 +197,9 @@ async def test_manual_customer_crud_and_duplicate_prevention():
 
 @pytest.mark.anyio
 async def test_po_creation_auto_persists_new_customer_and_prevents_duplicate():
+    import server
+    await ensure_sales_customer_indexes(server.db)
+    await _ensure_ygy_branch(server.db)
     app.dependency_overrides[current_user] = lambda: {
         "email": "admin@eternalpackaging.com",
         "name": "Admin",
@@ -262,29 +274,29 @@ async def test_po_creation_auto_persists_new_customer_and_prevents_duplicate():
         app.dependency_overrides.pop(current_user, None)
 
 
-def test_functional_permission_does_not_derive_sidebar_nav():
+def test_customer_view_derives_sidebar_nav_for_ui_consistency():
     from permissions import derived_nav_permissions, effective_permissions
 
-    # 1. derived_nav_permissions must not auto-derive nav.sales.customers
+    # sales.customer.view grants Data Pelanggan menu visibility (UI ↔ API aligned).
     derived = derived_nav_permissions({"sales.customer.view", "sales.customer.manage"})
-    assert "nav.sales.customers" not in derived
+    assert "nav.sales.customers" in derived
+    assert "nav.sales" in derived
 
-    # 2. User has sales.customer.view but does NOT have nav.sales.customers
-    # -> functional permission exists
-    # -> sidebar nav permission is still absent
     perms_view = effective_permissions("crm", override={"sales.customer.view": True})
     assert "sales.customer.view" in perms_view
-    assert "nav.sales.customers" not in perms_view
+    assert "nav.sales.customers" in perms_view
 
+    # manage alone does not imply view — no edit/status without explicit grants.
     perms_manage = effective_permissions("crm", override={"sales.customer.manage": True})
     assert "sales.customer.manage" in perms_manage
-    assert "nav.sales.customers" not in perms_manage
+    assert "sales.customer.edit" not in perms_manage
 
 
 @pytest.mark.anyio
 async def test_invalid_po_before_persistence_does_not_create_customer():
     import server
     await ensure_sales_customer_indexes(server.db)
+    await _ensure_ygy_branch(server.db)
 
     app.dependency_overrides[current_user] = lambda: {
         "email": "admin@eternalpackaging.com",
@@ -323,6 +335,7 @@ async def test_invalid_po_before_persistence_does_not_create_customer():
 async def test_customer_persistence_failure_rolls_back_exact_po(monkeypatch):
     import server
     await ensure_sales_customer_indexes(server.db)
+    await _ensure_ygy_branch(server.db)
 
     app.dependency_overrides[current_user] = lambda: {
         "email": "admin@eternalpackaging.com",
@@ -390,6 +403,7 @@ async def test_customer_persistence_failure_rolls_back_exact_po(monkeypatch):
 async def test_duplicate_normalized_customer_race_reuses_winner(monkeypatch):
     import server
     await ensure_sales_customer_indexes(server.db)
+    await _ensure_ygy_branch(server.db)
 
     app.dependency_overrides[current_user] = lambda: {
         "email": "admin@eternalpackaging.com",
@@ -455,6 +469,7 @@ async def test_duplicate_normalized_customer_race_reuses_winner(monkeypatch):
 async def test_existing_customer_po_failure_preserves_customer():
     import server
     await ensure_sales_customer_indexes(server.db)
+    await _ensure_ygy_branch(server.db)
 
     app.dependency_overrides[current_user] = lambda: {
         "email": "admin@eternalpackaging.com",
@@ -506,8 +521,8 @@ async def test_existing_customer_po_failure_preserves_customer():
 async def test_non_admin_cannot_access_sales_customers_by_default():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        # Non-admin roles (head_production, head_operations, crm) must be 403 Forbidden by default
-        for role in ["head_production", "head_operations", "crm", "operator"]:
+        # Roles without sales.customer.* defaults remain 403.
+        for role in ["head_production", "crm", "operator"]:
             app.dependency_overrides[current_user] = (lambda r: lambda: {
                 "email": f"{r}@eternalpackaging.com",
                 "name": r.title(),
@@ -525,6 +540,78 @@ async def test_non_admin_cannot_access_sales_customers_by_default():
                 assert r_post.status_code == 403, f"Role {role} should not have sales.customer.manage by default"
             finally:
                 app.dependency_overrides.pop(current_user, None)
+
+        # Operasional (head_operations) receives view/manage/edit/status by default.
+        app.dependency_overrides[current_user] = lambda: {
+            "email": "operasional@eternalpackaging.com",
+            "name": "Operasional",
+            "role": "head_operations",
+        }
+        try:
+            r_get = await client.get("/api/sales-customers")
+            assert r_get.status_code == 200
+            r_post = await client.post("/api/sales-customers", json={
+                "name": f"Ops Cust {uuid.uuid4().hex[:6]}",
+                "phone": "0812",
+                "address": "Jl. Ops",
+            })
+            assert r_post.status_code == 200, r_post.text
+        finally:
+            app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_reuse_existing_customer_does_not_overwrite_master_profile():
+    import server
+    await ensure_sales_customer_indexes(server.db)
+    await _ensure_ygy_branch(server.db)
+
+    app.dependency_overrides[current_user] = lambda: {
+        "email": "admin@eternalpackaging.com",
+        "name": "Admin",
+        "role": "admin",
+    }
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            unique = uuid.uuid4().hex[:6]
+            name = f"PT No Overwrite {unique}"
+            cust_id = str(uuid.uuid4())
+            await server.db[COLLECTION].insert_one({
+                "id": cust_id,
+                "name": name,
+                "normalized_name": normalize_customer_name(name),
+                "phone": "081-lama",
+                "address": "Alamat master",
+                "pic": "PIC lama",
+                "email": "lama@test",
+                "city": "Lama",
+            })
+            master = await _seed_master(f"Box OW {unique}")
+            r = await client.post("/api/sales-orders", json={
+                "po_number": f"PO-OW-{unique.upper()}",
+                "customer": name,
+                "customer_id": cust_id,
+                "customer_phone": "089-baru",
+                "customer_address": "Alamat PO",
+                "customer_pic": "PIC baru",
+                "customer_email": "baru@test",
+                "customer_city": "Baru",
+                "address": "Alamat PO",
+                "line_items": [_line(master)],
+            })
+            assert r.status_code == 200, r.text
+            order = r.json()["order"]
+            assert order["customer_id"] == cust_id
+            assert order["customer_phone"] == "089-baru"
+            stored = await server.db[COLLECTION].find_one({"id": cust_id})
+            assert stored["phone"] == "081-lama"
+            assert stored["address"] == "Alamat master"
+            assert stored["pic"] == "PIC lama"
+            assert stored["email"] == "lama@test"
+            assert stored["city"] == "Lama"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
 
 
 @pytest.mark.anyio
