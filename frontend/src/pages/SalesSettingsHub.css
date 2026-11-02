@@ -1,0 +1,145 @@
+.ps-hub {
+  display: grid;
+  gap: 8px;
+  background: #fff;
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+.ps-hub-head h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+  color: #0f172a;
+}
+
+.ps-hub-subhead {
+  margin: 2px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ps-hub-contract {
+  margin: 0;
+  padding: 6px 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.ps-hub-contract code {
+  font-size: 10.5px;
+}
+
+.ps-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.ps-section-nav button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ps-section-nav button.is-active {
+  border-color: #0f766e;
+  background: #ccfbf1;
+  color: #115e59;
+}
+
+.ps-section-nav button:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 1px;
+}
+
+.ps-section-nav button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ps-hub-panel {
+  min-width: 0;
+}
+
+.ps-summary-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.ps-summary-note {
+  margin: 0 0 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.ps-history-empty,
+.ps-history-denied,
+.ps-history-loading {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  color: #64748b;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.ps-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ps-history-row {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.ps-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: #64748b;
+  font-size: 11.5px;
+}
+
+.ps-denied {
+  margin: 0;
+  padding: 12px;
+  color: #7f1d1d;
+  font-size: 13px;
+}
+
+.ps-verifikasi-actions {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.ps-verifikasi-link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.ps-verifikasi-link select {
+  min-width: 160px;
+  max-width: 100%;
+}

@@ -64,6 +64,7 @@ import {
 import "./salesSubmenuDensity.css";
 import "./pengirimanPesananList.css";
 import "./ux90SalesCreate.css";
+import { operationalSalesSnapshotLabel } from "../lib/operationalSalesSnapshot";
 import { getWibTodayString } from "../lib/wibCalendarDate";
 
 /** Legacy API-cap constant (PR #605). Kept for tests/compat; UI uses server page+total. */
@@ -86,9 +87,9 @@ export function recipientWhatsappDigits(value) {
   return digits;
 }
 
-/** List-row Sales label — uses delivery.sales / sales_name only (never created_by). */
+/** List-row Sales label — delivery snapshot only (never created_by / live Master). */
 export function deliveryListSalesLabel(row) {
-  return String(row?.sales_name || row?.sales || "").trim();
+  return operationalSalesSnapshotLabel(row);
 }
 
 /** Counts for status tabs from a full filter-context list (no status param). */
@@ -660,6 +661,21 @@ export default function PengirimanPesanan() {
     [multiPoMode, poSummariesById],
   );
 
+  /** Sales follows PO snapshot(s) — never free-text inventing Master identity. */
+  const authoritativeSalesLabel = useMemo(() => {
+    if (multiPoMode) {
+      const labels = selectedPoIds
+        .map((id) => operationalSalesSnapshotLabel(poSummariesById[id]))
+        .filter((v) => String(v || "").trim() !== "");
+      const unique = Array.from(new Set(labels));
+      if (unique.length === 1) return unique[0];
+      if (unique.length === 0) return "";
+      // Ambiguous labels: leave blank; backend rejects conflicting multi-PO Sales.
+      return "";
+    }
+    return operationalSalesSnapshotLabel(poSummary) || formData.sales || "";
+  }, [multiPoMode, selectedPoIds, poSummariesById, poSummary, formData.sales]);
+
   const anchorMultiCustomerId = useMemo(() => {
     for (const id of selectedPoIds) {
       const cid = String(poSummariesById[id]?.customer_id || "").trim();
@@ -962,7 +978,8 @@ export default function PengirimanPesanan() {
         recipient: formData.recipient,
         address: formData.address,
         delivery_zone: formData.delivery_zone,
-        sales: formData.sales,
+        // Informational only — backend derives Sales from source POs.
+        sales: authoritativeSalesLabel,
         expedition: formData.expedition,
         notes: formData.notes,
         source_allocations: sourceAllocations,
@@ -988,7 +1005,8 @@ export default function PengirimanPesanan() {
         recipient: formData.recipient,
         address: formData.address,
         delivery_zone: formData.delivery_zone,
-        sales: formData.sales,
+        // Informational only — backend derives Sales from the associated PO.
+        sales: authoritativeSalesLabel,
         expedition: formData.expedition,
         notes: formData.notes,
         line_items: lineItemsPayload,
@@ -1895,11 +1913,17 @@ export default function PengirimanPesanan() {
                         <input
                           className="ux90-input"
                           type="text"
-                          value={formData.sales}
-                          onChange={(e) => setFormData((p) => ({ ...p, sales: e.target.value }))}
+                          readOnly
+                          value={authoritativeSalesLabel}
+                          title="Sales mengikuti snapshot PO sumber"
                           data-testid="input-delivery-sales"
                         />
-                        <input type="hidden" data-testid="input-delivery-sales-tab" value={formData.sales} readOnly />
+                        <input
+                          type="hidden"
+                          data-testid="input-delivery-sales-tab"
+                          value={authoritativeSalesLabel}
+                          readOnly
+                        />
                       </div>
                       <div className="ux90-field is-span-all">
                         <span>Alamat Pengiriman</span>
@@ -2787,7 +2811,9 @@ export default function PengirimanPesanan() {
                 </div>
                 <div>
                   <span className="sd-delivery-detail-meta-label">Sales:</span>
-                  <strong>{detailData.delivery?.sales || "-"}</strong>
+                  <strong data-testid="delivery-detail-sales">
+                    {operationalSalesSnapshotLabel(detailData.delivery) || "-"}
+                  </strong>
                 </div>
                 <div>
                   <span className="sd-delivery-detail-meta-label">Ekspedisi / Zona:</span>

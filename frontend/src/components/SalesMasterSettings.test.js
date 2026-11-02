@@ -20,6 +20,17 @@ describe("SalesMasterSettings + CrmDailyReportOptionsSettings", () => {
     expect(src).toMatch(/sm-col-resize|sm-filter-/);
     expect(src).toMatch(/sales-master-reset-layout/);
     expect(src).toMatch(/writeSalesMasterColPrefs|readSalesMasterColPrefs/);
+    expect(src).toMatch(/sales-master-rename-warning/);
+    expect(src).toMatch(/sales-master-rename-ack/);
+    expect(src).toMatch(/sales_user_mapping/);
+    expect(src).toMatch(/Alias Accurate lama tetap terhubung/);
+    expect(src).toMatch(/atribusi laporan[\s\S]*historis|atribusi historis|tidak mengubah mapping \/ atribusi/);
+    expect(src).toMatch(/Batalkan dengan menutup drawer tanpa Simpan/i);
+    expect(src).toMatch(/renamePending && !renameAck/);
+    expect(src).toMatch(/sales-master-pwa-hint/);
+    expect(src).toMatch(/Persetujuan alias saja tidak memberi akses PWA/);
+    expect(src).toMatch(/sales-master-pwa-status/);
+    expect(src).toMatch(/data-testid="sales-master-cancel"/);
   });
 
   test("crm options keep __other__ and controlled labels", () => {

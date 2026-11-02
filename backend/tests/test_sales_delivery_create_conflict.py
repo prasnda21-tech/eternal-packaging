@@ -320,6 +320,8 @@ async def test_retry_after_real_conflict_does_not_overship(db, storage):
             winner["line_items"] = [{**doc["line_items"][0], "qty": 600}]
             winner["total_qty"] = 600
             winner.pop("_id", None)
+            # Committed concurrent SJ (not provisional) so remaining qty accounts for it.
+            winner.pop("allocation_commit_pending", None)
             await real(winner)
             raise DuplicateKeyError("E11000 concurrent shipment_index")
         return await real(doc, *args, **kwargs)

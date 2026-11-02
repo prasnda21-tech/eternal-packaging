@@ -288,15 +288,16 @@ async def test_accurate_sync_fills_and_clears_sales_user_id(monkeypatch):
     assert result["updated"] >= 1
     mapped = await db.orders.find_one({"po_number": po_mapped}, {"_id": 0})
     assert mapped["sales"] == ACCURATE_AYUB
-    assert mapped["sales_user_id"] == AYUB_ID
-    assert mapped.get("sales_ownership_status") == STATUS_MATCHED
+    # Existing sync must NOT transfer ownership (historical EUIS_ID preserved).
+    assert mapped["sales_user_id"] == EUIS_ID
     fresh = await db.orders.find_one({"po_number": po_unmapped}, {"_id": 0})
     assert fresh is not None
     assert fresh["sales"] == ACCOUNT_AYUB
+    # New sync insert: unmatched label → no ownership.
     assert fresh.get("sales_user_id") in (None, "")
     assert fresh.get("sales_ownership_status") == STATUS_UNMATCHED
 
-    await db.app_settings.delete_many({"key": SETTINGS_KEY})
+    # Label refresh on existing still must not clear/rewrite ownership.
     await db.orders.update_one({"po_number": po_mapped}, {"$set": {"sales_user_id": AYUB_ID, "sales": ACCOUNT_AYUB}})
     class FakeClient2:
         is_live = False
@@ -304,11 +305,9 @@ async def test_accurate_sync_fills_and_clears_sales_user_id(monkeypatch):
             return [{"po_number": po_mapped, "sales": ACCOUNT_AYUB, **payload}]
     result2 = await sync_sales_orders(db, FakeClient2())
     assert result2["updated"] >= 1
-    cleared = await db.orders.find_one({"po_number": po_mapped}, {"_id": 0})
-    assert cleared["sales"] == ACCOUNT_AYUB
-    assert cleared.get("sales_user_id") in (None, "")
-    assert cleared.get("sales_ownership_status") == STATUS_UNMATCHED
-    assert cleared.get("sales_needs_verification") is True
+    preserved = await db.orders.find_one({"po_number": po_mapped}, {"_id": 0})
+    assert preserved["sales"] == ACCOUNT_AYUB
+    assert preserved.get("sales_user_id") == AYUB_ID
 
 
 def test_refuse_production_db_without_explicit_flag():

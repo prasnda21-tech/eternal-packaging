@@ -92,7 +92,9 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       sales_options: ["Vira"],
     });
     api.salesMasterCatalog.mockReset();
-    api.salesMasterCatalog.mockResolvedValue({ items: [] });
+    api.salesMasterCatalog.mockResolvedValue({
+      items: [{ id: "sm-vira", sales_name: "Vira", active: true, user_id: null, branch_ids: [] }],
+    });
     api.createSalesOrder.mockReset();
     api.createSalesOrder.mockResolvedValue({ message: "Pesanan Penjualan berhasil dibuat!", order: { id: "po-1" } });
     api.salesOrderRepeatSource.mockReset();

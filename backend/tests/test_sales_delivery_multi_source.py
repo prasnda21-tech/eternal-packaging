@@ -395,3 +395,136 @@ async def test_missing_customer_id_fail_closed():
     with pytest.raises(HTTPException) as exc:
         validate_orders_merge_compatible([po_a, po_b])
     assert "customer_id" in str(exc.value.detail).lower()
+
+
+async def _post_multi(client, po_a, po_b, *, sales_payload=None, qty_a=1, qty_b=1):
+    body = {
+        "po_id": po_a["id"],
+        "delivery_date": "2026-08-30",
+        "source_allocations": [
+            {
+                "source_po_id": po_a["id"],
+                "source_line_id": po_a["line_items"][0]["line_id"],
+                "source_line_idx": 0,
+                "allocated_qty": qty_a,
+            },
+            {
+                "source_po_id": po_b["id"],
+                "source_line_id": po_b["line_items"][0]["line_id"],
+                "source_line_idx": 0,
+                "allocated_qty": qty_b,
+            },
+        ],
+    }
+    if sales_payload is not None:
+        body["sales"] = sales_payload
+    return await client.post("/api/sales-deliveries", json=body)
+
+
+@pytest.mark.anyio
+async def test_multi_po_same_legacy_sales_accepted_and_spoof_ignored():
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/A/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    po_b = await _po(po_number=f"PO/B/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await _post_multi(client, po_a, po_b, sales_payload="HACKER", qty_a=2, qty_b=3)
+            assert res.status_code == 200, res.text
+            deliv = res.json()["delivery"]
+            assert deliv["is_multi_source"] is True
+            assert deliv["sales"] == "Vira"
+            assert deliv["sales_name"] == "Vira"
+            assert deliv["sales"] != "HACKER"
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_multi_po_different_legacy_sales_rejected_before_write():
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/A/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    po_b = await _po(po_number=f"PO/B/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    await server.db.orders.update_one({"id": po_b["id"]}, {"$set": {"sales": "Alfi"}})
+    before = await server.db.sales_deliveries.count_documents({})
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await _post_multi(client, po_a, po_b, sales_payload="Vira")
+            assert res.status_code == 400, res.text
+            assert "Sales" in res.text or "sales" in res.text.lower()
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+    after = await server.db.sales_deliveries.count_documents({})
+    assert after == before
+
+
+@pytest.mark.anyio
+async def test_multi_po_different_sales_master_id_rejected():
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/A/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    po_b = await _po(po_number=f"PO/B/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    await server.db.orders.update_one(
+        {"id": po_a["id"]}, {"$set": {"sales_master_id": "sm-vira", "sales": "Vira"}}
+    )
+    await server.db.orders.update_one(
+        {"id": po_b["id"]}, {"$set": {"sales_master_id": "sm-alfi", "sales": "Alfi"}}
+    )
+    before = await server.db.sales_deliveries.count_documents({})
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await _post_multi(client, po_a, po_b)
+            assert res.status_code == 400, res.text
+            assert "sales_master_id" in res.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+    assert await server.db.sales_deliveries.count_documents({}) == before
+
+
+@pytest.mark.anyio
+async def test_multi_po_blank_sales_rejected():
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/A/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    po_b = await _po(po_number=f"PO/B/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    await server.db.orders.update_one({"id": po_a["id"]}, {"$set": {"sales": ""}})
+    await server.db.orders.update_one({"id": po_b["id"]}, {"$set": {"sales": ""}})
+    before = await server.db.sales_deliveries.count_documents({})
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await _post_multi(client, po_a, po_b, sales_payload="Guess")
+            assert res.status_code == 400, res.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+    assert await server.db.sales_deliveries.count_documents({}) == before
+
+
+@pytest.mark.anyio
+async def test_multi_po_same_master_id_accepted():
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/A/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    po_b = await _po(po_number=f"PO/B/{uuid.uuid4().hex[:6].upper()}", qty=10, customer_id=cust)
+    await server.db.sales_master.insert_one(
+        {"id": "sm-vira", "sales_name": "Vira Official", "active": True}
+    )
+    await server.db.orders.update_one(
+        {"id": po_a["id"]}, {"$set": {"sales_master_id": "sm-vira", "sales": "Vira Old"}}
+    )
+    await server.db.orders.update_one(
+        {"id": po_b["id"]}, {"$set": {"sales_master_id": "sm-vira", "sales": "Vira Snapshot"}}
+    )
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await _post_multi(client, po_a, po_b, sales_payload="Spoof", qty_a=1, qty_b=1)
+            assert res.status_code == 200, res.text
+            deliv = res.json()["delivery"]
+            assert deliv["sales"] == "Vira Official"
+    finally:
+        app.dependency_overrides.pop(current_user, None)

@@ -21,7 +21,7 @@ from server import app, current_user
 from services import crm_daily_report_settings as crm_opts
 from services import sales_master as sm
 from services.org_locations import BRANCHES_COLLECTION
-from services.sales_user_mapping import SETTINGS_KEY as MAPPING_KEY
+from services.sales_user_mapping import SETTINGS_KEY as MAPPING_KEY, exact_sales_label
 
 
 def _user(role, *, uid=None, name=None, email=None, override=None):
@@ -75,11 +75,18 @@ async def _client(user):
 
 
 async def _prepare(db, users):
-    await sm.ensure_indexes(db)
+    from services import sales_master_aliases as aliases
+    from services import sales_label_candidates as cand
+    # Wipe before unique index create — polluted xdist DBs can block index builds.
     await db[sm.COLLECTION].delete_many({})
+    await db[aliases.COLLECTION].delete_many({})
+    await db[cand.COLLECTION].delete_many({})
     await db[BRANCHES_COLLECTION].delete_many({"id": {"$regex": r"^br-sm-"}})
     await db.app_settings.delete_many({"key": {"$in": [MAPPING_KEY, crm_opts.SETTINGS_KEY]}})
-    await db.audit_logs.delete_many({"action": {"$regex": r"^settings\.(sales_master|crm_daily_report)"}})
+    await db.audit_logs.delete_many({"action": {"$regex": r"^settings\.(sales_master|crm_daily_report|sales_master_alias|sales_label_candidate)"}})
+    await sm.ensure_indexes(db)
+    await aliases.ensure_indexes(db)
+    await cand.ensure_indexes(db)
     await _upsert_users(db, users)
 
 
@@ -174,36 +181,30 @@ async def test_inactive_blocked_for_new_but_history_resolve():
 @pytest.mark.anyio
 async def test_mapping_preserved_and_rename_conflict():
     import server
-    from services.sales_user_mapping import save_mapping
+    from services import sales_master_aliases as aliases
+    from services.sales_user_mapping import load_mapping_doc, save_mapping
 
     admin = _user("admin")
     sales_user = _user("sales_eternal", uid="su-1", name="Sales One")
     other = _user("sales_eternal", uid="su-2", name="Sales Two")
     await _prepare(server.db, [admin, sales_user, other])
-    await save_mapping(server.db, {"entries": [{"label": "OldLabel", "user_id": sales_user["id"]}]}, admin)
-
-    pub = await sm.create_sales_master(server.db, {
-        "sales_name": "OldLabel",
-        "user_id": sales_user["id"],
-    }, admin)
-    assert pub["sales_name"] == "OldLabel"
-
-    # Conflict: rename to label already mapped to another user
+    await aliases.ensure_indexes(server.db)
+    await server.db[aliases.COLLECTION].delete_many({})
     await save_mapping(server.db, {
         "entries": [
             {"label": "OldLabel", "user_id": sales_user["id"]},
             {"label": "Taken", "user_id": other["id"]},
         ],
     }, admin)
-    with pytest.raises(Exception) as exc:
-        await sm.update_sales_master(server.db, pub["id"], {
-            "sales_name": "Taken",
-            "user_id": sales_user["id"],
-            "doc_version": 1,
-        }, admin)
-    assert exc.value.status_code == 409
 
-    # Safe rename updates mapping label, does not rewrite orders
+    pub = await sm.create_sales_master(server.db, {
+        "sales_name": "OldLabel",
+        "user_id": sales_user["id"],
+    }, admin)
+    assert pub["sales_name"] == "OldLabel"
+    before_map = (await load_mapping_doc(server.db)).get("entries") or []
+
+    # Rename may reuse a label that exists only in mapping — mapping stays put.
     await server.db.orders.insert_one({
         "id": f"ord-{uuid.uuid4().hex[:6]}",
         "po_number": f"PO-SM-{uuid.uuid4().hex[:4]}",
@@ -218,6 +219,26 @@ async def test_mapping_preserved_and_rename_conflict():
     assert updated["sales_name"] == "NewLabel"
     hist = await server.db.orders.find_one({"sales": "OldLabel"}, {"_id": 0})
     assert hist is not None  # historical label untouched
+
+    after_map = (await load_mapping_doc(server.db)).get("entries") or []
+    assert after_map == before_map
+    assert any(exact_sales_label(e.get("label")) == "OldLabel" for e in after_map)
+
+    old_alias = await aliases.get_alias(server.db, "OldLabel")
+    new_alias = await aliases.get_alias(server.db, "NewLabel")
+    assert old_alias and old_alias["sales_master_id"] == pub["id"]
+    assert new_alias and new_alias["sales_master_id"] == pub["id"]
+
+    # name_key uniqueness still blocks colliding official Master names
+    other_master = await sm.create_sales_master(server.db, {"sales_name": "Taken"}, admin)
+    with pytest.raises(Exception) as exc:
+        await sm.update_sales_master(server.db, pub["id"], {
+            "sales_name": "Taken",
+            "user_id": sales_user["id"],
+            "doc_version": updated["doc_version"],
+        }, admin)
+    assert exc.value.status_code == 409
+    assert other_master["id"]
 
 
 @pytest.mark.anyio
@@ -354,12 +375,15 @@ async def test_pra_po_catalog_permission_branch_and_inactive():
         assert denied.status_code == 403
 
     from services.pra_po import create_draft
+    # Production requires operational_branch_id (or resolvable primary). Fixture must
+    # supply it — do not weaken resolve_write_branch for tests.
     with pytest.raises(HTTPException) as cross:
         await create_draft(server.db, {
             "customer": "Toko Lintas",
             "line_items": [{"name": "Dus", "quantity": 1, "unit": "pcs"}],
             "sales_master_id": other["id"],
             "sales": other["sales_name"],
+            "operational_branch_id": branch_a,
         }, outsider)
     assert cross.value.status_code == 403
     with pytest.raises(HTTPException) as inactive_new:
@@ -368,6 +392,7 @@ async def test_pra_po_catalog_permission_branch_and_inactive():
             "line_items": [{"name": "Dus", "quantity": 1, "unit": "pcs"}],
             "sales_master_id": inactive["id"],
             "sales": inactive["sales_name"],
+            "operational_branch_id": branch_a,
         }, admin)
     assert inactive_new.value.status_code == 400
     assert "nonaktif" in str(inactive_new.value.detail).lower()
@@ -392,6 +417,7 @@ async def test_pra_po_sales_survives_draft_invoice_and_report_bucket():
 
     admin = _user("admin")
     await _prepare(server.db, [admin])
+    branch = await _seed_branch(server.db, code="PRA2")
     pub = await sm.create_sales_master(server.db, {"sales_name": "Euis Risnawati"}, admin)
     sales_user = _user(SALES_PWA_ROLE, uid="euis-map", name="Euis User")
     await _upsert_users(server.db, [sales_user])
@@ -404,6 +430,7 @@ async def test_pra_po_sales_survives_draft_invoice_and_report_bucket():
         "sales": pub["sales_name"],
         "sales_master_id": pub["id"],
         "line_items": [line],
+        "operational_branch_id": branch,
     }, admin)
     assert created["sales"] == "Euis Risnawati"
     assert created["sales_master_id"] == pub["id"]
@@ -433,6 +460,7 @@ async def test_pra_po_sales_survives_draft_invoice_and_report_bucket():
         "sales": "Bukan Nama Master",
         "sales_master_id": pub["id"],
         "line_items": [line],
+        "operational_branch_id": branch,
     }, admin)
     assert forced["sales"] == "Euis Risnawati"
     assert forced["sales_master_id"] == pub["id"]
@@ -444,6 +472,7 @@ async def test_pra_po_sales_survives_draft_invoice_and_report_bucket():
             "address": "Jl. Teks",
             "sales": "Teks Baru",
             "line_items": [line],
+            "operational_branch_id": branch,
         }, admin)
     assert free_text.value.status_code == 400
     assert "Master Sales" in str(free_text.value.detail)
@@ -453,6 +482,7 @@ async def test_pra_po_sales_survives_draft_invoice_and_report_bucket():
         "customer_phone": "0813",
         "address": "Jl. Lama",
         "line_items": [line],
+        "operational_branch_id": branch,
     }, admin)
     await server.db.pra_pos.update_one(
         {"id": legacy["id"]},
