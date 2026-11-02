@@ -4644,6 +4644,41 @@ async def list_physical_stock_catalog(
     # Selected warehouse: blank SO demand stays branch-scoped — never fabricate WH ATP.
     blank_warehouse_scoped = bool(selected_warehouse)
 
+    # YGY ATS cutover: collect post-cutoff stream once for the page (list/detail/
+    # export share this catalog entrypoint). Read-only — no balance writes.
+    ats_stream_by_master = None
+    ats_as_of = now_iso()
+    if selected_warehouse and str(selected_warehouse.get("id") or "") == (
+        "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24"
+    ):
+        try:
+            from services.stock_ats_ygy_runtime import (
+                ats_ygy_enabled,
+                collect_ats_stream_for_ygy,
+            )
+
+            if ats_ygy_enabled():
+                ats_pack = await collect_ats_stream_for_ygy(
+                    db,
+                    master_item_ids=page_master_ids,
+                    as_of=ats_as_of,
+                    warehouse_id=str(selected_warehouse.get("id") or ""),
+                    branch_id=str(operational_id or ""),
+                )
+                ats_stream_by_master = ats_pack.get("by_master") or {}
+        except Exception as ats_collect_exc:
+            # Fail closed per-row below via empty pack → UNAVAILABLE gaps.
+            ats_stream_by_master = {
+                str(mid): {
+                    "events": [],
+                    "reservations_at_cutoff": [],
+                    "evidence_complete": False,
+                    "gaps": [f"ATS_COLLECTOR_ERROR: {ats_collect_exc}"],
+                    "skipped": [],
+                }
+                for mid in page_master_ids
+            }
+
     rows = []
     for master in page_masters:
         docs = balances.get(master.get("id"), [])
@@ -5033,6 +5068,34 @@ async def list_physical_stock_catalog(
                 row["qty_tersedia_note"] = (
                     f"{existing_note} {recon_note}".strip()
                 )
+        # YGY Accurate ATS cutover overlay (read-only). Never rewrites balances.
+        # Stream comes from collect_ats_stream_for_ygy (orders + ledger); evidence
+        # is computed honestly — never forced True to hide unmapped movements.
+        if (
+            ats_stream_by_master is not None
+            and selected_warehouse
+            and str(selected_warehouse.get("id") or "")
+            == "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24"
+        ):
+            try:
+                from services.stock_ats_ygy_runtime import apply_ats_overlay_to_ssi_row
+
+                mid_key = str(master.get("id") or row.get("master_item_id") or "").strip()
+                pack = ats_stream_by_master.get(mid_key) or {}
+                apply_ats_overlay_to_ssi_row(
+                    row,
+                    warehouse_id=str(selected_warehouse.get("id") or ""),
+                    as_of=ats_as_of,
+                    reservations_at_cutoff=pack.get("reservations_at_cutoff") or (),
+                    events=pack.get("events") or (),
+                    evidence_complete=bool(pack.get("evidence_complete")),
+                    coverage_gaps=pack.get("gaps") or None,
+                    skipped=pack.get("skipped") or None,
+                )
+            except Exception as ats_exc:  # fail closed — keep legacy SSI fields
+                row["ats_cutover_status"] = "UNAVAILABLE"
+                row["ats_cutover_reason"] = "ATS_OVERLAY_ERROR"
+                row["ats_cutover_error"] = str(ats_exc)
         rows.append(row)
     # rows already equals the requested page (built only for page_masters).
     await _attach_last_stock_actors(db, rows)
