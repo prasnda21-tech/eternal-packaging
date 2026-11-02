@@ -1,6 +1,13 @@
-import { FILTER_DEFAULTS, applyProductionFilters, sortScheduleDisplayRows } from "./productionScheduleFilters";
+import {
+  FILTER_DEFAULTS,
+  applyProductionFilters,
+  computeProductionScheduleStatusTabCounts,
+  countUniqueProductionSchedulePos,
+  sortScheduleDisplayRows,
+} from "./productionScheduleFilters";
 import { operatorQtyCetakProgress, operatorScheduleProgressCell, operatorWorkQtyCell, poTotalQtyDisplay, scheduledPrintQtyCell } from "./productionScheduleQty";
 import {
+  NON_PRINT_ONLY_ITEM_LABEL,
   buildProductionScheduleDisplayRows,
   productionScheduleAssignmentKey,
   productionScheduleDisplayRowKey,
@@ -231,5 +238,48 @@ describe("buildProductionScheduleDisplayRows", () => {
     expect(display).toHaveLength(2);
     expect(display.map((r) => r.displayOperator.line_id)).toEqual(["lid-a", "lid-b"]);
     expect(display.map((r) => r.displayOperator.split_id)).toEqual(["s1", "s2"]);
+  });
+
+  test("5 PO with 2 non-print-only remain traceable without double-counting", () => {
+    const rows = [
+      {
+        id: "p1", po_number: "P1", work_date: "2026-11-01",
+        operators: [{ split_id: "a", operator_name: "A", line_printable: true, quantity: 10, work_date: "2026-11-01" }],
+      },
+      {
+        id: "p2", po_number: "P2", work_date: "2026-11-01",
+        operators: [
+          { split_id: "b1", operator_name: "B", line_printable: true, quantity: 5, line_idx: 0, work_date: "2026-11-01" },
+          { split_id: "b2", operator_name: "C", line_printable: true, quantity: 5, line_idx: 1, work_date: "2026-11-01" },
+        ],
+      },
+      { id: "p3", po_number: "P3", work_date: null, hold: true, operators: [] },
+      {
+        id: "p4", po_number: "P4", work_date: "2026-11-02",
+        operators: [{ split_id: "np", operator_name: "N", line_printable: false, quantity: 9, work_date: "2026-11-02" }],
+      },
+      {
+        id: "p5", po_number: "P5", work_date: "2026-11-02",
+        print_qty_total: 0, non_print_qty_total: 100, operators: [],
+      },
+    ];
+    const filtered = applyProductionFilters(rows, {
+      ...FILTER_DEFAULTS,
+      scheduleScope: "all",
+      today: "2026-11-02",
+    });
+    expect(filtered).toHaveLength(5);
+    const counts = computeProductionScheduleStatusTabCounts(filtered);
+    expect(counts.all).toBe(5);
+    expect(counts.unscheduled + counts.scheduled + counts.hold).toBe(5);
+
+    const display = buildProductionScheduleDisplayRows(filtered);
+    expect(countUniqueProductionSchedulePos(display)).toBe(5);
+    expect(display.filter((r) => r.displayNonPrintOnly)).toHaveLength(2);
+    expect(display.some((r) => r.id === "p4" && r.displayNonPrintOnly)).toBe(true);
+    expect(display.some((r) => r.id === "p5" && r.displayNonPrintOnly)).toBe(true);
+    expect(NON_PRINT_ONLY_ITEM_LABEL).toMatch(/Tidak ada item cetak/i);
+    // multi-item PO still one unique PO in counter basis
+    expect(display.filter((r) => r.id === "p2")).toHaveLength(2);
   });
 });

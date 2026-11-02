@@ -149,14 +149,18 @@ function ProdColResizeHandle({ colKey, onPointerDown, onDoubleClick }) {
 }
 
 function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onClear, children, resizeSlot }) {
+  const fullLabel = String(label || "");
+  const sortTitle = sortable
+    ? (sortHint ? `${fullLabel} — ${sortHint}` : fullLabel)
+    : fullLabel;
   return (
-    <div className="prod-th-inner">
+    <div className="prod-th-inner" title={fullLabel}>
       {sortable ? (
-        <button type="button" className="prod-th-label is-sort" onClick={onSort} title={sortHint || "Urutkan"}>
+        <button type="button" className="prod-th-label is-sort" onClick={onSort} title={sortTitle}>
           {label}
         </button>
       ) : (
-        <span className="prod-th-label">{label}</span>
+        <span className="prod-th-label" title={fullLabel}>{label}</span>
       )}
       <Popover>
         <PopoverTrigger asChild>
@@ -164,6 +168,7 @@ function HeaderFilter({ label, testid, active, sortable, sortHint, onSort, onCle
             type="button"
             className={"prod-th-filter" + (active ? " is-active" : "")}
             aria-label={`Filter ${label}`}
+            title={`Filter ${fullLabel}`}
             data-testid={testid}
             onClick={(e) => e.stopPropagation()}
           >
@@ -249,7 +254,8 @@ export default function ProductionSchedule() {
   const [screenerFilter, setScreenerFilter] = useState(initialUi.filters.screenerFilter);
   const [helperFilter, setHelperFilter] = useState(initialUi.filters.helperFilter);
   const [packingFilter, setPackingFilter] = useState(initialUi.filters.packingFilter);
-  const [deliveryFilter, setDeliveryFilter] = useState(initialUi.filters.deliveryFilter);
+  // Desktop has no Delivery header control — never apply a hidden persisted value.
+  const [deliveryFilter, setDeliveryFilter] = useState(FILTER_DEFAULTS.deliveryFilter);
   const [bufferFilter, setBufferFilter] = useState(initialUi.filters.bufferFilter);
   const [dateFrom, setDateFrom] = useState(initialUi.filters.dateFrom);
   const [dateTo, setDateTo] = useState(initialUi.filters.dateTo);
@@ -268,6 +274,9 @@ export default function ProductionSchedule() {
     left: initialUi.scrollLeft,
     top: initialUi.scrollTop,
   });
+  const toolbarRef = useRef(null);
+  const toolbarScrollInitRef = useRef(false);
+  const [toolbarOverflow, setToolbarOverflow] = useState({ left: false, right: false });
   const persistReadyRef = useRef(false);
   const rowsRef = useRef(rows);
   const scheduleReadRef = useRef(scheduleRead);
@@ -278,6 +287,42 @@ export default function ProductionSchedule() {
   useEffect(() => {
     setColWidths(readProductionScheduleColWidths(listUserId));
   }, [listUserId]);
+
+  const updateToolbarOverflow = useCallback(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    // scrollbar-gutter / subpixel can leave a few px of unreachable scrollWidth.
+    const remain = el.scrollWidth - el.clientWidth - el.scrollLeft;
+    const left = el.scrollLeft > 2;
+    const right = remain > 12;
+    setToolbarOverflow((prev) => (
+      prev.left === left && prev.right === right ? prev : { left, right }
+    ));
+  }, []);
+
+  // Toolbar scroll is independent of table/list UI restore. Start at left so
+  // "Semua" stays visible; do not rewrite table viewport scroll here.
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return undefined;
+    if (!toolbarScrollInitRef.current) {
+      el.scrollLeft = 0;
+      toolbarScrollInitRef.current = true;
+    }
+    updateToolbarOverflow();
+    const onScroll = () => updateToolbarOverflow();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => updateToolbarOverflow())
+      : null;
+    ro?.observe(el);
+    window.addEventListener("resize", updateToolbarOverflow);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro?.disconnect();
+      window.removeEventListener("resize", updateToolbarOverflow);
+    };
+  }, [updateToolbarOverflow, mode, columnView, hasLoadedOnce]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -445,7 +490,10 @@ export default function ProductionSchedule() {
   const filterState = {
     q, poFilter, statusFilter, operatorFilter, customerFilter, urgentOnly, holdOnly,
     scheduleStatusTab, scheduleScope,
-    screenerFilter, helperFilter, packingFilter, deliveryFilter, bufferFilter,
+    screenerFilter, helperFilter, packingFilter,
+    // Force all: desktop Jadwal Produksi has no delivery filter control (F5).
+    deliveryFilter: FILTER_DEFAULTS.deliveryFilter,
+    bufferFilter,
     dateFrom, dateTo, workDateFilter, workDateFrom, workDateTo, sortBy,
     includeCancelled, includeCompleted,
   };
@@ -512,7 +560,7 @@ export default function ProductionSchedule() {
         screenerFilter,
         helperFilter,
         packingFilter,
-        deliveryFilter,
+        deliveryFilter: FILTER_DEFAULTS.deliveryFilter,
         bufferFilter,
         dateFrom,
         dateTo,
@@ -591,13 +639,36 @@ export default function ProductionSchedule() {
     else if (col === "work_date") setSortBy((prev) => (prev === "work_date_asc" ? "work_date" : "work_date_asc"));
   };
 
+  const scheduleExportReady = scheduleRead?.completeness === "complete"
+    && !scheduleRead?.reconcileStale
+    && !scheduleRead?.reconcileFailed
+    && !scheduleRead?.scanCapped;
+
   const download = async (scope) => {
+    if (!scheduleExportReady) {
+      alert(
+        "Ekspor dibatalkan: daftar jadwal belum lengkap atau masih stale "
+        + "(batas baca/rekonsiliasi). Gunakan Refresh sampai data complete, lalu coba lagi.",
+      );
+      return;
+    }
+    if (scope === "filtered" && !filtered.length) {
+      alert("Ekspor dibatalkan: tidak ada PO terfilter untuk diekspor.");
+      return;
+    }
     setExporting(true);
     try {
-      const payload = { scope };
-      if (scope === "filtered") payload.ids = filtered.map((r) => r.id);
-      payload.include_cancelled = includeCancelled;
-      payload.include_completed = includeCompleted;
+      const payload = {
+        scope,
+        schedule_scope: normalizeProductionScheduleScope(scheduleScope),
+        include_cancelled: includeCancelled,
+        include_completed: includeCompleted,
+        require_complete: true,
+        client_completeness: scheduleRead?.completeness || "incomplete",
+      };
+      if (scope === "filtered") {
+        payload.ids = filtered.map((r) => r.id).filter(Boolean);
+      }
       const blob = await api.productionExport(payload);
       const url = URL.createObjectURL(new Blob([blob], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
       const a = document.createElement("a");
@@ -608,7 +679,8 @@ export default function ProductionSchedule() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      alert(e.response?.data?.detail || "Gagal export Excel");
+      const detail = e.response?.data?.detail;
+      alert(typeof detail === "string" ? detail : (detail ? JSON.stringify(detail) : "Gagal export Excel"));
     } finally { setExporting(false); }
   };
 
@@ -917,8 +989,24 @@ export default function ProductionSchedule() {
             </button>
             {canExport && (
               <>
-                <button className="ghost sm" disabled={exporting || !filtered.length} onClick={() => download("filtered")} data-testid="prod-export-filtered"><Download size={12}/> Export Terfilter</button>
-                <button className="ghost sm" disabled={exporting} onClick={() => download("all")} data-testid="prod-export-all"><Download size={12}/> Export Semua</button>
+                <button
+                  className="ghost sm"
+                  disabled={exporting || !filtered.length || !scheduleExportReady}
+                  onClick={() => download("filtered")}
+                  data-testid="prod-export-filtered"
+                  title={scheduleExportReady ? "Export PO terfilter" : "Tunggu daftar complete sebelum ekspor"}
+                >
+                  <Download size={12}/> Export Terfilter
+                </button>
+                <button
+                  className="ghost sm"
+                  disabled={exporting || !scheduleExportReady}
+                  onClick={() => download("all")}
+                  data-testid="prod-export-all"
+                  title={scheduleExportReady ? "Export sesuai cakupan Jadwal Produksi" : "Tunggu daftar complete sebelum ekspor"}
+                >
+                  <Download size={12}/> Export Semua
+                </button>
               </>
             )}
           </div>
@@ -929,67 +1017,99 @@ export default function ProductionSchedule() {
           </span>
         )}
 
-        <div className="prod-toolbar" data-testid="prod-filters">
-          <div className="prod-schedule-status-tabs" role="tablist" aria-label="Status jadwal produksi" data-testid="prod-status-tabs">
-            {PRODUCTION_SCHEDULE_STATUS_TABS.map((tab) => {
-              const selected = scheduleStatusTab === tab.id;
-              const count = statusTabCounts == null ? null : Number(statusTabCounts[tab.id] ?? 0);
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={
-                    "prod-schedule-status-tab"
-                    + (selected ? " is-active" : "")
-                    + (tab.id === "hold" ? " is-hold" : "")
-                  }
-                  onClick={() => setScheduleStatusTab(tab.id)}
-                  data-testid={`prod-status-tab-${tab.id}`}
-                >
-                  <span className="prod-schedule-status-tab-label">{tab.label}</span>
-                  {count != null && (
-                    <span className="prod-schedule-status-tab-count" data-testid={`prod-status-tab-count-${tab.id}`}>
-                      {count.toLocaleString("id-ID")}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <ProductionScheduleSearchCluster
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            inputTestId="prod-search"
-            searchButtonTestId="prod-search-btn"
-          />
-          <label className="muted small" htmlFor="prod-schedule-scope">
-            Cakupan
-            <select
-              id="prod-schedule-scope"
-              className="prod-schedule-scope"
-              value={normalizeProductionScheduleScope(scheduleScope)}
-              onChange={(e) => setScheduleScope(normalizeProductionScheduleScope(e.target.value))}
-              data-testid="prod-schedule-scope"
+        <div
+          className={
+            "prod-toolbar-shell"
+            + (toolbarOverflow.left ? " is-overflow-left" : "")
+            + (toolbarOverflow.right ? " is-overflow-right" : "")
+          }
+          data-testid="prod-toolbar-shell"
+        >
+          <div className="prod-toolbar" data-testid="prod-filters" ref={toolbarRef}>
+            <div className="prod-schedule-status-tabs" role="tablist" aria-label="Status jadwal produksi" data-testid="prod-status-tabs">
+              {PRODUCTION_SCHEDULE_STATUS_TABS.map((tab) => {
+                const selected = scheduleStatusTab === tab.id;
+                const count = statusTabCounts == null ? null : Number(statusTabCounts[tab.id] ?? 0);
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={
+                      "prod-schedule-status-tab"
+                      + (selected ? " is-active" : "")
+                      + (tab.id === "hold" ? " is-hold" : "")
+                    }
+                    onClick={() => setScheduleStatusTab(tab.id)}
+                    data-testid={`prod-status-tab-${tab.id}`}
+                  >
+                    <span className="prod-schedule-status-tab-label">{tab.label}</span>
+                    {count != null && (
+                      <span className="prod-schedule-status-tab-count" data-testid={`prod-status-tab-count-${tab.id}`}>
+                        {count.toLocaleString("id-ID")}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <ProductionScheduleSearchCluster
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onSearch={(value) => setServerQ(String(value ?? q ?? "").trim())}
+              inputTestId="prod-search"
+              searchButtonTestId="prod-search-btn"
+            />
+            <label className="muted small" htmlFor="prod-schedule-scope">
+              Cakupan
+              <select
+                id="prod-schedule-scope"
+                className="prod-schedule-scope"
+                value={normalizeProductionScheduleScope(scheduleScope)}
+                onChange={(e) => setScheduleScope(normalizeProductionScheduleScope(e.target.value))}
+                data-testid="prod-schedule-scope"
+              >
+                <option value={PRODUCTION_SCHEDULE_SCOPE_DEFAULT}>Bulan Ini + Belum Selesai</option>
+                <option value={PRODUCTION_SCHEDULE_SCOPE_ALL}>Semua / Riwayat</option>
+              </select>
+            </label>
+            <ProductionScheduleRingkasan
+              metrics={summaryMetrics}
+              testidPrefix="prod"
+              basisNote="Basis: PO terfilter (termasuk tab status & filter aktif), bukan seluruh cache."
+            />
+            <span
+              className={`muted small${
+                scheduleRead?.completeness !== "complete"
+                || scheduleRead?.reconcileStale
+                || scheduleRead?.scanCapped
+                  ? " prod-po-count-is-partial"
+                  : ""
+              }`}
+              data-testid="prod-total-visible"
+              title={
+                scheduleRead?.completeness !== "complete"
+                || scheduleRead?.reconcileStale
+                || scheduleRead?.scanCapped
+                  ? "Hitungan masih partial/stale — bukan klaim daftar lengkap"
+                  : "PO unik di tampilan terfilter / PO termuat pada cakupan aktif"
+              }
             >
-              <option value={PRODUCTION_SCHEDULE_SCOPE_DEFAULT}>Bulan Ini + Belum Selesai</option>
-              <option value={PRODUCTION_SCHEDULE_SCOPE_ALL}>Semua / Riwayat</option>
-            </select>
-          </label>
-          <ProductionScheduleRingkasan metrics={summaryMetrics} testidPrefix="prod" />
-          <span className="muted small" data-testid="prod-total-visible">{mode === "tabel" ? tableVisiblePoCount : filtered.length} / {rows.length} entri</span>
-          <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
-          <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
-          <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT}>
-            Reset Filter
-          </button>
-          <button type="button" className="ghost sm prod-reset-widths" onClick={resetColumnWidths} data-testid="prod-reset-col-widths" title="Reset lebar kolom">
-            Reset Lebar
-          </button>
-          <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
-            <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
-            <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
+              {mode === "tabel" ? tableVisiblePoCount : filtered.length} / {rows.length} PO
+            </span>
+            <label className="prod-check"><input type="checkbox" checked={includeCompleted} onChange={(e) => setIncludeCompleted(e.target.checked)} data-testid="prod-include-completed"/> Selesai</label>
+            <label className="prod-check"><input type="checkbox" checked={includeCancelled} onChange={(e) => setIncludeCancelled(e.target.checked)} data-testid="prod-include-cancelled"/> Cancelled</label>
+            <button className="ghost sm prod-filter-reset" onClick={resetFilters} data-testid="prod-filter-reset" disabled={!filtersActive && sortBy === DESKTOP_PRODUCTION_SCHEDULE_SORT_DEFAULT}>
+              Reset Filter
+            </button>
+            <button type="button" className="ghost sm prod-reset-widths" onClick={resetColumnWidths} data-testid="prod-reset-col-widths" title="Reset lebar kolom">
+              Reset Lebar
+            </button>
+            <div className="prod-mode" role="tablist" data-testid="prod-mode-switch">
+              <button role="tab" className={mode === "kartu" ? "active" : ""} onClick={() => setMode("kartu")} data-testid="prod-mode-kartu"><LayoutGrid size={13}/> Kartu</button>
+              <button role="tab" className={mode === "tabel" ? "active" : ""} onClick={() => setMode("tabel")} data-testid="prod-mode-tabel"><TableIcon size={13}/> Tabel</button>
+            </div>
           </div>
         </div>
 
@@ -1069,7 +1189,14 @@ export default function ProductionSchedule() {
                     />
                   );
                   return (
-                    <th key={c.key} className={thClass} data-testid={c.testid} scope="col" style={productionSheetColumnStyle(c, colWidths[c.key])}>
+                    <th
+                      key={c.key}
+                      className={thClass}
+                      data-testid={c.testid}
+                      scope="col"
+                      title={c.label}
+                      style={productionSheetColumnStyle(c, colWidths[c.key])}
+                    >
                       {c.filter ? (
                         <HeaderFilter
                           label={c.label}
@@ -1084,8 +1211,8 @@ export default function ProductionSchedule() {
                           {renderColumnFilter(c)}
                         </HeaderFilter>
                       ) : (
-                        <div className="prod-th-inner">
-                          <span className="prod-th-label">{c.label}</span>
+                        <div className="prod-th-inner" title={c.label}>
+                          <span className="prod-th-label" title={c.label}>{c.label}</span>
                           {resizeSlot}
                         </div>
                       )}

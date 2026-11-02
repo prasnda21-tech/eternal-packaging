@@ -441,11 +441,69 @@
   font-weight: 650;
 }
 
+/* Scroll-aware overflow cues — never paint left fade at scrollLeft=0. */
+.prod-schedule-page .prod-toolbar-shell {
+  position: relative;
+  min-width: 0;
+  margin: 0 0 6px;
+}
+.prod-schedule-page .prod-toolbar-shell::before,
+.prod-schedule-page .prod-toolbar-shell::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 10px;
+  width: 22px;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.prod-schedule-page .prod-toolbar-shell::before {
+  left: 1px;
+  border-radius: 10px 0 0 10px;
+  background: linear-gradient(to right, var(--ps-surface, #fff) 30%, rgba(255, 255, 255, 0));
+}
+.prod-schedule-page .prod-toolbar-shell::after {
+  right: 1px;
+  border-radius: 0 10px 10px 0;
+  background: linear-gradient(to left, var(--ps-surface, #fff) 30%, rgba(255, 255, 255, 0));
+}
+.prod-schedule-page .prod-toolbar-shell.is-overflow-left::before {
+  opacity: 1;
+}
+.prod-schedule-page .prod-toolbar-shell.is-overflow-right::after {
+  opacity: 1;
+}
+
 .prod-schedule-page .prod-toolbar {
   align-items: center;
-  /* Allow Ringkasan popover to paint outside; row itself stays nowrap via App.css */
+  /* Keep controls reachable via horizontal scroll — never clip without access. */
   overflow-x: auto;
-  overflow-y: visible;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  background: var(--ps-surface, #fff);
+  margin: 0;
+}
+
+.prod-schedule-page .prod-toolbar::-webkit-scrollbar {
+  height: 8px;
+}
+.prod-schedule-page .prod-toolbar::-webkit-scrollbar-thumb {
+  background: #c5d0cb;
+  border-radius: 4px;
+}
+.prod-schedule-page .prod-toolbar::-webkit-scrollbar-track {
+  background: #eef3f1;
+  border-radius: 4px;
+}
+
+/* Prevent flex shrink from hiding Reset Lebar / mode switch at 1280. */
+.prod-schedule-page .prod-toolbar > * {
+  flex-shrink: 0;
 }
 
 .prod-schedule-page .prod-toolbar .ghost.sm,
@@ -458,10 +516,25 @@
 }
 
 .prod-schedule-page .prod-toolbar .production-schedule-search-cluster {
-  flex: 1 1 120px;
-  min-width: 96px;
-  max-width: 180px;
+  flex: 0 0 auto;
+  width: 148px;
+  min-width: 128px;
+  max-width: 148px;
   height: 28px;
+}
+
+@media (min-width: 1440px) {
+  .prod-schedule-page .prod-toolbar .production-schedule-search-cluster {
+    width: 180px;
+    max-width: 200px;
+  }
+}
+
+@media (min-width: 1920px) {
+  .prod-schedule-page .prod-toolbar .production-schedule-search-cluster {
+    width: 220px;
+    max-width: 220px;
+  }
 }
 
 .mop-schedule-toolbar .production-schedule-search-cluster {
@@ -571,7 +644,6 @@
 .prod-schedule-page .production-sheet-table tbody td {
   padding-top: 5px;
   padding-bottom: 5px;
-  font-size: max(11.5px, calc(12px * var(--production-sheet-zoom, 1)));
 }
 .prod-schedule-page .production-sheet-table tbody tr:hover td {
   background: #f3faf6;
@@ -826,6 +898,44 @@ body.prod-col-resizing * {
   gap: 3px;
 }
 
+/*
+ * Desktop data-cell typography token — one base size for all td content.
+ * Headers / toolbar / PWA (.mop-schedule-*) intentionally untouched.
+ */
+.prod-schedule-page {
+  --prod-sheet-data-fs: calc(12px * var(--production-sheet-zoom, 1));
+  --prod-sheet-data-lh: 1.3;
+}
+
+.prod-schedule-page .production-sheet-table tbody td,
+.prod-schedule-page .production-sheet-table tbody td.small,
+.prod-schedule-page .production-sheet-table tbody td .small,
+.prod-schedule-page .production-sheet-table tbody td .muted,
+.prod-schedule-page .production-sheet-table tbody td .muted.small,
+.prod-schedule-page .production-sheet-table tbody td a,
+.prod-schedule-page .production-sheet-table tbody td strong,
+.prod-schedule-page .production-sheet-table tbody td .prod-op-name,
+.prod-schedule-page .production-sheet-table tbody td .prod-op-line,
+.prod-schedule-page .production-sheet-table tbody td .prod-date-line,
+.prod-schedule-page .production-sheet-table tbody td .prod-line-qty-name,
+.prod-schedule-page .production-sheet-table tbody td .prod-schedule-item-line,
+.prod-schedule-page .production-sheet-table tbody td .mop-ops-item-name,
+.prod-schedule-page .production-sheet-table tbody td .mop-ops-item-qty,
+.prod-schedule-page .production-sheet-table tbody td .prod-schedule-qty-value,
+.prod-schedule-page .production-sheet-table tbody td .prod-schedule-progress,
+.prod-schedule-page .production-sheet-table tbody td .prod-schedule-progress-label,
+.prod-schedule-page .production-sheet-table tbody td .prod-schedule-nonprint-placeholder,
+.prod-schedule-page .production-sheet-table tbody td .pill,
+.prod-schedule-page .production-sheet-table tbody td .pill.sm,
+.prod-schedule-page .production-sheet-table tbody td .prod-status-akhir,
+.prod-schedule-page .production-sheet-table tbody td .urgent-badge,
+.prod-schedule-page .production-sheet-table tbody td .standard-badge,
+.prod-schedule-page .production-sheet-table tbody td .buffer-stock-badge,
+.prod-schedule-page .production-sheet-table tbody td .prod-prio-normal {
+  font-size: var(--prod-sheet-data-fs);
+  line-height: var(--prod-sheet-data-lh);
+}
+
 .prod-schedule-page .production-sheet-table .prod-status-akhir {
   font-weight: 700;
   border: 1px solid currentColor;
@@ -845,4 +955,211 @@ body.prod-col-resizing * {
 
 .prod-schedule-page .production-sheet-table .prod-status-akhir-cell {
   font-weight: 700;
+}
+
+/* --- Desktop readability polish (Eternal tokens; column order/widths frozen) --- */
+
+.prod-schedule-page .production-sheet-table thead .prod-col-label-row th {
+  vertical-align: middle;
+}
+
+.prod-schedule-page .production-sheet-table thead .prod-col-group-row th {
+  vertical-align: middle;
+}
+
+/* Soft customer tint — weaker than today yellow so text stays dominant. */
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer {
+  background: #fffcf7;
+}
+
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer strong {
+  font-weight: 650;
+  color: var(--ps-ink, #17232d);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr:hover td.prod-sticky-customer {
+  background: #f3faf6;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.hold td.prod-sticky-customer {
+  background: #fff8e1;
+}
+
+.prod-schedule-page .production-sheet-table tbody tr.cancelled td.prod-sticky-customer {
+  background: #faece9;
+}
+
+/* Today highlight keeps stronger amber; ensure ink contrast. */
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer.prod-cell-today,
+.prod-schedule-page .production-sheet-table tbody tr:hover td.prod-sticky-customer.prod-cell-today,
+.prod-schedule-page .production-sheet-table tbody tr.hold td.prod-sticky-customer.prod-cell-today {
+  background-color: #fef08a !important;
+  color: #713f12 !important;
+}
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-customer.prod-cell-today strong {
+  color: #713f12;
+}
+
+/* Long PO: one line + ellipsis inside sticky cell; full value via title tooltip. */
+.prod-schedule-page .production-sheet-table tbody td.prod-sticky-po {
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-overflow: clip;
+}
+.prod-schedule-page .production-sheet-table a[data-testid^="prod-po-link-"] {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  color: var(--ep-primary, #0f7a4a);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 650;
+}
+
+.prod-schedule-page .production-sheet-table a[data-testid^="prod-po-link-"]:hover,
+.prod-schedule-page .production-sheet-table a[data-testid^="prod-po-link-"]:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  outline: none;
+}
+.prod-schedule-page .production-sheet-table a[data-testid^="prod-po-link-"]:focus-visible {
+  box-shadow: inset 0 0 0 2px #1a73e8;
+  border-radius: 2px;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-qty-value {
+  font-variant-numeric: tabular-nums;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 650;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-label {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 650;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-track {
+  display: block;
+  width: 100%;
+  max-width: 72px;
+  height: 5px;
+  background: #e8ece9;
+  border: 1px solid #d0d7d3;
+  border-radius: 1px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-fill {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  background: var(--blue, #2563eb);
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-fill.is-zero {
+  background: var(--blue, #2563eb);
+  opacity: 0.35;
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-fill.is-partial {
+  background: var(--blue, #2563eb);
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-fill.is-done {
+  background: var(--green, #16a34a);
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-progress-fill.is-over {
+  background: var(--red, #dc2626);
+}
+
+/* Narrow progress column: keep % readable; hide track rather than widen col. */
+@media (max-width: 1366px) {
+  .prod-schedule-page .production-sheet-table .prod-schedule-progress-track {
+    max-width: 56px;
+  }
+}
+
+.prod-schedule-page .production-sheet-table .prod-schedule-nonprint-placeholder {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--ps-line, #e1e9e6);
+  background: #f3f6f5;
+  color: var(--ps-muted, #64748b);
+  font-weight: 500;
+  font-style: normal;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Buffer badge: keep one visual line; ellipsis if column narrower than label. */
+.prod-schedule-page .production-sheet-table tbody td.production-sheet-cell-status:has(.buffer-stock-badge) {
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.prod-schedule-page .production-sheet-table .buffer-stock-badge {
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 650;
+  line-height: var(--prod-sheet-data-lh, 1.3);
+  padding: 2px 7px;
+  min-height: 20px;
+  max-height: 24px;
+}
+
+/* NORMAL stays visible but never competes with URGENT. */
+.prod-schedule-page .production-sheet-table .prod-prio-normal.standard-badge {
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  opacity: 0.95;
+}
+.prod-schedule-page .production-sheet-table .urgent-badge {
+  font-weight: 700;
+}
+
+.prod-schedule-page .prod-po-count-is-partial {
+  color: #92400e;
+  border-bottom: 1px dashed #d97706;
+  padding-bottom: 1px;
+}
+
+.prod-schedule-page .prod-schedule-heading-actions .ghost.sm[aria-pressed="true"] {
+  background: #eaf6f0;
+  border-color: var(--ps-green, #075344);
+  color: var(--ps-green-strong, #043d33);
 }

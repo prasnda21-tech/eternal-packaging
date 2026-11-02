@@ -186,8 +186,8 @@ class TestB2Dashboard:
 
 # ---------------- B2 EXPORT EXCEL ----------------
 EXPECTED_HEADERS = [
-    "Deadline", "Prioritas", "No PO", "Customer", "Outlet", "Sales",
-    "Total Qty", "Operator", "Qty Operator", "Qty Selesai Operator",
+    "Tanggal Pengiriman", "Prioritas", "No PO", "Customer", "Outlet", "Sales",
+    "Total Qty", "Operator", "Item Cetak", "Qty Operator", "Qty Selesai Operator",
     "Approval Design", "Design Bypass", "Approval Payment", "Payment Bypass",
     "HOLD", "Alasan HOLD",
     "Qty Screen", "Catatan Screener",
@@ -216,7 +216,7 @@ class TestB2Export:
         assert "Ringkasan" in wb.sheetnames
         ws = wb["Jadwal Produksi"]
         header_row = [c.value for c in ws[1]]
-        assert len(header_row) == 32, f"expected 32 columns, got {len(header_row)}: {header_row}"
+        assert len(header_row) == 33, f"expected 33 columns, got {len(header_row)}: {header_row}"
         assert header_row == EXPECTED_HEADERS, f"header mismatch: {header_row}"
 
         # DB unchanged

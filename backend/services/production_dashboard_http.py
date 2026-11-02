@@ -346,7 +346,7 @@ async def fetch_production_schedule_orders(
     limit: int,
     now: Optional[datetime] = None,
 ) -> Tuple[List[dict], int]:
-    """Backward-compatible single-page helper (default scope, no cursor)."""
+    """ Backward-compatible single-page helper (default scope, no cursor)."""
     page = await fetch_production_schedule_orders_page(
         db,
         base_q,
@@ -357,6 +357,177 @@ async def fetch_production_schedule_orders(
         now=now,
     )
     return page["orders"], int(page["matched_count"])
+
+
+# Hard cap for Excel export — never silently truncate past this size.
+PRODUCTION_EXPORT_HARD_LIMIT = 2000
+_EXPORT_PAGE_SIZE = 500
+
+EXPORT_ERROR_TOO_LARGE = "EXPORT_TOO_LARGE"
+EXPORT_ERROR_INCOMPLETE = "EXPORT_INCOMPLETE"
+EXPORT_ERROR_IDS_DENIED = "EXPORT_IDS_DENIED"
+
+
+class ProductionExportTooLarge(Exception):
+    """Raised when export would exceed PRODUCTION_EXPORT_HARD_LIMIT."""
+
+    code = EXPORT_ERROR_TOO_LARGE
+
+    def __init__(self, limit: int = PRODUCTION_EXPORT_HARD_LIMIT):
+        self.limit = int(limit)
+        self.message = (
+            f"Ekspor dibatalkan: hasil melebihi batas aman {self.limit} PO. "
+            "Persempit cakupan atau filter, lalu coba lagi."
+        )
+        super().__init__(self.message)
+
+    def http_detail(self) -> Dict[str, Any]:
+        return {"code": self.code, "message": self.message}
+
+
+class ProductionExportIncomplete(Exception):
+    """Raised when the server cannot prove the export set is complete/authorized."""
+
+    def __init__(self, message: str, *, code: str = EXPORT_ERROR_INCOMPLETE):
+        self.code = str(code or EXPORT_ERROR_INCOMPLETE)
+        self.message = str(message or "Ekspor dibatalkan: hasil belum lengkap.")
+        super().__init__(self.message)
+
+    def http_detail(self) -> Dict[str, Any]:
+        return {"code": self.code, "message": self.message}
+
+
+def production_schedule_export_shipping_date(order: dict) -> Optional[str]:
+    """Same fallback chain as desktop sheet Tanggal Pengiriman (no legacy deadline)."""
+    if not order:
+        return None
+    return (
+        order.get("tanggal_pengiriman")
+        or order.get("effective_delivery_date")
+        or order.get("delivery_deadline_effective")
+        or order.get("scheduled_delivery_date")
+        or order.get("delivery_deadline_manual")
+        or None
+    )
+
+
+async def collect_production_export_orders(
+    db,
+    base_q: Dict[str, Any],
+    *,
+    schedule_scope: str = "default",
+    ids: Optional[List[str]] = None,
+    hard_limit: int = PRODUCTION_EXPORT_HARD_LIMIT,
+    now: Optional[datetime] = None,
+) -> List[dict]:
+    """Collect export orders under Jadwal Produksi scope. Server is completeness authority.
+
+    ``ids`` path (Export Terfilter): every requested id must be visible under
+    ``base_q`` (permission/cancelled) and match ``schedule_scope``. Missing or
+    out-of-scope ids fail closed — never silently omitted from a successful file.
+
+    Scope path (Export Semua): page until ``scope_complete`` without scan cap /
+    residual cursor. Incomplete collections raise ``ProductionExportIncomplete``.
+
+    Does not trust client completeness flags. Client filter columns beyond
+    schedule_scope are not re-derived here; Terfilter only attests that each
+    supplied id is authorized and in schedule_scope.
+    """
+    cap = max(0, int(hard_limit or 0))
+    scope = normalize_schedule_scope(schedule_scope)
+    if ids is not None:
+        requested: List[str] = []
+        seen = set()
+        for raw in ids:
+            oid = str(raw or "").strip()
+            if not oid or oid in seen:
+                continue
+            seen.add(oid)
+            requested.append(oid)
+        if not requested:
+            return []
+        if len(requested) > cap:
+            raise ProductionExportTooLarge(cap)
+        page = await fetch_production_schedule_orders_by_ids(
+            db,
+            base_q,
+            {"_id": 0},
+            requested,
+            limit=max(len(requested), 1),
+        )
+        if page.get("reconcile_truncated"):
+            raise ProductionExportIncomplete(
+                "Ekspor dibatalkan: daftar id terfilter melebihi batas rekonsiliasi server. "
+                "Persempit filter, lalu coba lagi.",
+                code=EXPORT_ERROR_INCOMPLETE,
+            )
+        by_id = {str(o.get("id")): o for o in page.get("orders") or [] if o.get("id") is not None}
+        today_key = wib_today(now).isoformat()
+        denied = False
+        ordered: List[dict] = []
+        for oid in requested:
+            order = by_id.get(oid)
+            if order is None:
+                denied = True
+                break
+            if scope == "default" and not order_matches_default_production_schedule_scope(
+                order, today_key=today_key,
+            ):
+                denied = True
+                break
+            ordered.append(order)
+        if denied:
+            # Do not echo which ids failed — avoids leaking existence across ACL/scope.
+            raise ProductionExportIncomplete(
+                "Ekspor dibatalkan: sebagian PO tidak diizinkan atau di luar cakupan jadwal. "
+                "Refresh daftar lengkap, lalu ekspor lagi.",
+                code=EXPORT_ERROR_IDS_DENIED,
+            )
+        return ordered
+
+    collected: List[dict] = []
+    cursor: Optional[str] = None
+    last: Optional[Dict[str, Any]] = None
+    while True:
+        page = await fetch_production_schedule_orders_page(
+            db,
+            base_q,
+            {"_id": 0},
+            limit=_EXPORT_PAGE_SIZE,
+            schedule_scope=scope,
+            cursor=cursor,
+            now=now,
+        )
+        last = page
+        batch = list(page.get("orders") or [])
+        for order in batch:
+            collected.append(order)
+            if len(collected) > cap:
+                raise ProductionExportTooLarge(cap)
+        next_cursor = page.get("next_cursor") or None
+        scan_capped = bool(page.get("scan_capped"))
+        scope_complete = bool(page.get("scope_complete"))
+        if scope_complete and not next_cursor and not scan_capped:
+            break
+        if not next_cursor:
+            break
+        if scan_capped:
+            # Residual unread candidates — stop and fail closed below.
+            break
+        cursor = str(next_cursor)
+
+    if (
+        last is None
+        or not bool(last.get("scope_complete"))
+        or bool(last.get("scan_capped"))
+        or bool(last.get("next_cursor"))
+    ):
+        raise ProductionExportIncomplete(
+            "Ekspor dibatalkan: hasil cakupan jadwal belum lengkap di server "
+            "(batas baca/scan atau cursor tersisa). Persempit cakupan atau coba lagi.",
+            code=EXPORT_ERROR_INCOMPLETE,
+        )
+    return collected
 
 
 class LayoutSaveBody(BaseModel):

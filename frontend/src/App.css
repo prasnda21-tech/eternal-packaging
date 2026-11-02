@@ -4027,21 +4027,28 @@ html:has(.prod-schedule-page) #root{
   100%{background-position:-100% 0}
 }
 /* Desktop toolbar — single row (1280 / 1366 / 1440). Scoped; do not wrap. */
+.prod-schedule-page .prod-toolbar-shell{
+  min-width:0;
+}
 .prod-schedule-page .prod-toolbar{
   --prod-sched-ctrl-h:28px;
   display:flex;
   flex-wrap:nowrap;
   align-items:center;
   gap:5px;
-  margin:0 0 6px;
+  margin:0;
   box-sizing:border-box;
-  padding:5px 8px;
+  padding:5px 8px 8px;
   border:1px solid var(--ps-line);
   border-radius:10px;
   background:var(--ps-surface);
   min-width:0;
   overflow-x:auto;
   overflow-y:hidden;
+  scrollbar-gutter:stable;
+}
+.prod-schedule-page .prod-toolbar > *{
+  flex-shrink:0;
 }
 .prod-schedule-page .prod-schedule-status-tabs{
   display:inline-flex;
@@ -4104,9 +4111,10 @@ html:has(.prod-schedule-page) #root{
   color:#9f1239;
 }
 .prod-schedule-page .prod-toolbar .production-schedule-search-cluster{
-  flex:1 1 120px;
-  min-width:96px;
-  max-width:180px;
+  flex:0 0 auto;
+  min-width:128px;
+  max-width:148px;
+  width:148px;
   height:var(--prod-sched-ctrl-h);
   gap:4px;
 }
@@ -4273,18 +4281,25 @@ html:has(.prod-schedule-page) #root{
 }
 .prod-schedule-page .prod-table tbody td:last-child{border-right:0}
 .prod-schedule-page .prod-table tbody td.col-text{line-height:1.3}
-.prod-schedule-page .prod-table tbody td.small{font-size:13px}
+.prod-schedule-page .prod-table tbody td.small{font-size:12px;line-height:1.3}
 .prod-schedule-page .prod-table tbody td .muted.small,
-.prod-schedule-page .prod-table tbody td .small{font-size:13px}
+.prod-schedule-page .prod-table tbody td .small{font-size:12px;line-height:1.3}
 .prod-schedule-page .prod-table tbody td.prod-qty-cell,
 .prod-schedule-page .prod-table tbody td.prod-ops{vertical-align:top}
 .prod-schedule-page .prod-table tbody td.prod-qty-cell{white-space:normal}
 .prod-schedule-page .prod-op-line{margin-bottom:2px;gap:8px;line-height:1.25}
 .prod-schedule-page .prod-date-line{padding:0}
-.prod-schedule-page .prod-line-qty-name{font-size:12px;max-width:11rem}
-.prod-schedule-page .pill.sm{padding:2px 7px;font-size:clamp(11px,11.5px,12px);min-height:20px;line-height:1.2}
+.prod-schedule-page .prod-line-qty-name{max-width:11rem}
+.prod-schedule-page .pill.sm{padding:2px 7px;min-height:20px;line-height:1.3}
 .prod-schedule-page .urgent-badge,
-.prod-schedule-page .standard-badge{font-size:clamp(11px,11.5px,12px);padding:2px 7px;min-height:20px;line-height:1.2}
+.prod-schedule-page .standard-badge{padding:2px 7px;min-height:20px;line-height:1.3}
+.prod-schedule-page .production-sheet-table tbody td .pill.sm,
+.prod-schedule-page .production-sheet-table tbody td .urgent-badge,
+.prod-schedule-page .production-sheet-table tbody td .standard-badge,
+.prod-schedule-page .production-sheet-table tbody td .buffer-stock-badge{
+  font-size:var(--prod-sheet-data-fs,12px);
+  line-height:var(--prod-sheet-data-lh,1.3);
+}
 .prod-schedule-page .prod-qty-over{color:var(--red);font-weight:650}
 @media (max-width:640px){
   .app-shell:has(.prod-schedule-page){

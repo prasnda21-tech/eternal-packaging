@@ -104,6 +104,7 @@ describe("ProductionSchedule spreadsheet", () => {
     api.productionDashboard.mockReset();
     api.productionExport.mockReset();
     window.localStorage.clear();
+    window.sessionStorage.clear();
     rafNow = 0;
     jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => (
       window.setTimeout(() => {
@@ -164,6 +165,11 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector(".prod-sticky-customer")).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-th-filter-po"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-th-filter-status"]')).toBeTruthy();
+    const workDateTh = [...container.querySelectorAll('[data-testid="production-sheet-table"] thead th')]
+      .find((th) => th.querySelector(".prod-th-label")?.textContent?.includes("Tgl Pengerjaan"));
+    expect(workDateTh?.getAttribute("title")).toBe("Tgl Pengerjaan");
+    expect(workDateTh?.querySelector(".prod-th-label")?.getAttribute("title")).toMatch(/^Tgl Pengerjaan/);
+    expect(container.querySelector('[data-testid="prod-th-filter-work_date"]')?.getAttribute("title")).toBe("Filter Tgl Pengerjaan");
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-in"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-out"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-zoom-fit"]')).toBeFalsy();
@@ -173,6 +179,14 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-search"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-search-btn"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-ringkasan"]')).toBeTruthy();
+    const toolbarShell = container.querySelector('[data-testid="prod-toolbar-shell"]');
+    const toolbar = container.querySelector('[data-testid="prod-filters"]');
+    expect(toolbarShell).toBeTruthy();
+    expect(toolbar).toBeTruthy();
+    expect(toolbar.scrollLeft).toBe(0);
+    expect(container.querySelector('[data-testid="prod-status-tab-all"]')).toBeTruthy();
+    // Left fade must not be forced on at initial scrollLeft=0.
+    expect(toolbarShell.className).not.toMatch(/\bis-overflow-left\b/);
     expect(container.querySelector('[data-testid="prod-work-date-PO-1001"]').textContent).toContain("25/08/26");
     expect(container.querySelector('[data-testid="prod-work-date-PO-1001"]').textContent).not.toContain("2026-08-25");
   });
@@ -269,6 +283,7 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-qty-operator-PO-1001"]').textContent).toBe("3.000");
     expect(container.querySelector('[data-testid="prod-qty-cetak-PO-1001"]').textContent).toBe("10.000");
     expect(container.querySelector('[data-testid="prod-progress-PO-1001"]').textContent).toBe("30%");
+    expect(container.querySelector('[data-testid="prod-progress-PO-1001"] .prod-schedule-progress-fill.is-partial')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).toBe("20.000");
     expect(container.querySelector('[data-testid="prod-item-PO-1001"]').textContent).toContain("Cup 16oz Extra Long Name");
     expect(container.querySelector('[data-testid="prod-qty-PO-1001"]').textContent).not.toContain("Cup");
@@ -449,7 +464,7 @@ describe("ProductionSchedule spreadsheet", () => {
     await renderPage();
     const rows = [...container.querySelectorAll('[data-testid="prod-row-PO-1001"]')];
     expect(rows).toHaveLength(3);
-    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 entri");
+    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 PO");
     expect(rows.map((row) => row.querySelector(".prod-op-name")?.textContent)).toEqual(["Cici", "Andi", "Budi"]);
     expect(container.querySelectorAll('[data-testid="prod-po-link-PO-1001"]')).toHaveLength(3);
     expect(container.querySelector('[href*="po-1"]')).toBeTruthy();
@@ -484,7 +499,7 @@ describe("ProductionSchedule spreadsheet", () => {
       "2.600",
     ]);
     expect(container.textContent).not.toContain("4.600");
-    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 entri");
+    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("1 / 1 PO");
   });
 
   test("Screen column shows line-level Screen Besar / Screen Kecil / em dash", async () => {
@@ -556,7 +571,7 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-row-PO-HIST-DONE"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="prod-row-PO-FUTURE"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="prod-row-PO-UNSCHED"]')).toBeFalsy();
-    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("4 / 7 entri");
+    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("4 / 7 PO");
 
     const selesai = container.querySelector('[data-testid="prod-include-completed"]');
     await act(async () => { selesai.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
@@ -663,6 +678,117 @@ describe("ProductionSchedule spreadsheet", () => {
     expect(container.querySelector('[data-testid="prod-row-PO-HI-D1"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="prod-row-PO-HI-D2"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="prod-row-PO-HI-D3"]')).toBeFalsy();
+  });
+
+  test("non-print-only PO stays visible with placeholder and matching PO counter", async () => {
+    const today = productionTodayKey();
+    api.productionDashboard.mockResolvedValue({
+      rows: [
+        {
+          ...sampleRows[0],
+          id: "print-1",
+          po_number: "PO-PRINT",
+          work_date: today,
+          operators: [{
+            split_id: "s1", operator_name: "Budi", quantity: 100, line_printable: true,
+            line_idx: 0, line_id: "lid-a", line_name: "Cup", work_date: today,
+          }],
+          operator_work_dates: [{ split_id: "s1", operator_name: "Budi", work_date: today }],
+        },
+        {
+          ...sampleRows[0],
+          id: "np-1",
+          po_number: "PO-NP",
+          work_date: today,
+          print_qty_total: 0,
+          non_print_qty_total: 50,
+          operators: [{
+            split_id: "snp", operator_name: "Sari", quantity: 50, line_printable: false,
+            line_idx: 1, line_id: "lid-b", line_name: "Lid", work_date: today,
+          }],
+          operator_work_dates: [{ split_id: "snp", operator_name: "Sari", work_date: today }],
+        },
+      ],
+      total: 2,
+      scope_complete: true,
+      next_cursor: null,
+    });
+    await renderPage();
+    // Ensure histori scope so fixture dates cannot be clipped by month predicate.
+    const scope = container.querySelector('[data-testid="prod-schedule-scope"]');
+    await act(async () => {
+      scope.value = "all";
+      scope.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="prod-row-PO-PRINT"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-row-PO-NP"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="prod-item-non-print-PO-NP"]')?.textContent)
+      .toMatch(/Tidak ada item cetak/i);
+    expect(container.querySelector('[data-testid="prod-total-visible"]').textContent).toBe("2 / 2 PO");
+  });
+
+  test("export buttons stay disabled while schedule completeness is incomplete", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: sampleRows,
+      total: 1,
+      scope_complete: false,
+      next_cursor: "x",
+      completeness: "incomplete",
+    });
+    await renderPage();
+    expect(container.querySelector('[data-testid="prod-export-all"]').disabled).toBe(true);
+    expect(container.querySelector('[data-testid="prod-export-filtered"]').disabled).toBe(true);
+    expect(api.productionExport).not.toHaveBeenCalled();
+  });
+
+  test("search icon button is wired (clickable) on the desktop toolbar", async () => {
+    api.productionDashboard.mockResolvedValue({
+      rows: sampleRows, total: 1, scope_complete: true, next_cursor: null,
+    });
+    await renderPage();
+    const btn = container.querySelector('[data-testid="prod-search-btn"]');
+    expect(btn).toBeTruthy();
+    expect(btn.getAttribute("type")).toBe("button");
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    // Click must not throw / unmount the page.
+    expect(container.querySelector('[data-testid="production-schedule-page"]')).toBeTruthy();
+  });
+
+  test("long PO link and BUFFER STOCK expose full title without mutating values", async () => {
+    const longPo = "PO-REV-VERY-LONG-NUMBER-2026-00012345";
+    api.productionDashboard.mockResolvedValue({
+      rows: [{
+        ...sampleRows[0],
+        po_number: longPo,
+        buffer_stock: true,
+        urgent: false,
+      }],
+      total: 1,
+      scope_complete: true,
+      next_cursor: null,
+    });
+    await renderPage();
+    const link = container.querySelector(`[data-testid="prod-po-link-${longPo}"]`);
+    expect(link).toBeTruthy();
+    expect(link.textContent).toBe(longPo);
+    expect(link.getAttribute("title")).toBe(longPo);
+    expect(link.getAttribute("href")).toContain("/po/");
+    expect(link.tabIndex).toBeGreaterThanOrEqual(0);
+    const buffer = container.querySelector(".buffer-stock-badge");
+    expect(buffer).toBeTruthy();
+    expect(buffer.textContent).toBe("BUFFER STOCK");
+    expect(buffer.getAttribute("title")).toBe("BUFFER STOCK");
+    const sheetCss = require("fs").readFileSync(
+      require("path").resolve(__dirname, "../productionSheet.css"),
+      "utf8",
+    );
+    expect(sheetCss).toMatch(/a\[data-testid\^="prod-po-link-"\][\s\S]*text-overflow:\s*ellipsis/);
+    expect(sheetCss).toMatch(/\.buffer-stock-badge[\s\S]*text-overflow:\s*ellipsis/);
+    expect(sheetCss).toMatch(/\.buffer-stock-badge[\s\S]*white-space:\s*nowrap/);
   });
 });
 

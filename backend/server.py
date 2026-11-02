@@ -9612,45 +9612,91 @@ async def status_po_dashboard(
 
 
 class ProductionExportPayload(BaseModel):
-    ids: Optional[List[str]] = None  # if provided, export only these
+    ids: Optional[List[str]] = None  # Export Terfilter: exact filtered ids
     include_cancelled: bool = False
     include_completed: bool = True
-    scope: str = "filtered"  # informational; "filtered" or "all"
+    scope: str = "filtered"  # "filtered" or "all"
+    schedule_scope: str = "default"  # Jadwal cakupan: default | all
+    require_complete: bool = True
+    client_completeness: Optional[str] = None
 
 
 @api_router.post("/dashboard/production/export")
 async def export_production_excel(payload: ProductionExportPayload, user=Depends(require_perm("dashboard.production.export"))):
     """Generate an Excel (.xlsx) export of the Jadwal Produksi. No DB writes.
-    - One header row
-    - AutoFilter + Freeze top row
-    - Excel dates & numeric qty (no merged cells)
-    - Optional Ringkasan sheet with factual counts (no KPI/score)
+
+    Export Semua follows ``schedule_scope`` (bulan ini + unfinished, or histori).
+    Export Terfilter uses ``ids`` from the complete client filter set.
+    Never silently truncates past the hard limit — fail-closed with 409.
     """
     from io import BytesIO
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill
     from openpyxl.utils import get_column_letter
     from datetime import datetime as _dt
+    from services.production_dashboard_http import (
+        ProductionExportIncomplete,
+        ProductionExportTooLarge,
+        collect_production_export_orders,
+        normalize_schedule_scope,
+        order_access_scope,
+        production_schedule_export_shipping_date,
+    )
 
-    q: dict = {}
-    if payload.ids:
-        q["id"] = {"$in": payload.ids}
-    else:
-        if not payload.include_cancelled:
-            q["cancelled"] = {"$ne": True}
-    q = {"$and": [q, sales_owner_match(user), await operational_query(db, user)]}
-    orders = await db.orders.find(q, {"_id": 0}).sort("deadline", 1).to_list(2000)
+    # require_complete / client_completeness remain accepted for back-compat but
+    # never authorize export. Completeness is proven only by server collection.
+
+    access_q: dict = {}
+    if not payload.include_cancelled:
+        access_q["cancelled"] = {"$ne": True}
+    access_q.update(await order_access_scope(db, user))
+
+    export_scope = (payload.scope or "filtered").strip().lower()
+    schedule_scope = normalize_schedule_scope(payload.schedule_scope)
+    try:
+        if payload.ids is not None:
+            if not payload.ids:
+                raise HTTPException(400, "Ekspor terfilter membutuhkan daftar id PO yang lengkap.")
+            orders = await collect_production_export_orders(
+                db, access_q, ids=list(payload.ids), schedule_scope=schedule_scope,
+            )
+            export_scope = "filtered"
+        else:
+            # Export Semua (and legacy empty body): Jadwal Produksi schedule_scope.
+            orders = await collect_production_export_orders(
+                db, access_q, schedule_scope=schedule_scope, ids=None,
+            )
+            export_scope = "all"
+    except ProductionExportTooLarge as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
+    except ProductionExportIncomplete as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail()) from exc
+
+    _dd_settings = await _get_delivery_deadline_settings()
+    from services.production_wave2 import holiday_dates as _holiday_dates
+    holidays = await _holiday_dates(db)
     for o in orders:
         _apply_hold_snapshot(o)
-    if not payload.include_completed and not payload.ids:
+        _attach_deadline_snapshot(o, _dd_settings["lead_time_days"], holidays=holidays)
+    if not payload.include_completed and payload.ids is None:
         orders = [o for o in orders if o.get("current_stage", 0) < 14]
+
+    def _export_split_printable(order: dict, split: dict) -> bool:
+        try:
+            idx = int(split.get("line_idx"))
+        except (TypeError, ValueError):
+            return False
+        lines = order.get("line_items") or []
+        if 0 <= idx < len(lines):
+            return _is_print_line(lines[idx])
+        return False
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Jadwal Produksi"
     headers = [
-        "Deadline", "Prioritas", "No PO", "Customer", "Outlet", "Sales",
-        "Total Qty", "Operator", "Qty Operator", "Qty Selesai Operator",
+        "Tanggal Pengiriman", "Prioritas", "No PO", "Customer", "Outlet", "Sales",
+        "Total Qty", "Operator", "Item Cetak", "Qty Operator", "Qty Selesai Operator",
         "Approval Design", "Design Bypass", "Approval Payment", "Payment Bypass",
         "HOLD", "Alasan HOLD",
         "Qty Screen", "Catatan Screener",
@@ -9670,11 +9716,18 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
     def parse_iso_date(iso: Optional[str]):
         if not iso:
             return None
+        text = str(iso).strip()
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            try:
+                return _dt.strptime(text[:10], "%Y-%m-%d").date()
+            except Exception:
+                pass
         try:
-            return _dt.fromisoformat(iso.replace("Z", "+00:00")).date()
+            return _dt.fromisoformat(text.replace("Z", "+00:00")).date()
         except Exception:
             return None
 
+    po_level_tail_width = 22
     row_idx = 1
     for o in orders:
         splits = o.get("operator_splits") or []
@@ -9691,14 +9744,39 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
         else:
             status_final = o.get("status_label") or STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)]
 
+        ship_date = production_schedule_export_shipping_date(o)
         base = [
-            parse_iso_date(o.get("deadline")),
+            parse_iso_date(ship_date),
             "Urgent" if o.get("priority") == "urgent" else "Normal",
             o.get("po_number"),
             o.get("customer"),
             o.get("outlet"),
             o.get("sales") or o.get("sales_user"),
             int(o.get("total_quantity") or 0),
+        ]
+        po_tail = [
+            o.get("design_status") or "-",
+            "Ya" if o.get("design_bypassed") else "Tidak",
+            o.get("payment_status") or "-",
+            "Ya" if o.get("payment_bypassed") else "Tidak",
+            "HOLD" if hold else "-",
+            "; ".join(o.get("hold_reasons") or []),
+            sc.get("screen_qty"),
+            sc.get("notes") or "",
+            _qr_helper_target_qty(o),
+            hp.get("qty_prepared"),
+            max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0),
+            ("Barang Kurang" if max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0) > 0 else "Cukup"),
+            STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
+            o.get("packing_status") or "-",
+            o.get("delivery_note_number") or "",
+            "OK" if _loading_completed(o) else "-",
+            loading.get("vehicle_plate") or "",
+            loading.get("driver_name") or "",
+            o.get("delivery_status") or "-",
+            len(o.get("delivery_proofs") or []),
+            status_final,
+            o.get("cancel_reason") or "",
         ]
         if splits:
             for i, s in enumerate(splits):
@@ -9707,70 +9785,27 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
                 # Only first row shows Total Qty to avoid double counting
                 if i > 0:
                     op_row[6] = None
+                printable = _export_split_printable(o, s)
                 op_row += [
                     s.get("operator_name") or s.get("operator_email"),
+                    "Ya" if printable else "Tidak",
                     int(s.get("quantity") or 0),
-                    int(s.get("qty_completed") or 0),
+                    int(s.get("qty_completed") or 0) if "qty_completed" in s else None,
                 ]
-                # After the first operator row, blank the remaining PO-level cells
                 if i == 0:
-                    op_row += [
-                        o.get("design_status") or "-",
-                        "Ya" if o.get("design_bypassed") else "Tidak",
-                        o.get("payment_status") or "-",
-                        "Ya" if o.get("payment_bypassed") else "Tidak",
-                        "HOLD" if hold else "-",
-                        "; ".join(o.get("hold_reasons") or []),
-                        sc.get("screen_qty"),
-                        sc.get("notes") or "",
-                        _qr_helper_target_qty(o),
-                        hp.get("qty_prepared"),
-                        max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0),
-                        ("Barang Kurang" if max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0) > 0 else "Cukup"),
-                        STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
-                        o.get("packing_status") or "-",
-                        o.get("delivery_note_number") or "",
-                        "OK" if _loading_completed(o) else "-",
-                        loading.get("vehicle_plate") or "",
-                        loading.get("driver_name") or "",
-                        o.get("delivery_status") or "-",
-                        len(o.get("delivery_proofs") or []),
-                        status_final,
-                        o.get("cancel_reason") or "",
-                    ]
+                    op_row += po_tail
                 else:
-                    op_row += [""] * 22
+                    op_row += [""] * po_level_tail_width
                 ws.append(op_row)
         else:
             row_idx += 1
             ws.append(base + [
-                "", "", "",
-                o.get("design_status") or "-",
-                "Ya" if o.get("design_bypassed") else "Tidak",
-                o.get("payment_status") or "-",
-                "Ya" if o.get("payment_bypassed") else "Tidak",
-                "HOLD" if hold else "-",
-                "; ".join(o.get("hold_reasons") or []),
-                sc.get("screen_qty"),
-                sc.get("notes") or "",
-                _qr_helper_target_qty(o),
-                hp.get("qty_prepared"),
-                max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0),
-                ("Barang Kurang" if max(_qr_helper_target_qty(o) - int(hp.get("qty_prepared") or 0), 0) > 0 else "Cukup"),
-                STAGES[min(o.get("current_stage", 0), len(STAGES) - 1)],
-                o.get("packing_status") or "-",
-                o.get("delivery_note_number") or "",
-                "OK" if _loading_completed(o) else "-",
-                loading.get("vehicle_plate") or "",
-                loading.get("driver_name") or "",
-                o.get("delivery_status") or "-",
-                len(o.get("delivery_proofs") or []),
-                status_final,
-                o.get("cancel_reason") or "",
+                "", "Tidak ada item cetak", "", "",
+                *po_tail,
             ])
 
     # Auto width (approx)
-    widths = [12, 10, 18, 22, 22, 12, 10, 22, 12, 16, 18, 14, 18, 15, 8, 30, 12, 24, 20, 20, 16, 16, 18, 12, 18, 12, 18, 20, 14, 16, 16, 24]
+    widths = [14, 10, 18, 22, 22, 12, 10, 22, 14, 12, 16, 18, 14, 18, 15, 8, 30, 12, 24, 20, 20, 16, 16, 18, 12, 18, 12, 18, 20, 14, 16, 16, 24]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     # Freeze header + autofilter
@@ -9779,9 +9814,9 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
     # Format date column (A) & qty columns as numeric
     for r in range(2, row_idx + 1):
         d = ws.cell(row=r, column=1).value
-        if isinstance(d, _dt):
+        if isinstance(d, _dt) or hasattr(d, "year"):
             ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
-        for qty_col in (7, 9, 10, 17, 19, 20, 21, 30):
+        for qty_col in (7, 10, 11, 18, 20, 21, 22, 31):
             ws.cell(row=r, column=qty_col).number_format = "#,##0"
 
     # ---------- Ringkasan sheet ----------
@@ -9797,7 +9832,8 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
     for o in orders:
         if o.get("cancelled") or o.get("current_stage", 0) >= 14: continue
         try:
-            dl = datetime.fromisoformat((o.get("deadline") or "").replace("Z", "+00:00"))
+            ship = production_schedule_export_shipping_date(o) or o.get("deadline") or ""
+            dl = datetime.fromisoformat(str(ship).replace("Z", "+00:00"))
             if dl.tzinfo is None: dl = dl.replace(tzinfo=timezone.utc)
             if dl < now: overdue += 1
         except Exception:
@@ -9807,6 +9843,8 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
         ["Metrik", "Nilai"],
         ["Total PO (scope)", total],
         ["Total Qty (scope)", total_qty],
+        ["Cakupan jadwal", schedule_scope],
+        ["Mode ekspor", export_scope],
         ["Aktif", aktif],
         ["HOLD", hold_n],
         ["Urgent", urgent],
@@ -9815,13 +9853,15 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
         ["Cancelled", cancelled],
     ]
     for r in rows2: ws2.append(r)
-    # PO per operator
+    # PO per operator (printable assignments only — avoid inventing print work)
     ws2.append([])
-    ws2.append(["Jumlah PO per Operator", "Total Qty"])
+    ws2.append(["Jumlah baris assign per Operator", "Total Qty Assigned"])
     op_map: dict = {}
     for o in orders:
         if o.get("cancelled"): continue
         for s in o.get("operator_splits") or []:
+            if not _export_split_printable(o, s):
+                continue
             name = s.get("operator_name") or s.get("operator_email") or "-"
             op_map.setdefault(name, {"po": 0, "qty": 0})
             op_map[name]["po"] += 1
@@ -9838,8 +9878,13 @@ async def export_production_excel(payload: ProductionExportPayload, user=Depends
 
     # Audit (informational only, no DB write to orders)
     await _write_audit("dashboard.production.export", user, target_email=None,
-                       after={"scope": payload.scope, "count": len(orders), "ids": bool(payload.ids)},
-                       note=f"Export Excel {payload.scope} ({len(orders)} PO)")
+                       after={
+                           "scope": export_scope,
+                           "schedule_scope": schedule_scope,
+                           "count": len(orders),
+                           "ids": bool(payload.ids),
+                       },
+                       note=f"Export Excel {export_scope}/{schedule_scope} ({len(orders)} PO)")
 
     buf = BytesIO()
     wb.save(buf)
