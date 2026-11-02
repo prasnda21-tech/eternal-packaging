@@ -2,6 +2,7 @@ import {
   buildCombinedAllocationRows,
   buildSourceAllocationsPayload,
   lineAllocKey,
+  multiPoSummariesReady,
   summarizeMultiPoDeliveryQty,
   validateMultiSourceSelection,
 } from "./salesDeliveryMultiSource";
@@ -76,5 +77,15 @@ describe("salesDeliveryMultiSource", () => {
       b: { customer_id: "c1", address: "Jl Satu", customer: "PT Sama" },
     });
     expect(err).toMatch(/customer_id/i);
+  });
+
+  test("multiPoSummariesReady blocks publish until every selected PO has authoritative summary", () => {
+    expect(multiPoSummariesReady(["a", "b"], { a: { customer_id: "c1" } })).toBe(false);
+    expect(multiPoSummariesReady(["a", "b"], {
+      a: { customer_id: "c1" },
+      b: { customer_id: "c1" },
+    })).toBe(true);
+    expect(multiPoSummariesReady(["a"], { a: { customer_id: "c1" } })).toBe(false);
+    expect(multiPoSummariesReady([], {})).toBe(false);
   });
 });

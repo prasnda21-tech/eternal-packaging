@@ -44,6 +44,7 @@ import {
   buildSourceAllocationsPayload,
   formatSourcePoLabel,
   lineAllocKey,
+  multiPoSummariesReady,
   summarizeMultiPoDeliveryQty,
   validateMultiSourceSelection,
 } from "../lib/salesDeliveryMultiSource";
@@ -682,6 +683,15 @@ export default function PengirimanPesanan() {
     return { ...summarizeMultiPoDeliveryQty(loaded, formData.line_qtys), empty: false };
   }, [multiPoMode, selectedPoIds, poSummariesById, formData.line_qtys]);
 
+  const multiPoReadyForSubmit = useMemo(() => {
+    if (!multiPoMode) return false;
+    if (!multiPoSummariesReady(selectedPoIds, poSummariesById)) return false;
+    if (!multiPoQtySummary?.ready) return false;
+    if (validateMultiSourceSelection(poSummariesById)) return false;
+    if (combinedAllocRows.length === 0) return false;
+    return true;
+  }, [multiPoMode, selectedPoIds, poSummariesById, multiPoQtySummary, combinedAllocRows]);
+
   const multiPoSelectOptions = useMemo(() => {
     const map = new Map();
     (availablePOs || []).forEach((p) => {
@@ -895,6 +905,10 @@ export default function PengirimanPesanan() {
     setSuccessMsg("");
 
     if (multiPoMode) {
+      if (!multiPoSummariesReady(selectedPoIds, poSummariesById)) {
+        setFormErr("Ringkasan PO belum lengkap. Tunggu pemuatan selesai sebelum menerbitkan SJ.");
+        return;
+      }
       const mergeErr = validateMultiSourceSelection(poSummariesById);
       if (mergeErr) {
         setFormErr(mergeErr);
@@ -1949,7 +1963,7 @@ export default function PengirimanPesanan() {
               className="ux90-btn-primary primary"
               disabled={
                 formBusy
-                || (multiPoMode ? selectedPoIds.length < 2 || combinedAllocRows.length === 0 : !poSummary)
+                || (multiPoMode ? !multiPoReadyForSubmit : !poSummary)
                 || totalShippingQty <= 0
                 || overshipmentErrors.length > 0
               }

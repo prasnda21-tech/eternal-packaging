@@ -26,6 +26,10 @@ describe("LookupMultiSearchSelect contract", () => {
     expect(src).toMatch(/ux90-lookup-chip/);
     expect(src).toMatch(/data-testid=\{\`\$\{testId\}-chips\`\}/);
     expect(src).toMatch(/data-testid=\{\`\$\{testId\}-count\`\}/);
+    // Typing/query never clears values; selectedIds come from props.
+    expect(src).toMatch(/selectedIds = useMemo/);
+    expect(src).toMatch(/setQuery\(e\.target\.value\)/);
+    expect(src).not.toMatch(/onChange\?\.\(\[\]\)/);
   });
 
   test("PengirimanPesanan wires multi-PO lookup without silent 40-cap", () => {

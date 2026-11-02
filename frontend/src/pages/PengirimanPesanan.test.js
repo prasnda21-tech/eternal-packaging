@@ -862,11 +862,31 @@ describe("Pengiriman CREATE layout scroll ownership (multi-PO safe)", () => {
   });
 
   test("multi-PO submit is not gated on single-PO poSummary null", () => {
-    expect(pageSrc).toContain("selectedPoIds.length < 2");
-    expect(pageSrc).toContain("combinedAllocRows.length === 0");
-    expect(pageSrc).toMatch(/multiPoMode\s*\?\s*selectedPoIds\.length < 2/);
+    expect(pageSrc).toContain("multiPoReadyForSubmit");
+    expect(pageSrc).toContain("multiPoSummariesReady");
+    expect(pageSrc).toMatch(/multiPoMode\s*\?\s*!multiPoReadyForSubmit/);
+    expect(pageSrc).toMatch(/Ringkasan PO belum lengkap/);
     expect(pageSrc).not.toContain(
       "disabled={formBusy || !poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0}",
     );
+  });
+
+  test("multi-PO customer safety: incomplete summary / BE reject preserve selection", () => {
+    expect(pageSrc).toMatch(/multiPoReadyForSubmit/);
+    expect(pageSrc).toMatch(/validateMultiSourceSelection\(poSummariesById\)/);
+    expect(pageSrc).toMatch(/customer_id kanonik|customer_id\)/);
+    // Create failure only sets formErr — does not clear selectedPoIds / line_qtys.
+    const catchIdx = pageSrc.indexOf("} catch (err) {");
+    const finallyIdx = pageSrc.indexOf("} finally {", catchIdx);
+    expect(catchIdx).toBeGreaterThan(-1);
+    expect(finallyIdx).toBeGreaterThan(catchIdx);
+    const catchBlock = pageSrc.slice(catchIdx, finallyIdx);
+    expect(catchBlock).toMatch(/setFormErr/);
+    expect(catchBlock).toMatch(/Gagal membuat Pengiriman Pesanan/);
+    expect(catchBlock).not.toMatch(/setSelectedPoIds/);
+    expect(catchBlock).not.toMatch(/setPoSummariesById/);
+    expect(catchBlock).not.toMatch(/line_qtys/);
+    expect(pageSrc).not.toMatch(/\.slice\(0,\s*40\)/);
+    expect(pageSrc).toMatch(/LookupMultiSearchSelect/);
   });
 });

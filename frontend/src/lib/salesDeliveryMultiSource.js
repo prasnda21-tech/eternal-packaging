@@ -61,6 +61,14 @@ export function validateMultiSourceSelection(summaries) {
   return "";
 }
 
+/** True only when every selected PO has an authoritative delivery summary loaded. */
+export function multiPoSummariesReady(selectedPoIds, summariesByPoId) {
+  const ids = (selectedPoIds || []).map((id) => String(id || "").trim()).filter(Boolean);
+  if (ids.length < 2) return false;
+  const map = summariesByPoId || {};
+  return ids.every((id) => Boolean(map[id]));
+}
+
 /**
  * Aggregate qty across selected PO summaries without merging product lines.
  * Each PO line remains independent; totals are sums of line remaining/ordered/shipped.
