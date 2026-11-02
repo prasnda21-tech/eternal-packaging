@@ -2109,7 +2109,9 @@ async def cancel_sales_delivery_document_operational(
     actor = _as_text(actor_id, "actor_id")
     note = str(reason or "").strip() or "Pembatalan Surat Jalan"
     identity = _sales_delivery_identity_tokens(delivery)
-    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    from services.sales_delivery_allocations import delivery_source_po_ids
+    source_po_ids = delivery_source_po_ids(delivery)
+    po_id = source_po_ids[0] if source_po_ids else str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
 
     fresh = await db.sales_deliveries.find_one({"id": delivery_id}, {"_id": 0})
     if not fresh:
@@ -2123,6 +2125,8 @@ async def cancel_sales_delivery_document_operational(
     replayed = already
 
     if not already:
+        from services.sales_invoice_allocations import assert_sales_delivery_not_invoiced
+        await assert_sales_delivery_not_invoiced(db, delivery_id)
         cancelled_at = now_iso()
         result = await db.sales_deliveries.update_one(
             {
@@ -2154,16 +2158,23 @@ async def cancel_sales_delivery_document_operational(
             replayed = False
 
     order_patch: Dict[str, Any] = {}
-    if po_id:
-        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
-        if order:
-            order_patch = _order_soft_cancel_patch_for_delivery(
-                order,
-                identity=identity,
-                delivery_id=delivery_id,
-                cancelled_at=cancelled_at,
-            )
-            await db.orders.update_one({"id": po_id}, {"$set": order_patch})
+    for src_po in source_po_ids or ([po_id] if po_id else []):
+        order = await db.orders.find_one({"id": src_po}, {"_id": 0})
+        if not order:
+            continue
+        patch = _order_soft_cancel_patch_for_delivery(
+            order,
+            identity=identity,
+            delivery_id=delivery_id,
+            cancelled_at=cancelled_at,
+        )
+        await db.orders.update_one({"id": src_po}, {"$set": patch})
+        if src_po == po_id:
+            order_patch = patch
+
+    # Always attempt idempotent counter release (safe on cancel replay / crash retry).
+    from services.sales_delivery_allocations import release_delivery_allocations
+    allocation_release = await release_delivery_allocations(db, fresh)
 
     return {
         "id": delivery_id,
@@ -2173,10 +2184,12 @@ async def cancel_sales_delivery_document_operational(
         "replayed": replayed,
         "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
         "order_id": po_id or None,
+        "source_po_ids": source_po_ids,
         "qty_delivered": order_patch.get("qty_delivered"),
         "delivery_status": order_patch.get("delivery_status"),
         "current_stage": order_patch.get("current_stage"),
         "engine": "operational_no_stock",
+        "allocation_release": allocation_release,
     }
 
 
@@ -2290,11 +2303,15 @@ async def cancel_sales_delivery_document(
     note = str(reason or "").strip() or "Pembatalan Surat Jalan"
     await require_transaction_support(_client(db))
     identity = _sales_delivery_identity_tokens(delivery)
-    po_id = str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
+    from services.sales_delivery_allocations import delivery_source_po_ids
+    source_po_ids = delivery_source_po_ids(delivery)
+    po_id = source_po_ids[0] if source_po_ids else str(delivery.get("po_id") or delivery.get("order_id") or "").strip()
 
     last_error: Optional[BaseException] = None
     for _attempt in range(_MAX_ATTEMPTS):
         try:
+            txn_result: Optional[dict] = None
+            fresh_for_release: Optional[dict] = None
             async with await _client(db).start_session() as session:
                 async with session.start_transaction():
                     fresh = await db.sales_deliveries.find_one(
@@ -2306,7 +2323,8 @@ async def cancel_sales_delivery_document(
                         "cancelled", "dibatalkan", "deleted",
                     ):
                         order = await db.orders.find_one({"id": po_id}, {"_id": 0}, session=session) if po_id else None
-                        return {
+                        fresh_for_release = fresh
+                        txn_result = {
                             "id": delivery_id,
                             "sj_number": fresh.get("sj_number", delivery_id),
                             "soft_cancelled": True,
@@ -2314,98 +2332,102 @@ async def cancel_sales_delivery_document(
                             "replayed": True,
                             "r2_reversal": {"reversed_confirmations": [], "confirmation_ids": []},
                             "order_id": po_id or None,
+                            "source_po_ids": source_po_ids,
                             "qty_delivered": (order or {}).get("qty_delivered"),
                             "delivery_status": (order or {}).get("delivery_status"),
                         }
-
-                    confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(
-                        db, fresh, session=session,
-                    )
-                    reversal_results = []
-                    all_reversal_ids = []
-                    for cid in confirmation_ids:
-                        confirmation = await db[SALES_DELIVERY_CONFIRMATIONS].find_one(
-                            {"id": cid}, {"_id": 0}, session=session,
+                    else:
+                        from services.sales_invoice_allocations import assert_sales_delivery_not_invoiced
+                        await assert_sales_delivery_not_invoiced(db, delivery_id)
+                        confirmation_ids = await _r2_confirmation_ids_for_sales_delivery(
+                            db, fresh, session=session,
                         )
-                        if not confirmation:
-                            reversal_results.append({
-                                "confirmation_id": cid,
-                                "replayed": True,
-                                "reversed": False,
-                                "reason": "confirmation_not_found",
-                                "reversals": [],
-                            })
-                            continue
-                        if confirmation.get("reversed") is True:
-                            ids = list(confirmation.get("reversal_movement_ids") or [])
-                            reversal_results.append({
-                                "confirmation_id": cid,
-                                "replayed": True,
-                                "reversed": True,
-                                "reversals": ids,
-                            })
-                            all_reversal_ids.extend(ids)
-                            continue
-                        originals = await db[LEDGER_COLLECTION].find(
-                            {
-                                "movement_type": MOVEMENT_SALES_DELIVERY,
-                                "metadata.confirmation_id": cid,
-                            },
-                            {"_id": 0, "id": 1},
-                            session=session,
-                        ).to_list(500)
-                        reversal_ids = []
-                        for original in originals:
-                            movement = await reverse_movement_in_session(
-                                db,
-                                session,
-                                original["id"],
-                                actor_id=actor,
-                                idempotency_key=f"sales-delivery-reversal:{cid}:{original['id']}",
-                                reason=note,
+                        reversal_results = []
+                        all_reversal_ids = []
+                        for cid in confirmation_ids:
+                            confirmation = await db[SALES_DELIVERY_CONFIRMATIONS].find_one(
+                                {"id": cid}, {"_id": 0}, session=session,
                             )
-                            reversal_ids.append(movement["id"])
-                        await db[SALES_DELIVERY_CONFIRMATIONS].update_one(
-                            {"id": cid, "reversed": {"$ne": True}},
-                            {"$set": {
+                            if not confirmation:
+                                reversal_results.append({
+                                    "confirmation_id": cid,
+                                    "replayed": True,
+                                    "reversed": False,
+                                    "reason": "confirmation_not_found",
+                                    "reversals": [],
+                                })
+                                continue
+                            if confirmation.get("reversed") is True:
+                                ids = list(confirmation.get("reversal_movement_ids") or [])
+                                reversal_results.append({
+                                    "confirmation_id": cid,
+                                    "replayed": True,
+                                    "reversed": True,
+                                    "reversals": ids,
+                                })
+                                all_reversal_ids.extend(ids)
+                                continue
+                            originals = await db[LEDGER_COLLECTION].find(
+                                {
+                                    "movement_type": MOVEMENT_SALES_DELIVERY,
+                                    "metadata.confirmation_id": cid,
+                                },
+                                {"_id": 0, "id": 1},
+                                session=session,
+                            ).to_list(500)
+                            reversal_ids = []
+                            for original in originals:
+                                movement = await reverse_movement_in_session(
+                                    db,
+                                    session,
+                                    original["id"],
+                                    actor_id=actor,
+                                    idempotency_key=f"sales-delivery-reversal:{cid}:{original['id']}",
+                                    reason=note,
+                                )
+                                reversal_ids.append(movement["id"])
+                            await db[SALES_DELIVERY_CONFIRMATIONS].update_one(
+                                {"id": cid, "reversed": {"$ne": True}},
+                                {"$set": {
+                                    "reversed": True,
+                                    "reversed_at": now_iso(),
+                                    "reversed_by": actor,
+                                    "reversal_reason": note,
+                                    "reversal_movement_ids": reversal_ids,
+                                }},
+                                session=session,
+                            )
+                            reversal_results.append({
+                                "confirmation_id": cid,
+                                "replayed": False,
                                 "reversed": True,
-                                "reversed_at": now_iso(),
-                                "reversed_by": actor,
-                                "reversal_reason": note,
-                                "reversal_movement_ids": reversal_ids,
+                                "reversals": reversal_ids,
+                            })
+                            all_reversal_ids.extend(reversal_ids)
+
+                        cancelled_at = now_iso()
+                        await db.sales_deliveries.update_one(
+                            {"id": delivery_id},
+                            {"$set": {
+                                "is_cancelled": True,
+                                "cancelled": True,
+                                "status": "DIBATALKAN",
+                                "cancelled_at": cancelled_at,
+                                "cancel_reason": note,
+                                "r2_reversal": {
+                                    "reversed_confirmations": reversal_results,
+                                    "confirmation_ids": confirmation_ids,
+                                },
+                                "updated_at": cancelled_at,
                             }},
                             session=session,
                         )
-                        reversal_results.append({
-                            "confirmation_id": cid,
-                            "replayed": False,
-                            "reversed": True,
-                            "reversals": reversal_ids,
-                        })
-                        all_reversal_ids.extend(reversal_ids)
 
-                    cancelled_at = now_iso()
-                    await db.sales_deliveries.update_one(
-                        {"id": delivery_id},
-                        {"$set": {
-                            "is_cancelled": True,
-                            "cancelled": True,
-                            "status": "DIBATALKAN",
-                            "cancelled_at": cancelled_at,
-                            "cancel_reason": note,
-                            "r2_reversal": {
-                                "reversed_confirmations": reversal_results,
-                                "confirmation_ids": confirmation_ids,
-                            },
-                            "updated_at": cancelled_at,
-                        }},
-                        session=session,
-                    )
-
-                    order_patch = {}
-                    if po_id:
-                        order = await db.orders.find_one({"id": po_id}, {"_id": 0}, session=session)
-                        if order:
+                        order_patch = {}
+                        for src_po in source_po_ids or ([po_id] if po_id else []):
+                            order = await db.orders.find_one({"id": src_po}, {"_id": 0}, session=session)
+                            if not order:
+                                continue
                             shipments = []
                             for sh in order.get("shipments") or []:
                                 if not isinstance(sh, dict):
@@ -2417,7 +2439,6 @@ async def cancel_sales_delivery_document(
                                     row["status"] = "cancelled"
                                     row["sj_status"] = "cancelled"
                                     row["cancelled_at"] = cancelled_at
-                                    # Keep delivered_at / proofs linkage for audit; inactive via flags.
                                 shipments.append(row)
                             confirmations = []
                             for rec in order.get("delivery_confirmations") or []:
@@ -2443,7 +2464,6 @@ async def cancel_sales_delivery_document(
                                 if not isinstance(entry, dict):
                                     continue
                                 file_row = dict(entry)
-                                # Keep the document for audit, but stop treating the cancelled SJ as live.
                                 if str(file_row.get("source") or "") == "SYSTEM_GENERATED" and (
                                     str(file_row.get("id") or "") == delivery_id
                                     or str(file_row.get("shipment_id") or "") == delivery_id
@@ -2456,7 +2476,7 @@ async def cancel_sales_delivery_document(
                             order["surat_jalan_files"] = files
                             order["delivery_confirmations"] = confirmations
                             recomputed = _recompute_order_delivery_after_cancel(order)
-                            order_patch = {
+                            patch = {
                                 "shipments": shipments,
                                 "surat_jalan_files": files,
                                 "delivery_confirmations": confirmations,
@@ -2466,27 +2486,39 @@ async def cancel_sales_delivery_document(
                                 "updated_at": cancelled_at,
                             }
                             await db.orders.update_one(
-                                {"id": po_id},
-                                {"$set": order_patch},
+                                {"id": src_po},
+                                {"$set": patch},
                                 session=session,
                             )
+                            if src_po == po_id:
+                                order_patch = patch
 
-                    return {
-                        "id": delivery_id,
-                        "sj_number": fresh.get("sj_number", delivery_id),
-                        "soft_cancelled": True,
-                        "deleted": False,
-                        "replayed": False,
-                        "r2_reversal": {
-                            "reversed_confirmations": reversal_results,
-                            "confirmation_ids": confirmation_ids,
-                            "reversal_movement_ids": all_reversal_ids,
-                        },
-                        "order_id": po_id or None,
-                        "qty_delivered": order_patch.get("qty_delivered"),
-                        "delivery_status": order_patch.get("delivery_status"),
-                        "current_stage": order_patch.get("current_stage"),
-                    }
+                        fresh_for_release = fresh
+                        txn_result = {
+                            "id": delivery_id,
+                            "sj_number": fresh.get("sj_number", delivery_id),
+                            "soft_cancelled": True,
+                            "deleted": False,
+                            "replayed": False,
+                            "r2_reversal": {
+                                "reversed_confirmations": reversal_results,
+                                "confirmation_ids": confirmation_ids,
+                                "reversal_movement_ids": all_reversal_ids,
+                            },
+                            "order_id": po_id or None,
+                            "source_po_ids": source_po_ids,
+                            "qty_delivered": order_patch.get("qty_delivered"),
+                            "delivery_status": order_patch.get("delivery_status"),
+                            "current_stage": order_patch.get("current_stage"),
+                        }
+
+            # After txn commit: idempotent counter release (heals crash-before-release).
+            if txn_result is not None:
+                from services.sales_delivery_allocations import release_delivery_allocations
+                txn_result["allocation_release"] = await release_delivery_allocations(
+                    db, fresh_for_release or {"id": delivery_id},
+                )
+                return txn_result
         except (
             PhysicalStockValidationError,
             PhysicalStockConflictError,

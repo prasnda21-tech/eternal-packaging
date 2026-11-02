@@ -152,10 +152,19 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/invoiceDeletable/);
   });
 
-  test("Faktur lifecycle UI has finalize confirmation and status badges", () => {
-    expect(pageSrc).toMatch(/btn-finalize-invoice/);
-    expect(pageSrc).toMatch(/finalize-confirm-modal/);
-    expect(pageSrc).toMatch(/Finalisasi akan mengunci tanggal, item, harga, diskon, PPN, biaya lainnya, dan total invoice/);
+  test("Faktur lifecycle UI one-click save finalizes; no separate Finalisasi button", () => {
+    expect(pageSrc).not.toMatch(/btn-finalize-invoice/);
+    expect(pageSrc).not.toMatch(/finalize-confirm-modal/);
+    expect(pageSrc).not.toMatch(/Finalisasi Invoice/);
+    expect(pageSrc).not.toMatch(/finalizeSalesInvoice\(/);
+    expect(pageSrc).toMatch(/finalize_on_save:\s*true/);
+    expect(pageSrc).toMatch(/createSubmitLockRef/);
+    expect(pageSrc).toMatch(/if \(createSubmitLockRef\.current \|\| formBusy\) return/);
+    expect(pageSrc).toMatch(/Simpan & Finalisasi/);
+    expect(pageSrc).toMatch(/berhasil disimpan dan difinalisasi/);
+    expect(pageSrc).toMatch(/Gagal finalisasi setelah menyimpan/);
+    expect(pageSrc).toMatch(/FINALIZE_AFTER_CREATE_FAILED/);
+    expect(pageSrc).toMatch(/detail-payment-status/);
     expect(pageSrc).toMatch(/invoice-financial-badge-/);
     expect(pageSrc).toMatch(/btn-cancel-invoice/);
     expect(pageSrc).toMatch(/btn-post-accounting/);
@@ -191,9 +200,13 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
   });
 
   test("draft invoice qty is an input and finalized or cancelled qty stays display-only", () => {
-    expect(pageSrc).toMatch(/detail-qty-input-\$\{li\.line_idx\}/);
+    expect(pageSrc).toMatch(/invoiceLineTestId\("detail-qty-input"/);
     expect(pageSrc).toMatch(/canEditFinancial \?/);
-    expect(pageSrc).toMatch(/detail-qty-text-\$\{li\.line_idx\}/);
+    expect(pageSrc).toMatch(/invoiceLineTestId\("detail-qty-text"/);
+    expect(pageSrc).toMatch(/invoiceLineUiKey/);
+    expect(pageSrc).toMatch(/toggle-multi-po-invoice/);
+    expect(pageSrc).toMatch(/multi-po-invoice-picker/);
+    expect(pageSrc).toMatch(/multi-po-save-invoice/);
     expect(pageSrc).toMatch(/financialLocked = Boolean\(detailData\) && detailStatus !== "draft"/);
     expect(pageSrc).toMatch(/min=\{1\}/);
     expect(pageSrc).toMatch(/max=\{li\.maxQty/);
@@ -205,8 +218,9 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/Maksimum Faktur ini:/);
     expect(pageSrc).toMatch(/li\.po_qty/);
     expect(pageSrc).toMatch(/li\.other_active_invoiced_qty/);
-    expect(pageSrc).toMatch(/li\.max_qty/);
-    expect(pageSrc).toMatch(/detail-qty-cap-/);
+    expect(pageSrc).toMatch(/li\.maxQty/);
+    expect(pageSrc).toMatch(/invoiceLineTestId\("detail-qty-cap"/);
+    expect(pageSrc).toMatch(/resolveDetailLineCapacity/);
     expect(pageSrc).toMatch(/quantity: qty/);
     expect(pageSrc).toMatch(/setDetailQuantities/);
   });
@@ -217,7 +231,7 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/FAKTUR_QTY_MELEBIHI_SISA_PO/);
     expect(pageSrc).toMatch(/DRAFT_QTY_OVER_MESSAGE/);
     expect(pageSrc).toMatch(/FINALIZE_QTY_OVER_MESSAGE/);
-    expect(pageSrc).toMatch(/detail-qty-over-/);
+    expect(pageSrc).toMatch(/invoiceLineTestId\("detail-qty-over"/);
     expect(pageSrc).not.toMatch(/aggregate/);
     expect(pageSrc).not.toMatch(/non-cancelled/);
     expect(pageSrc).not.toMatch(/remaining capacity/);
@@ -227,7 +241,8 @@ describe("Faktur Penjualan UI & Navigation Suite", () => {
     expect(pageSrc).toMatch(/disabled=\{!canEditFinancial\}/);
     expect(pageSrc).toMatch(/btn-print-pdf-detail/);
     expect(pageSrc).toMatch(/Cetak PDF/);
-    expect(pageSrc).toMatch(/btn-finalize-invoice/);
+    expect(pageSrc).toMatch(/Simpan & Finalisasi/);
+    expect(pageSrc).not.toMatch(/btn-finalize-invoice/);
     expect(pageSrc).not.toMatch(/proforma/i);
     const proformaSrc = fs.readFileSync(path.join(__dirname, "../components/poDetail/ProformaInvoiceDocRow.jsx"), "utf8");
     expect(proformaSrc).toMatch(/Proforma/);

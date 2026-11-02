@@ -2055,6 +2055,20 @@ async def get_order(order_id: str, view: Optional[str] = None, user=Depends(curr
             order["line_product_replace"] = await evaluate_all_line_product_replacements(db, order)
         except Exception:
             order["line_product_replace"] = []
+        try:
+            from services.sales_document_relations import (
+                build_po_document_relations,
+                build_relation_history_events,
+            )
+            order["document_relations"] = await build_po_document_relations(db, order)
+            order["relation_history"] = build_relation_history_events(order=order)
+        except Exception:
+            order["document_relations"] = {
+                "sales_deliveries": [],
+                "invoices": [],
+                "qty_summary": {},
+            }
+            order["relation_history"] = []
     _strip_tracking_secret(order)
     if operational:
         return {"order": _operational_public_order(order)}
@@ -6096,6 +6110,10 @@ async def confirm_loading(order_id: str, payload: LoadingConfirmPayload, user=De
     await _require_perm(user, "loading.update")
 
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    # Fail-closed: provisional allocation_commit_pending SJ cannot enter Loading.
+    from services.sales_delivery_allocations import require_operational_sales_delivery
+    await require_operational_sales_delivery(db, payload.surat_jalan_id, attempt_reconcile=True)
+
     if existing_order and payload.lines:
         from services.physical_stock_engine import precheck_loading_confirmed
         await precheck_loading_confirmed(db, existing_order, [ln.model_dump() for ln in payload.lines])
@@ -6176,6 +6194,9 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
     existing_order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not existing_order:
         raise HTTPException(404, "PO tidak ditemukan")
+
+    from services.sales_delivery_allocations import require_operational_sales_delivery
+    await require_operational_sales_delivery(db, payload.surat_jalan_id, attempt_reconcile=True)
 
     # Preview generated lines for stock precheck (authoritative SJ, not client qty)
     preview_lines = _qr_build_sj_loading_lines(existing_order, payload.surat_jalan_id)
@@ -6258,6 +6279,9 @@ async def confirm_loading_match(order_id: str, payload: LoadingMatchConfirmPaylo
 async def report_loading_discrepancy(order_id: str, payload: LoadingDiscrepancyPayload, user=Depends(current_user)):
     """Exception path: physical qty differs from SJ — holds Loading, notifies CRM."""
     await _require_perm(user, "loading.report_discrepancy")
+
+    from services.sales_delivery_allocations import require_operational_sales_delivery
+    await require_operational_sales_delivery(db, payload.surat_jalan_id, attempt_reconcile=True)
 
     act_id = (payload.action_id or "").strip() or str(uuid.uuid4())
     disc_holder = {}
@@ -11428,6 +11452,7 @@ from services.sales_invoices import (
     get_po_invoice_preview as _get_po_invoice_preview,
     list_charge_account_options as _list_charge_account_options,
     create_sales_invoice as _create_sales_invoice,
+    create_and_finalize_sales_invoice as _create_and_finalize_sales_invoice,
     generate_sales_invoice_pdf_bytes,
     invoice_pdf_presentation,
     proforma_availability as _proforma_availability,
@@ -11437,6 +11462,7 @@ from services.sales_invoices import (
     get_sales_invoice_detail as _get_sales_invoice_detail,
     get_sales_invoice_detail_for_user as _get_sales_invoice_detail_for_user,
     update_sales_invoice as _update_sales_invoice,
+    update_draft_and_finalize_sales_invoice as _update_draft_and_finalize_sales_invoice,
     delete_sales_invoice as _delete_sales_invoice,
     bulk_delete_sales_invoices as _bulk_delete_sales_invoices,
     finalize_sales_invoice as _finalize_sales_invoice,
@@ -11587,7 +11613,20 @@ class SalesOrderCreatePayload(BaseModel):
 class SalesDeliveryLineItemInput(BaseModel):
     line_idx: int = 0
     line_id: Optional[str] = None
-    qty: int
+    qty: Optional[int] = None
+    notes: Optional[str] = ""
+    source_po_id: Optional[str] = None
+    source_line_id: Optional[str] = None
+    source_line_idx: Optional[int] = None
+    allocated_qty: Optional[int] = None
+
+
+class SalesDeliverySourceAllocationInput(BaseModel):
+    source_po_id: str
+    source_line_id: Optional[str] = None
+    source_line_idx: Optional[int] = None
+    allocated_qty: Optional[int] = None
+    qty: Optional[int] = None
     notes: Optional[str] = ""
 
 
@@ -11600,7 +11639,7 @@ class SalesDeliveryLocationInput(BaseModel):
 
 
 class SalesDeliveryCreatePayload(BaseModel):
-    po_id: str
+    po_id: Optional[str] = None
     delivery_date: Optional[str] = None
     recipient: Optional[str] = None
     address: Optional[str] = None
@@ -11611,7 +11650,8 @@ class SalesDeliveryCreatePayload(BaseModel):
     notes: Optional[str] = ""
     recipient_phone_source: Optional[str] = None
     recipient_phone: Optional[str] = None
-    line_items: List[SalesDeliveryLineItemInput]
+    line_items: Optional[List[SalesDeliveryLineItemInput]] = None
+    source_allocations: Optional[List[SalesDeliverySourceAllocationInput]] = None
     delivery_location: Optional[SalesDeliveryLocationInput] = None
 
 
@@ -11619,9 +11659,16 @@ class SalesDeliveryCreatePayload(BaseModel):
 class SalesInvoiceLineItemInput(BaseModel):
     line_idx: int = 0
     line_id: Optional[str] = None
+    invoice_line_id: Optional[str] = None
+    source_po_id: Optional[str] = None
+    source_po_line_id: Optional[str] = None
+    source_po_line_idx: Optional[int] = None
+    source_sj_id: Optional[str] = None
+    source_sj_line_id: Optional[str] = None
     quantity: Optional[Union[int, float, str]] = None
     invoice_qty: Optional[Union[int, float, str]] = None
     unit_price: Optional[Union[int, float, str]] = None
+    sj_line_qty: Optional[Union[int, float, str]] = None
 
 
 class SalesInvoiceOtherChargeInput(BaseModel):
@@ -11633,13 +11680,18 @@ class SalesInvoiceOtherChargeInput(BaseModel):
 
 
 class SalesInvoiceCreatePayload(BaseModel):
-    po_id: str
+    po_id: Optional[str] = None
+    source_mode: Optional[str] = None  # po | sj (Model C); omit = legacy single-PO
+    source_po_ids: Optional[List[str]] = None
+    source_sj_ids: Optional[List[str]] = None
     invoice_date: Optional[str] = None
     payment_term_days: Optional[Union[int, str]] = 0
     discount_amount: Optional[Union[int, float, str]] = 0
     ppn_percent: Optional[Union[int, float, str]] = 0
     notes: Optional[str] = ""
     idempotency_key: Optional[str] = None
+    # UI one-click Simpan Faktur: create then finalize via existing lifecycle.
+    finalize_on_save: Optional[bool] = False
     lines: Optional[List[SalesInvoiceLineItemInput]] = None
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
     other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
@@ -11655,6 +11707,8 @@ class SalesInvoiceUpdatePayload(BaseModel):
     line_items: Optional[List[SalesInvoiceLineItemInput]] = None
     other_charges: Optional[List[SalesInvoiceOtherChargeInput]] = None
     idempotency_key: Optional[str] = None
+    # UI draft Simpan & Finalisasi: update then finalize. Omit = draft-only update.
+    finalize_on_save: Optional[bool] = False
 
 
 class SalesInvoiceReverseAccountingPayload(BaseModel):
@@ -13793,11 +13847,18 @@ async def create_sales_delivery_endpoint(payload: SalesDeliveryCreatePayload, us
     """Create a new Sales Delivery (Pengiriman Pesanan) backend-authoritatively."""
     await _require_any_perm(user, "sales.delivery.create", "sales_order.create", "po.edit")
     delivery = await _create_sales_delivery(db, payload.model_dump(), user)
+    source_note = ""
+    src_ids = delivery.get("source_po_ids") or []
+    if len(src_ids) > 1:
+        source_note = f" multi-PO={len(src_ids)}"
     await _audit_po(
         {"id": delivery.get("po_id"), "po_number": delivery.get("po_number")},
         "sales.delivery.create",
         user,
-        note=f"Buat Pengiriman Pesanan #{delivery.get('shipment_index')} {delivery.get('sj_number')} (Total {delivery.get('total_qty')} pcs)"
+        note=(
+            f"Buat Pengiriman Pesanan #{delivery.get('shipment_index')} {delivery.get('sj_number')} "
+            f"(Total {delivery.get('total_qty')} pcs){source_note}"
+        ),
     )
     return {"delivery": delivery, "message": f"Pengiriman Pesanan {delivery.get('sj_number')} berhasil dibuat"}
 
@@ -13809,6 +13870,255 @@ async def get_sales_delivery_endpoint(id: str, user=Depends(current_user)):
     detail = await _get_sales_delivery_detail(db, id)
     await ensure_owned_po_id(db, user, (detail or {}).get("po_id") or ((detail or {}).get("delivery") or {}).get("po_id"))
     return detail
+
+
+class SalesDeliveryOneshotLoadingPayload(BaseModel):
+    action_id: Optional[str] = None
+    resume: Optional[bool] = False
+
+
+class SalesDeliveryOneshotPodPayload(BaseModel):
+    action_id: Optional[str] = None
+    recipient_name: Optional[str] = None
+    shared_pod_proof: Optional[dict] = None
+    warehouse_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    resume: Optional[bool] = False
+
+
+@api_router.post("/sales-deliveries/{id}/loading-confirm-all")
+async def sales_delivery_loading_confirm_all(
+    id: str,
+    payload: Optional[SalesDeliveryOneshotLoadingPayload] = None,
+    user=Depends(current_user),
+):
+    """One-shot Loading for all source POs on one operational multi-PO SJ.
+
+    Permission matches per-PO match confirm. Standalone multi-PO is fail-closed
+    before stock mutations; use per-PO endpoints as fallback.
+    """
+    await _require_perm(user, "loading.confirm_match")
+    from services.sales_delivery_fulfillment import confirm_loading_all_orchestrated
+
+    action_id = str((payload.action_id if payload else None) or "").strip() or str(uuid.uuid4())
+    resume = bool(getattr(payload, "resume", False)) if payload else False
+
+    async def _apply_one(po_id: str, surat_jalan_id: str, child_action_id: str):
+        return await confirm_loading_match(
+            po_id,
+            LoadingMatchConfirmPayload(surat_jalan_id=surat_jalan_id, action_id=child_action_id),
+            user=user,
+        )
+
+    result = await confirm_loading_all_orchestrated(
+        db,
+        id,
+        user,
+        action_id=action_id,
+        apply_one=_apply_one,
+        resume=resume,
+    )
+    await _write_audit(
+        action="sales.delivery.loading_confirm_all",
+        actor=user,
+        target_email=f"sj:{id}",
+        after={"action_id": action_id, "ok": result.get("ok"), "resume": resume, "status": result.get("status")},
+    )
+    return result
+
+
+@api_router.get("/sales-deliveries/{id}/fulfillment-recovery")
+async def sales_delivery_fulfillment_recovery_status(id: str, user=Depends(current_user)):
+    """Read-only oneshot fulfillment reconciliation status (Stage 5B)."""
+    await _require_any_perm(user, "sales.delivery.view", "loading.confirm_match", "delivery.update", "po.view")
+    from services.sales_delivery_fulfillment import inspect_fulfillment_recovery
+
+    detail = await _get_sales_delivery_detail(db, id)
+    await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
+    return await inspect_fulfillment_recovery(db, id)
+
+
+class SalesDeliveryFulfillmentReconcilePayload(BaseModel):
+    healer_action_id: Optional[str] = None
+
+
+@api_router.post("/sales-deliveries/{id}/fulfillment-reconcile")
+async def sales_delivery_fulfillment_reconcile(
+    id: str,
+    payload: Optional[SalesDeliveryFulfillmentReconcilePayload] = None,
+    user=Depends(current_user),
+):
+    """Mutating reconcile for stuck fence / partial oneshot (Stage 5B)."""
+    await _require_any_perm(user, "loading.confirm_match", "delivery.update")
+    from services.sales_delivery_fulfillment import reconcile_oneshot_fulfillment
+
+    detail = await _get_sales_delivery_detail(db, id)
+    await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
+    healer = str((payload.healer_action_id if payload else None) or "").strip() or None
+    result = await reconcile_oneshot_fulfillment(db, id, mutate=True, healer_action_id=healer)
+    await _write_audit(
+        action="sales.delivery.fulfillment_reconcile",
+        actor=user,
+        target_email=f"sj:{id}",
+        after={"status": result.get("status"), "mutated": result.get("mutated")},
+    )
+    return result
+
+
+class SalesDeliveryFulfillmentResumePayload(BaseModel):
+    action_id: Optional[str] = None
+    kind: Optional[str] = None  # loading | pod
+    shared_pod_proof: Optional[dict] = None
+    warehouse_id: Optional[str] = None
+    branch_id: Optional[str] = None
+
+
+@api_router.post("/sales-deliveries/{id}/fulfillment-resume")
+async def sales_delivery_fulfillment_resume(
+    id: str,
+    payload: Optional[SalesDeliveryFulfillmentResumePayload] = None,
+    user=Depends(current_user),
+):
+    """Resume pending oneshot sources only after evidence-based reconcile (Stage 5B)."""
+    kind = str((payload.kind if payload else None) or "loading").strip().lower() or "loading"
+    if kind == "pod":
+        await _require_perm(user, "delivery.update")
+    else:
+        await _require_perm(user, "loading.confirm_match")
+    from services.sales_delivery_fulfillment import (
+        attach_shared_proof_refs_to_order,
+        resume_pending_fulfillment,
+    )
+
+    detail = await _get_sales_delivery_detail(db, id)
+    await ensure_owned_po_id(db, user, ((detail or {}).get("delivery") or {}).get("po_id"))
+
+    async def _apply_loading(po_id: str, surat_jalan_id: str, child_action_id: str):
+        return await confirm_loading_match(
+            po_id,
+            LoadingMatchConfirmPayload(surat_jalan_id=surat_jalan_id, action_id=child_action_id),
+            user=user,
+        )
+
+    async def _attach(po_id: str, delivery: dict, proof: dict):
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+        if not order:
+            raise HTTPException(404, f"PO '{po_id}' tidak ditemukan.")
+        attach_shared_proof_refs_to_order(order, delivery=delivery, shared_proof=proof)
+        await db.orders.update_one(
+            {"id": po_id},
+            {
+                "$set": {
+                    "delivery_proofs": order.get("delivery_proofs") or [],
+                    "delivery_recipient_signature": order.get("delivery_recipient_signature"),
+                    "delivery_driver_signature": order.get("delivery_driver_signature"),
+                    "updated_at": now_iso(),
+                }
+            },
+        )
+
+    async def _apply_pod(po_id: str, shipment_id: str, child_action_id: str, proof: dict):
+        return await confirm_delivered(
+            po_id,
+            ConfirmDeliveredPayload(
+                action_id=child_action_id,
+                shipment_id=shipment_id,
+                recipient_name=str((proof or {}).get("recipient_name") or ""),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+            ),
+            user=user,
+        )
+
+    result = await resume_pending_fulfillment(
+        db,
+        id,
+        user,
+        action_id=str((payload.action_id if payload else None) or "").strip() or None,
+        kind=kind,
+        apply_loading=_apply_loading,
+        apply_pod=_apply_pod,
+        attach_proof_fn=_attach,
+        shared_proof=(payload.shared_pod_proof if payload else None),
+    )
+    await _write_audit(
+        action="sales.delivery.fulfillment_resume",
+        actor=user,
+        target_email=f"sj:{id}",
+        after={"kind": kind, "ok": result.get("ok"), "status": result.get("status")},
+    )
+    return result
+
+
+@api_router.post("/sales-deliveries/{id}/confirm-delivered-all")
+async def sales_delivery_confirm_delivered_all(
+    id: str,
+    payload: Optional[SalesDeliveryOneshotPodPayload] = None,
+    user=Depends(current_user),
+):
+    """One-shot POD for all source POs with shared proof references.
+
+    Requires delivery.update. Standalone multi-PO fail-closed before mutations.
+    """
+    await _require_perm(user, "delivery.update")
+    from services.sales_delivery_fulfillment import (
+        attach_shared_proof_refs_to_order,
+        confirm_delivered_all_orchestrated,
+    )
+
+    action_id = str((payload.action_id if payload else None) or "").strip() or str(uuid.uuid4())
+    shared = (payload.shared_pod_proof if payload else None) or None
+    if shared is None and payload and payload.recipient_name:
+        shared = {"recipient_name": payload.recipient_name}
+    resume = bool(getattr(payload, "resume", False)) if payload else False
+
+    async def _attach(po_id: str, delivery: dict, proof: dict):
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+        if not order:
+            raise HTTPException(404, f"PO '{po_id}' tidak ditemukan.")
+        attach_shared_proof_refs_to_order(order, delivery=delivery, shared_proof=proof)
+        await db.orders.update_one(
+            {"id": po_id},
+            {
+                "$set": {
+                    "delivery_proofs": order.get("delivery_proofs") or [],
+                    "delivery_recipient_signature": order.get("delivery_recipient_signature"),
+                    "delivery_driver_signature": order.get("delivery_driver_signature"),
+                    "updated_at": now_iso(),
+                }
+            },
+        )
+
+    async def _apply_one(po_id: str, shipment_id: str, child_action_id: str, proof: dict):
+        return await confirm_delivered(
+            po_id,
+            ConfirmDeliveredPayload(
+                action_id=child_action_id,
+                shipment_id=shipment_id,
+                recipient_name=str((proof or {}).get("recipient_name") or ""),
+                warehouse_id=(payload.warehouse_id if payload else None),
+                branch_id=(payload.branch_id if payload else None),
+            ),
+            user=user,
+        )
+
+    result = await confirm_delivered_all_orchestrated(
+        db,
+        id,
+        user,
+        action_id=action_id,
+        shared_proof=shared if isinstance(shared, dict) else None,
+        apply_one=_apply_one,
+        attach_proof_fn=_attach,
+        resume=resume,
+    )
+    await _write_audit(
+        action="sales.delivery.confirm_delivered_all",
+        actor=user,
+        target_email=f"sj:{id}",
+        after={"action_id": action_id, "ok": result.get("ok"), "shared_proof_id": result.get("shared_proof_id")},
+    )
+    return result
 
 
 @api_router.get("/sales-deliveries/{id}/pdf")
@@ -13930,11 +14240,16 @@ async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user
 
     When ``auto_sales_invoice_lifecycle_enabled`` is ON, eligible creates also
     finalize and first-time post. Financial success requires a posted journal.
-    Flag default OFF preserves legacy draft-only create.
+
+    When the auto flag is OFF:
+    - ``finalize_on_save=true`` (UI Simpan Faktur) → create then finalize.
+      Does not post a journal and does not set payment_status to LUNAS.
+    - otherwise → legacy draft-only create (compat for tests/integrations).
     """
     await _require_any_perm(user, "sales.invoice.create", "sales_order.create", "po.edit")
+    data = payload.model_dump()
     if await _is_auto_sales_invoice_lifecycle_enabled(db):
-        result = await _create_sales_invoice_auto_lifecycle(db, payload.model_dump(), user)
+        result = await _create_sales_invoice_auto_lifecycle(db, data, user)
         body = {
             "invoice": result["invoice"],
             "message": result["message"],
@@ -13950,7 +14265,13 @@ async def create_sales_invoice_endpoint(payload: SalesInvoiceCreatePayload, user
             int(result.get("http_status") or 409),
             body,
         )
-    inv = await _create_sales_invoice(db, payload.model_dump(), user)
+    if bool(data.get("finalize_on_save")):
+        inv = await _create_and_finalize_sales_invoice(db, data, user)
+        return {
+            "invoice": inv,
+            "message": "Faktur Penjualan berhasil disimpan dan difinalisasi",
+        }
+    inv = await _create_sales_invoice(db, data, user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil dibuat"}
 
 
@@ -14128,9 +14449,19 @@ async def get_sales_invoice_markup_pdf_endpoint(id: str, markup_id: str, user=De
 
 @api_router.put("/sales-invoices/{id}")
 async def update_sales_invoice_endpoint(id: str, payload: SalesInvoiceUpdatePayload, user=Depends(current_user)):
-    """Update draft qty, unit prices, or notes. Qty is rechecked against the latest PO."""
+    """Update draft (or revision). With ``finalize_on_save`` also finalizes the draft."""
     await _require_any_perm(user, "sales.invoice.edit", "sales.invoice.create", "sales_order.create", "po.edit")
-    inv = await _update_sales_invoice(db, id, payload.model_dump(), user)
+    data = payload.model_dump()
+    if bool(data.get("finalize_on_save")):
+        inv = await _update_draft_and_finalize_sales_invoice(db, id, data, user)
+        status = str((inv or {}).get("financial_status") or "").lower()
+        if status == "finalized":
+            return {
+                "invoice": inv,
+                "message": "Faktur Penjualan berhasil disimpan dan difinalisasi",
+            }
+        return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
+    inv = await _update_sales_invoice(db, id, data, user)
     return {"invoice": inv, "message": "Faktur Penjualan berhasil diperbarui"}
 
 
@@ -14480,15 +14811,13 @@ async def _sales_delivery_delete_blocker(delivery: dict, *, session=None) -> Opt
     Surat Jalan is an operational production/delivery document. Faktur, Penerimaan
     Penjualan, payment, piutang, and journals do not lock it. Only this SJ's own
     loading, completed shipment, or delivery evidence may block deletion.
+    Multi-source SJ checks every source PO for linked Loading/POD evidence.
     """
-    po_id = delivery.get("po_id")
+    from services.sales_delivery_allocations import delivery_source_po_ids
+    source_po_ids = delivery_source_po_ids(delivery)
     raw_sj_number = delivery.get("sj_number")
     find_kw = {"session": session} if session is not None else {}
-    order = (
-        await db.orders.find_one({"id": po_id}, {"_id": 0}, **find_kw)
-        if po_id else None
-    )
-    if not order:
+    if not source_po_ids:
         return None
 
     identity = {
@@ -14517,44 +14846,49 @@ async def _sales_delivery_delete_blocker(delivery: dict, *, session=None) -> Opt
         except (TypeError, ValueError):
             return False
 
-    for lc in (order.get("loading_confirmations") or []):
-        if _linked(lc, ("surat_jalan_id", "shipment_id", "sj_number", "sales_delivery_id")):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
+    for po_id in source_po_ids:
+        order = await db.orders.find_one({"id": po_id}, {"_id": 0}, **find_kw)
+        if not order:
+            continue
 
-    for sh in (order.get("shipments") or []):
-        if not _linked(sh, ("id", "sales_delivery_id", "sj_number", "number")):
-            continue
-        if _qty_positive(sh.get("loaded_qty")):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
-        status = str(sh.get("delivery_status") or sh.get("status") or "").strip()
-        if (
-            sh.get("delivered_at")
-            or sh.get("delivered")
-            or _qty_positive(sh.get("qty_delivered"))
-            or _qty_positive(sh.get("delivered_qty"))
-            or status in delivered_statuses
-        ):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+        for lc in (order.get("loading_confirmations") or []):
+            if _linked(lc, ("surat_jalan_id", "shipment_id", "sj_number", "sales_delivery_id")):
+                return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
 
-    for rec in (order.get("delivery_confirmations") or []):
-        if not isinstance(rec, dict) or rec.get("is_deleted"):
-            continue
-        if _linked(rec, ("shipment_id", "surat_jalan_id", "sj_number", "sales_delivery_id")):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+        for sh in (order.get("shipments") or []):
+            if not _linked(sh, ("id", "sales_delivery_id", "sj_number", "number")):
+                continue
+            if _qty_positive(sh.get("loaded_qty")):
+                return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Loading."
+            status = str(sh.get("delivery_status") or sh.get("status") or "").strip()
+            if (
+                sh.get("delivered_at")
+                or sh.get("delivered")
+                or _qty_positive(sh.get("qty_delivered"))
+                or _qty_positive(sh.get("delivered_qty"))
+                or status in delivered_statuses
+            ):
+                return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
 
-    for proof in (order.get("delivery_proofs") or []):
-        if not isinstance(proof, dict) or proof.get("is_deleted"):
-            continue
-        if _linked(proof, ("shipment_id", "surat_jalan_id", "sj_number", "sales_delivery_id", "delivery_id")):
-            return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+        for rec in (order.get("delivery_confirmations") or []):
+            if not isinstance(rec, dict) or rec.get("is_deleted"):
+                continue
+            if _linked(rec, ("shipment_id", "surat_jalan_id", "sj_number", "sales_delivery_id")):
+                return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
 
-    for f in (order.get("surat_jalan_files") or []):
-        if f.get("is_deleted"):
-            continue
-        if _sj_is_generated(f):
-            continue
-        if f.get("sj_number") == raw_sj_number or f.get("delivery_note_number") == raw_sj_number:
-            return "Surat Jalan tidak dapat dihapus karena memiliki file lampiran."
+        for proof in (order.get("delivery_proofs") or []):
+            if not isinstance(proof, dict) or proof.get("is_deleted"):
+                continue
+            if _linked(proof, ("shipment_id", "surat_jalan_id", "sj_number", "sales_delivery_id", "delivery_id")):
+                return "Surat Jalan tidak dapat dihapus karena sudah memiliki proses Pengiriman."
+
+        for f in (order.get("surat_jalan_files") or []):
+            if f.get("is_deleted"):
+                continue
+            if _sj_is_generated(f):
+                continue
+            if f.get("sj_number") == raw_sj_number or f.get("delivery_note_number") == raw_sj_number:
+                return "Surat Jalan tidak dapat dihapus karena memiliki file lampiran."
     return None
 
 
@@ -14676,6 +15010,7 @@ async def _sales_delivery_bulk_hard_delete_blocker(delivery: dict) -> Optional[s
 
 async def _apply_bulk_hard_deletes_in_session(session, deliveries: list) -> None:
     """Delete draft SJ docs + sync shipments inside an open Mongo transaction."""
+    from services.sales_delivery_allocations import delivery_source_po_ids
     for delivery in deliveries:
         fresh = await db.sales_deliveries.find_one(
             {"id": delivery["id"]}, {"_id": 0}, session=session,
@@ -14707,12 +15042,18 @@ async def _apply_bulk_hard_deletes_in_session(session, deliveries: list) -> None
                 "code": "BULK_DELETE_CONFLICT",
                 "id": delivery["id"],
             })
-        await _remove_matching_business_sj_shipment(
-            fresh.get("po_id") or delivery.get("po_id"),
-            fresh,
-            session=session,
-            deleted_reason="sales.delivery.bulk_delete",
-        )
+        source_ids = delivery_source_po_ids(fresh) or [
+            fresh.get("po_id") or delivery.get("po_id")
+        ]
+        for src_po in source_ids:
+            if not src_po:
+                continue
+            await _remove_matching_business_sj_shipment(
+                src_po,
+                fresh,
+                session=session,
+                deleted_reason="sales.delivery.bulk_delete",
+            )
 
 
 async def _bulk_hard_delete_sales_deliveries_atomic(
@@ -14809,12 +15150,25 @@ async def _bulk_hard_delete_sales_deliveries_atomic(
             "code": "BULK_DELETE_TXN_FAILED",
         }) from exc
 
+    # After successful txn: idempotent allocation counter release for every deleted SJ.
+    from services.sales_delivery_allocations import release_delivery_allocations
+    allocation_releases = []
+    for delivery in deliveries:
+        allocation_releases.append({
+            "id": delivery.get("id"),
+            "release": await release_delivery_allocations(db, delivery),
+        })
+
     await _write_audit(
         action="sales.delivery.bulk_delete",
         actor=user,
         target_email=f"deliveries:{len(deliveries)}",
         before={"ids": delete_ids},
-        after={"deleted_count": len(deliveries), "reversals": reversals},
+        after={
+            "deleted_count": len(deliveries),
+            "reversals": reversals,
+            "allocation_releases": allocation_releases,
+        },
     )
     return {
         "deleted_count": len(deliveries),
@@ -14823,6 +15177,7 @@ async def _bulk_hard_delete_sales_deliveries_atomic(
             for d in deliveries
         ],
         "reversals": reversals,
+        "allocation_releases": allocation_releases,
     }
 
 
@@ -15015,19 +15370,31 @@ async def delete_sales_delivery_endpoint(id: str, user=Depends(current_user)):
         raise HTTPException(400, str(exc)) from exc
     sj_number = delivery.get("sj_number", delivery["id"])
     await db.sales_deliveries.delete_one({"id": delivery["id"]})
-    await _remove_matching_business_sj_shipment(delivery.get("po_id"), delivery)
+    from services.sales_delivery_allocations import (
+        delivery_source_po_ids,
+        release_delivery_allocations,
+    )
+    allocation_release = await release_delivery_allocations(db, delivery)
+    for src_po in delivery_source_po_ids(delivery) or [delivery.get("po_id")]:
+        if src_po:
+            await _remove_matching_business_sj_shipment(src_po, delivery)
     await _write_audit(
         action="sales.delivery.delete",
         actor=user,
         target_email=f"delivery:{sj_number}",
         before={"sj_number": sj_number, "id": delivery["id"]},
-        after={"deleted": True, "r2_reversal": r2_reverse},
+        after={
+            "deleted": True,
+            "r2_reversal": r2_reverse,
+            "allocation_release": allocation_release,
+        },
     )
     return {
         "deleted": True,
         "sj_number": sj_number,
         "id": delivery["id"],
         "r2_reversal": r2_reverse,
+        "allocation_release": allocation_release,
     }
 
 
@@ -19458,7 +19825,22 @@ async def seed():
     await db.sales_invoices.create_index("created_at")
     await db.sales_invoices.create_index("invoice_date")
     await db.sales_invoices.create_index("financial_status")
-    
+    # Durable create idempotency (partial unique + intent). Safe no-op when duplicates block.
+    try:
+        from services.sales_invoice_create_idempotency import (
+            ensure_sales_invoice_create_idempotency_indexes as _ensure_inv_create_idem,
+        )
+        _idem_report = await _ensure_inv_create_idem(db)
+        if _idem_report.get("errors"):
+            logging.getLogger(__name__).warning(
+                "sales invoice create idempotency indexes incomplete: %s",
+                _idem_report,
+            )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "sales invoice create idempotency index ensure failed"
+        )
+
     await db.sales_receipts.create_index("id", unique=True)
     await _ensure_unique_business_number_index(db.sales_receipts, "receipt_number")
     await db.sales_receipts.create_index("invoice_id")

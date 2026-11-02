@@ -3208,6 +3208,35 @@ def _sj_partial_order():
     return order
 
 
+async def _seed_operational_sales_deliveries(db, order):
+    """Insert allocation-committed canonical SJ docs for order.shipments.
+
+    prepare_confirm_delivered_action fail-closes via require_operational_sales_delivery;
+    order.shipments alone are not enough.
+    """
+    po_id = str(order.get("id") or "")
+    for sh in order.get("shipments") or []:
+        sid = str(sh.get("id") or "").strip()
+        if not sid:
+            continue
+        await db.sales_deliveries.insert_one({
+            "id": sid,
+            "sj_number": sh.get("number") or sid,
+            "po_id": po_id,
+            "is_cancelled": False,
+            "status": "SELESAI",
+            "line_items": [
+                {
+                    "line_idx": ln.get("line_idx"),
+                    "line_id": ln.get("line_id"),
+                    "qty": ln.get("qty"),
+                    "source_po_id": po_id,
+                }
+                for ln in (sh.get("lines") or [])
+            ],
+        })
+
+
 @pytest.mark.anyio
 async def test_selected_sj_rows_reserve_confirmed_qty_not_full_po(mock_db):
     """400+400 then 600+600. Identity is the PO line. Qty is the SJ row."""
@@ -3460,6 +3489,8 @@ async def test_explicit_action_rejects_a_different_shipment_or_payload(mock_db):
     }]
     order["delivery_confirm_action_ids"] = ["act-1"]
     await mock_db.orders.insert_one(dict(order))
+    await _seed_operational_sales_deliveries(mock_db, order)
+    # Same action + same shipment/payload resolves (idempotent binding).
     same = await prepare_confirm_delivered_action(mock_db, order, "sj-1", "act-1")
     assert same["action_id"] == "act-1"
     with pytest.raises(HTTPException) as other_sj:
@@ -3475,6 +3506,33 @@ async def test_explicit_action_rejects_a_different_shipment_or_payload(mock_db):
     with pytest.raises(HTTPException) as other_payload:
         await prepare_confirm_delivered_action(mock_db, changed, "sj-1", "act-1")
     assert other_payload.value.status_code == 409
+
+    # Fail-closed gates for missing / pending / cancelled canonical SJ
+    # (same require_operational_sales_delivery used by prepare_confirm_delivered_action).
+    from services.sales_delivery_allocations import require_operational_sales_delivery
+
+    await mock_db.sales_deliveries.delete_one({"id": "sj-1"})
+    with pytest.raises(HTTPException) as missing_sj:
+        await require_operational_sales_delivery(mock_db, "sj-1", attempt_reconcile=False)
+    assert missing_sj.value.status_code == 404
+    await mock_db.sales_deliveries.insert_one({
+        "id": "sj-1",
+        "sj_number": "SJ/2026/09/26/000011",
+        "po_id": order["id"],
+        "is_cancelled": False,
+        "allocation_commit_pending": True,
+        "line_items": [],
+    })
+    with pytest.raises(HTTPException) as pending_sj:
+        await require_operational_sales_delivery(mock_db, "sj-1", attempt_reconcile=False)
+    assert pending_sj.value.status_code == 409
+    await mock_db.sales_deliveries.update_one(
+        {"id": "sj-1"},
+        {"$unset": {"allocation_commit_pending": ""}, "$set": {"is_cancelled": True}},
+    )
+    with pytest.raises(HTTPException) as cancelled_sj:
+        await require_operational_sales_delivery(mock_db, "sj-1", attempt_reconcile=False)
+    assert cancelled_sj.value.status_code == 404
 
 
 @pytest.mark.anyio

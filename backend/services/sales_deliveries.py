@@ -36,10 +36,38 @@ from services.physical_stock_engine import (
 )
 from services.delivery_schedule import persistable_delivery_location
 from services.sales_activity.util import normalize_whatsapp
+from services.sales_delivery_allocations import (
+    ALLOCATION_COMMIT_PENDING_FIELD,
+    activate_delivery_allocation_commit,
+    active_deliveries_query_for_po,
+    allocation_fingerprint,
+    assess_multi_source_slice_fulfillment,
+    claim_source_line_allocation,
+    commit_claimed_allocations,
+    delivery_is_allocation_pending,
+    delivery_is_operationally_active,
+    delivery_source_po_ids,
+    is_multi_source_delivery,
+    mongo_transactions_available,
+    normalize_delivery_source_allocations,
+    order_price_snapshot,
+    reconcile_pending_orphan_delivery,
+    release_claimed_allocations,
+    release_source_line_allocation,
+    require_operational_sales_delivery,
+    require_reserved_allocations,
+    shipped_qty_by_source_line,
+    slice_lines_for_po,
+    validate_orders_merge_compatible,
+)
 
 logger = logging.getLogger(__name__)
 
 _delivery_locks: Dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+_MULTI_PO_ATOMICITY_UNAVAILABLE = (
+    "Penggabungan beberapa PO ke satu Surat Jalan memerlukan transaksi database atomik. "
+    "Lingkungan saat ini tidak mendukung transaksi MongoDB — pembuatan SJ multi-PO ditolak (fail-closed)."
+)
 
 
 def _get_delivery_lock() -> asyncio.Lock:
@@ -321,11 +349,22 @@ async def ensure_generated_sj_pdf(db, order: dict, delivery: dict, user: dict, *
     Idempotent: same shipment always maps to the same file id / object key.
     Never writes fake surat_jalan_files metadata when storage/PDF fails.
     force=True overwrites the stored PDF after an SJ number / delivery_date change.
+    Provisional (allocation_commit_pending) SJ cannot be printed as official docs.
     """
     shipment_id = str(delivery.get("id") or delivery.get("delivery_id") or "").strip()
     po_id = str(delivery.get("po_id") or (order or {}).get("id") or "").strip()
     if not shipment_id or not po_id:
         return None, "shipment_identity_missing"
+
+    # Canonical gate: refuse pending even if a cached file already exists.
+    try:
+        await require_operational_sales_delivery(db, shipment_id, attempt_reconcile=True)
+    except HTTPException as exc:
+        if exc.status_code in (404, 409):
+            return None, "allocation_pending_or_unavailable"
+        raise
+    if delivery_is_allocation_pending(delivery):
+        return None, "allocation_pending_or_unavailable"
 
     fresh = await db.orders.find_one({"id": po_id}, {"_id": 0}) or order or {}
     existing = find_generated_sj_file(fresh, shipment_id)
@@ -442,6 +481,7 @@ async def ensure_order_shipment_synced(
     shipment_entry: dict,
     *,
     stamp: Optional[dict] = None,
+    session=None,
 ) -> None:
     """Ensure orders.shipments carries this sales_delivery before create reports success.
 
@@ -453,6 +493,7 @@ async def ensure_order_shipment_synced(
     if not delivery_id or not oid:
         raise HTTPException(500, "Gagal menyinkronkan Surat Jalan ke PO (identitas kosong).")
 
+    kw = {"session": session} if session is not None else {}
     set_fields = dict(stamp or {})
     result = await db.orders.update_one(
         {
@@ -464,6 +505,7 @@ async def ensure_order_shipment_synced(
             "$push": {"shipments": shipment_entry},
             **({"$set": set_fields} if set_fields else {}),
         },
+        **kw,
     )
     if getattr(result, "matched_count", 0) or getattr(result, "modified_count", 0):
         return
@@ -471,11 +513,12 @@ async def ensure_order_shipment_synced(
     fresh = await db.orders.find_one(
         {"id": oid},
         {"_id": 0, "shipments.id": 1, "shipments.sales_delivery_id": 1},
+        **kw,
     )
     if _order_has_shipment_id(fresh, delivery_id):
         # Idempotent: already projected (concurrent push or prior attempt).
         if set_fields:
-            await db.orders.update_one({"id": oid}, {"$set": set_fields})
+            await db.orders.update_one({"id": oid}, {"$set": set_fields}, **kw)
         return
     if not fresh:
         raise HTTPException(
@@ -494,10 +537,12 @@ async def ensure_order_shipment_synced(
             "$push": {"shipments": shipment_entry},
             **({"$set": set_fields} if set_fields else {}),
         },
+        **kw,
     )
     fresh2 = await db.orders.find_one(
         {"id": oid},
         {"_id": 0, "shipments.id": 1, "shipments.sales_delivery_id": 1},
+        **kw,
     )
     if _order_has_shipment_id(fresh2, delivery_id) or getattr(result2, "modified_count", 0):
         return
@@ -613,6 +658,8 @@ def summarize_po_delivery_quantities(
             continue
         if doc.get("is_cancelled") is True:
             continue
+        if doc.get(ALLOCATION_COMMIT_PENDING_FIELD) is True:
+            continue
         status = str(doc.get("status") or "").strip().lower()
         if status in _DETAIL_EXCLUDED_SHIPMENT_STATUSES:
             continue
@@ -620,15 +667,10 @@ def summarize_po_delivery_quantities(
             continue
         existing_deliveries.append(doc)
 
-    shipped_by_line_idx: Dict[int, int] = {}
-    for delivery in existing_deliveries:
-        for li in delivery.get("line_items", []):
-            l_idx = int(li.get("line_idx", 0))
-            q = int(li.get("qty") if li.get("qty") is not None else li.get("quantity", 0))
-            shipped_by_line_idx[l_idx] = shipped_by_line_idx.get(l_idx, 0) + q
+    line_po_id = po_id if po_id is not None else order.get("id")
+    shipped_by_line_idx = shipped_qty_by_source_line(existing_deliveries, str(line_po_id or ""))
 
     raw_lines = order.get("line_items") or []
-    line_po_id = po_id if po_id is not None else order.get("id")
     lines_summary = []
     total_ordered = 0
     total_shipped = 0
@@ -762,10 +804,12 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
                 if not sales_val:
                     sales_val = (recent_cust_po.get("sales") or recent_cust_po.get("seller") or "").strip()
 
-    # Fetch all existing sales deliveries for this exact PO sorted by shipment_index.
-    # is_cancelled is excluded here; summarize_po_delivery_quantities applies the
-    # same status and cancelled filter as before.
-    deliveries_cursor = db.sales_deliveries.find({"po_id": po_id, "is_cancelled": {"$ne": True}}, {"_id": 0}).sort("shipment_index", 1)
+    # Active SJ that allocate from this PO (legacy po_id and multi-source membership).
+    # summarize_po_delivery_quantities filters cancelled/status and attributes by source.
+    deliveries_cursor = db.sales_deliveries.find(
+        active_deliveries_query_for_po(str(po_id)),
+        {"_id": 0},
+    ).sort("shipment_index", 1)
     fetched_deliveries = await deliveries_cursor.to_list(1000)
     qty = summarize_po_delivery_quantities(order, fetched_deliveries, po_id=po_id)
     existing_deliveries = qty["deliveries"]
@@ -777,12 +821,14 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
 
     next_shipment_index, suggested_sj = await allocate_sales_delivery_identity(db, po_id, po_number)
 
+    from services.customer_identity import extract_stable_customer_id
     return {
         "po_id": po_id,
         "po_number": po_number,
         "order_date": order.get("order_date"),
         "customer": customer_val,
         "customer_name": customer_val,
+        "customer_id": extract_stable_customer_id(order),
         "customer_phone": (order.get("customer_phone") or "").strip(),
         "outlet": outlet_val,
         "outlet_name": outlet_val,
@@ -907,18 +953,91 @@ def resolve_delivery_recipient_phone(order: dict, payload: dict) -> Tuple[Option
     return text, wa
 
 
+def _payload_source_allocation_rows(payload: Dict[str, Any]) -> List[dict]:
+    """Normalize create payload into allocation rows (may be empty)."""
+    rows: List[dict] = []
+    for raw in payload.get("source_allocations") or []:
+        if not isinstance(raw, dict):
+            continue
+        rows.append(dict(raw))
+    # line_items may already carry source_po_id for multi-source clients
+    if not rows:
+        for raw in payload.get("line_items") or []:
+            if not isinstance(raw, dict):
+                continue
+            if not str(raw.get("source_po_id") or "").strip():
+                continue
+            rows.append({
+                "source_po_id": raw.get("source_po_id"),
+                "source_line_id": raw.get("source_line_id") or raw.get("line_id"),
+                "source_line_idx": raw.get("source_line_idx", raw.get("line_idx")),
+                "allocated_qty": raw.get("allocated_qty", raw.get("qty", raw.get("quantity"))),
+                "notes": raw.get("notes"),
+            })
+    return rows
+
+
+def _enrich_single_po_lines(order: dict, validated_lines: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """Stamp source_* on single-PO lines and build source_allocations for Stage 2."""
+    po_id = str(order.get("id") or "")
+    po_number = str(order.get("po_number") or "")
+    raw_lines = order.get("line_items") or []
+    enriched = []
+    allocations = []
+    for item in validated_lines:
+        idx = int(item.get("line_idx", 0))
+        order_line = raw_lines[idx] if 0 <= idx < len(raw_lines) and isinstance(raw_lines[idx], dict) else {}
+        price = order_price_snapshot(order_line)
+        currency = str(order.get("currency") or price.get("currency") or "").strip()
+        row = {
+            **item,
+            "source_po_id": po_id,
+            "source_po_number": po_number,
+            "source_line_id": str(item.get("line_id") or ""),
+            "source_line_idx": idx,
+            "master_item_id": order_line.get("master_item_id") or item.get("master_item_id"),
+            "unit_price": price.get("unit_price"),
+            "discount_amount": price.get("discount_amount"),
+            "ppn_percent": price.get("ppn_percent"),
+            "currency": currency or price.get("currency") or "",
+        }
+        enriched.append(row)
+        allocations.append({
+            "source_po_id": po_id,
+            "source_po_number": po_number,
+            "source_line_id": row["source_line_id"],
+            "source_line_idx": idx,
+            "master_item_id": row.get("master_item_id") or "",
+            "item_code": row.get("item_code"),
+            "name": row.get("name"),
+            "unit": row.get("unit") or "pcs",
+            "allocated_qty": int(row.get("qty") or 0),
+            "unit_price": row.get("unit_price"),
+            "discount_amount": row.get("discount_amount"),
+            "ppn_percent": row.get("ppn_percent"),
+            "currency": row.get("currency") or "",
+        })
+    return enriched, allocations
+
+
 async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
     """Create a new Sales Delivery (Pengiriman Pesanan) backend-authoritatively.
-    
-    Guarantees:
-    - Stable relations (po_id, delivery_id, stable line items)
-    - Concurrency and duplicate safety
-    - Strict over-shipment prevention per exact PO line
-    - Exact SJ numbering formula (SJ base, SJ base-2, SJ base-3...)
-    - Preserves original PO unchanged
-    - Saves final edited snapshot values
+
+    Single-PO path remains the default API. Multi-PO uses source_allocations and
+    requires Mongo transactions (fail-closed when unavailable).
     """
+    alloc_rows = _payload_source_allocation_rows(payload or {})
+    distinct_sources = {
+        str(r.get("source_po_id") or "").strip()
+        for r in alloc_rows
+        if str(r.get("source_po_id") or "").strip()
+    }
+    if len(distinct_sources) > 1:
+        return await _create_multi_source_sales_delivery(db, payload, user, alloc_rows)
+
     po_id = str(payload.get("po_id") or "").strip()
+    if not po_id and len(distinct_sources) == 1:
+        po_id = next(iter(distinct_sources))
     if not po_id:
         raise HTTPException(400, "ID Pesanan Penjualan (po_id) wajib diisi.")
 
@@ -945,8 +1064,18 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
         summary = await get_po_delivery_summary(db, order)
         lines_summary_by_idx = {l["line_idx"]: l for l in summary["lines"]}
 
-        # 3. Validate line items payload
+        # 3. Validate line items payload (legacy line_items OR single-source allocations)
         input_lines = payload.get("line_items") or []
+        if not input_lines and alloc_rows:
+            input_lines = [
+                {
+                    "line_idx": r.get("source_line_idx", r.get("line_idx", 0)),
+                    "line_id": r.get("source_line_id") or r.get("line_id"),
+                    "qty": r.get("allocated_qty", r.get("qty", r.get("quantity"))),
+                    "notes": r.get("notes"),
+                }
+                for r in alloc_rows
+            ]
         if not input_lines:
             raise HTTPException(400, "Minimal 1 line item pengiriman harus memiliki kuantitas > 0.")
 
@@ -1015,6 +1144,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
             # Packing/Loading are NOT prerequisites for creating/preparing Pengiriman Pesanan.
             # Physical readiness is enforced later (Loading confirm, photo/gallery, confirm-delivered).
 
+        validated_lines, source_allocations = _enrich_single_po_lines(order, validated_lines)
+
         # 4. Determine shipment index and SJ number backend-authoritatively
         now = now_iso()
         delivery_date = str(payload.get("delivery_date") or now[:10]).strip()
@@ -1044,6 +1175,9 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "delivery_id": delivery_id,
                 "po_id": summary["po_id"],
                 "po_number": po_number,
+                "source_po_ids": [summary["po_id"]],
+                "is_multi_source": False,
+                "source_allocations": source_allocations,
                 "sj_number": authoritative_sj,
                 "shipment_index": shipment_index,
                 "delivery_date": delivery_date,
@@ -1075,6 +1209,8 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 "item_count": len(validated_lines),
                 "status": "SELESAI" if (summary["total_remaining"] - total_delivery_qty <= 0) else "SEBAGIAN",
                 "is_cancelled": False,
+                # Invisible to remaining/seed until claim commit succeeds (Race A fence).
+                ALLOCATION_COMMIT_PENDING_FIELD: True,
                 "physical_stock_snapshot": order.get("physical_stock_snapshot"),
             }
             from services.operational_branch import document_branch
@@ -1094,9 +1230,44 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     db, order, validated_lines, delivery_id, user
                 )
 
+            # Unified allocation counter (same gate as multi-PO) — cross-process safe.
+            line_claims: List[dict] = []
+            order_lines = order.get("line_items") or []
             try:
+                for ln in validated_lines:
+                    idx = int(ln.get("line_idx", 0))
+                    order_line = (
+                        order_lines[idx]
+                        if 0 <= idx < len(order_lines) and isinstance(order_lines[idx], dict)
+                        else {}
+                    )
+                    ordered_qty = int(
+                        order_line.get("quantity")
+                        if order_line.get("quantity") is not None
+                        else order_line.get("qty") or ln.get("ordered_qty") or 0
+                    )
+                    claim = await claim_source_line_allocation(
+                        db,
+                        source_po_id=str(summary["po_id"]),
+                        source_line_id=str(ln.get("source_line_id") or ln.get("line_id") or ""),
+                        source_line_idx=idx,
+                        ordered_qty=ordered_qty,
+                        qty=int(ln.get("qty") or 0),
+                        sales_delivery_id=delivery_id,
+                    )
+                    line_claims.append(claim)
+            except Exception:
+                await release_claimed_allocations(db, line_claims)
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
+                raise
+
+            try:
+                # Fence: refuse persist if lease was stolen / healed while we waited.
+                await require_reserved_allocations(db, line_claims)
                 await db.sales_deliveries.insert_one(delivery_doc)
             except DuplicateKeyError:
+                await release_claimed_allocations(db, line_claims)
                 if claimed_stock:
                     await release_sales_delivery_stock(db, claimed_stock)
                 # Real race: another insert took this key. Do not reuse a stale
@@ -1107,6 +1278,30 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                 if attempt == max_retries - 1:
                     raise HTTPException(409, _CONCURRENT_CONFLICT)
                 continue
+            except HTTPException:
+                await release_claimed_allocations(db, line_claims)
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
+                raise
+            except Exception:
+                # Insert did not persist — release claims so qty is not stuck.
+                await release_claimed_allocations(db, line_claims)
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
+                raise
+
+            # SJ document exists → commit reservations (idempotent; healer also promotes).
+            # Fail-closed: any non-committed claim raises → delete provisional SJ.
+            try:
+                await commit_claimed_allocations(db, line_claims)
+                await activate_delivery_allocation_commit(db, delivery_id)
+                delivery_doc.pop(ALLOCATION_COMMIT_PENDING_FIELD, None)
+            except Exception:
+                await release_claimed_allocations(db, line_claims)
+                if claimed_stock:
+                    await release_sales_delivery_stock(db, claimed_stock)
+                await db.sales_deliveries.delete_one({"id": delivery_id})
+                raise
 
             delivery_doc.pop("_id", None)
             try:
@@ -1188,11 +1383,571 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
                     logger.exception("surat jalan created notifications failed")
                 return delivery_doc
             except Exception:
+                # After sales_deliveries insert: keep SJ + allocation claims so
+                # orphan-reuse retry can repair shipment/PDF under the same id.
+                # Only release ephemeral stock reservations (not line counters).
                 if claimed_stock:
                     await release_sales_delivery_stock(db, claimed_stock)
                 raise
 
         raise HTTPException(500, "Gagal membuat Pengiriman Pesanan.")
+
+
+async def _create_multi_source_sales_delivery(
+    db,
+    payload: Dict[str, Any],
+    user: dict,
+    alloc_rows: List[dict],
+) -> Dict[str, Any]:
+    """Create one SJ from multiple source POs with item-level allocations.
+
+    Fail-closed when Mongo transactions are unavailable. All source shipment
+    mirrors succeed together with the sales_deliveries insert, or none persist.
+    """
+    from services.operational_branch import document_branch, require_document_branch
+
+    # Atomicity: per-line allocation counters (conditional $inc) work on standalone
+    # Mongo. Optional multi-doc transaction wraps insert+shipment sync when available.
+
+    # Group requested qty by (source_po_id, source_line_idx/line_id)
+    requested: List[dict] = []
+    for raw in alloc_rows:
+        source_po_id = str(raw.get("source_po_id") or "").strip()
+        if not source_po_id:
+            raise HTTPException(400, "source_po_id wajib diisi pada setiap alokasi.")
+        try:
+            qty = int(
+                raw.get("allocated_qty")
+                if raw.get("allocated_qty") is not None
+                else raw.get("qty") if raw.get("qty") is not None else raw.get("quantity", 0)
+            )
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        try:
+            source_line_idx = int(raw.get("source_line_idx") if raw.get("source_line_idx") is not None else raw.get("line_idx", 0))
+        except (TypeError, ValueError):
+            source_line_idx = 0
+        requested.append({
+            "source_po_id": source_po_id,
+            "source_line_id": str(raw.get("source_line_id") or raw.get("line_id") or "").strip(),
+            "source_line_idx": source_line_idx,
+            "qty": qty,
+            "notes": str(raw.get("notes") or "").strip(),
+        })
+    if not requested:
+        raise HTTPException(400, "Total kuantitas pengiriman sekarang harus lebih besar dari 0.")
+
+    source_ids = list(dict.fromkeys(r["source_po_id"] for r in requested))
+    if len(source_ids) < 2:
+        # Caller should have used single-PO path; keep fail-safe without re-entering multi.
+        single_payload = dict(payload or {})
+        single_payload["po_id"] = source_ids[0] if source_ids else single_payload.get("po_id")
+        single_payload.pop("source_allocations", None)
+        # Rebuild legacy line_items from requested rows for the single PO.
+        single_pid = str(single_payload.get("po_id") or "")
+        single_payload["line_items"] = [
+            {
+                "line_idx": r["source_line_idx"],
+                "line_id": r.get("source_line_id"),
+                "qty": r["qty"],
+                "notes": r.get("notes") or "",
+            }
+            for r in requested
+            if r["source_po_id"] == single_pid
+        ]
+        return await create_sales_delivery(db, single_payload, user)
+
+    async with _get_delivery_lock():
+        orders: Dict[str, dict] = {}
+        for pid in source_ids:
+            order = await db.orders.find_one({"id": pid}, {"_id": 0})
+            if not order:
+                order = await db.orders.find_one({"po_number": pid}, {"_id": 0})
+            if not order:
+                raise HTTPException(404, f"Pesanan Penjualan dengan ID '{pid}' tidak ditemukan.")
+            await require_document_branch(db, user, order)
+            orders[str(order["id"])] = order
+            # Rewrite requested ids to canonical order.id when looked up by po_number
+            for row in requested:
+                if row["source_po_id"] == pid:
+                    row["source_po_id"] = str(order["id"])
+        source_ids = list(orders.keys())
+        validate_orders_merge_compatible([orders[pid] for pid in source_ids])
+
+        summaries: Dict[str, dict] = {}
+        for pid in source_ids:
+            summaries[pid] = await get_po_delivery_summary(db, orders[pid])
+
+        # Detect duplicate allocation keys in one request
+        seen_keys = set()
+        validated_lines: List[dict] = []
+        source_allocations: List[dict] = []
+        total_delivery_qty = 0
+        remaining_by_po: Dict[str, int] = {
+            pid: int(summaries[pid].get("total_remaining") or 0) for pid in source_ids
+        }
+
+        for row in requested:
+            pid = row["source_po_id"]
+            order = orders[pid]
+            summary = summaries[pid]
+            by_idx = {l["line_idx"]: l for l in summary.get("lines") or []}
+            target = by_idx.get(row["source_line_idx"])
+            if not target:
+                raise HTTPException(
+                    400,
+                    f"Line item #{row['source_line_idx'] + 1} tidak ditemukan pada PO {order.get('po_number')}.",
+                )
+            client_line_id = row["source_line_id"]
+            if client_line_id and client_line_id != str(target["line_id"]):
+                raise HTTPException(
+                    400,
+                    f"Identitas line item tidak cocok dengan PO {order.get('po_number')}.",
+                )
+            key = (pid, str(target["line_id"]))
+            if key in seen_keys:
+                raise HTTPException(
+                    400,
+                    f"Alokasi ganda untuk item '{target['name']}' pada PO {order.get('po_number')} ditolak.",
+                )
+            seen_keys.add(key)
+            remain = int(target.get("remaining_qty") or 0)
+            if row["qty"] > remain:
+                raise HTTPException(
+                    400,
+                    f"Kuantitas pengiriman untuk '{target['name']}' dari PO {order.get('po_number')} "
+                    f"({row['qty']} {target['unit']}) melebihi sisa ({remain} {target['unit']}).",
+                )
+            raw_lines = order.get("line_items") or []
+            order_line = (
+                raw_lines[row["source_line_idx"]]
+                if 0 <= row["source_line_idx"] < len(raw_lines)
+                and isinstance(raw_lines[row["source_line_idx"]], dict)
+                else {}
+            )
+            price = order_price_snapshot(order_line)
+            currency = str(order.get("currency") or price.get("currency") or "").strip()
+            line_doc = {
+                "line_idx": len(validated_lines),
+                "line_id": f"{pid}:{target['line_id']}",
+                "source_po_id": pid,
+                "source_po_number": order.get("po_number"),
+                "source_line_id": target["line_id"],
+                "source_line_idx": row["source_line_idx"],
+                "master_item_id": order_line.get("master_item_id"),
+                "item_code": target.get("item_code"),
+                "name": target.get("name"),
+                "unit": target.get("unit") or "pcs",
+                "color": target.get("color"),
+                "production_process": target.get("production_process"),
+                "ordered_qty": target.get("ordered_qty"),
+                "qty": row["qty"],
+                "notes": row["notes"],
+                "unit_price": price.get("unit_price"),
+                "discount_amount": price.get("discount_amount"),
+                "ppn_percent": price.get("ppn_percent"),
+                "currency": currency,
+            }
+            validated_lines.append(line_doc)
+            source_allocations.append({
+                "source_po_id": pid,
+                "source_po_number": order.get("po_number"),
+                "source_line_id": target["line_id"],
+                "source_line_idx": row["source_line_idx"],
+                "master_item_id": order_line.get("master_item_id") or "",
+                "item_code": target.get("item_code"),
+                "name": target.get("name"),
+                "unit": target.get("unit") or "pcs",
+                "allocated_qty": row["qty"],
+                "unit_price": price.get("unit_price"),
+                "discount_amount": price.get("discount_amount"),
+                "ppn_percent": price.get("ppn_percent"),
+                "currency": currency,
+            })
+            total_delivery_qty += row["qty"]
+            remaining_by_po[pid] = max(0, remaining_by_po[pid] - row["qty"])
+
+        # Primary PO = explicit payload.po_id if part of sources, else first source.
+        primary_hint = str(payload.get("po_id") or "").strip()
+        primary_id = primary_hint if primary_hint in orders else source_ids[0]
+        primary_order = orders[primary_id]
+        primary_summary = summaries[primary_id]
+
+        # Idempotent retry: identical fingerprint + incomplete PDF/sync on primary.
+        want_fp = allocation_fingerprint(source_allocations)
+        existing_multi = await db.sales_deliveries.find(
+            {
+                "is_cancelled": {"$ne": True},
+                "is_multi_source": True,
+                "source_po_ids": {"$all": source_ids},
+            },
+            {"_id": 0},
+        ).sort("created_at", -1).to_list(50)
+        for d in existing_multi:
+            if allocation_fingerprint(normalize_delivery_source_allocations(d)) != want_fp:
+                continue
+            # Reuse only incomplete prior attempts (same contract as single-PO).
+            sid = str(d.get("id") or "").strip()
+            fresh_primary = await db.orders.find_one({"id": primary_id}, {"_id": 0}) or primary_order
+            gen = find_generated_sj_file(fresh_primary, sid)
+            pdf_real = generated_file_is_real(gen)
+            missing_any = False
+            for pid in source_ids:
+                ord_doc = await db.orders.find_one({"id": pid}, {"_id": 0}) or orders[pid]
+                if not _order_has_shipment_id(ord_doc, sid):
+                    missing_any = True
+                    break
+            if pdf_real and not missing_any:
+                continue
+            # Repair mirrors for every source then return.
+            for pid in source_ids:
+                ord_doc = await db.orders.find_one({"id": pid}, {"_id": 0}) or orders[pid]
+                if _order_has_shipment_id(ord_doc, sid):
+                    continue
+                slice_lines = slice_lines_for_po(d, pid)
+                repair_entry = {
+                    "id": sid,
+                    "number": d.get("sj_number"),
+                    "shipment_index": d.get("shipment_index"),
+                    "delivery_date": d.get("delivery_date"),
+                    "customer": d.get("customer"),
+                    "outlet": d.get("outlet"),
+                    "sales": d.get("sales"),
+                    "recipient": d.get("recipient"),
+                    "address": d.get("address"),
+                    "delivery_zone": d.get("delivery_zone"),
+                    "expedition": d.get("expedition"),
+                    "notes": d.get("notes"),
+                    "lines": slice_lines,
+                    "total_qty": sum(int(x.get("qty") or 0) for x in slice_lines),
+                    "created_at": d.get("created_at"),
+                    "created_by": d.get("created_by") or "",
+                    "sales_delivery_id": sid,
+                    "source_po_ids": list(d.get("source_po_ids") or source_ids),
+                    "is_multi_source": True,
+                }
+                await ensure_order_shipment_synced(
+                    db,
+                    pid,
+                    repair_entry,
+                    stamp={
+                        "delivery_note_number": d.get("sj_number"),
+                        "delivery_note_created_at": d.get("created_at") or now_iso(),
+                        "delivery_note_created_by": d.get("created_by") or "",
+                        "delivery_note_created_by_name": d.get("created_by_name") or "",
+                    },
+                )
+            if not pdf_real:
+                await ensure_generated_sj_pdf(db, primary_order, d, user)
+            d.pop("_id", None)
+            return d
+
+        recipient_phone, recipient_phone_wa = resolve_delivery_recipient_phone(primary_order, payload)
+        now = now_iso()
+        delivery_date = str(payload.get("delivery_date") or now[:10]).strip()
+        po_number = primary_order.get("po_number")
+        final_customer = primary_summary["customer"]
+        final_outlet = str(payload.get("outlet") if payload.get("outlet") is not None else primary_summary["outlet"]).strip()
+        final_recipient = str(payload.get("recipient") if payload.get("recipient") is not None else primary_summary["recipient"]).strip()
+        final_address = str(payload.get("address") if payload.get("address") is not None else primary_summary["address"]).strip()
+        final_zone = str(payload.get("delivery_zone") if payload.get("delivery_zone") is not None else primary_summary["delivery_zone"]).strip()
+        final_sales = str(payload.get("sales") if payload.get("sales") is not None else primary_summary["sales"]).strip()
+        final_expedition = str(
+            payload.get("expedition") if payload.get("expedition") is not None else primary_summary["expedition"]
+        ).strip()
+        final_notes = str(payload.get("notes") if payload.get("notes") is not None else "").strip()
+        sj_location = persistable_delivery_location(payload.get("delivery_location"))
+
+        # Precheck stock per source order (legacy PSS path only when enabled).
+        for pid in source_ids:
+            mapped = [
+                {**ln, "line_idx": ln["source_line_idx"], "line_id": ln["source_line_id"]}
+                for ln in validated_lines
+                if ln.get("source_po_id") == pid
+            ]
+            await precheck_sales_delivery(db, orders[pid], mapped)
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            shipment_index, authoritative_sj = await allocate_sales_delivery_identity(
+                db, primary_id, po_number
+            )
+            delivery_id = str(uuid.uuid4())
+
+            # Stock claims (optional PSS) — use final delivery_id; release on failure.
+            claimed_by_po: Dict[str, Any] = {}
+            try:
+                for pid in source_ids:
+                    if not await should_claim_sales_delivery_stock(db, orders[pid]):
+                        continue
+                    po_lines = [
+                        {**ln, "line_idx": ln["source_line_idx"], "line_id": ln["source_line_id"]}
+                        for ln in validated_lines
+                        if ln.get("source_po_id") == pid
+                    ]
+                    claimed_by_po[pid] = await claim_sales_delivery_stock(
+                        db, orders[pid], po_lines, delivery_id, user
+                    )
+            except Exception:
+                for claim in claimed_by_po.values():
+                    if claim:
+                        await release_sales_delivery_stock(db, claim)
+                raise
+
+            all_remaining_zero = all(remaining_by_po[pid] <= 0 for pid in source_ids)
+            delivery_doc = {
+                "id": delivery_id,
+                "delivery_id": delivery_id,
+                "po_id": primary_id,
+                "po_number": po_number,
+                "source_po_ids": source_ids,
+                "is_multi_source": True,
+                "source_allocations": source_allocations,
+                "sj_number": authoritative_sj,
+                "shipment_index": shipment_index,
+                "delivery_date": delivery_date,
+                "customer": final_customer,
+                "customer_name": final_customer,
+                "outlet": final_outlet,
+                "outlet_name": final_outlet,
+                "recipient": final_recipient,
+                "recipient_name": final_recipient,
+                "address": final_address,
+                "shipping_address": final_address,
+                "delivery_zone": final_zone,
+                "shipping_zone": final_zone,
+                "sales": final_sales,
+                "sales_name": final_sales,
+                "expedition": final_expedition,
+                "expedition_or_vehicle": final_expedition,
+                "notes": final_notes,
+                "delivery_note": final_notes,
+                "recipient_phone": recipient_phone,
+                "recipient_phone_wa": recipient_phone_wa,
+                "created_by": user.get("email") or "",
+                "created_by_name": user.get("name") or user.get("email") or "",
+                "created_by_role": user.get("role") or "",
+                "created_at": now,
+                "updated_at": now,
+                "line_items": validated_lines,
+                "total_qty": total_delivery_qty,
+                "item_count": len(validated_lines),
+                "status": "SELESAI" if all_remaining_zero else "SEBAGIAN",
+                "is_cancelled": False,
+                ALLOCATION_COMMIT_PENDING_FIELD: True,
+                "physical_stock_snapshot": primary_order.get("physical_stock_snapshot"),
+            }
+            delivery_doc["operational_branch_id"] = document_branch(primary_order)
+            order_branch_id = str(primary_order.get("branch_id") or "").strip()
+            if order_branch_id.isdigit():
+                delivery_doc["branch_id"] = order_branch_id
+            if sj_location:
+                delivery_doc["delivery_location"] = sj_location
+
+            stamp = {
+                "delivery_note_number": authoritative_sj,
+                "delivery_note_created_at": now,
+                "delivery_note_created_by": user.get("email") or "",
+                "delivery_note_created_by_name": user.get("name") or user.get("email") or "",
+            }
+
+            def _shipment_for(pid: str) -> dict:
+                slice_lines = slice_lines_for_po(delivery_doc, pid)
+                entry = {
+                    "id": delivery_id,
+                    "number": authoritative_sj,
+                    "shipment_index": shipment_index,
+                    "delivery_date": delivery_date,
+                    "customer": final_customer,
+                    "outlet": final_outlet,
+                    "sales": final_sales,
+                    "recipient": final_recipient,
+                    "address": final_address,
+                    "delivery_zone": final_zone,
+                    "expedition": final_expedition,
+                    "notes": final_notes,
+                    "recipient_phone": recipient_phone,
+                    "recipient_phone_wa": recipient_phone_wa,
+                    "lines": slice_lines,
+                    "total_qty": sum(int(x.get("qty") or 0) for x in slice_lines),
+                    "created_at": now,
+                    "created_by": user.get("email") or "",
+                    "sales_delivery_id": delivery_id,
+                    "source_po_ids": source_ids,
+                    "is_multi_source": True,
+                }
+                if delivery_doc.get("branch_id"):
+                    entry["branch_id"] = delivery_doc["branch_id"]
+                entry["operational_branch_id"] = delivery_doc["operational_branch_id"]
+                if sj_location:
+                    entry["delivery_location"] = sj_location
+                return entry
+
+            # 1) Claim per-line remaining (atomic conditional writes — standalone-safe).
+            line_claims: List[dict] = []
+            try:
+                for ln in validated_lines:
+                    claim = await claim_source_line_allocation(
+                        db,
+                        source_po_id=ln["source_po_id"],
+                        source_line_id=str(ln["source_line_id"]),
+                        source_line_idx=int(ln["source_line_idx"]),
+                        ordered_qty=int(ln.get("ordered_qty") or 0),
+                        qty=int(ln["qty"]),
+                        sales_delivery_id=delivery_id,
+                    )
+                    line_claims.append(claim)
+            except Exception:
+                await release_claimed_allocations(db, line_claims)
+                for claim in claimed_by_po.values():
+                    if claim:
+                        await release_sales_delivery_stock(db, claim)
+                raise
+
+            # 2) Persist SJ + sync all source shipment mirrors.
+            # Prefer a multi-doc transaction when the deployment supports it; otherwise
+            # sequential writes with compensating delete/release on failure (fail-closed
+            # if compensation cannot restore a consistent state).
+            async def _compensate_provisional_multi() -> None:
+                await release_claimed_allocations(db, line_claims)
+                for claim in claimed_by_po.values():
+                    if claim:
+                        await release_sales_delivery_stock(db, claim)
+                await db.sales_deliveries.delete_one({"id": delivery_id})
+                for pid in source_ids:
+                    await db.orders.update_one(
+                        {"id": pid},
+                        {"$pull": {"shipments": {"sales_delivery_id": delivery_id}}},
+                    )
+                    await db.orders.update_one(
+                        {"id": pid},
+                        {"$pull": {"shipments": {"id": delivery_id}}},
+                    )
+
+            async def _persist_without_txn() -> None:
+                """Standalone: commit+activate first; publish mirrors only when SJ is active."""
+                await db.sales_deliveries.insert_one(delivery_doc)
+                synced: List[str] = []
+                try:
+                    await commit_claimed_allocations(db, line_claims)
+                    await activate_delivery_allocation_commit(db, delivery_id)
+                    for pid in source_ids:
+                        await ensure_order_shipment_synced(
+                            db, pid, _shipment_for(pid), stamp=stamp,
+                        )
+                        synced.append(pid)
+                except Exception:
+                    for pid in synced:
+                        await db.orders.update_one(
+                            {"id": pid},
+                            {"$pull": {"shipments": {"sales_delivery_id": delivery_id}}},
+                        )
+                        await db.orders.update_one(
+                            {"id": pid},
+                            {"$pull": {"shipments": {"id": delivery_id}}},
+                        )
+                    await db.sales_deliveries.delete_one({"id": delivery_id})
+                    raise
+
+            try:
+                await require_reserved_allocations(db, line_claims)
+            except Exception:
+                await release_claimed_allocations(db, line_claims)
+                for claim in claimed_by_po.values():
+                    if claim:
+                        await release_sales_delivery_stock(db, claim)
+                raise
+
+            use_txn = await mongo_transactions_available(db)
+            try:
+                if use_txn:
+                    try:
+                        client = db.client
+                        async with await client.start_session() as session:
+                            session.start_transaction()
+                            try:
+                                # Claim commit + activate before mirrors: abort leaves
+                                # no durable SJ/mirror for the loser.
+                                await db.sales_deliveries.insert_one(delivery_doc, session=session)
+                                await commit_claimed_allocations(
+                                    db, line_claims, session=session,
+                                )
+                                await activate_delivery_allocation_commit(
+                                    db, delivery_id, session=session,
+                                )
+                                for pid in source_ids:
+                                    await ensure_order_shipment_synced(
+                                        db, pid, _shipment_for(pid), stamp=stamp, session=session,
+                                    )
+                                await session.commit_transaction()
+                            except Exception:
+                                if session.in_transaction:
+                                    await session.abort_transaction()
+                                raise
+                    except Exception as txn_exc:
+                        msg = str(txn_exc).lower()
+                        if "transaction" in msg or "replica" in msg or "illegal" in msg:
+                            await _persist_without_txn()
+                        else:
+                            raise
+                else:
+                    await _persist_without_txn()
+                delivery_doc.pop(ALLOCATION_COMMIT_PENDING_FIELD, None)
+            except DuplicateKeyError:
+                await _compensate_provisional_multi()
+                if attempt == max_retries - 1:
+                    raise HTTPException(409, _CONCURRENT_CONFLICT)
+                continue
+            except HTTPException:
+                await _compensate_provisional_multi()
+                raise
+            except Exception:
+                await _compensate_provisional_multi()
+                raise
+
+            delivery_doc.pop("_id", None)
+            try:
+                file_entry, pdf_err = await ensure_generated_sj_pdf(db, primary_order, delivery_doc, user)
+                if file_entry:
+                    delivery_doc["generated_sj_file_id"] = file_entry["id"]
+                elif pdf_err:
+                    delivery_doc["generated_sj_file_error"] = pdf_err
+                for pid, claim in claimed_by_po.items():
+                    if claim:
+                        await finalize_sales_delivery_stock(db, claim, user)
+                    else:
+                        await handle_sales_delivery_created(
+                            db,
+                            orders[pid],
+                            {
+                                **delivery_doc,
+                                "line_items": [
+                                    {**ln, "line_idx": ln["source_line_idx"], "line_id": ln["source_line_id"]}
+                                    for ln in validated_lines
+                                    if ln.get("source_po_id") == pid
+                                ],
+                            },
+                            user,
+                        )
+                try:
+                    from services.notifications import emit_surat_jalan_created_notifications
+                    await emit_surat_jalan_created_notifications(
+                        db,
+                        order=primary_order,
+                        shipment=_shipment_for(primary_id),
+                    )
+                except Exception:
+                    logger.exception("surat jalan created notifications failed")
+                return delivery_doc
+            except Exception:
+                for claim in claimed_by_po.values():
+                    if claim:
+                        await release_sales_delivery_stock(db, claim)
+                raise
+
+        raise HTTPException(500, "Gagal membuat Pengiriman Pesanan multi-PO.")
 
 
 DELIVERY_LIST_SORT = [("created_at", -1), ("id", -1)]
@@ -1203,7 +1958,10 @@ DELIVERY_PAGE_SIZES = frozenset({10, 25, 50, 100})
 
 
 async def _po_delivery_statuses(db, po_ids: List[str]) -> Dict[str, str]:
-    """Authoritative SELESAI/SEBAGIAN from parent PO fulfillment (same rules as before)."""
+    """Authoritative SELESAI/SEBAGIAN from parent PO fulfillment (same rules as before).
+
+    Includes multi-source SJ allocations attributed to each PO via source_line_idx.
+    """
     po_statuses: Dict[str, str] = {}
     if not po_ids:
         return po_statuses
@@ -1211,24 +1969,23 @@ async def _po_delivery_statuses(db, po_ids: List[str]) -> Dict[str, str]:
         o["id"]: o
         async for o in db.orders.find({"id": {"$in": po_ids}}, {"_id": 0})
     }
-    pipe = [
-        {"$match": {"po_id": {"$in": po_ids}, "is_cancelled": {"$ne": True}}},
-        {"$unwind": "$line_items"},
-        {"$group": {
-            "_id": {"po_id": "$po_id", "line_idx": "$line_items.line_idx"},
-            "total_qty": {"$sum": {"$ifNull": ["$line_items.qty", "$line_items.quantity"]}},
-        }},
-    ]
-    line_shipped_agg: Dict[str, Dict[int, int]] = {}
-    async for doc in db.sales_deliveries.aggregate(pipe):
-        pid = doc["_id"]["po_id"]
-        l_idx = int(doc["_id"]["line_idx"])
-        line_shipped_agg.setdefault(pid, {})[l_idx] = int(doc["total_qty"] or 0)
+    deliveries = await db.sales_deliveries.find(
+        {
+            "is_cancelled": {"$ne": True},
+            ALLOCATION_COMMIT_PENDING_FIELD: {"$ne": True},
+            "$or": [
+                {"po_id": {"$in": po_ids}},
+                {"source_po_ids": {"$in": po_ids}},
+                {"line_items.source_po_id": {"$in": po_ids}},
+            ],
+        },
+        {"_id": 0},
+    ).to_list(5000)
 
     for pid, ord_doc in orders_map.items():
         raw_lines = ord_doc.get("line_items") or []
         tot_ord = sum(int(l.get("quantity") or 0) for l in raw_lines)
-        shipped_map = line_shipped_agg.get(pid, {})
+        shipped_map = shipped_qty_by_source_line(deliveries, pid)
         tot_ship = sum(shipped_map.values())
         all_fulfilled = len(raw_lines) > 0 and all(
             shipped_map.get(idx, 0) >= int(l.get("quantity") or 0)
@@ -1277,12 +2034,24 @@ async def list_sales_deliveries(
     if size > DELIVERY_PAGE_SIZE_MAX:
         raise HTTPException(400, "Halaman atau ukuran halaman tidak valid.")
 
-    query: dict = {"is_cancelled": {"$ne": True}}
+    # Operational list only — provisional allocation_commit_pending excluded.
+    query: dict = {
+        "is_cancelled": {"$ne": True},
+        ALLOCATION_COMMIT_PENDING_FIELD: {"$ne": True},
+    }
+    and_clauses: List[dict] = []
     if branch_query:
-        query["$and"] = [branch_query]
+        and_clauses.append(branch_query)
 
     if po_id and po_id.strip():
-        query["po_id"] = po_id.strip()
+        pid = po_id.strip()
+        and_clauses.append({
+            "$or": [
+                {"po_id": pid},
+                {"source_po_ids": pid},
+                {"line_items.source_po_id": pid},
+            ]
+        })
 
     created_by_key = str(created_by or "").strip()
     if created_by_key:
@@ -1290,14 +2059,19 @@ async def list_sales_deliveries(
 
     if q and q.strip():
         needle = re.escape(q.strip())
-        query["$or"] = [
-            {"sj_number": {"$regex": needle, "$options": "i"}},
-            {"po_number": {"$regex": needle, "$options": "i"}},
-            {"customer": {"$regex": needle, "$options": "i"}},
-            {"outlet": {"$regex": needle, "$options": "i"}},
-            {"recipient": {"$regex": needle, "$options": "i"}},
-            {"sales": {"$regex": needle, "$options": "i"}},
-        ]
+        and_clauses.append({
+            "$or": [
+                {"sj_number": {"$regex": needle, "$options": "i"}},
+                {"po_number": {"$regex": needle, "$options": "i"}},
+                {"customer": {"$regex": needle, "$options": "i"}},
+                {"outlet": {"$regex": needle, "$options": "i"}},
+                {"recipient": {"$regex": needle, "$options": "i"}},
+                {"sales": {"$regex": needle, "$options": "i"}},
+                {"source_po_ids": {"$regex": needle, "$options": "i"}},
+            ]
+        })
+    if and_clauses:
+        query["$and"] = and_clauses
 
     light_proj = {
         "_id": 0,
@@ -1400,27 +2174,100 @@ async def list_sales_delivery_filter_options(db, branch_query=None) -> Dict[str,
 
 
 async def get_sales_delivery_detail(db, delivery_id: str) -> Dict[str, Any]:
-    """Get single sales delivery with its PO snapshot and all related shipments."""
+    """Get single sales delivery with its PO snapshot and all related shipments.
+
+    Provisional pending SJ are fail-closed (not returned as official detail).
+    """
     did = str(delivery_id or "").strip()
-    delivery = await db.sales_deliveries.find_one({"id": did}, {"_id": 0})
-    if not delivery:
-        delivery = await db.sales_deliveries.find_one({"sj_number": did}, {"_id": 0})
-    if not delivery:
-        raise HTTPException(404, f"Pengiriman Pesanan '{delivery_id}' tidak ditemukan.")
+    delivery = await require_operational_sales_delivery(db, did, attempt_reconcile=True)
+
+    # Read-time legacy normalization — do not rewrite stored docs.
+    normalized_alloc = normalize_delivery_source_allocations(delivery)
+    delivery["source_allocations"] = normalized_alloc
+    delivery["source_po_ids"] = delivery_source_po_ids(delivery)
+    delivery["is_multi_source"] = is_multi_source_delivery(delivery)
 
     po_id = delivery.get("po_id")
     po_summary = await get_po_delivery_summary(db, po_id)
     delivery["status"] = po_summary.get("delivery_status") or "SELESAI"
 
-    # All deliveries for this PO to display complete multi-shipment history
+    source_summaries = []
+    orders_by_id: Dict[str, dict] = {}
+    for src_id in delivery["source_po_ids"]:
+        try:
+            src_summary = await get_po_delivery_summary(db, src_id)
+            source_summaries.append({
+                "po_id": src_id,
+                "po_number": src_summary.get("po_number"),
+                "customer": src_summary.get("customer"),
+                "total_ordered": src_summary.get("total_ordered"),
+                "total_shipped": src_summary.get("total_shipped"),
+                "total_remaining": src_summary.get("total_remaining"),
+                "delivery_status": src_summary.get("delivery_status"),
+                "allocated_on_this_sj": sum(
+                    int(a.get("allocated_qty") or 0)
+                    for a in normalized_alloc
+                    if str(a.get("source_po_id") or "") == str(src_id)
+                ),
+            })
+        except HTTPException:
+            continue
+        order_doc = await db.orders.find_one({"id": src_id}, {"_id": 0})
+        if order_doc:
+            orders_by_id[src_id] = order_doc
+
+    slice_fulfillment = assess_multi_source_slice_fulfillment(delivery, orders_by_id)
+
+    # All deliveries for primary PO to display complete multi-shipment history
     all_deliveries = await db.sales_deliveries.find(
-        {"po_id": po_id, "is_cancelled": {"$ne": True}},
+        active_deliveries_query_for_po(str(po_id)),
         {"_id": 0}
     ).sort("shipment_index", 1).to_list(100)
+
+    oneshot = None
+    try:
+        from services.sales_delivery_fulfillment import assess_oneshot_capabilities
+        oneshot = await assess_oneshot_capabilities(db, str(delivery.get("id") or did))
+        # Prefer freshly computed slice from capability (same helper).
+        if isinstance(oneshot.get("slice_fulfillment"), dict):
+            slice_fulfillment = oneshot["slice_fulfillment"]
+    except Exception:
+        oneshot = None
+
+    related_invoices = []
+    relation_history = []
+    try:
+        from services.sales_document_relations import (
+            related_invoices_for_sj,
+            build_relation_history_events,
+        )
+        related_invoices = await related_invoices_for_sj(db, str(delivery.get("id") or did))
+        primary_order = orders_by_id.get(str(po_id)) if po_id else None
+        relation_history = build_relation_history_events(
+            order=primary_order,
+            delivery=delivery,
+        )
+    except Exception:
+        related_invoices = []
+        relation_history = []
+
+    delivery["fulfillment_last_status"] = (
+        (oneshot or {}).get("fulfillment_last_status")
+        or delivery.get("fulfillment_last_status")
+    )
+    delivery["fulfillment_commit_pending"] = bool(
+        (oneshot or {}).get("fulfillment_commit_pending")
+        or delivery.get("fulfillment_commit_pending")
+    )
 
     return {
         "delivery": delivery,
         "po_summary": po_summary,
+        "source_po_summaries": source_summaries,
+        "slice_fulfillment": slice_fulfillment,
+        "oneshot_fulfillment": oneshot,
+        "related_invoices": related_invoices,
+        "relation_history": relation_history,
         "all_po_deliveries": all_deliveries,
     }
 

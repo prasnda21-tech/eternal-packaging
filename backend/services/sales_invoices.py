@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from fastapi import HTTPException
@@ -787,31 +787,58 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
     - Rejection of negative / malformed prices or discounts or PPN
     - Duplicate submission protection via idempotency_key or internal locks
     - Zero mutation on PO or master collections
+
+    Model C: optional ``source_mode`` ``po``|``sj`` with multi document ids.
+    One mode per request. Legacy single ``po_id`` remains the default path.
     """
+    source_mode = str(payload.get("source_mode") or "").strip().lower()
+    source_po_ids = [
+        str(x).strip() for x in (payload.get("source_po_ids") or []) if str(x).strip()
+    ]
+    source_sj_ids = [
+        str(x).strip() for x in (payload.get("source_sj_ids") or []) if str(x).strip()
+    ]
+    if source_mode in ("po", "sj") or len(source_po_ids) > 1 or source_sj_ids:
+        return await create_flexible_sales_invoice(db, payload, user)
+
     po_id = str(payload.get("po_id") or "").strip()
     if not po_id:
         raise HTTPException(400, "ID Pesanan Penjualan (po_id) wajib diisi.")
 
     from services.operational_branch import require_document_branch
-    branch_doc = await db.orders.find_one({"id": po_id}, {"_id": 0})
-    if not branch_doc:
-        branch_doc = await db.orders.find_one({"po_number": po_id}, {"_id": 0})
-    if branch_doc:
-        await require_document_branch(db, user, branch_doc)
+    order = await db.orders.find_one({"id": po_id}, {"_id": 0})
+    if not order:
+        order = await db.orders.find_one({"po_number": po_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, f"Pesanan Penjualan (PO) '{po_id}' tidak ditemukan.")
+    await require_document_branch(db, user, order)
+    if order.get("cancelled"):
+        raise HTTPException(400, "Pesanan Penjualan ini sudah dibatalkan.")
+
+    from services.sales_invoice_create_idempotency import (
+        begin_idempotent_create,
+        bind_idempotent_create_invoice,
+        resolve_duplicate_key_invoice,
+        stamp_invoice_fingerprint,
+    )
+
+    existing_idem, idempotency_key, create_fingerprint = await begin_idempotent_create(
+        db, payload, user
+    )
+    if existing_idem:
+        await require_document_branch(db, user, existing_idem)
+        return existing_idem
+    idempotency_key = str(idempotency_key or payload.get("idempotency_key") or "").strip()
+
     async with _get_invoice_lock():
-        idempotency_key = str(payload.get("idempotency_key") or "").strip()
-        if idempotency_key:
+        if idempotency_key and not create_fingerprint:
             existing_by_key = await db.sales_invoices.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
             if existing_by_key:
                 await require_document_branch(db, user, existing_by_key)
                 return existing_by_key
 
-        order = await db.orders.find_one({"id": po_id}, {"_id": 0})
-        if not order:
-            order = await db.orders.find_one({"po_number": po_id}, {"_id": 0})
-        if not order:
-            raise HTTPException(404, f"Pesanan Penjualan (PO) '{po_id}' tidak ditemukan.")
-
+        # Re-read order inside lock for remaining qty.
+        order = await db.orders.find_one({"id": order["id"]}, {"_id": 0}) or order
         if order.get("cancelled"):
             raise HTTPException(400, "Pesanan Penjualan ini sudah dibatalkan.")
 
@@ -884,9 +911,14 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
             authoritative_subtotal += line_subtotal
             total_invoice_qty += invoice_qty
 
+            from services.sales_invoice_allocations import new_invoice_line_id
             calculated_lines.append({
+                "invoice_line_id": new_invoice_line_id(),
                 "line_idx": l_idx,
                 "line_id": p_line["line_id"],
+                "source_po_id": preview["po_id"],
+                "source_po_line_id": p_line["line_id"],
+                "source_po_line_idx": l_idx,
                 "item_name": p_line["item_name"],
                 "item_code": p_line["item_code"],
                 "color": p_line["color"],
@@ -965,6 +997,9 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
             "invoice_number": invoice_number,
             "invoice_index": invoice_index,
             "idempotency_key": idempotency_key or None,
+            "source_mode": "po",
+            "source_po_ids": [preview["po_id"]],
+            "is_multi_source": False,
             "po_id": preview["po_id"],
             "po_number": preview["po_number"],
             "order_date": preview["order_date"],
@@ -1006,14 +1041,26 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
         if order_branch_id.isdigit():
             invoice_doc["branch_id"] = order_branch_id
 
+        stamp_invoice_fingerprint(invoice_doc, create_fingerprint)
+        from services.sales_invoice_allocations import persist_invoice_with_billing_claims
         try:
-            await db.sales_invoices.insert_one(invoice_doc)
+            await persist_invoice_with_billing_claims(db, invoice_doc)
         except DuplicateKeyError:
             if idempotency_key:
-                existing = await db.sales_invoices.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
+                existing = await resolve_duplicate_key_invoice(
+                    db, idempotency_key=idempotency_key, fingerprint=create_fingerprint
+                )
                 if existing:
                     return existing
             raise HTTPException(409, "Faktur Penjualan duplikat terdeteksi.")
+
+        if idempotency_key and create_fingerprint:
+            await bind_idempotent_create_invoice(
+                db,
+                idempotency_key=idempotency_key,
+                fingerprint=create_fingerprint,
+                invoice_id=invoice_id,
+            )
 
         invoice_doc.pop("_id", None)
         await attach_invoice_accounting_fields(db, [invoice_doc])
@@ -1025,9 +1072,327 @@ async def create_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[
         return invoice_doc
 
 
+async def create_flexible_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+    """Model C create: one source_mode per request (po | sj), possibly multi documents."""
+    from services.customer_identity import extract_stable_customer_id
+    from services.operational_branch import document_branch, require_document_branch
+    from services.sales_delivery_allocations import (
+        normalize_delivery_source_allocations,
+        require_operational_sales_delivery,
+    )
+    from services.sales_invoice_allocations import (
+        derive_combined_invoice_number,
+        get_po_line_invoiceable_remaining,
+        new_invoice_line_id,
+        validate_orders_invoice_merge_compatible,
+    )
+    from services.sales_invoice_dates import SalesInvoiceDateError, parse_sales_invoice_date
+
+    source_mode = str(payload.get("source_mode") or "").strip().lower()
+    source_po_ids = [str(x).strip() for x in (payload.get("source_po_ids") or []) if str(x).strip()]
+    source_sj_ids = [str(x).strip() for x in (payload.get("source_sj_ids") or []) if str(x).strip()]
+    if source_mode not in ("po", "sj"):
+        if source_sj_ids:
+            source_mode = "sj"
+        else:
+            source_mode = "po"
+    if source_mode == "po" and source_sj_ids:
+        raise HTTPException(400, "Mode PO tidak boleh mencampur source_sj_ids dalam satu request.")
+    if source_mode == "sj" and not source_sj_ids:
+        raise HTTPException(400, "Mode SJ memerlukan source_sj_ids.")
+
+    input_lines = payload.get("lines") or payload.get("line_items") or []
+    if not input_lines:
+        raise HTTPException(400, "Baris Faktur wajib diisi untuk mode multi-sumber.")
+
+    orders_by_id: Dict[str, dict] = {}
+    deliveries_by_id: Dict[str, dict] = {}
+
+    if source_mode == "sj":
+        for sj_id in source_sj_ids:
+            delivery = await require_operational_sales_delivery(db, sj_id, attempt_reconcile=True)
+            deliveries_by_id[str(delivery.get("id"))] = delivery
+            for alloc in normalize_delivery_source_allocations(delivery):
+                pid = str(alloc.get("source_po_id") or "").strip()
+                if pid and pid not in orders_by_id:
+                    order = await db.orders.find_one({"id": pid}, {"_id": 0})
+                    if not order:
+                        raise HTTPException(404, f"PO sumber SJ '{pid}' tidak ditemukan.")
+                    orders_by_id[pid] = order
+        source_po_ids = list(orders_by_id.keys())
+    else:
+        if not source_po_ids:
+            po_id = str(payload.get("po_id") or "").strip()
+            if po_id:
+                source_po_ids = [po_id]
+        if not source_po_ids:
+            raise HTTPException(400, "Mode PO memerlukan source_po_ids atau po_id.")
+        for pid in source_po_ids:
+            order = await db.orders.find_one({"id": pid}, {"_id": 0})
+            if not order:
+                order = await db.orders.find_one({"po_number": pid}, {"_id": 0})
+            if not order:
+                raise HTTPException(404, f"Pesanan Penjualan '{pid}' tidak ditemukan.")
+            orders_by_id[str(order.get("id"))] = order
+        source_po_ids = list(orders_by_id.keys())
+
+    orders = [orders_by_id[pid] for pid in source_po_ids]
+    validate_orders_invoice_merge_compatible(orders)
+    for order in orders:
+        await require_document_branch(db, user, order)
+
+    # Durable multi-worker ownership AFTER validation, BEFORE billing claims.
+    from services.sales_invoice_create_idempotency import (
+        begin_idempotent_create,
+        bind_idempotent_create_invoice,
+        resolve_duplicate_key_invoice,
+        stamp_invoice_fingerprint,
+    )
+
+    existing_idem, idempotency_key, create_fingerprint = await begin_idempotent_create(
+        db, payload, user
+    )
+    if existing_idem:
+        await require_document_branch(db, user, existing_idem)
+        return existing_idem
+    idempotency_key = str(idempotency_key or payload.get("idempotency_key") or "").strip()
+
+    primary = orders[0]
+    calculated_lines: List[dict] = []
+    authoritative_subtotal = 0.0
+    total_invoice_qty = 0
+
+    for inp in input_lines:
+        if not isinstance(inp, dict):
+            continue
+        try:
+            invoice_qty = int(inp.get("quantity") if inp.get("quantity") is not None else inp.get("invoice_qty") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Kuantitas faktur harus bilangan bulat.")
+        if invoice_qty <= 0:
+            continue
+        source_po_id = str(inp.get("source_po_id") or "").strip()
+        if source_mode == "po" and not source_po_id:
+            source_po_id = source_po_ids[0]
+        if source_po_id not in orders_by_id:
+            raise HTTPException(400, f"source_po_id '{source_po_id}' tidak termasuk dokumen sumber.")
+        order = orders_by_id[source_po_id]
+        try:
+            line_idx = int(inp.get("source_po_line_idx", inp.get("line_idx", 0)))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "source_po_line_idx tidak valid.")
+        order_lines = order.get("line_items") or []
+        if line_idx < 0 or line_idx >= len(order_lines) or not isinstance(order_lines[line_idx], dict):
+            raise HTTPException(400, f"Baris PO {line_idx} tidak ditemukan.")
+        ol = order_lines[line_idx]
+        line_id = str(inp.get("source_po_line_id") or ol.get("line_id") or f"{source_po_id}_line_{line_idx}").strip()
+        ordered_qty = int(ol.get("quantity") or 0)
+        remaining = await get_po_line_invoiceable_remaining(
+            db,
+            source_po_id=source_po_id,
+            source_line_id=line_id,
+            source_line_idx=line_idx,
+            ordered_qty=ordered_qty,
+        )
+        if invoice_qty > remaining:
+            raise HTTPException(
+                409,
+                f"Qty faktur ({invoice_qty}) melebihi sisa invoiceable PO ({remaining}).",
+            )
+
+        source_sj_id = str(inp.get("source_sj_id") or "").strip()
+        sj_line_qty = None
+        if source_mode == "sj":
+            if not source_sj_id or source_sj_id not in deliveries_by_id:
+                raise HTTPException(400, "Setiap baris mode SJ wajib source_sj_id yang valid.")
+            delivery = deliveries_by_id[source_sj_id]
+            matched_alloc = None
+            for alloc in normalize_delivery_source_allocations(delivery):
+                if str(alloc.get("source_po_id")) != source_po_id:
+                    continue
+                if str(alloc.get("source_line_id") or "") == line_id or int(alloc.get("source_line_idx") or -1) == line_idx:
+                    matched_alloc = alloc
+                    break
+            if not matched_alloc:
+                raise HTTPException(400, "Baris tidak ditemukan pada alokasi SJ sumber.")
+            sj_line_qty = int(matched_alloc.get("allocated_qty") or 0)
+            if invoice_qty > sj_line_qty:
+                raise HTTPException(
+                    409,
+                    f"Qty faktur ({invoice_qty}) melebihi qty SJ sumber ({sj_line_qty}).",
+                )
+
+        if ol.get("unit_price") is not None or ol.get("price") is not None:
+            unit_price = float(ol.get("unit_price") if ol.get("unit_price") is not None else ol.get("price"))
+        elif "unit_price" in inp:
+            unit_price = _require_explicit_price(inp.get("unit_price"), f"Harga jual baris {line_idx}")
+        else:
+            raise HTTPException(400, f"Harga jual baris {line_idx} belum tersedia.")
+
+        line_subtotal = round(float(Decimal(str(invoice_qty)) * Decimal(str(unit_price))), 2)
+        authoritative_subtotal += line_subtotal
+        total_invoice_qty += invoice_qty
+        row = {
+            "invoice_line_id": new_invoice_line_id(),
+            "line_idx": line_idx,
+            "line_id": line_id,
+            "source_po_id": source_po_id,
+            "source_po_number": order.get("po_number"),
+            "source_po_line_id": line_id,
+            "source_po_line_idx": line_idx,
+            "item_name": ol.get("name") or ol.get("item_name") or f"Item #{line_idx + 1}",
+            "item_code": ol.get("item_code"),
+            "color": ol.get("color"),
+            "ordered_qty": ordered_qty,
+            "remaining_invoice_qty_before": remaining,
+            "quantity": invoice_qty,
+            "unit": ol.get("unit") or "pcs",
+            "unit_price": unit_price,
+            "line_subtotal": line_subtotal,
+            "line_total": line_subtotal,
+        }
+        if source_sj_id:
+            row["source_sj_id"] = source_sj_id
+            row["source_sj_line_id"] = str(inp.get("source_sj_line_id") or line_id)
+            row["sj_line_qty"] = int(sj_line_qty or invoice_qty)
+        calculated_lines.append(row)
+
+    if total_invoice_qty <= 0 or not calculated_lines:
+        raise HTTPException(400, "Total kuantitas faktur harus lebih besar dari 0.")
+
+    authoritative_subtotal = round(authoritative_subtotal, 2)
+    discount_amount = _parse_non_negative_price(payload.get("discount_amount", 0), "Diskon")
+    if discount_amount > authoritative_subtotal:
+        raise HTTPException(400, "Diskon tidak boleh melebihi subtotal.")
+    after_discount = round(float(Decimal(str(authoritative_subtotal)) - Decimal(str(discount_amount))), 2)
+    ppn_percent = _parse_non_negative_price(payload.get("ppn_percent", 0), "Persentase PPN")
+    ppn_amount = round(float(Decimal(str(after_discount)) * (Decimal(str(ppn_percent)) / Decimal("100"))), 2)
+    other_charges = await normalize_other_charges(db, payload.get("other_charges"))
+    charges_total = float(other_charges_total({"other_charges": other_charges}))
+    grand_total = round(
+        float(Decimal(str(after_discount)) + Decimal(str(ppn_amount)) + Decimal(str(charges_total))),
+        2,
+    )
+
+    raw_term = payload.get("payment_term_days", 0)
+    try:
+        payment_term_days = int(raw_term if raw_term is not None and str(raw_term).strip() != "" else 0)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Termin pembayaran harus berupa angka hari.")
+    if payment_term_days < 0:
+        raise HTTPException(400, "Termin pembayaran tidak boleh negatif.")
+
+    raw_invoice_date = payload.get("invoice_date")
+    if raw_invoice_date is None:
+        inv_dt = datetime.now(timezone.utc).date()
+    elif str(raw_invoice_date).strip() == "":
+        raise HTTPException(400, "Tanggal faktur wajib diisi.")
+    else:
+        try:
+            inv_dt = parse_sales_invoice_date(raw_invoice_date)
+        except SalesInvoiceDateError as exc:
+            raise HTTPException(400, "Tanggal faktur tidak valid.") from exc
+    invoice_date_str = inv_dt.isoformat()
+    due_date_str = (inv_dt + timedelta(days=payment_term_days)).strftime("%Y-%m-%d")
+
+    multi = len(source_po_ids) > 1 or (source_mode == "sj" and len(source_sj_ids) > 1)
+    if multi:
+        invoice_number = derive_combined_invoice_number()
+        while await db.sales_invoices.find_one({"invoice_number": invoice_number}, {"_id": 1}):
+            invoice_number = derive_combined_invoice_number()
+        invoice_index = 1
+    else:
+        existing_invoices_count = await db.sales_invoices.count_documents({"po_id": primary["id"]})
+        invoice_index = existing_invoices_count + 1
+        invoice_number = derive_invoice_number(primary.get("po_number") or "", invoice_index)
+        while await db.sales_invoices.find_one({"invoice_number": invoice_number}, {"_id": 1}):
+            invoice_index += 1
+            invoice_number = derive_invoice_number(primary.get("po_number") or "", invoice_index)
+
+    invoice_id = str(uuid.uuid4())
+    customer = (primary.get("customer") or primary.get("customer_name") or "").strip()
+    invoice_doc = {
+        "id": invoice_id,
+        "invoice_number": invoice_number,
+        "invoice_index": invoice_index,
+        "idempotency_key": idempotency_key or None,
+        "source_mode": source_mode,
+        "source_po_ids": source_po_ids,
+        "source_sj_ids": source_sj_ids if source_mode == "sj" else [],
+        "is_multi_source": multi,
+        "po_id": primary["id"],
+        "po_number": primary.get("po_number"),
+        "customer_id": extract_stable_customer_id(primary),
+        "order_date": primary.get("order_date"),
+        "invoice_date": invoice_date_str,
+        "payment_term_days": payment_term_days,
+        "due_date": due_date_str,
+        "customer": customer,
+        "outlet": (primary.get("outlet") or "").strip(),
+        "recipient": (primary.get("recipient") or "").strip(),
+        "address": (primary.get("address") or "").strip(),
+        "delivery_zone": (primary.get("delivery_zone") or "").strip(),
+        "sales": (primary.get("sales") or "").strip(),
+        "notes": str(payload.get("notes") or "").strip(),
+        "lines": calculated_lines,
+        "total_qty": total_invoice_qty,
+        "subtotal": authoritative_subtotal,
+        "discount_amount": discount_amount,
+        "after_discount": after_discount,
+        "ppn_percent": ppn_percent,
+        "ppn_amount": ppn_amount,
+        "other_charges": other_charges,
+        "other_charges_total": charges_total,
+        "grand_total": grand_total,
+        "paid_total": 0.0,
+        "outstanding_amount": grand_total,
+        "payment_status": "BELUM DIBAYAR",
+        "financial_status": FINANCIAL_DRAFT,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "created_by": {
+            "id": str(user.get("id") or user.get("_id") or ""),
+            "name": str(user.get("name") or user.get("email") or ""),
+            "role": str(user.get("role") or ""),
+        },
+        "operational_branch_id": document_branch(primary),
+    }
+    order_branch_id = str(primary.get("branch_id") or "").strip()
+    if order_branch_id.isdigit():
+        invoice_doc["branch_id"] = order_branch_id
+
+    stamp_invoice_fingerprint(invoice_doc, create_fingerprint)
+    from services.sales_invoice_allocations import persist_invoice_with_billing_claims
+    try:
+        await persist_invoice_with_billing_claims(db, invoice_doc)
+    except DuplicateKeyError:
+        if idempotency_key:
+            existing = await resolve_duplicate_key_invoice(
+                db, idempotency_key=idempotency_key, fingerprint=create_fingerprint
+            )
+            if existing:
+                return existing
+        raise HTTPException(409, "Faktur Penjualan duplikat terdeteksi.")
+
+    if idempotency_key and create_fingerprint:
+        await bind_idempotent_create_invoice(
+            db,
+            idempotency_key=idempotency_key,
+            fingerprint=create_fingerprint,
+            invoice_id=invoice_id,
+        )
+
+    invoice_doc.pop("_id", None)
+    await attach_invoice_accounting_fields(db, [invoice_doc])
+    return invoice_doc
+
+
 async def list_sales_invoices(db, q: Optional[str] = None, po_id: Optional[str] = None, branch_query: Optional[dict] = None) -> List[Dict[str, Any]]:
     """List all sales invoices with payment derived fields."""
+    from services.sales_invoice_allocations import BILLING_COMMIT_PENDING_FIELD
     filters: Dict[str, Any] = {"$and": [branch_query]} if branch_query else {}
+    # Operational list — provisional billing_commit_pending excluded.
+    filters[BILLING_COMMIT_PENDING_FIELD] = {"$ne": True}
     if po_id:
         filters["po_id"] = str(po_id)
     if q and str(q).strip():
@@ -1320,6 +1685,8 @@ async def query_sales_invoices(
     )
     scope_clause = _scope_clause(mongo_scope, incomplete_cancel_ids=hold_ids)
     clauses: List[Dict[str, Any]] = [branch_query] if branch_query else []
+    from services.sales_invoice_allocations import BILLING_COMMIT_PENDING_FIELD
+    clauses.append({BILLING_COMMIT_PENDING_FIELD: {"$ne": True}})
     if scope_clause:
         clauses.append(scope_clause)
     if po_id:
@@ -1507,11 +1874,22 @@ async def require_proforma_invoice(db, invoice_id: str) -> Dict[str, Any]:
 
 async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     """Fetch detail of a single sales invoice with live payment derived fields and receipt list."""
+    from services.sales_invoice_allocations import (
+        invoice_is_billing_pending,
+        reconcile_pending_orphan_invoice,
+        require_operational_sales_invoice,
+    )
+
     inv = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
     if not inv:
         inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
     if not inv:
         raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+    if invoice_is_billing_pending(inv) or inv.get("billing_recovery_fence") is True:
+        # Attempt safe recovery; provisional invoices are not operational detail.
+        await reconcile_pending_orphan_invoice(db, str(inv.get("id") or invoice_id))
+        inv = await require_operational_sales_invoice(db, str(inv.get("id") or invoice_id), attempt_reconcile=False)
 
     # Fetch live receipts for exact invoice
     receipts = await db.sales_receipts.find({"invoice_id": inv["id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
@@ -1521,6 +1899,19 @@ async def get_sales_invoice_detail(db, invoice_id: str) -> Dict[str, Any]:
     inv["receipts"] = receipts
     await attach_invoice_accounting_fields(db, [inv])
     await _attach_invoice_qty_limits(db, inv)
+    # Stage 4: read-only source_mode + relation history (no mutation of legacy docs).
+    mode = str(inv.get("source_mode") or "").strip().lower()
+    if mode not in ("po", "sj"):
+        mode = "sj" if (inv.get("source_sj_ids") or []) else "po"
+    inv["source_mode"] = mode
+    inv["is_multi_source"] = bool(inv.get("is_multi_source")) or (
+        len(inv.get("source_po_ids") or []) > 1 or len(inv.get("source_sj_ids") or []) > 1
+    )
+    try:
+        from services.sales_document_relations import build_relation_history_events
+        inv["relation_history"] = build_relation_history_events(invoice=inv)
+    except Exception:
+        inv["relation_history"] = []
     return inv
 
 
@@ -1555,33 +1946,60 @@ def _parse_draft_invoice_qty(raw: Any) -> int:
     return qty
 
 
-def _explicit_draft_qty_by_line(existing_lines: List[dict], input_lines: List[dict]) -> Dict[int, int]:
+def _invoice_line_match_key(line: dict, *, invoice: Optional[dict] = None, fallback_idx: int = 0) -> Tuple[str, ...]:
+    """Stable match key for draft edit. Prefer invoice_line_id, then source identity, else line_idx.
+
+    Source identity requires explicit source_po_line_id (Model C). Do not treat legacy
+    line_id as source identity — that would break line_idx-only revision payloads on
+    single-PO invoices that still store PO line_id without source_* fields.
+    """
+    if not isinstance(line, dict):
+        return ("idx", str(fallback_idx))
+    iid = str(line.get("invoice_line_id") or "").strip()
+    if iid:
+        return ("iid", iid)
+    po = str(line.get("source_po_id") or (invoice or {}).get("po_id") or "").strip()
+    lid = str(line.get("source_po_line_id") or "").strip()
+    sj = str(line.get("source_sj_id") or "").strip()
+    if po and lid:
+        return ("src", po, lid, sj)
+    try:
+        line_idx = int(line.get("line_idx", fallback_idx))
+    except (TypeError, ValueError):
+        line_idx = fallback_idx
+    return ("idx", str(line_idx))
+
+
+def _explicit_draft_qty_by_line(
+    existing_lines: List[dict],
+    input_lines: List[dict],
+    *,
+    invoice: Optional[dict] = None,
+) -> Dict[Tuple[str, ...], int]:
     """Qty explicitly sent for an existing invoice line. Missing qty keeps the stored value.
 
-    Duplicate line_idx and unknown lines are rejected. This does not insert PO lines.
+    Matches by invoice_line_id / source identity when present so multi-SJ rows that share
+    the same source line_idx do not collide. Duplicate keys and unknown lines are rejected.
     """
-    existing_idx = {
-        int(el.get("line_idx", idx))
+    existing_keys = {
+        _invoice_line_match_key(el, invoice=invoice, fallback_idx=idx)
         for idx, el in enumerate(existing_lines or [])
+        if isinstance(el, dict)
     }
     seen = set()
-    requested: Dict[int, int] = {}
+    requested: Dict[Tuple[str, ...], int] = {}
     for fallback, inp in enumerate(input_lines or []):
         if not isinstance(inp, dict):
             raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
-        raw_idx = inp.get("line_idx", fallback)
-        try:
-            line_idx = int(raw_idx)
-        except (TypeError, ValueError):
-            raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
-        if line_idx in seen:
+        key = _invoice_line_match_key(inp, invoice=invoice, fallback_idx=fallback)
+        if key in seen:
             raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
-        seen.add(line_idx)
-        if line_idx not in existing_idx:
+        seen.add(key)
+        if key not in existing_keys:
             raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
         if "quantity" not in inp or inp.get("quantity") in (None, ""):
             continue
-        requested[line_idx] = _parse_draft_invoice_qty(inp.get("quantity"))
+        requested[key] = _parse_draft_invoice_qty(inp.get("quantity"))
     return requested
 
 
@@ -1632,37 +2050,68 @@ async def assert_invoice_qty_within_po(db, invoice: dict, *, finalize: bool = Fa
     Reads the order and other active invoices at call time. Create, draft update,
     and finalize already share the in-process invoice lock, so one worker cannot
     interleave those writes. Separate processes do not share that lock.
+
+    Multi-source invoices resolve capacity per source_po_id so colliding source
+    line_idx values do not borrow another PO's remaining qty.
     """
-    limits = await invoice_line_qty_limits(db, invoice.get("po_id"), invoice.get("id"))
     empty = {"po_qty": 0, "other_active_invoiced_qty": 0, "max_qty": 0}
+    limits_by_po: Dict[str, Dict[int, Dict[str, int]]] = {}
     for idx, line in enumerate(invoice.get("lines") or []):
-        line_idx = int(line.get("line_idx", idx))
+        if not isinstance(line, dict):
+            continue
+        po_id = str(line.get("source_po_id") or invoice.get("po_id") or "").strip()
+        try:
+            line_idx = int(line.get("source_po_line_idx", line.get("line_idx", idx)))
+        except (TypeError, ValueError):
+            line_idx = idx
         try:
             invoice_qty = int(line.get("quantity") or 0)
         except (TypeError, ValueError):
             invoice_qty = 0
-        cap = limits.get(line_idx, empty)
+        if po_id not in limits_by_po:
+            limits_by_po[po_id] = await invoice_line_qty_limits(db, po_id, invoice.get("id"))
+        cap = dict(limits_by_po.get(po_id, {}).get(line_idx, empty))
+        if line.get("sj_line_qty") is not None:
+            try:
+                sj_cap = int(line.get("sj_line_qty") or 0)
+            except (TypeError, ValueError):
+                sj_cap = 0
+            cap["max_qty"] = min(int(cap.get("max_qty") or 0), sj_cap) if sj_cap >= 0 else int(cap.get("max_qty") or 0)
         if invoice_qty > int(cap["max_qty"]):
             raise HTTPException(409, _qty_over_detail(line_idx, invoice_qty, cap, finalize=finalize))
 
 
 async def _attach_invoice_qty_limits(db, invoice: Dict[str, Any]) -> None:
     """Read-only guidance for the draft editor. Not written back to the invoice."""
-    limits = await invoice_line_qty_limits(db, invoice.get("po_id"), invoice.get("id"))
     empty = {"po_qty": 0, "other_active_invoiced_qty": 0, "max_qty": 0}
+    limits_by_po: Dict[str, Dict[int, Dict[str, int]]] = {}
     for idx, line in enumerate(invoice.get("lines") or []):
         if not isinstance(line, dict):
             continue
-        line_idx = int(line.get("line_idx", idx))
-        cap = limits.get(line_idx, empty)
+        po_id = str(line.get("source_po_id") or invoice.get("po_id") or "").strip()
+        try:
+            line_idx = int(line.get("source_po_line_idx", line.get("line_idx", idx)))
+        except (TypeError, ValueError):
+            line_idx = idx
+        if po_id and po_id not in limits_by_po:
+            limits_by_po[po_id] = await invoice_line_qty_limits(db, po_id, invoice.get("id"))
+        cap = dict(limits_by_po.get(po_id, {}).get(line_idx, empty))
         try:
             current_qty = int(line.get("quantity") or 0)
         except (TypeError, ValueError):
             current_qty = 0
+        max_qty = int(cap.get("max_qty") or 0)
+        if line.get("sj_line_qty") is not None:
+            try:
+                sj_cap = int(line.get("sj_line_qty") or 0)
+            except (TypeError, ValueError):
+                sj_cap = 0
+            if sj_cap >= 0:
+                max_qty = min(max_qty, sj_cap) if max_qty else sj_cap
         line["current_qty"] = current_qty
-        line["po_qty"] = cap["po_qty"]
-        line["other_active_invoiced_qty"] = cap["other_active_invoiced_qty"]
-        line["max_qty"] = cap["max_qty"]
+        line["po_qty"] = int(cap.get("po_qty") or line.get("ordered_qty") or 0)
+        line["other_active_invoiced_qty"] = int(cap.get("other_active_invoiced_qty") or 0)
+        line["max_qty"] = max_qty
 
 
 async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
@@ -1694,24 +2143,26 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         existing_lines = inv.get("lines") or []
         input_lines = payload.get("lines") or payload.get("line_items") or []
-        explicit_qty = _explicit_draft_qty_by_line(existing_lines, input_lines)
-        input_by_idx = {}
+        explicit_qty = _explicit_draft_qty_by_line(existing_lines, input_lines, invoice=inv)
+        input_by_key = {}
         seen_input = set()
         for fallback, inp in enumerate(input_lines):
-            line_idx = int(inp.get("line_idx", fallback))
-            if line_idx in seen_input:
+            if not isinstance(inp, dict):
+                raise HTTPException(400, {"code": "FAKTUR_BARIS_TIDAK_DITEMUKAN", "message": MSG_INVOICE_LINE_UNKNOWN})
+            key = _invoice_line_match_key(inp, invoice=inv, fallback_idx=fallback)
+            if key in seen_input:
                 raise HTTPException(400, {"code": "FAKTUR_BARIS_DUPLIKAT", "message": MSG_INVOICE_LINE_DUPLICATE})
-            seen_input.add(line_idx)
-            input_by_idx[line_idx] = inp
+            seen_input.add(key)
+            input_by_key[key] = inp
 
         updated_lines = []
         authoritative_subtotal = 0.0
         total_invoice_qty = 0
 
         for idx, el in enumerate(existing_lines):
-            line_idx = int(el.get("line_idx", idx))
-            if line_idx in explicit_qty:
-                qty = explicit_qty[line_idx]
+            key = _invoice_line_match_key(el, invoice=inv, fallback_idx=idx)
+            if key in explicit_qty:
+                qty = explicit_qty[key]
             else:
                 try:
                     qty = int(el.get("quantity") or 0)
@@ -1720,8 +2171,8 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
             if qty <= 0:
                 raise HTTPException(400, {"code": "FAKTUR_QTY_TIDAK_VALID", "message": MSG_INVOICE_QTY_INVALID})
 
-            if line_idx in input_by_idx and input_by_idx[line_idx].get("unit_price") not in (None, ""):
-                raw_price = input_by_idx[line_idx].get("unit_price")
+            if key in input_by_key and input_by_key[key].get("unit_price") not in (None, ""):
+                raw_price = input_by_key[key].get("unit_price")
                 unit_price = _parse_non_negative_price(raw_price, f"Harga satuan '{el.get('item_name')}'")
             else:
                 unit_price = _parse_non_negative_price(el.get("unit_price", 0), f"Harga satuan '{el.get('item_name')}'")
@@ -1741,6 +2192,16 @@ async def update_sales_invoice(db, invoice_id: str, payload: Dict[str, Any], use
 
         authoritative_subtotal = round(authoritative_subtotal, 2)
         await assert_invoice_qty_within_po(db, {**inv, "lines": updated_lines}, finalize=False)
+
+        from services.sales_invoice_allocations import (
+            assert_invoice_not_provisional,
+            rebalance_invoice_billing_allocations,
+        )
+        assert_invoice_not_provisional(inv)
+        # Rebalance billing counters BEFORE persisting new qty (all-or-nothing).
+        await rebalance_invoice_billing_allocations(
+            db, inv, existing_lines, updated_lines
+        )
 
         raw_disc = payload.get("discount_amount") if "discount_amount" in payload else inv.get("discount_amount", 0)
         discount_amount = _parse_non_negative_price(raw_disc, "Diskon")
@@ -1826,6 +2287,8 @@ async def delete_sales_invoice(db, invoice_id: str, user: dict) -> dict:
     if block:
         raise HTTPException(block[0], block[1])
 
+    from services.sales_invoice_allocations import release_invoice_billing_allocations
+    await release_invoice_billing_allocations(db, inv)
     inv_number = inv.get("invoice_number", inv["id"])
     await db.sales_invoices.delete_one({"id": inv["id"]})
     return {"deleted": True, "invoice_number": inv_number, "id": inv["id"]}
@@ -1861,6 +2324,9 @@ async def bulk_delete_sales_invoices(db, ids: list, user: dict) -> dict:
         raise HTTPException(400, {"message": "Tidak dapat menghapus. Beberapa faktur memiliki dependensi.", "blockers": blockers})
 
     if to_delete:
+        from services.sales_invoice_allocations import release_invoice_billing_allocations
+        for inv in to_delete:
+            await release_invoice_billing_allocations(db, inv)
         delete_ids = [inv["id"] for inv in to_delete]
         await db.sales_invoices.delete_many({"id": {"$in": delete_ids}})
 
@@ -1878,6 +2344,9 @@ async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, A
             inv = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
         if not inv:
             raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+        from services.sales_invoice_allocations import assert_invoice_not_provisional
+        assert_invoice_not_provisional(inv)
 
         status = effective_financial_status(inv)
         if status == FINANCIAL_CANCELLED:
@@ -1911,6 +2380,75 @@ async def finalize_sales_invoice(db, invoice_id: str, user: dict) -> Dict[str, A
                 raise HTTPException(409, "Faktur yang dibatalkan tidak dapat difinalisasi.")
             raise HTTPException(409, "Finalisasi faktur gagal karena perubahan bersamaan.")
         return await get_sales_invoice_detail(db, inv["id"])
+
+
+async def _raise_finalize_after_create_failure(db, invoice: Dict[str, Any], exc: HTTPException) -> None:
+    """Fail-closed: keep draft identity; never advertise financial success."""
+    invoice_id = str((invoice or {}).get("id") or "").strip()
+    detail_doc = invoice
+    if invoice_id:
+        try:
+            detail_doc = await get_sales_invoice_detail(db, invoice_id)
+        except Exception:
+            detail_doc = invoice
+    raw = exc.detail
+    if isinstance(raw, dict):
+        body = dict(raw)
+        body.setdefault("message", raw.get("message") or "Finalisasi faktur gagal.")
+    else:
+        body = {"message": str(raw or "Finalisasi faktur gagal.")}
+    body["invoice"] = detail_doc
+    body["code"] = body.get("code") or "FINALIZE_AFTER_CREATE_FAILED"
+    body["finalize_after_create"] = False
+    raise HTTPException(int(exc.status_code or 409), body) from exc
+
+
+async def create_and_finalize_sales_invoice(db, payload: Dict[str, Any], user: dict) -> Dict[str, Any]:
+    """Create via existing lifecycle, then finalize. Idempotent retry-safe.
+
+    Does NOT post a journal. Does NOT set payment_status to LUNAS.
+    Uses create_sales_invoice (legacy + Model C) then finalize_sales_invoice.
+    On finalize failure after create, preserves draft identity for recovery.
+    """
+    created = await create_sales_invoice(db, payload, user)
+    status = effective_financial_status(created)
+    if status == FINANCIAL_FINALIZED:
+        return await get_sales_invoice_detail(db, created["id"])
+    if status == FINANCIAL_CANCELLED:
+        raise HTTPException(409, "Faktur yang dibatalkan tidak dapat difinalisasi.")
+    try:
+        return await finalize_sales_invoice(db, created["id"], user)
+    except HTTPException as exc:
+        await _raise_finalize_after_create_failure(db, created, exc)
+        raise  # pragma: no cover
+
+
+async def update_draft_and_finalize_sales_invoice(
+    db, invoice_id: str, payload: Dict[str, Any], user: dict
+) -> Dict[str, Any]:
+    """Update draft then finalize in one orchestration. Finalized revision stays revision-only.
+
+    Legacy drafts: Simpan Perubahan also finalizes.
+    Already-finalized invoices: update_sales_invoice routes to edit revision when enabled;
+    this wrapper does not force a second finalize.
+    """
+    existing = await db.sales_invoices.find_one({"id": str(invoice_id)}, {"_id": 0})
+    if not existing:
+        existing = await db.sales_invoices.find_one({"invoice_number": str(invoice_id)}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, f"Faktur Penjualan '{invoice_id}' tidak ditemukan.")
+
+    was_draft = effective_financial_status(existing) == FINANCIAL_DRAFT
+    updated = await update_sales_invoice(db, invoice_id, payload, user)
+    if not was_draft:
+        return updated
+    if effective_financial_status(updated) == FINANCIAL_FINALIZED:
+        return updated
+    try:
+        return await finalize_sales_invoice(db, updated["id"], user)
+    except HTTPException as exc:
+        await _raise_finalize_after_create_failure(db, updated, exc)
+        raise  # pragma: no cover
 
 
 async def cancel_sales_invoice(
@@ -1996,6 +2534,14 @@ async def cancel_sales_invoice(
                 409,
                 "Faktur tidak dapat dibatalkan karena sudah memiliki Penerimaan Penjualan.",
             )
+        # Free shared billing capacity exactly once (idempotent).
+        try:
+            from services.sales_invoice_allocations import release_invoice_billing_allocations
+            cancelled_doc = await db.sales_invoices.find_one({"id": inv["id"]}, {"_id": 0})
+            await release_invoice_billing_allocations(db, cancelled_doc or claimed or inv)
+        except Exception:
+            logging.getLogger(__name__).exception("release invoice billing on cancel failed")
+            raise
         return await get_sales_invoice_detail(db, inv["id"])
 
 

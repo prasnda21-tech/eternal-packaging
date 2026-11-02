@@ -55,6 +55,150 @@
 .production-compact :is(h1,.page-heading h1,.paint-header h1,.po-hero-customer) {
   font-size: var(--production-title); line-height: 1.25; letter-spacing: 0; text-transform: none;
 }
+/* Flexible Document — Relasi Dokumen panel (PO Detail) */
+.po-doc-relations {
+  padding: 14px 16px 16px;
+  overflow-x: hidden;
+}
+.po-doc-relations__title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.po-doc-relations__kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+}
+@media (max-width: 1366px) {
+  .po-doc-relations__kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1280px) {
+  .po-doc-relations__kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.po-doc-relations__kpi {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.po-doc-relations__kpi-label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.po-doc-relations__kpi-value {
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.po-doc-relations__block {
+  margin: 0 0 14px;
+}
+.po-doc-relations__block-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.po-doc-relations__table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+.po-doc-relations__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: auto;
+}
+.po-doc-relations__table th,
+.po-doc-relations__table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  vertical-align: middle;
+}
+.po-doc-relations__table th {
+  background: #f1f5f9;
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+  white-space: nowrap;
+}
+.po-doc-relations__table td.is-num,
+.po-doc-relations__table th.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.po-doc-relations__table tbody tr:last-child td {
+  border-bottom: none;
+}
+.po-doc-relations__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.po-doc-relations__badge.is-alloc {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+.po-doc-relations__badge.is-partial {
+  background: #fff7ed;
+  color: #c2410c;
+  border-color: #fdba74;
+}
+.po-doc-relations__badge.is-muted {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #e2e8f0;
+}
+.po-doc-relations__badge.is-multi {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.po-doc-relations__badge.is-danger {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+.po-doc-relations__history {
+  font-size: 12px;
+  margin: 0;
+}
+.po-doc-relations__history summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #334155;
+}
+
 .production-compact :is(h2,h3,.panel-head h3,.qty-ops-head h3) {
   font-size: 14px; line-height: 1.3; letter-spacing: 0; text-transform: none;
 }

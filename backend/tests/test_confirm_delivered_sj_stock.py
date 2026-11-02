@@ -162,8 +162,48 @@ def _as_admin():
     }
 
 
+async def _ensure_operational_sales_deliveries(db, order):
+    """Seed allocation-committed canonical SJ docs for order.shipments.
+
+    confirm-delivered / prepare_confirm_delivered_action fail-close via
+    require_operational_sales_delivery; order.shipments alone are not enough.
+    Cancelled shipment mirrors are seeded as cancelled so the gate stays fail-closed.
+    """
+    if not isinstance(order, dict):
+        return
+    po_id = str(order.get("id") or "").strip()
+    for sh in order.get("shipments") or []:
+        if not isinstance(sh, dict):
+            continue
+        sid = str(sh.get("id") or "").strip()
+        if not sid:
+            continue
+        cancelled = bool(sh.get("cancelled") or sh.get("is_cancelled"))
+        doc = {
+            "id": sid,
+            "sj_number": sh.get("number") or sid,
+            "po_id": po_id,
+            "is_cancelled": cancelled,
+            "status": "BATAL" if cancelled else "SELESAI",
+            "line_items": [
+                {
+                    "line_idx": ln.get("line_idx"),
+                    "line_id": ln.get("line_id"),
+                    "qty": ln.get("qty"),
+                    "source_po_id": po_id,
+                }
+                for ln in (sh.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
+        }
+        await db.sales_deliveries.update_one({"id": sid}, {"$set": doc}, upsert=True)
+
+
 async def _confirm(order_id, shipment_id, action_id="__omit__"):
     _as_admin()
+    order = await server.db.orders.find_one({"id": order_id}, {"_id": 0})
+    if order:
+        await _ensure_operational_sales_deliveries(server.db, order)
     payload = {"shipment_id": shipment_id, "recipient_name": "Penerima Uji"}
     if action_id != "__omit__":
         payload["action_id"] = action_id
@@ -195,8 +235,13 @@ async def test_endpoint_confirms_each_sj_qty_and_retries_without_doubling(mongo)
     assert not state.get("pending_event")
 
     cancelled = await _confirm(order["id"], "sj-cancel", "act-cancel")
-    assert cancelled.status_code == 400, cancelled.text
-    assert "batal" in cancelled.text.lower()
+    # Cancelled SJ is fail-closed: legacy 400 "batal" or operational gate 404.
+    assert cancelled.status_code in (400, 404), cancelled.text
+    assert (
+        "batal" in cancelled.text.lower()
+        or "tidak tersedia" in cancelled.text.lower()
+        or "provisional" in cancelled.text.lower()
+    )
 
     thin = _order("ord-thin")
     thin["delivery_proofs"] = [{"id": "only", "shipment_id": "sj-1"}]
@@ -508,6 +553,7 @@ async def _seed(mongo, order, *, printed=2000, unprinted=4700):
             user={"email": "admin@test.local"},
         )
     await mongo.orders.insert_one(dict(order))
+    await _ensure_operational_sales_deliveries(mongo, order)
 
 
 def _switch_signatures(order, shipment_id):
@@ -1098,6 +1144,7 @@ async def _seed_two_masters(mongo, order):
             user={"email": "admin@test.local"},
         )
     await mongo.orders.insert_one(dict(order))
+    await _ensure_operational_sales_deliveries(mongo, order)
 
 
 async def _holder_count(mongo, action_id):
@@ -1240,6 +1287,7 @@ async def _seed_full_sj(mongo, order_id):
     )
     order = _full_same_master_sj(_order(order_id))
     await mongo.orders.insert_one(dict(order))
+    await _ensure_operational_sales_deliveries(mongo, order)
     return order
 
 

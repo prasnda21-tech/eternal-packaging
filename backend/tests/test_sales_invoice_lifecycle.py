@@ -102,15 +102,86 @@ async def test_new_invoice_is_draft_and_editable():
             assert inv["financial_status"] == "draft"
             assert inv["accounting_posted"] is False
             assert inv.get("after_discount") == inv["subtotal"]
+            line = (inv.get("lines") or [{}])[0]
             res = await client.put(
                 f"/api/sales-invoices/{inv['id']}",
-                json={"discount_amount": 5000, "lines": [{"line_idx": 0, "unit_price": 1000}]},
+                json={
+                    "discount_amount": 5000,
+                    "lines": [{
+                        "invoice_line_id": line.get("invoice_line_id"),
+                        "line_idx": line.get("line_idx", 0),
+                        "line_id": line.get("line_id"),
+                        "unit_price": 1000,
+                    }],
+                },
             )
             assert res.status_code == 200, res.text
             updated = res.json()["invoice"]
             assert updated["discount_amount"] == 5000.0
             assert updated["after_discount"] == 95000.0
             assert updated["financial_status"] == "draft"
+            assert await _journal_counts() == before
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_finalize_on_save_create_and_draft_put():
+    """UI flag finalize_on_save: create→finalized; draft PUT→finalized; no journal; unpaid."""
+    from services.sales_invoices import create_sales_invoice
+
+    po = await _seed_po()
+    _admin()
+    before = await _journal_counts()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            res = await client.post("/api/sales-invoices", json={
+                "po_id": po["id"],
+                "invoice_date": "2026-09-01",
+                "finalize_on_save": True,
+                "lines": [{"line_idx": 0, "quantity": 100, "unit_price": 1000}],
+            })
+            assert res.status_code == 200, res.text
+            inv = res.json()["invoice"]
+            assert inv["financial_status"] == "finalized"
+            assert inv["accounting_posted"] is False
+            assert inv.get("payment_status") == "BELUM DIBAYAR"
+            assert inv.get("finalized_at")
+            mut = await client.put(
+                f"/api/sales-invoices/{inv['id']}",
+                json={"discount_amount": 1, "finalize_on_save": True},
+            )
+            assert mut.status_code == 409
+
+        draft = await create_sales_invoice(
+            server.db,
+            {
+                "po_id": (await _seed_po())["id"],
+                "invoice_date": "2026-09-01",
+                "lines": [{"line_idx": 0, "quantity": 100, "unit_price": 1000}],
+            },
+            {"id": "u1", "name": "Admin", "role": "admin", "email": "admin@eternalpackaging.com"},
+        )
+        dline = (draft.get("lines") or [{}])[0]
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            put = await client.put(
+                f"/api/sales-invoices/{draft['id']}",
+                json={
+                    "discount_amount": 5000,
+                    "finalize_on_save": True,
+                    "lines": [{
+                        "invoice_line_id": dline.get("invoice_line_id"),
+                        "line_idx": dline.get("line_idx", 0),
+                        "line_id": dline.get("line_id"),
+                        "unit_price": 1000,
+                    }],
+                },
+            )
+            assert put.status_code == 200, put.text
+            updated = put.json()["invoice"]
+            assert updated["financial_status"] == "finalized"
+            assert updated["discount_amount"] == 5000.0
+            assert updated.get("payment_status") == "BELUM DIBAYAR"
             assert await _journal_counts() == before
     finally:
         app.dependency_overrides.pop(current_user, None)

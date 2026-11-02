@@ -86,8 +86,26 @@ describe("Package B2 — five-tab + lifecycle UI contracts", () => {
     expect(ensureIdempotencyIntent(ref, "a", { prefix: "x" })).toBe(key);
   });
 
-  test("flag-off legacy parity: finalize/post/reverse preserved; auto success needs financial_complete", () => {
-    expect(faktur).toMatch(/finalizeSalesInvoice/);
+  test("one-click Simpan finalizes; post/reverse preserved; auto success needs financial_complete", () => {
+    // Create save uses finalize_on_save — no separate Finalisasi Invoice control.
+    expect(faktur).toMatch(/finalize_on_save:\s*true/);
+    expect(faktur).toMatch(/buildFlexibleInvoicePayload/);
+    expect(faktur).not.toMatch(/finalizeSalesInvoice\(/);
+    expect(faktur).not.toMatch(/btn-finalize-invoice/);
+    expect(faktur).not.toMatch(/Finalisasi Invoice/);
+    // Sync double-submit guard + busy disable; key cleared only after success.
+    expect(faktur).toMatch(/createSubmitLockRef/);
+    expect(faktur).toMatch(/if \(createSubmitLockRef\.current \|\| formBusy\) return/);
+    expect(faktur).toMatch(/clearIdempotencyIntent\(createIdempotencyRef\)/);
+    // Finalize failure must surface as error, never success toast.
+    expect(faktur).toMatch(/interpretAutoLifecycleResponse/);
+    expect(faktur).toMatch(/FINALIZE_AFTER_CREATE_FAILED/);
+    expect(faktur).toMatch(/Gagal finalisasi setelah menyimpan/);
+    expect(faktur).toMatch(/berhasil disimpan dan difinalisasi/);
+    // Payment stays separate from financial finalize.
+    expect(faktur).toMatch(/detail-payment-status/);
+    expect(faktur).toMatch(/payment_status/);
+    // Accounting post/reverse remain available after finalize.
     expect(faktur).toMatch(/postSalesInvoiceAccounting/);
     expect(faktur).toMatch(/reverseSalesInvoiceAccounting/);
     expect(faktur).toMatch(/btn-post-accounting/);
@@ -99,6 +117,14 @@ describe("Package B2 — five-tab + lifecycle UI contracts", () => {
       financial_complete: true,
       auto_accounting_status: "complete",
     }).ok).toBe(true);
+    expect(interpretAutoLifecycleResponse({}, {
+      httpErrorBody: {
+        code: "FINALIZE_AFTER_CREATE_FAILED",
+        financial_complete: false,
+        message: "Gagal finalisasi setelah menyimpan",
+        invoice: { id: "draft-1", financial_status: "draft" },
+      },
+    }).ok).toBe(false);
     expect(interpretBusinessCancelResponse({}, {
       statusCode: 409,
       httpErrorBody: "Pembatalan bisnis faktur belum diaktifkan.",
