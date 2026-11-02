@@ -306,7 +306,8 @@ export default function CrmDailyReportForm() {
   const applySalesFromOrder = (order, prev) => {
     const verified = Boolean(order.sales_verified && (order.sales_user_id || order.sales_label_resolved));
     const catalog = meta?.sales_catalog || [];
-    const next = { ...prev };
+    // Always clear stale Master before applying PO Sales identity (#718).
+    const next = { ...prev, sales_master_id: "" };
     if (verified) {
       next.sales_user_id = order.sales_user_id || "";
       next.sales_label = order.sales_label_resolved || order.sales || "";
@@ -333,16 +334,15 @@ export default function CrmDailyReportForm() {
       setSalesQ(rawLabel);
       return next;
     }
+    // Blank PO Sales — clear prior Sales so unrelated Master is not shown (#718).
     next.sales_locked_from_po = false;
     next.sales_note = "PO tidak memiliki Sales terverifikasi; pilih Sales dari daftar";
     next.sales_master_id = "";
-    if (prev.sales_source === SALES_SOURCE_MANUAL || prev.sales_choice === SALES_MANUAL_CHOICE) {
-      next.sales_source = "";
-      next.sales_choice = "";
-      next.sales_user_id = "";
-      next.sales_label = "";
-      setSalesQ("");
-    }
+    next.sales_source = "";
+    next.sales_choice = "";
+    next.sales_user_id = "";
+    next.sales_label = "";
+    setSalesQ("");
     return next;
   };
 
@@ -371,12 +371,19 @@ export default function CrmDailyReportForm() {
     setPendingLegacyOrder(null);
     setIdentityNote("");
     setPoQ("");
+    setSalesQ("");
     setForm((prev) => ({
       ...prev,
       order_id: "",
       po_number: "",
       sales_locked_from_po: false,
       sales_note: "",
+      // Drop PO-derived Sales/Master so a prior selection cannot look verified (#718).
+      sales_master_id: "",
+      sales_user_id: "",
+      sales_label: "",
+      sales_choice: "",
+      sales_source: "",
       legacy_po_customer_confirmed: false,
       legacy_po_needs_confirm: false,
     }));
@@ -397,6 +404,8 @@ export default function CrmDailyReportForm() {
         po_number: order.po_number || "",
         legacy_po_needs_confirm: Boolean(legacyNeedsConfirm),
         legacy_po_customer_confirmed: Boolean(legacyConfirmed),
+        // Always clear stale Master before applying PO Sales identity (#718).
+        sales_master_id: "",
       };
       if (bindCustomer?.id) {
         next = {
@@ -554,31 +563,17 @@ export default function CrmDailyReportForm() {
       }, 0);
       return;
     }
-    // Master Sales catalog row (manual-allowed): label snapshot, no verified user id.
-    if (row.sales_master_id && !row.user_id) {
-      setForm((prev) => ({
-        ...prev,
-        sales_choice: SALES_MANUAL_CHOICE,
-        sales_source: SALES_SOURCE_MANUAL,
-        sales_user_id: "",
-        sales_label: row.label || row.sales_name || "",
-        sales_master_id: row.sales_master_id,
-        sales_locked_from_po: false,
-        sales_note: "",
-      }));
-      setSalesQ(row.label || row.sales_name || "");
-      setSalesOpen(false);
-      return;
-    }
+    // Verified Master Sales — sales_master_id is canonical; Eternal user_id is optional.
     const label = row.label || row.sales_name || "";
     const userId = row.user_id || "";
+    const masterId = row.sales_master_id || matchSalesMasterId(catalog, { userId, label });
     setForm((prev) => ({
       ...prev,
-      sales_choice: userId,
+      sales_choice: userId || masterId || "",
       sales_user_id: userId,
       sales_label: label,
       sales_source: SALES_SOURCE_EXISTING,
-      sales_master_id: row.sales_master_id || matchSalesMasterId(catalog, { userId, label }),
+      sales_master_id: masterId,
       sales_locked_from_po: false,
       sales_note: "",
     }));
@@ -1078,7 +1073,8 @@ export default function CrmDailyReportForm() {
                       sales_source: SALES_SOURCE_MANUAL,
                       sales_choice: SALES_MANUAL_CHOICE,
                       sales_user_id: "",
-                      sales_master_id: matchSalesMasterId(meta?.sales_catalog || [], { label: value }),
+                      // Free-text manual must not spoof a verified Master id.
+                      sales_master_id: "",
                     }));
                     setErrors((prev) => {
                       if (!prev.sales_label) return prev;
