@@ -63,6 +63,29 @@ def test_template_binds_session_and_leaves_count_blank():
     assert wb["Hitung Fisik"].cell(2, 7).value is None
 
 
+def test_operational_template_defers_final_math_to_system_review():
+    session = dict(_session([_line("m1", "SKU-A", 100)]), mode="operational")
+    wb = load_workbook(BytesIO(build_count_template_xlsx(session)))
+    sheet = wb["Hitung Fisik"]
+    assert sheet["H2"].value == '=IF(G2="","","Lihat Review sistem")'
+    assert sheet["I2"].value == '=IF(G2="","","Lihat Review sistem")'
+    meta = dict(wb["Sesi"].values)
+    assert meta["mode"] == "operational"
+    assert "mutasi bersih" in meta["formula_note"]
+    assert "stok buku saat posting" in meta["formula_note"]
+
+
+def test_freeze_template_does_not_subtract_unknown_belum_as_zero():
+    line = dict(_line("m1", "SKU-A", 100), qty_belum_terkirim=None)
+    session = _session([line])
+    wb = load_workbook(BytesIO(build_count_template_xlsx(session)))
+    sheet = wb["Hitung Fisik"]
+    assert sheet["F2"].value is None
+    assert sheet["I2"].value == '=IF(AND(ISNUMBER(G2),ISNUMBER(E2),ISNUMBER(F2)),G2-E2-F2,"")'
+    assert sheet["H2"].value == '=IF(AND(ISNUMBER(G2),ISNUMBER(D2)),G2-D2,"")'
+    assert sheet["I1"].comment is not None
+
+
 def test_preview_ready_zero_vs_missing_and_rejected_unknown():
     session = _session([
         _line("m1", "100089", 500),

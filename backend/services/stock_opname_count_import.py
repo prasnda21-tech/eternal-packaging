@@ -13,6 +13,7 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 
 from services.stock_opname_sessions import (
     STATUS_COUNTING,
@@ -57,6 +58,16 @@ def build_count_template_xlsx(session: dict) -> bytes:
     sheet.title = COUNT_SHEET
     headers = COUNT_HEADERS + [ID_HEADER]
     sheet.append(headers)
+    operational = session.get("mode") == "operational"
+    sheet["H1"].comment = Comment(
+        "Operational: lihat Review sistem untuk selisih posting. "
+        "Freeze: Stock Fisik dikurangi Stock Buku cutoff.", "Eternal Packaging",
+    )
+    sheet["I1"].comment = Comment(
+        "Perbandingan terhadap pesanan dan siap belum terkirim pada cutoff. "
+        "Kosong bukan nol. Operational dihitung kembali di Review sistem.",
+        "Eternal Packaging",
+    )
     for index, line in enumerate(session.get("lines") or [], start=2):
         sheet.append([
             line.get("item_code") or "",
@@ -66,14 +77,31 @@ def build_count_template_xlsx(session: dict) -> bytes:
             line.get("qty_pesanan"),
             line.get("qty_belum_terkirim"),
             None,
-            f'=IF(G{index}="","",G{index}-D{index})',
-            f'=IF(G{index}="","",G{index}-E{index}-F{index})',
+            (
+                f'=IF(G{index}="","","Lihat Review sistem")'
+                if operational else
+                f'=IF(AND(ISNUMBER(G{index}),ISNUMBER(D{index})),G{index}-D{index},"")'
+            ),
+            (
+                f'=IF(G{index}="","","Lihat Review sistem")'
+                if operational else
+                f'=IF(AND(ISNUMBER(G{index}),ISNUMBER(E{index}),ISNUMBER(F{index})),G{index}-E{index}-F{index},"")'
+            ),
             line.get("master_item_id") or "",
         ])
     meta = workbook.create_sheet(SESSION_SHEET)
     meta.append(["session_id", session.get("id") or ""])
     meta.append(["warehouse_id", session.get("warehouse_id") or ""])
     meta.append(["opname_number", session.get("opname_number") or ""])
+    meta.append(["mode", session.get("mode") or "freeze"])
+    meta.append([
+        "formula_note",
+        "Operational: target = hasil hitung + mutasi bersih setelah waktu hitung; "
+        "selisih posting = target - stok buku saat posting. "
+        "Excel tidak memiliki mutasi terbaru; angka final tersedia pada Review sistem. "
+        "Freeze: selisih = hasil hitung - stok buku cutoff. "
+        "Kolom kosong atau belum terverifikasi tidak dianggap nol.",
+    ])
     meta.append([
         "qty_belum_note",
         "Qty Siap Belum Terkirim = barang siap kirim belum terbukti keluar (bukan stok fisik). "

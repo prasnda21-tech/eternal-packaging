@@ -41,7 +41,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-FORMULA_VERSION = "ssi_excel_v1_3"
+FORMULA_VERSION = "ssi_excel_v1_4"
 
 STATUS_READY = "READY"
 STATUS_UNVERIFIED = "UNVERIFIED"
@@ -53,6 +53,7 @@ REASON_NO_OPERATOR_EVIDENCE = "NO_OPERATOR_EVIDENCE"
 REASON_WIP_COMPOSITION_UNPROVEN = "WIP_COMPOSITION_UNPROVEN"
 REASON_BLANK_PRINT_COMPLETION_UNPROVEN = "BLANK_PRINT_COMPLETION_UNPROVEN"
 REASON_BRANCH_DEMAND_WAREHOUSE_SCOPE = "BRANCH_DEMAND_WAREHOUSE_SCOPE"
+REASON_PRINT_DELIVERY_EXCEEDS_COMPLETION = "PRINT_DELIVERY_EXCEEDS_COMPLETION"
 
 SOURCE_SALDO_AWAL = "physical_stock_ledger.OPENING_BALANCE"
 SOURCE_PEMBELIAN = "physical_stock_ledger.PURCHASE_RECEIPT"
@@ -381,17 +382,14 @@ def resolve_cetak_sudah_dikirim(
 ) -> Dict[str, Any]:
     """Printed goods already shipped — proven print SJ only.
 
-    - print_delivery_proven + numeric qty → READY (capped by qty_tercetak when known)
+    - print_delivery_proven + numeric qty → READY, preserving proven shipment qty
     - otherwise → UNVERIFIED null (never min(so_delivered, qty_tercetak))
     """
     if not print_delivery_proven or cetak_delivered_proven is None:
         return _unknown(REASON_PRINT_DELIVERY_UNPROVEN)
-    cetak = max(qty_num(cetak_delivered_proven), 0.0)
-    if qty_tercetak is None:
-        # Print out proven but tercetak unknown — still publish proven shipped print qty.
-        return _known(cetak)
-    tercetak = max(qty_num(qty_tercetak), 0.0)
-    return _known(min(cetak, tercetak))
+    # Operator history may be incomplete. Never reduce proven shipment evidence
+    # to fit it; dependent composition fields detect the inconsistency below.
+    return _known(max(qty_num(cetak_delivered_proven), 0.0))
 
 
 def resolve_qty_tercetak(progress_row: Optional[dict]) -> Dict[str, Any]:
@@ -524,6 +522,9 @@ def compute_excel_columns(
     if tercetak_slot["qty"] is None or cetak_slot["qty"] is None:
         belum_slot = _unknown(REASON_DEPENDENT_UNKNOWN)
         polos_slot = _unknown(REASON_DEPENDENT_UNKNOWN)
+    elif cetak_slot["qty"] > tercetak_slot["qty"]:
+        belum_slot = _unknown(REASON_PRINT_DELIVERY_EXCEEDS_COMPLETION)
+        polos_slot = _unknown(REASON_PRINT_DELIVERY_EXCEEDS_COMPLETION)
     else:
         belum_slot = _known(tercetak_slot["qty"] - cetak_slot["qty"])
         if incomplete_print:
@@ -602,6 +603,11 @@ def apply_excel_fields_to_catalog_row(
     def _unverified_note(reason: Optional[str], fallback: str) -> str:
         code = str(reason or "").strip().upper()
         mapping = {
+            REASON_PRINT_DELIVERY_EXCEEDS_COMPLETION: (
+                "Belum terverifikasi: pengiriman cetak terbukti melebihi jumlah "
+                "selesai operator. Periksa bukti produksi dan pengiriman; "
+                "jumlah pengiriman tetap dipertahankan."
+            ),
             REASON_PRINT_DELIVERY_UNPROVEN: (
                 "Belum terverifikasi: pengiriman cetak belum terbukti dari SJ print "
                 "(jangan pakai estimasi min(so_delivered, qty_tercetak))."
