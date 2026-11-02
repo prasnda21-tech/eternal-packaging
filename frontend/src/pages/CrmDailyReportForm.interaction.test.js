@@ -110,6 +110,7 @@ describe("CrmDailyReportForm interaction", () => {
       sales_catalog: [
         { id: "sm-ayub", sales_name: "Sholahudin Al - Ayubi", user_id: "sales-ayub", active: true },
         { id: "sm-euis", sales_name: "Euis Risnawati", user_id: "sales-euis", active: true },
+        { id: "sm-offline", sales_name: "Sales Offline", user_id: "", active: true },
       ],
     });
     api.crmDailyReportCustomers.mockResolvedValue({ customers: [] });
@@ -284,6 +285,46 @@ describe("CrmDailyReportForm interaction", () => {
     expect(payload.sales_user_id).toBe("sales-ayub");
     expect(payload.sales_source).toBe("existing");
     expect(payload.status_customer).toBe("New");
+  });
+
+  test("Master Sales without Eternal account posts as existing, not manual", async () => {
+    await act(async () => {
+      root.render(<CrmDailyReportForm />);
+    });
+    await flush();
+
+    const wa = container.querySelector('[data-testid="cdr-whatsapp"]');
+    const sales = container.querySelector('[data-testid="cdr-sales"]');
+    await act(async () => {
+      const setInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setInput.call(wa, "081299988877");
+      wa.dispatchEvent(new Event("input", { bubbles: true }));
+      setInput.call(sales, "Offline");
+      sales.dispatchEvent(new Event("input", { bubbles: true }));
+      sales.dispatchEvent(new Event("focus", { bubbles: true }));
+    });
+    await flush();
+    const salesBtn = [...container.querySelectorAll('[data-testid="cdr-sales-results"] button')]
+      .find((btn) => /Sales Offline/.test(btn.textContent || ""));
+    expect(salesBtn).toBeTruthy();
+    expect(salesBtn.textContent).toMatch(/tanpa akun Eternal/);
+    await act(async () => {
+      salesBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="cdr-sales-manual-box"]')).toBeFalsy();
+
+    await act(async () => {
+      const form = container.querySelector('[data-testid="crm-daily-report-form"]');
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(api.createCrmDailyReport).toHaveBeenCalled();
+    const payload = api.createCrmDailyReport.mock.calls[0][0];
+    expect(payload.sales_master_id).toBe("sm-offline");
+    expect(payload.sales_label).toBe("Sales Offline");
+    expect(payload.sales_user_id).toBeNull();
+    expect(payload.sales_source).toBe("existing");
   });
 
   test("create draft survives remount (list/tab navigation) and clears after success", async () => {

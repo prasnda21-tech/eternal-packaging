@@ -360,31 +360,17 @@ export default function CrmDailyReportForm() {
       }, 0);
       return;
     }
-    // Master Sales catalog row (manual-allowed): label snapshot, no verified user id.
-    if (row.sales_master_id && !row.user_id) {
-      setForm((prev) => ({
-        ...prev,
-        sales_choice: SALES_MANUAL_CHOICE,
-        sales_source: SALES_SOURCE_MANUAL,
-        sales_user_id: "",
-        sales_label: row.label || row.sales_name || "",
-        sales_master_id: row.sales_master_id,
-        sales_locked_from_po: false,
-        sales_note: "",
-      }));
-      setSalesQ(row.label || row.sales_name || "");
-      setSalesOpen(false);
-      return;
-    }
+    // Verified Master Sales — sales_master_id is canonical; Eternal user_id is optional.
     const label = row.label || row.sales_name || "";
     const userId = row.user_id || "";
+    const masterId = row.sales_master_id || matchSalesMasterId(catalog, { userId, label });
     setForm((prev) => ({
       ...prev,
-      sales_choice: userId,
+      sales_choice: userId || masterId || "",
       sales_user_id: userId,
       sales_label: label,
       sales_source: SALES_SOURCE_EXISTING,
-      sales_master_id: row.sales_master_id || matchSalesMasterId(catalog, { userId, label }),
+      sales_master_id: masterId,
       sales_locked_from_po: false,
       sales_note: "",
     }));
@@ -816,7 +802,8 @@ export default function CrmDailyReportForm() {
                       sales_source: SALES_SOURCE_MANUAL,
                       sales_choice: SALES_MANUAL_CHOICE,
                       sales_user_id: "",
-                      sales_master_id: matchSalesMasterId(meta?.sales_catalog || [], { label: value }),
+                      // Free-text manual must not spoof a verified Master id.
+                      sales_master_id: "",
                     }));
                     setErrors((prev) => {
                       if (!prev.sales_label) return prev;

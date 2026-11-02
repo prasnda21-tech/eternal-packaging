@@ -797,3 +797,289 @@ async def test_sales_po_picker_autofill_manual_and_validation():
         empty = await client.get("/api/crm-daily-reports/orders", params={"q": "PO"})
         assert empty.status_code == 200
         assert empty.json()["orders"] == []
+
+
+@pytest.mark.anyio
+async def test_master_sales_without_eternal_account_order_and_guards():
+    """Active Master Sales may be selected without Eternal user_id.
+
+    sales_master_id is canonical; verified Master is not free-text manual.
+    """
+    import server
+    from services import sales_master as sm
+    from services.org_locations import BRANCHES_COLLECTION
+
+    crm = _user("crm", uid="crm-master-no-acct")
+    await _prepare(server.db, [crm])
+    await sm.ensure_indexes(server.db)
+    await server.db[sm.COLLECTION].delete_many({})
+    await server.db[BRANCHES_COLLECTION].delete_many({"id": {"$regex": r"^br-cdr-"}})
+
+    branch_a = f"br-cdr-{uuid.uuid4().hex[:6]}"
+    branch_b = f"br-cdr-{uuid.uuid4().hex[:6]}"
+    await server.db[BRANCHES_COLLECTION].insert_many([
+        {"id": branch_a, "code": "CDA", "name": "Cabang A", "active": True},
+        {"id": branch_b, "code": "CDB", "name": "Cabang B", "active": True},
+    ])
+
+    master_with_user = await sm.create_sales_master(server.db, {
+        "sales_name": SALES_AYUB_LABEL,
+        "user_id": SALES_AYUB_ID,
+        "branch_ids": [],
+    }, crm)
+    master_no_user = await sm.create_sales_master(server.db, {
+        "sales_name": "Sales Freelancer Offline",
+        "branch_ids": [],
+    }, crm)
+    assert not master_no_user.get("user_id")
+    master_other_branch = await sm.create_sales_master(server.db, {
+        "sales_name": "Sales Cabang Lain",
+        "branch_ids": [branch_b],
+    }, crm)
+    master_inactive = await sm.create_sales_master(server.db, {
+        "sales_name": "Sales Nonaktif",
+        "branch_ids": [],
+        "active": False,
+    }, crm)
+
+    crm_branch = _user("crm", uid="crm-branch-a", override={})
+    crm_branch["branch_ids"] = [branch_a]
+    await _upsert_users(server.db, [crm_branch])
+
+    cust = await _seed_customer(server.db, name="Outlet Master", phone="081288800001")
+    order_verified = await _seed_order(
+        server.db,
+        po_number="PO/CRM/MASTER/001",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales=SALES_AYUB_LABEL,
+        sales_user_id=SALES_AYUB_ID,
+    )
+    order_unmapped = await _seed_order(
+        server.db,
+        po_number="PO/CRM/MASTER/002",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales="Label Accurate Historis",
+        sales_user_id=None,
+    )
+    order_no_sales = await _seed_order(
+        server.db,
+        po_number="PO/CRM/MASTER/003",
+        customer_id=cust["id"],
+        customer=cust["name"],
+        sales="",
+        sales_user_id=None,
+    )
+
+    async with await _client(crm) as client:
+        # Active Master with Eternal user — ORDER, no PO
+        with_user = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811101",
+            sales_master_id=master_with_user["id"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+            sales_source="existing",
+            status_order="ORDER",
+            order_id=None,
+            po_number="",
+        ))
+        assert with_user.status_code == 200, with_user.text
+        body = with_user.json()["report"]
+        assert body["sales_master_id"] == master_with_user["id"]
+        assert body["sales_user_id"] == SALES_AYUB_ID
+        assert body["sales_source"] == "existing"
+        assert body["sales_label"] == SALES_AYUB_LABEL
+
+        # Active Master without Eternal user — ORDER, no PO
+        no_user_order = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811102",
+            sales_master_id=master_no_user["id"],
+            sales_user_id=None,
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+            status_order="ORDER",
+            order_id=None,
+            po_number="",
+        ))
+        assert no_user_order.status_code == 200, no_user_order.text
+        body = no_user_order.json()["report"]
+        assert body["sales_master_id"] == master_no_user["id"]
+        assert body["sales_user_id"] in (None, "")
+        assert body["sales_source"] == "existing"
+        assert body["sales_label"] == master_no_user["sales_name"]
+        rid = body["id"]
+
+        # Same Master without user — TIDAK ORDER, no PO
+        no_user_tidak = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811103",
+            sales_master_id=master_no_user["id"],
+            sales_user_id=None,
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            order_id=None,
+            po_number="",
+        ))
+        assert no_user_tidak.status_code == 200, no_user_tidak.text
+        assert no_user_tidak.json()["report"]["sales_source"] == "existing"
+        assert no_user_tidak.json()["report"]["sales_user_id"] in (None, "")
+
+        # True free-text manual still OK for TIDAK ORDER without PO
+        manual = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811104",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            sales_source="manual",
+            sales_user_id=None,
+            sales_master_id=None,
+            sales_label="Sales Freelancer X",
+            order_id=None,
+            po_number="",
+        ))
+        assert manual.status_code == 200, manual.text
+        assert manual.json()["report"]["sales_source"] == "manual"
+
+        # Manual + spoofed sales_master_id rejected
+        manual_spoof = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811105",
+            status_order="TIDAK ORDER",
+            no_order_reason="Harga terlalu mahal",
+            sales_source="manual",
+            sales_user_id=None,
+            sales_master_id=master_no_user["id"],
+            sales_label="Sales Freelancer X",
+        ))
+        assert manual_spoof.status_code == 400
+
+        # Spoofed sales_user_id on Master without account
+        spoof_uid = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811106",
+            sales_master_id=master_no_user["id"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+        ))
+        assert spoof_uid.status_code == 400
+
+        # Invalid Master id
+        bad_id = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811107",
+            sales_master_id="sm-does-not-exist",
+            sales_user_id=None,
+            sales_label="Ghost",
+            sales_source="existing",
+        ))
+        assert bad_id.status_code == 400
+        assert "Master Sales" in bad_id.text
+
+        # Inactive Master
+        inactive = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811108",
+            sales_master_id=master_inactive["id"],
+            sales_user_id=None,
+            sales_label=master_inactive["sales_name"],
+            sales_source="existing",
+        ))
+        assert inactive.status_code == 400
+        assert "nonaktif" in inactive.text.lower()
+
+        # PO verified Sales wins — unrelated Master id cannot substitute Sales identity
+        po_sub = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811109",
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=order_verified["id"],
+            po_number=order_verified["po_number"],
+            sales_master_id=master_no_user["id"],
+            sales_user_id=SALES_EUIS_ID,  # conflicting uid vs PO
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+        ))
+        assert po_sub.status_code == 400
+
+        # PO verified Sales accepted; stale/unrelated preferred Master ignored for identity
+        po_ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811110",
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=order_verified["id"],
+            po_number=order_verified["po_number"],
+            sales_master_id=master_no_user["id"],
+            sales_user_id=SALES_AYUB_ID,
+            sales_label=SALES_AYUB_LABEL,
+            sales_source="existing",
+        ))
+        assert po_ok.status_code == 200, po_ok.text
+        assert po_ok.json()["report"]["sales_user_id"] == SALES_AYUB_ID
+        assert po_ok.json()["report"]["sales_label"] == SALES_AYUB_LABEL
+        assert po_ok.json()["report"]["sales_source"] == "existing"
+        # Unrelated preferred Master must not attach over PO Sales
+        assert po_ok.json()["report"]["sales_master_id"] != master_no_user["id"]
+
+        # PO with unresolved historical label — keep Accurate label (Master cannot substitute)
+        hist_ok = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811112",
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=order_unmapped["id"],
+            po_number=order_unmapped["po_number"],
+            sales_master_id=master_no_user["id"],
+            sales_user_id=None,
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+        ))
+        assert hist_ok.status_code == 200, hist_ok.text
+        assert hist_ok.json()["report"]["sales_label"] == "Label Accurate Historis"
+        assert hist_ok.json()["report"]["sales_source"] == "legacy"
+        assert hist_ok.json()["report"]["sales_master_id"] != master_no_user["id"]
+
+        # PO without sales — Master without account allowed
+        po_blank = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811113",
+            status_customer="Repeat",
+            customer_id=cust["id"],
+            order_id=order_no_sales["id"],
+            po_number=order_no_sales["po_number"],
+            sales_master_id=master_no_user["id"],
+            sales_user_id=None,
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+        ))
+        assert po_blank.status_code == 200, po_blank.text
+        assert po_blank.json()["report"]["sales_master_id"] == master_no_user["id"]
+        assert po_blank.json()["report"]["sales_source"] == "existing"
+
+        # Edit existing report keeps Master without account
+        edited = await client.patch(f"/api/crm-daily-reports/{rid}", json=_new_payload(
+            whatsapp="081288811102",
+            sales_master_id=master_no_user["id"],
+            sales_user_id=None,
+            sales_label=master_no_user["sales_name"],
+            sales_source="existing",
+            status_order="FOLLOW UP",
+            notes="edited",
+        ))
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["report"]["sales_master_id"] == master_no_user["id"]
+        assert edited.json()["report"]["sales_source"] == "existing"
+        assert edited.json()["report"]["notes"] == "edited"
+
+        # Mapping / PO / customer ownership unchanged
+        mapping = await server.db.app_settings.find_one({"key": "sales_user_mapping"})
+        assert mapping and any(e.get("user_id") == SALES_AYUB_ID for e in mapping.get("entries") or [])
+        po_after = await server.db.orders.find_one({"id": order_verified["id"]})
+        assert po_after["sales_user_id"] == SALES_AYUB_ID
+
+    # Cross-branch Master rejected
+    async with await _client(crm_branch) as client:
+        cross = await client.post("/api/crm-daily-reports", json=_new_payload(
+            whatsapp="081288811114",
+            sales_master_id=master_other_branch["id"],
+            sales_user_id=None,
+            sales_label=master_other_branch["sales_name"],
+            sales_source="existing",
+        ))
+        assert cross.status_code == 403
+        assert "cabang" in cross.text.lower()

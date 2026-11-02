@@ -163,9 +163,15 @@ export function formFromCrmDailyReport(report) {
       ? SALES_SOURCE_EXISTING
       : (salesLabel ? SALES_SOURCE_LEGACY : "");
   }
+  const salesMasterId = report?.sales_master_id || "";
+  // Existing reports with Master but no Eternal account stay verified (not manual/legacy).
+  if (!salesSource && salesMasterId && salesLabel && !salesUserId) {
+    salesSource = SALES_SOURCE_EXISTING;
+  }
   let salesChoice = "";
   if (salesSource === SALES_SOURCE_MANUAL) salesChoice = SALES_MANUAL_CHOICE;
   else if (salesUserId) salesChoice = salesUserId;
+  else if (salesSource === SALES_SOURCE_EXISTING && salesMasterId) salesChoice = salesMasterId;
   // Legacy free-text keeps empty choice so UI shows the legacy hint without
   // pretending the value is a verified dropdown selection or new manual entry.
 
@@ -177,7 +183,7 @@ export function formFromCrmDailyReport(report) {
     whatsapp: report?.whatsapp || "",
     order_id: report?.order_id || "",
     po_number: report?.po_number || "",
-    sales_master_id: report?.sales_master_id || "",
+    sales_master_id: salesMasterId,
     sales_label: salesLabel,
     sales_user_id: salesUserId,
     sales_source: salesSource,
@@ -216,6 +222,7 @@ export function validateCrmDailyReportForm(form) {
   const salesSource = String(form.sales_source || "").trim();
   const salesUserId = String(form.sales_user_id || "").trim();
   const salesLabel = String(form.sales_label || "").trim();
+  const salesMasterId = String(form.sales_master_id || "").trim();
   const hasPo = Boolean(String(form.order_id || "").trim());
   if (salesSource === SALES_SOURCE_MANUAL || form.sales_choice === SALES_MANUAL_CHOICE) {
     if (!canUseManualSales(form)) {
@@ -226,9 +233,13 @@ export function validateCrmDailyReportForm(form) {
       errors.sales_label = `Nama Sales Manual maksimal ${MANUAL_SALES_MAX_LEN} karakter`;
     } else if (salesUserId) {
       errors.sales_label = "Sales manual tidak boleh memakai ID terverifikasi";
+    } else if (salesMasterId) {
+      errors.sales_label = "Sales manual tidak boleh memakai Master Sales terverifikasi";
     }
   } else if (salesSource === SALES_SOURCE_LEGACY && salesLabel && !salesUserId) {
     // Keep legacy snapshot editable without forcing remapping on open.
+  } else if (salesMasterId && salesLabel) {
+    // Verified Master Sales — Eternal account optional.
   } else if (!salesUserId) {
     errors.sales_label = hasPo && form.sales_note
       ? "Pilih Sales dari daftar (PO tanpa Sales terverifikasi)"
@@ -284,6 +295,8 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
   }
   const isManual = form.sales_source === SALES_SOURCE_MANUAL
     || form.sales_choice === SALES_MANUAL_CHOICE;
+  const salesMasterId = isManual ? null : (String(form.sales_master_id || "").trim() || null);
+  const salesUserId = isManual ? null : (String(form.sales_user_id || "").trim() || null);
   const payload = {
     report_date: String(form.report_date || "").trim(),
     status_customer: form.status_customer,
@@ -292,12 +305,12 @@ export function toCrmDailyReportPayload(form, clientSubmitId) {
     whatsapp: form.status_customer === "New" ? String(form.whatsapp || "").trim() : "",
     order_id: String(form.order_id || "").trim() || null,
     po_number: String(form.po_number || "").trim(),
-    sales_master_id: String(form.sales_master_id || "").trim() || null,
+    sales_master_id: salesMasterId,
     sales_label: String(form.sales_label || "").trim(),
-    sales_user_id: isManual ? null : (String(form.sales_user_id || "").trim() || null),
+    sales_user_id: salesUserId,
     sales_source: isManual
       ? SALES_SOURCE_MANUAL
-      : (form.sales_source === SALES_SOURCE_LEGACY && !form.sales_user_id
+      : (form.sales_source === SALES_SOURCE_LEGACY && !salesUserId && !salesMasterId
         ? SALES_SOURCE_LEGACY
         : SALES_SOURCE_EXISTING),
     status_order: form.status_order,
@@ -399,14 +412,24 @@ function sanitizeDraftForm(raw) {
       next.sales_choice = "";
       next.sales_user_id = "";
       next.sales_label = "";
+      next.sales_master_id = "";
       next.sales_locked_from_po = false;
       next.sales_note = "";
     } else {
       next.sales_source = SALES_SOURCE_MANUAL;
       next.sales_choice = SALES_MANUAL_CHOICE;
       next.sales_user_id = "";
+      next.sales_master_id = "";
       next.sales_locked_from_po = false;
     }
+  } else if (
+    next.sales_master_id
+    && next.sales_label
+    && !next.sales_user_id
+    && next.sales_source !== SALES_SOURCE_LEGACY
+  ) {
+    next.sales_source = SALES_SOURCE_EXISTING;
+    if (!next.sales_choice) next.sales_choice = next.sales_master_id;
   }
   if (next.status_order !== "TIDAK ORDER") {
     next.no_order_reason = "";
