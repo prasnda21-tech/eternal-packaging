@@ -36,6 +36,7 @@ import { listIdentityBranchId, listIdentityUserId } from "../lib/listIdentity";
 import { salesDeliveryListCache } from "../lib/smartListCaches";
 import { useDebouncedLiveSearch } from "../hooks/useDebouncedLiveSearch";
 import LookupSearchSelect from "../components/LookupSearchSelect";
+import LookupMultiSearchSelect from "../components/LookupMultiSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import { deliveryBelumSjMeta } from "../lib/ux90RemainingMeta";
 import {
@@ -43,6 +44,7 @@ import {
   buildSourceAllocationsPayload,
   formatSourcePoLabel,
   lineAllocKey,
+  summarizeMultiPoDeliveryQty,
   validateMultiSourceSelection,
 } from "../lib/salesDeliveryMultiSource";
 import {
@@ -356,22 +358,35 @@ export default function PengirimanPesanan() {
     })),
   ]), [createdByOptions]);
 
-  // Load active POs with remaining quantity
+  const filterInvoiceableActivePos = useCallback((orders) => (
+    (orders || []).filter(
+      (o) => !o.cancelled && (!o.delivery_summary || Number(o.delivery_summary.total_remaining || 0) > 0),
+    )
+  ), []);
+
+  // Load active POs with remaining quantity (no silent 40-cap; API hard-max applies).
   const loadActivePOs = useCallback(async () => {
     if (!canCreate) return;
     setLoadingPOs(true);
     try {
+      // Omit page/page_size so backend returns the uncapped (hard-max) stream for aktif.
       const res = await api.listSalesOrders({ status: "aktif" });
-      const activeList = (res.orders || []).filter(
-        (o) => !o.cancelled && (!o.delivery_summary || o.delivery_summary.total_remaining > 0)
-      );
-      setAvailablePOs(activeList);
+      setAvailablePOs(filterInvoiceableActivePos(res.orders));
     } catch {
       // Best effort load POs
     } finally {
       setLoadingPOs(false);
     }
-  }, [canCreate]);
+  }, [canCreate, filterInvoiceableActivePos]);
+
+  const fetchMultiPoOptions = useCallback(async (query) => {
+    const q = String(query || "").trim();
+    const res = await api.listSalesOrders({
+      status: "aktif",
+      ...(q ? { q } : {}),
+    });
+    return filterInvoiceableActivePos(res.orders);
+  }, [filterInvoiceableActivePos]);
 
   const poSummaryReqRef = useRef(0);
 
@@ -644,50 +659,135 @@ export default function PengirimanPesanan() {
     [multiPoMode, poSummariesById],
   );
 
-  const toggleMultiPoId = async (poId, checked) => {
-    const next = checked
-      ? Array.from(new Set([...selectedPoIds, poId]))
-      : selectedPoIds.filter((id) => id !== poId);
-    setSelectedPoIds(next);
-    if (!checked) {
+  const anchorMultiCustomerId = useMemo(() => {
+    for (const id of selectedPoIds) {
+      const cid = String(poSummariesById[id]?.customer_id || "").trim();
+      if (cid) return cid;
+    }
+    return "";
+  }, [selectedPoIds, poSummariesById]);
+
+  const multiPoQtySummary = useMemo(() => {
+    if (!multiPoMode) return null;
+    const loaded = {};
+    selectedPoIds.forEach((id) => {
+      if (poSummariesById[id]) loaded[id] = poSummariesById[id];
+    });
+    if (selectedPoIds.length === 0) {
+      return { ...summarizeMultiPoDeliveryQty({}, {}), ready: false, empty: true };
+    }
+    if (Object.keys(loaded).length !== selectedPoIds.length) {
+      return { ...summarizeMultiPoDeliveryQty(loaded, formData.line_qtys), ready: false, empty: false };
+    }
+    return { ...summarizeMultiPoDeliveryQty(loaded, formData.line_qtys), empty: false };
+  }, [multiPoMode, selectedPoIds, poSummariesById, formData.line_qtys]);
+
+  const multiPoSelectOptions = useMemo(() => {
+    const map = new Map();
+    (availablePOs || []).forEach((p) => {
+      if (p?.id) map.set(String(p.id), p);
+    });
+    Object.values(poSummariesById || {}).forEach((summary) => {
+      const id = String(summary?.po_id || "").trim();
+      if (!id) return;
+      map.set(id, {
+        ...(map.get(id) || {}),
+        id,
+        po_number: summary.po_number,
+        customer: summary.customer,
+        outlet: summary.outlet,
+        customer_id: summary.customer_id,
+      });
+    });
+    return Array.from(map.values());
+  }, [availablePOs, poSummariesById]);
+
+  const applyMultiPoSelection = useCallback(async (nextIds) => {
+    const unique = Array.from(new Set((nextIds || []).map((id) => String(id || "").trim()).filter(Boolean)));
+    const removed = selectedPoIds.filter((id) => !unique.includes(id));
+    const added = unique.filter((id) => !selectedPoIds.includes(id));
+
+    if (removed.length) {
       setPoSummariesById((prev) => {
         const copy = { ...prev };
-        delete copy[poId];
+        removed.forEach((id) => { delete copy[id]; });
         return copy;
       });
-      return;
-    }
-    try {
-      const data = await api.getPoDeliverySummary(poId);
-      setPoSummariesById((prev) => ({ ...prev, [poId]: data }));
       setFormData((prev) => {
         const qtys = { ...prev.line_qtys };
         const notes = { ...prev.line_notes };
-        (data.lines || []).forEach((l) => {
-          const key = lineAllocKey(data.po_id, l.line_idx);
-          qtys[key] = l.remaining_qty;
-          notes[key] = "";
+        removed.forEach((id) => {
+          Object.keys(qtys).forEach((key) => {
+            if (key.startsWith(`${id}::`)) delete qtys[key];
+          });
+          Object.keys(notes).forEach((key) => {
+            if (key.startsWith(`${id}::`)) delete notes[key];
+          });
         });
-        const first = Object.keys(prev.line_qtys || {}).length === 0;
-        return {
-          ...prev,
-          outlet: first ? (data.outlet || prev.outlet) : prev.outlet,
-          recipient: first ? (data.recipient || prev.recipient) : prev.recipient,
-          address: first ? (data.address || prev.address) : prev.address,
-          delivery_zone: first ? (data.delivery_zone || prev.delivery_zone) : prev.delivery_zone,
-          sales: first ? (data.sales || prev.sales) : prev.sales,
-          expedition: first ? (data.expedition || prev.expedition || "Internal fleet") : prev.expedition,
-          line_qtys: qtys,
-          line_notes: notes,
-        };
+        return { ...prev, line_qtys: qtys, line_notes: notes };
       });
-      if (!selectedPoId) setSelectedPoId(poId);
-    } catch (e) {
-      const det = e.response?.data?.detail;
-      setFormErr(typeof det === "object" ? det.message : (det || "Gagal memuat ringkasan PO"));
-      setSelectedPoIds((prev) => prev.filter((id) => id !== poId));
     }
-  };
+
+    setSelectedPoIds(unique);
+    if (!unique.length) {
+      setSelectedPoId("");
+      setFormErr("");
+      return;
+    }
+    if (!selectedPoId || !unique.includes(selectedPoId)) {
+      setSelectedPoId(unique[0]);
+    }
+
+    for (const poId of added) {
+      try {
+        const data = await api.getPoDeliverySummary(poId);
+        const nextCid = String(data.customer_id || "").trim();
+        const peerIds = unique
+          .filter((id) => id !== poId)
+          .map((id) => String(poSummariesById[id]?.customer_id || "").trim())
+          .filter(Boolean);
+        if (!nextCid) {
+          setFormErr("Setiap PO harus punya customer_id kanonik. Penggabungan ditolak.");
+          setSelectedPoIds((prev) => prev.filter((id) => id !== poId));
+          continue;
+        }
+        if (peerIds.length && peerIds.some((cid) => cid !== nextCid)) {
+          setFormErr(
+            "Penggabungan PO ditolak: seluruh PO harus dari pelanggan yang sama (customer_id). Nama pelanggan tidak dipakai sebagai dasar.",
+          );
+          setSelectedPoIds((prev) => prev.filter((id) => id !== poId));
+          continue;
+        }
+        setPoSummariesById((prev) => ({ ...prev, [poId]: data }));
+        setFormData((prev) => {
+          const qtys = { ...prev.line_qtys };
+          const notes = { ...prev.line_notes };
+          (data.lines || []).forEach((l) => {
+            const key = lineAllocKey(data.po_id, l.line_idx);
+            qtys[key] = l.remaining_qty;
+            notes[key] = "";
+          });
+          const first = unique[0] === poId && removed.length === selectedPoIds.length;
+          return {
+            ...prev,
+            outlet: first ? (data.outlet || prev.outlet) : prev.outlet,
+            recipient: first ? (data.recipient || prev.recipient) : prev.recipient,
+            address: first ? (data.address || prev.address) : prev.address,
+            delivery_zone: first ? (data.delivery_zone || prev.delivery_zone) : prev.delivery_zone,
+            sales: first ? (data.sales || prev.sales) : prev.sales,
+            expedition: first ? (data.expedition || prev.expedition || "Internal fleet") : prev.expedition,
+            line_qtys: qtys,
+            line_notes: notes,
+          };
+        });
+        setFormErr("");
+      } catch (e) {
+        const det = e.response?.data?.detail;
+        setFormErr(typeof det === "object" ? det.message : (det || "Gagal memuat ringkasan PO"));
+        setSelectedPoIds((prev) => prev.filter((id) => id !== poId));
+      }
+    }
+  }, [selectedPoIds, selectedPoId, poSummariesById]);
 
   // Change shipped qty for a specific line item
   const handleLineQtyChange = (lineIdx, rawVal) => {
@@ -1261,19 +1361,38 @@ export default function PengirimanPesanan() {
                         />
                       ) : multiPoMode ? (
                         <div data-testid="multi-po-picker" className="ux90-multi-po-picker">
-                          {(availablePOs || []).slice(0, 40).map((p) => (
-                            <label key={p.id} className="ux90-multi-po-picker-row">
-                              <input
-                                type="checkbox"
-                                checked={selectedPoIds.includes(p.id)}
-                                disabled={formBusy}
-                                onChange={(ev) => toggleMultiPoId(p.id, ev.target.checked)}
-                                data-testid={`multi-po-check-${p.id}`}
-                              />
-                              <span>{p.po_number} · {p.customer}</span>
-                            </label>
-                          ))}
-                          {!availablePOs.length ? <span className="ux90-hint">Tidak ada PO aktif dengan sisa qty.</span> : null}
+                          <LookupMultiSearchSelect
+                            options={multiPoSelectOptions}
+                            values={selectedPoIds}
+                            onChange={(ids) => { void applyMultiPoSelection(ids); }}
+                            fetchOptions={fetchMultiPoOptions}
+                            getOptionValue={(p) => p.id}
+                            getOptionLabel={(p) => String(p.po_number || p.id || "")}
+                            getOptionMeta={(p) => [
+                              p.customer,
+                              p.outlet || null,
+                              deliveryBelumSjMeta(p),
+                            ].filter(Boolean).join(" · ")}
+                            getSearchText={(p) => [p.po_number, p.customer, p.outlet].filter(Boolean).join(" ")}
+                            isOptionDisabled={(p) => {
+                              if (!anchorMultiCustomerId) return false;
+                              const cid = String(p.customer_id || "").trim();
+                              if (!cid) return false;
+                              return cid !== anchorMultiCustomerId;
+                            }}
+                            getOptionDisabledReason={(p) => {
+                              const cid = String(p.customer_id || "").trim();
+                              if (anchorMultiCustomerId && cid && cid !== anchorMultiCustomerId) {
+                                return "Pelanggan berbeda (customer_id)";
+                              }
+                              return "";
+                            }}
+                            placeholder={loadingPOs ? "Memuat PO…" : "Cari nomor PO, pelanggan, atau outlet…"}
+                            noResultLabel="Tidak ada PO aktif dengan sisa qty"
+                            disabled={formBusy}
+                            testId="multi-po-lookup"
+                            selectedCountLabel={(n) => (n ? `${n} PO terpilih` : "")}
+                          />
                         </div>
                       ) : (
                         <LookupSearchSelect
@@ -1569,25 +1688,85 @@ export default function PengirimanPesanan() {
               {deliveryFormTab === "items" ? (
                 <div className="ux90-doc-summary is-inline is-delivery-compact" data-testid="delivery-qty-summary">
                   <div className="ux90-doc-summary-rows">
-                    <div>
-                      <span>Total Qty SJ</span>
-                      <strong data-testid="total-delivery-qty">{totalShippingQty.toLocaleString("id-ID")} pcs</strong>
-                    </div>
-                    <div>
-                      <span>Sisa PO Sebelum SJ Ini</span>
-                      <strong data-testid="delivery-po-remaining-before">
-                        {poSummary ? Number(poSummary.total_remaining || 0).toLocaleString("id-ID") : "—"} pcs
-                      </strong>
-                    </div>
-                    <div className="is-total">
-                      <span>Sisa setelah SJ</span>
-                      <strong>
-                        {poSummary
-                          ? Math.max(0, Number(poSummary.total_remaining || 0) - totalShippingQty).toLocaleString("id-ID")
-                          : "—"}{" "}
-                        pcs
-                      </strong>
-                    </div>
+                    {multiPoMode ? (
+                      <>
+                        <div>
+                          <span>Total Qty PO</span>
+                          <strong data-testid="multi-po-total-ordered">
+                            {multiPoQtySummary?.empty
+                              ? "—"
+                              : multiPoQtySummary?.ready
+                                ? Number(multiPoQtySummary.total_ordered || 0).toLocaleString("id-ID")
+                                : "…"}{" "}
+                            pcs
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Qty sudah dikirim</span>
+                          <strong data-testid="multi-po-total-shipped">
+                            {multiPoQtySummary?.empty
+                              ? "—"
+                              : multiPoQtySummary?.ready
+                                ? Number(multiPoQtySummary.total_shipped || 0).toLocaleString("id-ID")
+                                : "…"}{" "}
+                            pcs
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Sisa sebelum SJ ini</span>
+                          <strong data-testid="delivery-po-remaining-before">
+                            {multiPoQtySummary?.empty
+                              ? "—"
+                              : multiPoQtySummary?.ready
+                                ? Number(multiPoQtySummary.total_remaining_before || 0).toLocaleString("id-ID")
+                                : "…"}{" "}
+                            pcs
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Qty dialokasikan SJ ini</span>
+                          <strong data-testid="total-delivery-qty">
+                            {multiPoQtySummary?.ready
+                              ? Number(multiPoQtySummary.total_allocated || 0).toLocaleString("id-ID")
+                              : totalShippingQty.toLocaleString("id-ID")}{" "}
+                            pcs
+                          </strong>
+                        </div>
+                        <div className="is-total">
+                          <span>Sisa setelah SJ</span>
+                          <strong data-testid="multi-po-remaining-after">
+                            {multiPoQtySummary?.empty
+                              ? "—"
+                              : multiPoQtySummary?.ready
+                                ? Number(multiPoQtySummary.total_remaining_after || 0).toLocaleString("id-ID")
+                                : "…"}{" "}
+                            pcs
+                          </strong>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <span>Total Qty SJ</span>
+                          <strong data-testid="total-delivery-qty">{totalShippingQty.toLocaleString("id-ID")} pcs</strong>
+                        </div>
+                        <div>
+                          <span>Sisa PO Sebelum SJ Ini</span>
+                          <strong data-testid="delivery-po-remaining-before">
+                            {poSummary ? Number(poSummary.total_remaining || 0).toLocaleString("id-ID") : "—"} pcs
+                          </strong>
+                        </div>
+                        <div className="is-total">
+                          <span>Sisa setelah SJ</span>
+                          <strong>
+                            {poSummary
+                              ? Math.max(0, Number(poSummary.total_remaining || 0) - totalShippingQty).toLocaleString("id-ID")
+                              : "—"}{" "}
+                            pcs
+                          </strong>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               ) : null}

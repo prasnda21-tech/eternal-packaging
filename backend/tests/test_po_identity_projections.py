@@ -29,6 +29,7 @@ def test_sales_order_list_and_summary_include_identity():
     server = _import_server()
     assert server._SALES_ORDER_LIST_PROJECTION.get("priority") == 1
     assert server._SALES_ORDER_LIST_PROJECTION.get("buffer_stock") == 1
+    assert server._SALES_ORDER_LIST_PROJECTION.get("customer_id") == 1
     summary = server._orders_list_summary_projection()
     assert summary.get("priority") == 1
     assert summary.get("buffer_stock") == 1

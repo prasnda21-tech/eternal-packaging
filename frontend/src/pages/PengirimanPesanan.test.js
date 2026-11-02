@@ -175,9 +175,12 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
   });
 
   test("CREATE SJ Rincian table remains scrollable under multi-PO header (layout regression)", () => {
-    // Multi-PO picker uses CSS-capped class (not inline maxHeight:160 that starved the body).
+    // Multi-PO searchable picker uses CSS-capped class (not inline maxHeight:160 that starved the body).
     expect(src).toMatch(/data-testid="multi-po-picker"/);
     expect(src).toMatch(/className="ux90-multi-po-picker"/);
+    expect(src).toMatch(/LookupMultiSearchSelect/);
+    expect(src).toMatch(/testId="multi-po-lookup"/);
+    expect(src).not.toMatch(/\.slice\(0,\s*40\)/);
     expect(src).toMatch(/ux90-table-scroll/);
     expect(src).toMatch(/ux90-delivery-doc-header/);
     expect(src).toMatch(/ux90-delivery-doc-body/);
@@ -201,6 +204,21 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(css).toMatch(
       /\.ux90-pj-delivery-host\s+\.ux90-pj-delivery\s+\.ux90-footer[\s\S]*?flex:\s*0\s+0\s+auto\s*!important/
     );
+  });
+
+  test("multi-PO create uses searchable select + authoritative qty summary + customer_id gate", () => {
+    expect(src).toMatch(/fetchMultiPoOptions/);
+    expect(src).toMatch(/applyMultiPoSelection/);
+    expect(src).toMatch(/multiPoQtySummary/);
+    expect(src).toMatch(/summarizeMultiPoDeliveryQty/);
+    expect(src).toMatch(/anchorMultiCustomerId/);
+    expect(src).toMatch(/customer_id/);
+    expect(src).toMatch(/data-testid="multi-po-total-ordered"/);
+    expect(src).toMatch(/data-testid="multi-po-total-shipped"/);
+    expect(src).toMatch(/data-testid="multi-po-remaining-after"/);
+    expect(src).toMatch(/status:\s*"aktif"/);
+    expect(src).not.toMatch(/page_size:\s*40/);
+    expect(src).not.toMatch(/multi-po-check-/);
   });
 
   test("adds Proses ke Pengiriman Pesanan button and summary to PesananPenjualan", () => {
