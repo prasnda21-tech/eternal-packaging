@@ -1,4 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { placeMasterItemListBox } from "./MasterItemSearchSelect";
 import "./masterItemSearchSelect.css";
 
 export const CUSTOMER_SEARCH_DEBOUNCE_MS = 150;
@@ -34,10 +36,13 @@ export function filterActiveMasterCustomers(customers, query) {
 }
 
 /**
- * Customer live search for Pesanan Penjualan create form.
+ * Customer live search for Pesanan Penjualan / Pra-PO create forms.
  * Canonical customer_id is set only via explicit result selection.
  * Free typing never silently binds an existing customer.
+ * Focus/click shows active masters immediately — typing is not required to see the list.
  */
+export const CUSTOMER_OPTIONS_LOAD_ERROR = "Gagal memuat daftar pelanggan.";
+
 export default function CustomerSearchSelect({
   customers = [],
   value = "",
@@ -51,33 +56,109 @@ export default function CustomerSearchSelect({
   testId = "input-customer",
   className = "",
   required = false,
+  /** True while salesOrderOptions (or equivalent) is loading masters. */
+  customersLoading = false,
+  /** Distinct from empty search — set when master list failed to load. */
+  loadError = "",
+  /** Retry via the page's existing options loader. */
+  onRetryLoad = null,
 }) {
   const listId = useId();
   const rootRef = useRef(null);
+  const listRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState(false);
   const [filtered, setFiltered] = useState([]);
   const [highlight, setHighlight] = useState(0);
+  const [listBox, setListBox] = useState(null);
+  const [overModal, setOverModal] = useState(false);
 
   const display = open ? query : String(value || "");
 
+  const applyFilterNow = useCallback((nextQuery) => {
+    const next = filterActiveMasterCustomers(customers, nextQuery);
+    setFiltered(next);
+    setHighlight(0);
+    setPending(false);
+    return next;
+  }, [customers]);
+
+  const openList = useCallback((nextQuery) => {
+    const q = String(nextQuery || "");
+    setQuery(q);
+    setOpen(true);
+    // Sync first paint from available masters — never flash false empty before debounce.
+    applyFilterNow(q);
+  }, [applyFilterNow]);
+
   useEffect(() => {
     if (!open || disabled) return undefined;
+    const q = String(query || "").trim();
+    // Empty query: keep the full active list in sync immediately (focus / clear / customers load).
+    if (!q) {
+      applyFilterNow(query);
+      return undefined;
+    }
+    // Typing: debounce filter only.
     setPending(true);
-    setFiltered([]);
     const handle = window.setTimeout(() => {
-      setFiltered(filterActiveMasterCustomers(customers, query));
-      setHighlight(0);
-      setPending(false);
+      applyFilterNow(query);
     }, CUSTOMER_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [query, open, disabled, customers]);
+  }, [query, open, disabled, customers, applyFilterNow]);
+
+  const placeList = useCallback(() => {
+    const anchor = rootRef.current;
+    if (!anchor || !anchor.isConnected || typeof window === "undefined") {
+      setListBox(null);
+      return;
+    }
+    const nextOverModal = Boolean(anchor.closest?.(".modal"));
+    setOverModal((prev) => (prev === nextOverModal ? prev : nextOverModal));
+    const rect = anchor.getBoundingClientRect();
+    const measured = listRef.current ? listRef.current.scrollHeight : 0;
+    const next = placeMasterItemListBox(rect, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }, measured);
+    if (!next) return;
+    setListBox((prev) => {
+      if (
+        prev
+        && prev.top === next.top
+        && prev.left === next.left
+        && prev.width === next.width
+        && prev.maxHeight === next.maxHeight
+        && prev.placement === next.placement
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open || disabled) {
+      setListBox(null);
+      setOverModal(false);
+      return undefined;
+    }
+    placeList();
+    window.addEventListener("resize", placeList);
+    window.addEventListener("scroll", placeList, true);
+    return () => {
+      window.removeEventListener("resize", placeList);
+      window.removeEventListener("scroll", placeList, true);
+    };
+  }, [open, disabled, placeList, filtered.length, pending]);
 
   useEffect(() => {
     if (!open) return undefined;
     const onDoc = (event) => {
-      if (!rootRef.current?.contains(event.target)) setOpen(false);
+      const t = event.target;
+      if (rootRef.current?.contains(t) || listRef.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -100,7 +181,8 @@ export default function CustomerSearchSelect({
     if (disabled) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setOpen(true);
+      if (!open) openList(String(value || ""));
+      else setOpen(true);
       setHighlight((h) => Math.min(h + 1, Math.max(filtered.length - 1, 0)));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
@@ -114,12 +196,94 @@ export default function CustomerSearchSelect({
   };
 
   const showClear = Boolean(String(value || "").trim() || selectedId) && !disabled;
+  const loadErrorMessage = String(loadError || "").trim();
 
   const status = useMemo(() => {
+    if (customersLoading) return "loading-customers";
     if (pending) return "loading";
-    if (!filtered.length) return "empty";
-    return "results";
-  }, [pending, filtered.length]);
+    if (filtered.length) return "results";
+    // API failure must not reuse the empty-search copy.
+    if (loadErrorMessage) return "error";
+    return "empty";
+  }, [customersLoading, pending, filtered.length, loadErrorMessage]);
+
+  const retry = (event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (disabled || typeof onRetryLoad !== "function") return;
+    onRetryLoad();
+  };
+
+  const listNode = open && !disabled && listBox ? (
+    <ul
+      id={listId}
+      ref={listRef}
+      className={`mis-list${overModal ? " mis-list-over-modal" : ""}`}
+      role="listbox"
+      data-testid={`${testId}-list`}
+      data-overlay="portal"
+      data-placement={listBox.placement}
+      style={{
+        top: listBox.top,
+        left: listBox.left,
+        width: listBox.width,
+        maxHeight: listBox.maxHeight,
+      }}
+    >
+      {status === "loading-customers" && (
+        <li className="mis-status" data-testid={`${testId}-loading`}>
+          Memuat daftar pelanggan…
+        </li>
+      )}
+      {status === "loading" && (
+        <li className="mis-status" data-testid={`${testId}-loading`}>
+          Mencari…
+        </li>
+      )}
+      {status === "error" && (
+        <li className="mis-status mis-error" data-testid={`${testId}-load-error`}>
+          <span>{loadErrorMessage || CUSTOMER_OPTIONS_LOAD_ERROR}</span>
+          {typeof onRetryLoad === "function" ? (
+            <button
+              type="button"
+              className="mis-retry"
+              onClick={retry}
+              data-testid={`${testId}-retry`}
+            >
+              Coba lagi
+            </button>
+          ) : null}
+        </li>
+      )}
+      {status === "empty" && (
+        <li className="mis-status" data-testid={`${testId}-empty`}>
+          {noResultLabel}
+        </li>
+      )}
+      {status === "results" &&
+        filtered.map((customer, index) => {
+          const key = String(customer.id);
+          const active = highlight === index;
+          const meta = formatCustomerOptionMeta(customer);
+          return (
+            <li key={key}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={active}
+                className={`mis-option ${active ? "is-active" : ""}`}
+                onMouseEnter={() => setHighlight(index)}
+                onClick={() => pick(customer)}
+                data-testid={`${testId}-option-${key}`}
+              >
+                <span className="mis-option-name">{customer.name}</span>
+                {meta ? <span className="mis-option-meta">{meta}</span> : null}
+              </button>
+            </li>
+          );
+        })}
+    </ul>
+  ) : null;
 
   return (
     <div className={`mis-root ${className}`.trim()} ref={rootRef} data-testid={`${testId}-root`}>
@@ -140,14 +304,12 @@ export default function CustomerSearchSelect({
             setQuery(next);
             setOpen(true);
             setPending(true);
-            setFiltered([]);
             // Free text never binds customer_id — parent must clear selection.
             onTextChange?.(next);
           }}
           onFocus={() => {
             if (disabled) return;
-            setOpen(true);
-            setQuery(String(value || ""));
+            openList(String(value || ""));
           }}
           onKeyDown={onKeyDown}
           data-testid={testId}
@@ -164,48 +326,25 @@ export default function CustomerSearchSelect({
           </button>
         )}
       </div>
-      {open && !disabled && (
-        <ul
-          id={listId}
-          className="mis-list"
-          role="listbox"
-          data-testid={`${testId}-list`}
-          style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 80 }}
-        >
-          {status === "loading" && (
-            <li className="mis-status" data-testid={`${testId}-loading`}>
-              Mencari…
-            </li>
-          )}
-          {status === "empty" && (
-            <li className="mis-status" data-testid={`${testId}-empty`}>
-              {String(query || "").trim() ? noResultLabel : "Ketik untuk mencari customer aktif"}
-            </li>
-          )}
-          {status === "results" &&
-            filtered.map((customer, index) => {
-              const key = String(customer.id);
-              const active = highlight === index;
-              const meta = formatCustomerOptionMeta(customer);
-              return (
-                <li key={key}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    className={`mis-option ${active ? "is-active" : ""}`}
-                    onMouseEnter={() => setHighlight(index)}
-                    onClick={() => pick(customer)}
-                    data-testid={`${testId}-option-${key}`}
-                  >
-                    <span className="mis-option-name">{customer.name}</span>
-                    {meta ? <span className="mis-option-meta">{meta}</span> : null}
-                  </button>
-                </li>
-              );
-            })}
-        </ul>
-      )}
+      {loadErrorMessage && !disabled ? (
+        <div className="mis-load-error-hint" data-testid={`${testId}-load-error-hint`}>
+          <span>{loadErrorMessage}</span>
+          {typeof onRetryLoad === "function" ? (
+            <button
+              type="button"
+              className="mis-retry"
+              onClick={retry}
+              disabled={customersLoading}
+              data-testid={`${testId}-retry-inline`}
+            >
+              Coba lagi
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {typeof document !== "undefined" && listNode
+        ? createPortal(listNode, document.body)
+        : null}
     </div>
   );
 }
