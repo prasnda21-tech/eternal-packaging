@@ -206,6 +206,7 @@ describe("MobileProductionSchedulePage", () => {
       include_cancelled: FILTER_DEFAULTS.includeCancelled,
       include_completed: FILTER_DEFAULTS.includeCompleted,
       view: "summary",
+      schedule_scope: "default",
     });
     expect(container.querySelector('[data-testid="mobile-schedule-prev"]')).toBeFalsy();
     expect(container.querySelector('[data-testid="mobile-schedule-today"]')).toBeFalsy();
@@ -529,6 +530,7 @@ describe("MobileProductionSchedulePage", () => {
       include_cancelled: false,
       include_completed: false,
       view: "summary",
+      schedule_scope: "default",
     });
   });
 
@@ -542,6 +544,7 @@ describe("MobileProductionSchedulePage", () => {
       include_cancelled: true,
       include_completed: true,
       view: "summary",
+      schedule_scope: "default",
     });
   });
 
