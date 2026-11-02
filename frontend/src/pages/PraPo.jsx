@@ -993,6 +993,31 @@ export default function PraPoPage() {
                           data-testid="pra-po-customer-phone"
                         />
                       </PraField>
+                      {newCustomer ? (
+                        <>
+                          <PraField label="Email Pelanggan">
+                            <input
+                              className="so-line-input"
+                              type="email"
+                              value={form.customer_email || ""}
+                              onChange={(e) => setForm((p) => ({ ...p, customer_email: e.target.value }))}
+                              disabled={!canEditForm}
+                              placeholder="opsional"
+                              data-testid="pra-po-customer-email"
+                            />
+                          </PraField>
+                          <PraField label="Kota">
+                            <input
+                              className="so-line-input"
+                              value={form.customer_city || ""}
+                              onChange={(e) => setForm((p) => ({ ...p, customer_city: e.target.value }))}
+                              disabled={!canEditForm}
+                              placeholder="opsional"
+                              data-testid="pra-po-customer-city"
+                            />
+                          </PraField>
+                        </>
+                      ) : null}
                       <PraField
                         label="Alamat Lengkap Pengiriman"
                         required={newCustomer}

@@ -994,6 +994,10 @@ async def _resolve_customer_for_verify(db, pra: dict, user: dict) -> str:
     if not address:
         raise HTTPException(400, "Pelanggan baru: Alamat lengkap pengiriman wajib diisi.")
 
+    # Prefer explicit customer_pic; fall back to transaction recipient for new masters
+    # (same semantics as prepare_customer_for_po: customer_pic or recipient).
+    pic = str(pra.get("customer_pic") or "").strip() or str(pra.get("recipient") or "").strip()
+
     cid = str(uuid.uuid4())
     now = customer_now_iso()
     doc = {
@@ -1002,7 +1006,7 @@ async def _resolve_customer_for_verify(db, pra: dict, user: dict) -> str:
         "normalized_name": normalize_customer_name(name),
         "phone": phone,
         "address": address,
-        "pic": str(pra.get("customer_pic") or "").strip(),
+        "pic": pic,
         "email": str(pra.get("customer_email") or "").strip(),
         "city": str(pra.get("customer_city") or "").strip(),
         "notes": "",

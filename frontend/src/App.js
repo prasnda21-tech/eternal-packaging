@@ -376,7 +376,7 @@ export default function App() {
             <Route path="/produksi" element={<PermGate anyOf={["schedule.view"]}><ProductionSchedule /></PermGate>} />
             <Route path="/analytics/operators" element={<PermGate anyOf={["dashboard.production.view"]}><AnalyticsOperators /></PermGate>} />
             <Route path="/admin/import" element={<PermGate anyOf={[NAV_KEYS.importPo]} alsoAnyOf={["po.import.view"]}><ImportPO /></PermGate>} />
-            <Route path="/penjualan/data-pelanggan" element={<PermGate anyOf={[NAV_KEYS.salesCustomers, NAV_KEYS.sales, "sales.customer.view", "sales.customer.manage", "sales_order.view", "sales_order.create", "po.view"]}><DataPelanggan /></PermGate>} />
+            <Route path="/penjualan/data-pelanggan" element={<PermGate anyOf={["sales.customer.view", "sales.customer.manage", "sales.customer.edit", "sales.customer.manage_status"]}><DataPelanggan /></PermGate>} />
             <Route path="/penjualan/permintaan-produk/baru" element={<PermGate anyOf={["product_request.create"]}><ProductRequestForm /></PermGate>} />
             <Route path="/penjualan/permintaan-produk/:id" element={<ProductRequestForm />} />
             <Route path="/penjualan/permintaan-produk" element={<ProductRequestList />} />

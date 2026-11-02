@@ -967,6 +967,8 @@ ROLE_DEFAULT_PERMISSIONS = {
     "head_operations": [
         "po.view", "po.edit", "po.cancel", "sales_order.view", "sales_order.create",
         "pra_po.view_all", "pra_po.verify", "pra_po.return", "pra_po.audit.view",
+        "sales.customer.view", "sales.customer.manage", "sales.customer.edit",
+        "sales.customer.manage_status",
         "sales.delivery.view", "sales.delivery.create", "sales.delivery.print",
         "sales.invoice.view", "sales.invoice.create", "sales.invoice.edit",
         "sales.receipt.view", "sales.receipt.create",

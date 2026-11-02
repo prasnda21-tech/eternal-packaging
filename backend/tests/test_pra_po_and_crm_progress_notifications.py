@@ -198,6 +198,13 @@ class FakeDb:
         self.sales_customers = FakeCollection([
             {"id": "cust-1", "name": "Toko Master", "phone": "081111", "address": "Jl. Master", "is_active": True},
         ])
+        # Single YGY branch — matches resolve_write_branch auto-pick for FakeDb users.
+        self.branches = FakeCollection([
+            {"id": "br-ygy", "code": "YGY", "name": "Yogyakarta", "active": True},
+        ])
+        self.warehouses = FakeCollection([
+            {"id": "wh-ygy", "branch_id": "br-ygy", "code": "YGY-MAIN", "name": "Gudang YGY", "active": True},
+        ])
 
     def __getitem__(self, name):
         return getattr(self, name)
