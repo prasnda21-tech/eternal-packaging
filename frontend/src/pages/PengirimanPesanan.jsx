@@ -366,13 +366,20 @@ export default function PengirimanPesanan() {
     )
   ), []);
 
-  // Load active POs with remaining quantity (no silent 40-cap; API hard-max applies).
+  // Single-PO local options: first page only (never uncapped stream on form open).
+  const SINGLE_PO_LOOKUP_PAGE_SIZE = 50;
+  const MULTI_PO_LOOKUP_PAGE_SIZE = 40;
+  const multiPoQueryCacheRef = useRef(new Map());
+
   const loadActivePOs = useCallback(async () => {
     if (!canCreate) return;
     setLoadingPOs(true);
     try {
-      // Omit page/page_size so backend returns the uncapped (hard-max) stream for aktif.
-      const res = await api.listSalesOrders({ status: "aktif" });
+      const res = await api.listSalesOrders({
+        status: "aktif",
+        page: 1,
+        page_size: SINGLE_PO_LOOKUP_PAGE_SIZE,
+      });
       setAvailablePOs(filterInvoiceableActivePos(res.orders));
     } catch {
       // Best effort load POs
@@ -381,10 +388,44 @@ export default function PengirimanPesanan() {
     }
   }, [canCreate, filterInvoiceableActivePos]);
 
-  const fetchMultiPoOptions = useCallback(async (query) => {
+  /** Server-side multi-PO search with pagination. Supports AbortSignal + light query cache. */
+  const fetchMultiPoOptions = useCallback(async (query, opts = {}) => {
+    const page = Number(opts.page) > 0 ? Number(opts.page) : 1;
+    const pageSize = Number(opts.pageSize) > 0 ? Number(opts.pageSize) : MULTI_PO_LOOKUP_PAGE_SIZE;
+    const q = String(query || "").trim();
+    const cacheKey = `${q}::${page}::${pageSize}`;
+    const hit = multiPoQueryCacheRef.current.get(cacheKey);
+    if (hit && (Date.now() - hit.at) < 30_000) {
+      return hit.payload;
+    }
+    const res = await api.listSalesOrders(
+      {
+        status: "aktif",
+        page,
+        page_size: pageSize,
+        ...(q ? { q } : {}),
+      },
+      opts.signal ? { signal: opts.signal } : {},
+    );
+    const orders = filterInvoiceableActivePos(res.orders);
+    const total = Number(res.total) || 0;
+    const current = Number(res.page) || page;
+    const size = Number(res.page_size) || pageSize;
+    const hasMore = total > 0
+      ? (current * size) < total
+      : orders.length >= pageSize;
+    const payload = { items: orders, hasMore, page: current };
+    multiPoQueryCacheRef.current.set(cacheKey, { at: Date.now(), payload });
+    return payload;
+  }, [filterInvoiceableActivePos]);
+
+  // Single-PO searchable fetch (PO 51+ still reachable without uncapped preload).
+  const fetchSinglePoOptions = useCallback(async (query) => {
     const q = String(query || "").trim();
     const res = await api.listSalesOrders({
       status: "aktif",
+      page: 1,
+      page_size: SINGLE_PO_LOOKUP_PAGE_SIZE,
       ...(q ? { q } : {}),
     });
     return filterInvoiceableActivePos(res.orders);
@@ -1431,6 +1472,7 @@ export default function PengirimanPesanan() {
                           options={availablePOs}
                           value={selectedPoId}
                           onChange={(id) => handleSelectPO(id || "")}
+                          fetchOptions={fetchSinglePoOptions}
                           getOptionValue={(p) => p.id}
                           getOptionLabel={(p) => String(p.po_number || p.id || "")}
                           getOptionMeta={(p) => [
@@ -1459,7 +1501,7 @@ export default function PengirimanPesanan() {
                                 setPoSummary(null);
                                 setSelectedPoIds([]);
                                 setPoSummariesById({});
-                                void loadActivePOs();
+                                // Multi-PO uses paginated fetchOptions — do not preload all aktif POs.
                               } else {
                                 setPoSummariesById({});
                                 setSelectedPoIds(selectedPoId ? [selectedPoId] : []);
