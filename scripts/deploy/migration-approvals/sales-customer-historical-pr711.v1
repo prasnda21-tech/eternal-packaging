@@ -1,0 +1,12 @@
+# SHA-scoped deploy-gate approval — does NOT execute migrations.
+# Audited release tip that first carried PR #711 historical migration files.
+# Unlock deploy of this exact target_sha only when the deploy-range blocked
+# path set equals the path list below and each blob id matches git content.
+schema=eternal.deploy.migration_approval.v1
+target_sha=99c201be32f974161a0cb552805267d68fed68b9
+path=backend/scripts/migrate_sales_customers_historical.py
+blob=b5f09b599ea66ffdbedb9c73c382f76ef5b4200e
+path=backend/services/sales_customer_historical_migration.py
+blob=10d7ad83a95ccfd71a4c820bd5cbd9c1626661d7
+path=backend/tests/test_sales_customer_historical_migration.py
+blob=0d5b14249dbe103aa82f437154ecd8b329b04d2b
