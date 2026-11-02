@@ -1,10 +1,10 @@
 """One-time historical reconciliation into sales_customers.
 
-Default mode is dry-run against business collections (orders / sales_customers
-unchanged). Optional durable audit rows may be written to
-``sales_customer_migration_runs`` (ops metadata, not business masters).
+Default mode is dry-run: fully zero-write (orders / sales_customers /
+``sales_customer_migration_runs`` unchanged). Apply and rollback write
+durable audit rows. Apply requires explicit Owner approval.
 
-Apply requires explicit Owner approval. Never invoked from server startup.
+Never invoked from server startup.
 Does NOT mutate orders, invoices, AR, Accurate, inventory, or journals.
 Does NOT replace the entire sales_customers collection.
 """
