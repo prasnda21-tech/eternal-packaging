@@ -1,4 +1,5 @@
 import { STAGES } from "./constants";
+import { operationalSalesSnapshotLabel } from "./operationalSalesSnapshot";
 
 export const SALES_ORDER_DELIVERY_STATUS_OPTIONS = [
   { value: "BELUM DIKIRIM", label: "Belum dikirim" },
@@ -69,7 +70,7 @@ export function salesOrderStageLabel(order) {
 }
 
 export function salesOrderSalesName(order) {
-  return String(order?.sales || order?.sales_user || "");
+  return operationalSalesSnapshotLabel(order);
 }
 
 function hasText(value) {

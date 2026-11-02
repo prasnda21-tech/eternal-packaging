@@ -107,6 +107,10 @@ describe("CrmDailyReportForm interaction", () => {
       can_view_all: false,
       can_edit_own: true,
       reporter: { id: "u1", name: "Andi Dharma" },
+      sales_catalog: [
+        { id: "sm-ayub", sales_name: "Sholahudin Al - Ayubi", user_id: "sales-ayub", active: true },
+        { id: "sm-euis", sales_name: "Euis Risnawati", user_id: "sales-euis", active: true },
+      ],
     });
     api.crmDailyReportCustomers.mockResolvedValue({ customers: [] });
     api.crmDailyReportOrders.mockResolvedValue({
@@ -122,12 +126,7 @@ describe("CrmDailyReportForm interaction", () => {
         },
       ],
     });
-    api.crmDailyReportSales.mockResolvedValue({
-      sales: [
-        { user_id: "sales-ayub", label: "Sholahudin Al - Ayubi", name: "Ayub", email: "ayub@eternal.com" },
-        { user_id: "sales-euis", label: "Euis Risnawati", name: "Euis", email: "euis@eternal.com" },
-      ],
-    });
+    api.crmDailyReportSales.mockResolvedValue({ sales: [] });
     api.createCrmDailyReport.mockImplementation(async (payload) => ({ report: { id: "r1", ...payload } }));
     api.getCrmDailyReport.mockReset();
     api.updateCrmDailyReport.mockReset();

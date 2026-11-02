@@ -3618,7 +3618,7 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
     imported_pos: List[str] = []
     updated_pos: List[str] = []
 
-    from services.sales_user_mapping import resolve_from_map, load_mapping_dict, apply_sales_user_id
+    from services.sales_user_mapping import load_mapping_dict
     mapping = await load_mapping_dict(db)
 
     for so in src_orders:
@@ -3669,15 +3669,10 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
         branch_id = str(so.get("branch_id") or "").strip()
         if branch_id.isdigit():
             sales_payload["branch_id"] = branch_id
-        uid, _status = resolve_from_map(mapping, so.get("sales"))
-
         if existing:
             # Only refresh sales-side fields. Preserve all workflow state.
+            # Do NOT rewrite sales_user_id / ownership on existing POs (no ownership transfer).
             update = {k: v for k, v in sales_payload.items() if k in _SALES_FIELDS or k in ("updated_at", "accurate_synced_at", "accurate_source", "branch_id")}
-            # Derived ownership — never keep a previous users.id for an unmatched label.
-            update["sales_user_id"] = uid or None
-            update["sales_ownership_status"] = _status
-            update["sales_needs_verification"] = _status != "matched"
             await db.orders.update_one({"po_number": po_number}, {"$set": update})
             updated += 1
             updated_pos.append(po_number)
@@ -3712,14 +3707,33 @@ async def sync_sales_orders(db, client: AccurateClient) -> Dict[str, Any]:
                 "deadline": deadline,
                 **sales_payload,
             }
-            apply_sales_user_id(new, uid)
-            new["sales_ownership_status"] = _status
-            new["sales_needs_verification"] = _status != "matched"
+            # Soft Master attach on NEW sync inserts only — never rewrite existing history.
+            try:
+                from services.sales_master import resolve_for_po_write
+                sync_mid, sync_label, _ = await resolve_for_po_write(
+                    db,
+                    sales_master_id=None,
+                    sales_label=new.get("sales"),
+                    user=None,
+                )
+                if sync_mid:
+                    new["sales_master_id"] = sync_mid
+                if sync_label:
+                    new["sales"] = sync_label
+            except Exception:
+                pass
+            from services.sales_user_mapping import attach_sales_ownership
+            await attach_sales_ownership(db, new, mapping=mapping, allow_master_fallback=True)
             from services.physical_stock_engine import attach_order_stock_snapshot
             from services.stock_engine_v2 import validate_sales_order_availability
             await validate_sales_order_availability(db, new.get("line_items") or [])
             await attach_order_stock_snapshot(db, new)
             await db.orders.insert_one(new)
+            try:
+                from services.sales_master import after_import_sales_identity
+                await after_import_sales_identity(db, new)
+            except Exception:
+                pass
             imported += 1
             imported_pos.append(po_number)
 

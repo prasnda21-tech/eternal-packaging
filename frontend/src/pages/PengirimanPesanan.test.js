@@ -168,6 +168,9 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/data-testid="input-delivery-outlet"/);
     expect(src).toMatch(/data-testid="input-delivery-recipient"/);
     expect(src).toMatch(/data-testid="input-delivery-sales"/);
+    expect(src).toMatch(/readOnly[\s\S]*data-testid="input-delivery-sales"|data-testid="input-delivery-sales"[\s\S]*readOnly/);
+    expect(src).not.toMatch(/onChange=\{\(e\) => setFormData\(\(p\) => \(\{ \.\.\.p, sales: e\.target\.value \}\)\)\}/);
+    expect(src).toMatch(/authoritativeSalesLabel|operationalSalesSnapshotLabel/);
     expect(src).toMatch(/data-testid="input-delivery-expedition"/);
     expect(src).toMatch(/data-testid="input-delivery-zone"/);
     expect(src).toMatch(/data-testid="input-delivery-address"/);

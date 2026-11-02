@@ -18,11 +18,9 @@ from pymongo import ReturnDocument
 from services.branch_access import SCOPE_ALL, resolve_branch_access
 from services.org_locations import BRANCHES_COLLECTION
 from services.sales_user_mapping import (
-    MAPPING_TARGET_ROLES,
     exact_sales_label,
     load_mapping_doc,
     mapping_dict_from_entries,
-    save_mapping,
 )
 
 COLLECTION = "sales_master"
@@ -214,38 +212,32 @@ async def require_active_sales(db, sales_id: str, *, user: Optional[dict] = None
     return pub
 
 
-async def _assert_mapping_rename_safe(
+async def _preserve_aliases_on_rename(
     db,
     *,
+    sales_master_id: str,
     old_name: str,
     new_name: str,
-    user_id: Optional[str],
-    user_role: Optional[str],
 ) -> None:
-    """Raise 409 if rename would collide with mapping to a different Eternal user."""
-    mapping_uid = user_id if (user_id and user_role in MAPPING_TARGET_ROLES) else None
-    old_label = exact_sales_label(old_name)
-    new_label = exact_sales_label(new_name)
-    if not new_label or old_label == new_label:
+    """Keep exact Accurate aliases intact across official-name rename.
+
+    Does not touch sales_user_mapping. Old label stays bound so historical
+    invoice/PO Accurate labels still resolve to the same Master.
+    """
+    mid = str(sales_master_id or "").strip()
+    if not mid:
         return
-    doc = await load_mapping_doc(db)
-    for row in doc.get("entries") or []:
-        if not isinstance(row, dict):
-            continue
-        label = exact_sales_label(row.get("label"))
-        uid = str(row.get("user_id") or "").strip()
-        if label == new_label and mapping_uid and uid and uid != mapping_uid:
-            raise HTTPException(
-                409,
-                "Rename/label bentrok dengan mapping Accurate existing ke user lain. "
-                "Perbarui Mapping Sales Accurate terlebih dahulu.",
-            )
-        if label == new_label and not mapping_uid and uid:
-            raise HTTPException(
-                409,
-                "Rename/label bentrok dengan mapping Accurate existing. "
-                "Perbarui Mapping Sales Accurate terlebih dahulu.",
-            )
+    try:
+        from services import sales_master_aliases as _aliases
+        await _aliases.ensure_indexes(db)
+        old_label = exact_sales_label(old_name)
+        new_label = exact_sales_label(new_name)
+        if old_label:
+            await _aliases.ensure_alias_silent(db, exact_label=old_label, sales_master_id=mid)
+        if new_label:
+            await _aliases.ensure_alias_silent(db, exact_label=new_label, sales_master_id=mid)
+    except Exception:
+        pass
 
 
 async def _sync_mapping_label(
@@ -257,48 +249,16 @@ async def _sync_mapping_label(
     user_role: Optional[str],
     actor: dict,
 ) -> None:
-    """Keep Accurate mapping aligned when Master sales_name (Accurate label) changes.
+    """DEPRECATED auto-path — do not call from Master create/rename.
 
-    Mapping entries only accept sales_eternal users (existing contract). Links to
-    other roles stay on Master Sales only.
+    Official Master rename must NOT rewrite sales_user_mapping (financial
+    attribution is invoice Accurate label → mapping → users.id at report read).
+    Mapping changes require an explicit PUT /settings/sales-user-mapping with
+    settings.sales_user_mapping.manage + attribution confirmation in the UI.
+    Function retained only so older imports/tests that reference the symbol
+    do not break; it is intentionally a no-op.
     """
-    mapping_uid = user_id if (user_id and user_role in MAPPING_TARGET_ROLES) else None
-    old_label = exact_sales_label(old_name)
-    new_label = exact_sales_label(new_name)
-    doc = await load_mapping_doc(db)
-    entries = list(doc.get("entries") or [])
-    changed = False
-    next_entries: List[dict] = []
-    for row in entries:
-        if not isinstance(row, dict):
-            continue
-        label = exact_sales_label(row.get("label"))
-        uid = str(row.get("user_id") or "").strip()
-        if label == old_label and old_label != new_label:
-            if new_label:
-                next_entries.append({"label": new_label, "user_id": mapping_uid or uid or None})
-            changed = True
-            continue
-        if label == new_label and mapping_uid and uid and uid != mapping_uid:
-            raise HTTPException(
-                409,
-                "Rename/label bentrok dengan mapping Accurate existing ke user lain. "
-                "Perbarui Mapping Sales Accurate terlebih dahulu.",
-            )
-        next_entries.append({"label": label, "user_id": uid or None})
-
-    if mapping_uid and new_label:
-        if not any(exact_sales_label(e.get("label")) == new_label for e in next_entries):
-            next_entries.append({"label": new_label, "user_id": mapping_uid})
-            changed = True
-        else:
-            for e in next_entries:
-                if exact_sales_label(e.get("label")) == new_label and str(e.get("user_id") or "") != mapping_uid:
-                    e["user_id"] = mapping_uid
-                    changed = True
-
-    if changed:
-        await save_mapping(db, {"entries": next_entries}, actor)
+    return None
 
 
 async def create_sales_master(db, payload: dict, actor: dict) -> dict:
@@ -330,9 +290,15 @@ async def create_sales_master(db, payload: dict, actor: dict) -> dict:
         "updated_by_name": (actor or {}).get("name"),
     }
     await db[COLLECTION].insert_one(doc)
-    await _sync_mapping_label(
-        db, old_name=name, new_name=name, user_id=user_id, user_role=user_role, actor=actor,
-    )
+    # Official name → alias only. Never auto-write sales_user_mapping on create.
+    try:
+        from services import sales_master_aliases as _aliases
+        await _aliases.ensure_indexes(db)
+        await _aliases.ensure_alias_silent(
+            db, exact_label=exact_sales_label(name), sales_master_id=doc["id"],
+        )
+    except Exception:
+        pass
     pub = public_sales(doc)
     await _write_audit(db, action="settings.sales_master.create", actor=actor, after=pub, note=f"create {doc['id']}")
     return pub
@@ -382,11 +348,6 @@ async def update_sales_master(db, sales_id: str, payload: dict, actor: dict) -> 
             raise HTTPException(400, "sort_order tidak valid")
 
     old_name = normalize_sales_name(raw.get("sales_name"))
-    # Validate mapping rename blockers before write to avoid partial updates.
-    if old_name != name or user_id != (before or {}).get("user_id"):
-        await _assert_mapping_rename_safe(
-            db, old_name=old_name, new_name=name, user_id=user_id, user_role=user_role,
-        )
 
     updates = {
         "sales_name": name,
@@ -408,24 +369,26 @@ async def update_sales_master(db, sales_id: str, payload: dict, actor: dict) -> 
     if not result:
         raise HTTPException(409, "Data sudah diubah pengelola lain. Muat ulang lalu simpan lagi.")
 
-    if old_name != name or user_id != (before or {}).get("user_id"):
-        await _sync_mapping_label(
-            db,
-            old_name=old_name,
-            new_name=name,
-            user_id=user_id,
-            user_role=user_role,
-            actor=actor,
+    # Rename keeps Accurate aliases; never rewrites sales_user_mapping.
+    if old_name != name:
+        await _preserve_aliases_on_rename(
+            db, sales_master_id=sid, old_name=old_name, new_name=name,
         )
 
     pub = public_sales(result)
+    note = f"update {sid}"
+    if old_name != name:
+        note = (
+            f"rename {sid}: {old_name!r} → {name!r}; "
+            "aliases preserved; sales_user_mapping unchanged"
+        )
     await _write_audit(
         db,
         action="settings.sales_master.update",
         actor=actor,
         before=before,
         after=pub,
-        note=f"update {sid}",
+        note=note,
     )
     return pub
 
@@ -441,6 +404,11 @@ async def resolve_for_po_write(
 
     Prefer master id when provided. Legacy free-text label still allowed for
     Accurate import / unmatched paths (no auto-create master).
+
+    Resolution order for free-text:
+    1. Authoritative exact alias (sales_master_aliases.exact_label)
+    2. Soft active Master name_key match (legacy)
+    Alias → inactive Master: leave free-text (caller may open candidate for review).
     """
     mid = str(sales_master_id or "").strip()
     if mid:
@@ -454,7 +422,30 @@ async def resolve_for_po_write(
     label = exact_sales_label(sales_label)
     if not label:
         return None, None, None
-    # Optional soft-resolve: if label matches an active master, attach id
+
+    # 1) Authoritative exact Accurate alias → sales_master.id
+    try:
+        from services import sales_master_aliases as _aliases
+        alias_mid, alias_st = await _aliases.resolve_master_id_for_label(db, label)
+    except Exception:
+        alias_mid, alias_st = None, "unmatched"
+    if alias_st == "matched" and alias_mid:
+        master_doc = await db[COLLECTION].find_one({"id": alias_mid}, {"_id": 0})
+        if master_doc and master_doc.get("active") is not False:
+            pub = public_sales(master_doc)
+            if user is not None:
+                # Branch-scoped catalog check when actor provided
+                try:
+                    await require_active_sales(db, pub["id"], user=user)
+                except HTTPException:
+                    return None, label, None
+            uid = str(pub.get("user_id") or "").strip() or None
+            official = exact_sales_label(pub.get("sales_name")) or label
+            return pub["id"], official, uid
+        # Alias points at missing/inactive master — preserve original label
+        return None, label, None
+
+    # 2) Optional soft-resolve: if label matches an active master name_key, attach id
     key = name_key(label)
     doc = await db[COLLECTION].find_one({"name_key": key, "active": True}, {"_id": 0})
     if doc:
@@ -462,3 +453,58 @@ async def resolve_for_po_write(
         uid = str(pub.get("user_id") or "").strip() or None
         return pub["id"], exact_sales_label(pub.get("sales_name")) or label, uid
     return None, label, None
+
+
+async def after_import_sales_identity(db, order: dict) -> None:
+    """Best-effort candidate bookkeeping after PO import/sync insert.
+
+    Never raises to callers that wrap it; never creates Master; never writes mapping.
+    """
+    from services import sales_label_candidates as candidates
+    from services import sales_master_aliases as _aliases
+
+    label = exact_sales_label(order.get("sales"))
+    if not label:
+        return
+    po_id = str(order.get("id") or "").strip() or None
+
+    # Already attached to active master via resolve — ensure official name alias exists,
+    # do not open a candidate.
+    mid = str(order.get("sales_master_id") or "").strip()
+    if mid:
+        master = await db[COLLECTION].find_one({"id": mid}, {"_id": 0, "active": 1, "sales_name": 1})
+        if master and master.get("active") is not False:
+            try:
+                await _aliases.ensure_indexes(db)
+                await _aliases.ensure_alias_silent(db, exact_label=label, sales_master_id=mid)
+                official = exact_sales_label(master.get("sales_name"))
+                if official and official != label:
+                    await _aliases.ensure_alias_silent(
+                        db, exact_label=official, sales_master_id=mid,
+                    )
+            except Exception:
+                pass
+            return
+
+    # Alias to inactive/missing master → needs_review candidate
+    alias_mid, alias_st = await _aliases.resolve_master_id_for_label(db, label)
+    if alias_st == "matched" and alias_mid:
+        master = await db[COLLECTION].find_one({"id": alias_mid}, {"_id": 0, "active": 1})
+        if not master or master.get("active") is False:
+            await candidates.ensure_indexes(db)
+            await candidates.record_unrecognized_label(
+                db,
+                sales_label=label,
+                po_id=po_id,
+                review_reason="inactive_or_missing_master",
+                status=candidates.STATUS_NEEDS_REVIEW,
+            )
+            return
+
+    await candidates.ensure_indexes(db)
+    await candidates.record_unrecognized_label(
+        db,
+        sales_label=label,
+        po_id=po_id,
+        status=candidates.STATUS_PENDING,
+    )

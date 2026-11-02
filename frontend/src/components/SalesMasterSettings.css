@@ -20,6 +20,27 @@
   font-size: 13px;
 }
 
+.sales-master-rename-warn {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sales-master-rename-warn p {
+  margin: 0 0 6px;
+}
+
+.sales-master-rename-warn-hint {
+  margin: 0 0 6px !important;
+  font-size: 11.5px;
+  color: #a16207;
+}
+
 .sales-master-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -677,4 +698,14 @@ body.sm-col-resizing {
   gap: 6px;
   padding-top: 4px;
   border-top: 1px solid var(--line, #e2e8f0);
+}
+
+.sales-master-alias-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: #334155;
+  font-size: 12.5px;
+}
+.sales-master-alias-list code {
+  font-size: 12px;
 }

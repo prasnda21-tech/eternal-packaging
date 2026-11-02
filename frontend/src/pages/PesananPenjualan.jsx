@@ -791,12 +791,14 @@ export default function PesananPenjualan() {
           .catch(() => ({ items: [] })),
       ]);
       const catalog = Array.isArray(catalogRes?.items) ? catalogRes.items : [];
-      const catalogNames = catalog.map((s) => s.sales_name).filter(Boolean);
-      const mergedSales = Array.from(new Set([
-        ...(Array.isArray(data?.sales_options) ? data.sales_options : []),
-        ...catalogNames,
-      ])).sort((a, b) => String(a).localeCompare(String(b), "id"));
-      setOptions({ ...(data || {}), sales_options: mergedSales, sales_master_catalog: catalog });
+      // sales_options stay for list column filters (historical snapshots only).
+      // Create picker uses sales_master_catalog exclusively — no free-text fallback.
+      setOptions({
+        ...(data || {}),
+        sales_options: Array.isArray(data?.sales_options) ? data.sales_options : [],
+        sales_master_catalog: catalog,
+        sales_catalog_state: "ready",
+      });
       setWarehouses(
         (Array.isArray(warehouseRes?.items) ? warehouseRes.items : [])
           .filter((wh) => wh && wh.active !== false),
@@ -809,7 +811,11 @@ export default function PesananPenjualan() {
         }));
       }
     } catch {
-      // Best effort load options
+      setOptions((prev) => ({
+        ...prev,
+        sales_master_catalog: Array.isArray(prev.sales_master_catalog) ? prev.sales_master_catalog : [],
+        sales_catalog_state: "error",
+      }));
     } finally {
       setOptionsLoading(false);
     }
@@ -3214,59 +3220,38 @@ export default function PesananPenjualan() {
                       </div>
                       <div className="ux90-doc-info-grid ux90-so-info-grid">
                         <SoField field="sales" label="Sales" error={fieldHasError("sales")}>
-                          {(options.sales_master_catalog || []).length > 0 ? (
-                            <LookupSearchSelect
-                              options={options.sales_master_catalog || []}
-                              value={formData.sales_master_id || ""}
-                              onChange={(sid, hit) => {
-                                setFormData((p) => ({
-                                  ...p,
-                                  sales_master_id: sid || "",
-                                  sales: hit?.sales_name || "",
-                                }));
-                              }}
-                              getOptionValue={(s) => s.id}
-                              getOptionLabel={(s) => s.sales_name || ""}
-                              getOptionMeta={(s) => [s.sales_code, s.branch_name || s.outlet].filter(Boolean).join(" · ")}
-                              getSearchText={(s) => [s.sales_name, s.sales_code, s.branch_name, s.outlet].filter(Boolean).join(" ")}
-                              placeholder="Ketik nama Sales…"
-                              noResultLabel="Tidak ada hasil yang cocok"
-                              testId="input-sales"
-                            />
-                          ) : (options.sales_options || []).length > 0 ? (
-                            <LookupSearchSelect
-                              options={(options.sales_options || []).map((name) => ({ id: name, sales_name: name }))}
-                              value={formData.sales || ""}
-                              onChange={(name) => {
-                                setFormData((p) => ({
-                                  ...p,
-                                  sales: name || "",
-                                  sales_master_id: "",
-                                }));
-                              }}
-                              getOptionValue={(s) => s.id}
-                              getOptionLabel={(s) => s.sales_name}
-                              getSearchText={(s) => s.sales_name}
-                              placeholder="Ketik nama Sales…"
-                              noResultLabel="Tidak ada hasil yang cocok"
-                              testId="input-sales"
-                            />
-                          ) : (
-                            <input
-                              id="so-sales"
-                              type="text"
-                              className="so-line-input"
-                              value={formData.sales}
-                              onChange={(e) => setFormData((p) => ({
+                          <LookupSearchSelect
+                            options={options.sales_master_catalog || []}
+                            value={formData.sales_master_id || ""}
+                            onChange={(sid, hit) => {
+                              setFormData((p) => ({
                                 ...p,
-                                sales: e.target.value,
-                                sales_master_id: "",
-                              }))}
-                              placeholder="mis. Vira"
-                              data-testid="input-sales"
-                              aria-invalid={fieldHasError("sales") || undefined}
-                            />
-                          )}
+                                sales_master_id: sid || "",
+                                sales: hit?.sales_name || "",
+                              }));
+                            }}
+                            getOptionValue={(s) => s.id}
+                            getOptionLabel={(s) => s.sales_name || ""}
+                            getSearchText={(s) => s.sales_name || ""}
+                            placeholder="Ketik nama Sales dari Master…"
+                            noResultLabel="Tidak ada Sales aktif yang cocok"
+                            testId="input-sales"
+                            disabled={optionsLoading}
+                          />
+                          {optionsLoading ? (
+                            <p className="ux90-hint" data-testid="so-sales-catalog-loading">Memuat daftar Sales…</p>
+                          ) : null}
+                          {!optionsLoading && options.sales_catalog_state === "error" ? (
+                            <p className="ux90-hint" data-testid="so-sales-catalog-error">
+                              Daftar Sales gagal dimuat. Tidak memakai input nama bebas.
+                            </p>
+                          ) : null}
+                          {!optionsLoading && options.sales_catalog_state === "ready" && !(options.sales_master_catalog || []).length ? (
+                            <p className="ux90-hint" data-testid="so-sales-catalog-empty">
+                              Tidak ada Sales aktif untuk cabang Anda. Lengkapi Master Sales di Pengaturan Sales.
+                              Input nama bebas tidak tersedia.
+                            </p>
+                          ) : null}
                         </SoField>
 
                         <OperationalBranchSelect value={formData.operational_branch_id} onChange={(id) => setFormData((prev) => ({ ...prev, operational_branch_id: id }))} />

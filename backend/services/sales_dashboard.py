@@ -36,6 +36,7 @@ from services.sales_user_mapping import (
     sales_owner_match,
 )
 from services.sales_user_mapping import STATUS_MATCHED
+from services.sales_report_master_display import attach_master_display_to_dashboard_groups
 from workflow_gates import design_ok
 
 PERM_VIEW = "dashboard.sales.view"
@@ -1339,6 +1340,8 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
         note = f"{unassigned_count} faktur tanpa sales terpetakan masuk {UNASSIGNED_LABEL}, tidak ditebak dari nama."
     status = "complete" if not unassigned_count else "incomplete"
     show_share = status == "complete" and total > 0 and all(row["omzet"] >= 0 for row in public)
+    # Optional Master metadata only — does not change keys, omzet, or invoice_count.
+    enriched = await attach_master_display_to_dashboard_groups(db, public)
     return {
         "status": status,
         "groups": [
@@ -1348,8 +1351,11 @@ async def _build_sales(db, invoices: Sequence[dict], mapping: Dict[str, str]) ->
                 "omzet": _num(row["omzet"].quantize(MONEY_Q)),
                 "invoice_count": row["invoice_count"],
                 "share": _share_percent(row["omzet"], total) if show_share else None,
+                "sales_master_id": row.get("sales_master_id"),
+                "sales_master_name": row.get("sales_master_name"),
+                "sales_master_match_status": row.get("sales_master_match_status"),
             }
-            for row in public
+            for row in enriched
         ],
         "total_omzet": _num(total),
         "unassigned_invoice_count": unassigned_count,

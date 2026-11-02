@@ -432,6 +432,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.sd-premium .sd-sales-master {
+  font-style: normal;
+  font-weight: 400;
+  color: #5a6b64;
+  font-size: 0.86em;
+}
 .sd-premium .sd-ranking strong,
 .sd-premium .sd-aging strong {
   font-size: 12px;

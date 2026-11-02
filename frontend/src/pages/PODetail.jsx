@@ -95,6 +95,7 @@ import { PoStageAccordionProvider, usePoStageAccordion } from "../components/poD
 import { getStagePresentation } from "../lib/poDetailPresentation";
 import { sjHistory } from "../lib/suratJalan";
 import { physicalOrderQty } from "../lib/orderPhysicalQty";
+import { operationalSalesSnapshotLabel } from "../lib/operationalSalesSnapshot";
 
 function PengirimanDeliveryProofPanel({ order, onUpdated }) {
   const { open } = usePoStageAccordion(14);
@@ -1292,7 +1293,7 @@ export default function PODetail() {
             <div className="po-info-pair">
               <span className="lbl">Sales</span>
               <strong data-testid="detail-sales">
-                {order.sales || order.sales_user || <em className="muted">Perlu verifikasi</em>}
+                {operationalSalesSnapshotLabel(order) || <em className="muted">Perlu verifikasi</em>}
               </strong>
             </div>
             <div className="po-info-pair">
