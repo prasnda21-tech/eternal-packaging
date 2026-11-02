@@ -1,4 +1,4 @@
-import { productionNavVisible, productionMenuItems, dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
+import { productionNavVisible, productionMenuItems, dashboardNavVisible, inventoryMenuItems, inventoryNavVisible, purchasingMenuItems, purchasingNavVisible, reportsMenuItems, reportsNavVisible, salesMenuItems, salesNavVisible, settingsAliasFromPath, settingsMenuItems, settingsNavVisible, settingsTabFromPath, tasksNavVisible, taskMenuItems, NAV_KEYS, NAV_MENU_FALLBACK, SALES_NAV_ROUTES, SETTINGS_TAB_IDS, TASK_NAV_ORDER } from "./navAccess";
 import { SALES_WORKSPACE_TABS } from "./salesWorkspace";
 
 const has = (...keys) => (k) => keys.includes(k);
@@ -673,8 +673,18 @@ describe("settingsMenuItems", () => {
   });
 
   test("does not invent placeholder settings", () => {
-    const items = settingsMenuItems(() => true);
-    expect(items.map((item) => item.key).sort()).toEqual([...SETTINGS_TAB_IDS].sort());
+    const allow = () => true;
+    const visibility = settingsNavVisible(allow);
+    const visibleIds = SETTINGS_TAB_IDS.filter((id) => visibility[id]);
+    const items = settingsMenuItems(allow);
+    expect(items.map((item) => item.key)).toEqual(visibleIds);
+    expect(items.map((item) => item.key).sort()).toEqual([...visibleIds].sort());
+    expect(items.filter((item) => item.key === "pengaturan-sales")).toHaveLength(1);
+    expect(items.some((item) => item.key === "sales-master")).toBe(false);
+    expect(items.some((item) => item.key === "sales-user-mapping")).toBe(false);
+    expect(visibility["sales-master"]).toBe(false);
+    expect(visibility["sales-user-mapping"]).toBe(false);
+    expect(SETTINGS_TAB_IDS).toEqual(expect.arrayContaining(["pengaturan-sales", "sales-master", "sales-user-mapping"]));
     expect(items.some((item) => /placeholder|coming soon|akun tipe|account type/i.test(item.label))).toBe(false);
   });
 
@@ -684,6 +694,13 @@ describe("settingsMenuItems", () => {
     expect(settingsTabFromPath("/settings", "?tab=payroll-accounting")).toBe("payroll-accounting");
     expect(settingsTabFromPath("/settings", "?tab=not-a-real-tab")).toBe(null);
     expect(settingsTabFromPath("/settings/not-a-real-tab")).toBe(null);
+    // Legacy Sales settings paths stay routable → unified hub.
+    expect(settingsTabFromPath("/settings/sales-master")).toBe("pengaturan-sales");
+    expect(settingsTabFromPath("/settings/sales-user-mapping")).toBe("pengaturan-sales");
+    expect(settingsTabFromPath("/settings", "?tab=sales-master")).toBe("pengaturan-sales");
+    expect(settingsAliasFromPath("/settings/sales-master")).toEqual({ tab: "pengaturan-sales", section: "semua" });
+    expect(settingsAliasFromPath("/settings/sales-user-mapping")).toEqual({ tab: "pengaturan-sales", section: "semua" });
+    expect(settingsAliasFromPath("/settings/pengaturan-sales")).toBe(null);
   });
 });
 
