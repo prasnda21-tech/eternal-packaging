@@ -761,11 +761,17 @@ async def collect_ats_stream_for_ygy(
             key = _reservation_key(oid, line, idx)
             if key in post_cutoff_keys:
                 continue
-            _append_skip(
-                by_master[mid],
+            msg = (
                 f"SKIP_OLD_PO_CANCEL_NO_OPENING_RESERVATION:{key}: refuse RELEASE inflate; "
                 "CONSEQUENCE: free ATS may remain UNDERSTATED vs true free stock — "
-                "pre-cutoff commitment was adopted into baseline and cancel cannot restore it",
+                "pre-cutoff commitment was adopted into baseline and cancel cannot restore it"
+            )
+            _append_skip(by_master[mid], msg)
+            # Do not mark READY while free stock may be understated.
+            _append_gap(
+                by_master[mid],
+                f"OLD_PO_CANCEL_UNDERSTATED_FREE_STOCK:{key}: "
+                "no proven opening reservation to RELEASE; ATS remains UNAVAILABLE",
             )
 
     # Assign canonical sequences per master (time, event_id).

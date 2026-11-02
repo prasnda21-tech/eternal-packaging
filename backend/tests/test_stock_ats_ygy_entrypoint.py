@@ -299,7 +299,12 @@ async def test_entrypoint_old_po_ship_does_not_recut_baseline(db):
     assert any("SKIP_OLD_PO_SHIP" in s for s in (row.get("ats_cutover_skipped") or []))
 
 
-async def test_entrypoint_old_po_cancel_does_not_inflate(db):
+async def test_entrypoint_old_po_cancel_no_release_and_unavailable(db):
+    """Pre-cutoff PO cancelled after cutoff without opening reservation.
+
+    Saldo must not inflate (no RELEASE), but status must be UNAVAILABLE /
+    UNVERIFIED because free stock may be understated vs true free.
+    """
     await _seed_master_wh(db)
     oid = f"so-oldc-{uuid.uuid4().hex[:6]}"
     await db.orders.insert_one({
@@ -320,13 +325,18 @@ async def test_entrypoint_old_po_cancel_does_not_inflate(db):
         db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
     )
     pack = stream["by_master"][MID_100032]
-    assert pack["evidence_complete"] is True
+    assert pack["evidence_complete"] is False
     assert not any(e.kind == "RELEASE" for e in pack["events"])
     assert any("SKIP_OLD_PO_CANCEL" in s for s in pack["skipped"])
-    assert any("UNDERSTATED" in s for s in pack["skipped"])
+    assert any("OLD_PO_CANCEL_UNDERSTATED_FREE_STOCK" in g for g in pack["gaps"])
     _, row = await _catalog_row(db)
-    assert row["ats_cutover_status"] == "READY"
-    assert row["stock_dapat_dijual"] == 20000.0
+    assert row["ats_cutover_status"] == "UNAVAILABLE"
+    assert row["stock_dapat_dijual"] is None
+    assert row.get("stock_dapat_dijual_status") == "UNVERIFIED"
+    assert row.get("qty_siap_jual_status") == "UNVERIFIED"
+    # Physical / baseline figure not inflated by unproven RELEASE
+    assert row["physical_qty"] == -19300
+    assert any("UNDERSTATED" in g for g in (row.get("ats_coverage_gaps") or []))
 
 
 async def test_entrypoint_new_po_reserve_and_ship_reserved(db):
