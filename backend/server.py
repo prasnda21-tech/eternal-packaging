@@ -12409,24 +12409,76 @@ async def create_sales_order(payload: SalesOrderCreatePayload, user=Depends(curr
 
 
 class OrderInfoUpdatePayload(BaseModel):
-    """Field-scoped Informasi PO edit — address / Tanggal Pengiriman / estimasi.
+    """Field-scoped Informasi PO edit — shipping contact + schedule.
 
     ``tanggal_pengiriman`` is the authoritative manual delivery date.
     Legacy ``deadline`` is accepted only for backward-compatible clients and is
     mapped to Tanggal Pengiriman (never used as a competing schedule source).
+
+    Does not rewrite Master Pelanggan, SJ snapshots, line items, prices, or qty.
     """
     address: Optional[str] = None
+    recipient: Optional[str] = None
+    customer_phone: Optional[str] = None
     tanggal_pengiriman: Optional[str] = None
     deadline: Optional[str] = None  # legacy alias → tanggal_pengiriman
     estimated_delivery: Optional[str] = None
 
 
+async def _assert_order_info_editable(db, order: dict, *, shipping_fields_changing: bool) -> None:
+    """Guard delivered / locked POD / active SJ with Loading or shipment evidence.
+
+    Never mutates sales_deliveries, loading, or stock. Operator must use the
+    existing SJ cancel/recreate path before changing shipping identity fields
+    when an active SJ already has Loading or Pengiriman evidence.
+    """
+    from services.delivery_schedule import is_delivered
+    from services.delivery_pod_signature import get_frozen_signatures
+
+    if is_delivered(order) or str(order.get("delivery_status") or "").strip() == "Terkirim":
+        raise HTTPException(
+            409,
+            "PO sudah selesai dikirim. Data pengiriman tidak dapat diubah tanpa mekanisme koreksi resmi.",
+        )
+    if get_frozen_signatures(order):
+        raise HTTPException(
+            409,
+            "Tanda tangan penerima (POD) sudah final. Data pengiriman tidak dapat diubah.",
+        )
+    if not shipping_fields_changing:
+        return
+
+    po_id = str(order.get("id") or "").strip()
+    if not po_id:
+        return
+    active = await db.sales_deliveries.find(
+        {
+            "$or": [{"po_id": po_id}, {"source_po_ids": po_id}],
+            "is_cancelled": {"$ne": True},
+        },
+        {"_id": 0, "id": 1, "sj_number": 1, "po_id": 1, "source_po_ids": 1, "delivery_id": 1},
+    ).to_list(100)
+    for delivery in active:
+        blocker = await _sales_delivery_delete_blocker(delivery)
+        if not blocker:
+            continue
+        if "Loading" in blocker or "Pengiriman" in blocker:
+            sj = str(delivery.get("sj_number") or delivery.get("id") or "").strip() or "?"
+            raise HTTPException(
+                409,
+                "Data pengiriman tidak dapat diubah karena SJ aktif "
+                f"({sj}) sudah memiliki proses Loading/Pengiriman. "
+                "Batalkan SJ terlebih dahulu melalui mekanisme koreksi SJ yang ada "
+                f"(tanpa mengubah stok dari menu Informasi PO). Detail: {blocker}",
+            )
+
+
 @api_router.patch("/orders/{order_id}/info")
 async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user=Depends(current_user)):
-    """Update Alamat / Tanggal Pengiriman / Estimasi Kirim on Detail PO.
+    """Update Alamat / Penerima / HP / Tanggal Pengiriman / Estimasi on Detail PO.
 
-    Permission: po.edit (existing). Field-scoped $set — does not touch
-    workflow quantities, delivery_location, or line items.
+    Permission: po.edit. Field-scoped $set — does not touch Master Pelanggan,
+    workflow quantities, prices, line items, SJ snapshots, loading, or stock.
 
     Tanggal Pengiriman (manual) becomes the authoritative schedule date and is
     written to delivery_deadline_manual + scheduled_delivery_date. Clearing it
@@ -12437,7 +12489,8 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
     if not data:
         raise HTTPException(
             400,
-            "Tidak ada field yang diubah. Kirim address, tanggal_pengiriman, dan/atau estimated_delivery.",
+            "Tidak ada field yang diubah. Kirim address, recipient, customer_phone, "
+            "tanggal_pengiriman, dan/atau estimated_delivery.",
         )
 
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -12453,6 +12506,8 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
 
     before = {
         "address": order.get("address"),
+        "recipient": order.get("recipient"),
+        "customer_phone": order.get("customer_phone"),
         "deadline": order.get("deadline"),
         "estimated_delivery": order.get("estimated_delivery"),
         "delivery_deadline_manual": order.get("delivery_deadline_manual"),
@@ -12463,6 +12518,21 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
     patch: dict = {}
     if "address" in data:
         patch["address"] = (data.get("address") or "").strip() or None
+    if "recipient" in data:
+        patch["recipient"] = (data.get("recipient") or "").strip() or None
+    if "customer_phone" in data:
+        patch["customer_phone"] = (data.get("customer_phone") or "").strip() or None
+
+    shipping_changing = any(
+        k in patch and patch.get(k) != before.get(k)
+        for k in ("address", "recipient", "customer_phone")
+    )
+    # Delivered / frozen POD blocks any info edit; Loading SJ blocks shipping identity only.
+    await _assert_order_info_editable(
+        db, order, shipping_fields_changing=shipping_changing or bool(
+            {"address", "recipient", "customer_phone"} & set(data.keys())
+        ),
+    )
 
     tanggal_raw = None
     tanggal_provided = False
@@ -12499,6 +12569,10 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
     note_bits = []
     if "address" in patch and patch.get("address") != before.get("address"):
         note_bits.append("alamat")
+    if "recipient" in patch and patch.get("recipient") != before.get("recipient"):
+        note_bits.append("penerima")
+    if "customer_phone" in patch and patch.get("customer_phone") != before.get("customer_phone"):
+        note_bits.append("hp penerima")
     if tanggal_provided:
         note_bits.append("tanggal pengiriman")
     if "estimated_delivery" in patch and patch.get("estimated_delivery") != before.get("estimated_delivery"):
@@ -12516,7 +12590,9 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
         "delivery_deadline_history",
         "scheduled_delivery_date",
     ]
+    # Persist PO only — never rewrite sales_deliveries snapshots (multi-SJ safe).
     await _persist_order(order, persist_keys=tuple(dict.fromkeys(persist_keys)))
+
     dd_settings = await _get_delivery_deadline_settings()
     from services.production_wave2 import holiday_dates as _holiday_dates
     holidays = await _holiday_dates(db)
@@ -12529,6 +12605,8 @@ async def update_order_info(order_id: str, payload: OrderInfoUpdatePayload, user
         before=before,
         after={
             "address": order.get("address"),
+            "recipient": order.get("recipient"),
+            "customer_phone": order.get("customer_phone"),
             "deadline": order.get("deadline"),
             "estimated_delivery": order.get("estimated_delivery"),
             "tanggal_pengiriman": order.get("tanggal_pengiriman"),

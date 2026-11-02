@@ -59,14 +59,32 @@ def test_permission_catalog_includes_edit_and_manage_status():
     assert labels["sales.customer.edit"] == "Edit Pelanggan"
     assert labels["sales.customer.manage_status"] == "Kelola Status Pelanggan"
 
+    ops_defaults = set(ROLE_DEFAULT_PERMISSIONS["head_operations"])
+    for key in (
+        "sales.customer.view",
+        "sales.customer.manage",
+        "sales.customer.edit",
+        "sales.customer.manage_status",
+    ):
+        assert key in ops_defaults
+
+    ops = effective_permissions("head_operations", None)
+    assert "sales.customer.view" in ops
+    assert "sales.customer.manage" in ops
+    assert "sales.customer.edit" in ops
+    assert "sales.customer.manage_status" in ops
+
     for role, perms in ROLE_DEFAULT_PERMISSIONS.items():
-        if role == "admin":
+        if role in ("admin", "head_operations"):
             continue
         assert "sales.customer.edit" not in perms
         assert "sales.customer.manage_status" not in perms
+        assert "sales.customer.manage" not in perms
 
     crm = effective_permissions("crm", None)
+    assert "sales.customer.view" not in crm
     assert "sales.customer.edit" not in crm
+    assert "sales.customer.manage" not in crm
     assert "sales.customer.manage_status" not in crm
 
 

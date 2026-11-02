@@ -1171,6 +1171,12 @@ export default function PODetail() {
               <span className="lbl">Penerima</span>
               <strong>{order.recipient || <span className="po-info-empty">—</span>}</strong>
             </div>
+            <div className="po-info-pair">
+              <span className="lbl">No. HP Penerima</span>
+              <strong data-testid="detail-customer-phone">
+                {order.customer_phone || <span className="po-info-empty">—</span>}
+              </strong>
+            </div>
           </div>
           <div className="po-info-col">
             <div className="po-info-pair">

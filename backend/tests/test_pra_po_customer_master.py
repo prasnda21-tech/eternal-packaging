@@ -145,6 +145,42 @@ async def test_verify_existing_customer_does_not_create_or_overwrite(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_verify_new_master_prefers_customer_pic_over_recipient(monkeypatch):
+    db = FakeDb()
+    _install_unique_customer_name(db)
+    _stub_materialize(monkeypatch)
+    submitted = await _submit(db, {
+        **SUBMIT_READY,
+        "customer": "Toko PIC Prioritas",
+        "customer_pic": "PIC Master",
+        "recipient": "Penerima Kirim",
+        "customer_email": "pic@toko.test",
+        "customer_city": "Solo",
+    })
+    result = await pra_po.verify_pra_po(db, submitted["id"], ADMIN, ADMIN_PERMS)
+    master = await db.sales_customers.find_one({"id": result["order"]["customer_id"]})
+    assert master["pic"] == "PIC Master"
+    assert result["order"]["recipient"] == "Penerima Kirim"
+
+
+@pytest.mark.anyio
+async def test_verify_new_master_falls_back_recipient_when_customer_pic_empty(monkeypatch):
+    db = FakeDb()
+    _install_unique_customer_name(db)
+    _stub_materialize(monkeypatch)
+    submitted = await _submit(db, {
+        **SUBMIT_READY,
+        "customer": "Toko PIC Fallback",
+        "customer_pic": "",
+        "recipient": "Ibu Rina",
+    })
+    result = await pra_po.verify_pra_po(db, submitted["id"], ADMIN, ADMIN_PERMS)
+    master = await db.sales_customers.find_one({"id": result["order"]["customer_id"]})
+    assert master["pic"] == "Ibu Rina"
+    assert result["order"]["recipient"] == "Ibu Rina"
+
+
+@pytest.mark.anyio
 async def test_verify_creates_one_master_and_links_pra_po_and_order(monkeypatch):
     db = FakeDb()
     _install_unique_customer_name(db)
@@ -320,11 +356,11 @@ async def test_customer_id_survives_until_po_insert(monkeypatch):
     original = pra_po._materialize_sales_order
     calls = {"n": 0}
 
-    async def fail_before_insert(db_, pra, user):
+    async def fail_before_insert(db_, pra, user, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             raise HTTPException(400, "Line item gagal")
-        return await original(db_, pra, user)
+        return await original(db_, pra, user, **kwargs)
 
     monkeypatch.setattr(pra_po, "_materialize_sales_order", fail_before_insert)
     with pytest.raises(HTTPException):
@@ -409,9 +445,9 @@ async def test_retry_after_po_insert_failure_keeps_one_customer_and_one_po(monke
     original = pra_po._materialize_sales_order
     calls = {"n": 0}
 
-    async def fail_once(db_, pra, user):
+    async def fail_once(db_, pra, user, **kwargs):
         calls["n"] += 1
-        order = await original(db_, pra, user)
+        order = await original(db_, pra, user, **kwargs)
         if calls["n"] == 1:
             raise RuntimeError("timeout after insert")
         return order

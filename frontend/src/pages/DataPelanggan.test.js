@@ -98,6 +98,11 @@ describe("Data Pelanggan UI & Architecture Invariants", () => {
     expect(appSrc).toMatch(/path="\/penjualan\/data-pelanggan"/);
     expect(appSrc).toMatch(/<DataPelanggan \/>/);
     expect(appSrc).toMatch(/sales\.customer\.view/);
+    expect(appSrc).toMatch(/sales\.customer\.edit/);
+    expect(appSrc).toMatch(/sales\.customer\.manage_status/);
+    expect(appSrc).not.toMatch(
+      /data-pelanggan" element=\{<PermGate anyOf=\{\[[^\]]*sales_order\.view/
+    );
   });
 
   test("PesananPenjualan integrates with master customers and auto-creates on PO save", () => {
@@ -107,6 +112,8 @@ describe("Data Pelanggan UI & Architecture Invariants", () => {
     expect(ppSrc).toMatch(/badge-customer-registered/);
     expect(ppSrc).toMatch(/badge-customer-new/);
     expect(ppSrc).toMatch(/input-customer-phone/);
+    expect(ppSrc).toMatch(/input-customer-email/);
+    expect(ppSrc).toMatch(/input-customer-city/);
   });
 });
 
