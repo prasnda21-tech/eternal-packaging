@@ -1759,6 +1759,53 @@ export default function FakturPenjualan() {
     };
   }, [sjPreviewLines, sjLineQuantities, discountAmount, ppnPercent]);
 
+  const createWorkspaceState = useMemo(() => {
+    const isSj = invoiceSourceMode === INVOICE_SOURCE_SJ;
+    const isMulti = !isSj && multiPoMode;
+    const loading = Boolean(previewLoading || multiPoPreviewLoading || sjPreviewLoading);
+    const hasError = Boolean(previewErr || sjPreviewErr || multiPoPreviewErr || formErr);
+    const hasSource = isSj
+      ? selectedSjIds.length > 0
+      : isMulti
+        ? selectedPoIds.length > 0
+        : Boolean(selectedPoId || previewData);
+    const hasPreview = isSj
+      ? sjPreviewLines.length > 0
+      : isMulti
+        ? multiPoCreateCalculations.lines.length > 0
+        : Boolean(previewData);
+    if (loading) return "loading";
+    if (hasError && !hasPreview) return "error";
+    if (!isSj && !isMulti && hasPreview && invoiceCompleteness.complete) return "ready";
+    if (isMulti && hasPreview && !multiPoCreateCalculations.hasErrors && multiPoCreateCalculations.totalQty > 0) {
+      return "ready";
+    }
+    if (isSj && hasPreview && (sjCreateCalculations?.lines || []).some((line) => Number(line.numericQty || 0) > 0)) {
+      return "ready";
+    }
+    if (hasPreview) return "preview-loaded";
+    if (hasSource) return "source-selected";
+    return "empty";
+  }, [
+    invoiceSourceMode,
+    multiPoMode,
+    previewLoading,
+    multiPoPreviewLoading,
+    sjPreviewLoading,
+    previewErr,
+    sjPreviewErr,
+    multiPoPreviewErr,
+    formErr,
+    selectedSjIds,
+    selectedPoIds,
+    selectedPoId,
+    previewData,
+    sjPreviewLines,
+    multiPoCreateCalculations,
+    invoiceCompleteness.complete,
+    sjCreateCalculations,
+  ]);
+
   const handleSaveInvoice = async (e) => {
     e.preventDefault();
     // Sync lock blocks double-click / submit+click races before formBusy re-renders.
@@ -3027,628 +3074,451 @@ export default function FakturPenjualan() {
         </section>
       )}
 
-      {/* VIEW: CREATE — Eternal UX 9.0 invoice workspace */}
-      {viewMode === "create" && (
+      {/* VIEW: CREATE — Eternal UX 9.0 unified invoice workspace */}
+      {viewMode === "create" && (() => {
+        const isSjMode = invoiceSourceMode === INVOICE_SOURCE_SJ;
+        const isMultiPo = !isSjMode && multiPoMode;
+        const singlePoReady = Boolean(previewData) && !isMultiPo && !isSjMode;
+        const infoCustomer = isSjMode
+          ? (selectedSjIds.length
+            ? (availableSJs.find((sj) => sj.id === selectedSjIds[0])?.customer || "—")
+            : "Belum dipilih")
+          : isMultiPo
+            ? (multiPoAnchorPreview?.customer || "Belum dipilih")
+            : (previewData?.customer || "Belum dipilih");
+        const infoReference = isSjMode
+          ? (selectedSjIds.length
+            ? selectedSjIds
+              .map((id) => {
+                const sj = availableSJs.find((row) => row.id === id);
+                return sj?.sj_number || sj?.number || id;
+              })
+              .join(", ")
+            : "—")
+          : isMultiPo
+            ? (selectedPoIds.length
+              ? selectedPoIds
+                .map((id) => multiPoPreviewsById[id]?.po_number || availablePOs.find((p) => p.id === id)?.po_number || id)
+                .join(", ")
+              : "—")
+            : (previewData?.po_number || "—");
+        const dateTestId = isSjMode
+          ? "sj-invoice-date-input"
+          : isMultiPo
+            ? "multi-po-invoice-date-input"
+            : "invoice-date-input";
+        const discountTestId = isSjMode
+          ? "sj-discount-input"
+          : isMultiPo
+            ? "multi-po-discount-input"
+            : "invoice-discount-input";
+        const ppnTestId = isSjMode
+          ? "sj-ppn-input"
+          : isMultiPo
+            ? "multi-po-ppn-input"
+            : "invoice-ppn-input";
+        const saveDisabled = formBusy
+          || previewLoading
+          || multiPoPreviewLoading
+          || sjPreviewLoading
+          || (isSjMode
+            ? false
+            : isMultiPo
+              ? (multiPoCreateCalculations.hasErrors || multiPoCreateCalculations.totalQty <= 0)
+              : (createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0 || !previewData));
+        const saveLabel = formBusy
+          ? "Menyimpan…"
+          : isSjMode
+            ? "Buat Faktur dari SJ"
+            : isMultiPo && selectedPoIds.length >= 2
+              ? "Buat Faktur dari beberapa PO"
+              : "Simpan Faktur";
+
+        return (
         <div
           className="sd-form fp-create ux90-create-shell ux90-fp-create"
           data-testid="invoice-create-lifecycle"
           data-legacy-manual={hideLegacyOnCreate ? "required" : "hidden"}
-          data-gate-only={
-            ((!previewData && !previewLoading) || (multiPoMode && invoiceSourceMode === INVOICE_SOURCE_PO))
-              ? "true"
-              : "false"
-          }
+          data-gate-only="false"
+          data-workspace-state={createWorkspaceState}
         >
-          {((!previewData && !previewLoading) || (multiPoMode && invoiceSourceMode === INVOICE_SOURCE_PO)) && (
-            <div className="ux90-gate" data-testid="fp-po-gate">
-              <div className="ux90-txn-header" style={{ marginBottom: 12 }}>
-                <div className="ux90-field" style={{ gridColumn: "1 / -1" }} data-testid="invoice-source-mode">
-                  <span>Sumber Faktur <span className="ux90-req">*</span></span>
-                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        type="radio"
-                        name="invoice-source-mode"
-                        checked={invoiceSourceMode === INVOICE_SOURCE_PO}
-                        onChange={() => {
-                          setInvoiceSourceMode(INVOICE_SOURCE_PO);
-                          setSelectedSjIds([]);
-                          setSjPreviewLines([]);
-                          setSjRelations([]);
-                          setSjLineQuantities({});
-                          setSjPreviewErr("");
-                        }}
-                        disabled={previewLoading || formBusy || sjPreviewLoading || multiPoPreviewLoading}
-                        data-testid="invoice-source-mode-po"
-                      />
-                      Dari PO
-                    </label>
-                    <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        type="radio"
-                        name="invoice-source-mode"
-                        checked={invoiceSourceMode === INVOICE_SOURCE_SJ}
-                        onChange={() => {
-                          setInvoiceSourceMode(INVOICE_SOURCE_SJ);
-                          setSelectedPoId("");
-                          setPreviewData(null);
-                          setPreviewErr("");
-                          setMultiPoMode(false);
-                          setSelectedPoIds([]);
-                          setMultiPoPreviewsById({});
-                          setMultiPoLineQuantities({});
-                          setMultiPoLinePrices({});
-                          setMultiPoPreviewErr("");
-                          loadAvailableSJs(sjCustomerFilter);
-                        }}
-                        disabled={previewLoading || formBusy || sjPreviewLoading || multiPoPreviewLoading}
-                        data-testid="invoice-source-mode-sj"
-                      />
-                      Dari Surat Jalan
-                    </label>
-                  </div>
+          <form
+            className="sd-form-fill fp-create-fill ux90-create-shell ux90-fp-filled ux90-fp-doc-host"
+            data-form-tab={invoiceFormTab}
+            data-testid="fp-doc-host"
+            onSubmit={handleSaveInvoice}
+          >
+            <div className="ux90-fp-doc ux90-fp-unified" data-testid="fp-po-gate">
+              {/* 01 — Sumber Faktur */}
+              <section className="ux90-fp-panel ux90-fp-source-panel" data-testid="fp-source-panel">
+                <div className="ux90-fp-panel-head">
+                  <span className="ux90-fp-panel-index">01</span>
+                  <h2>Sumber Faktur</h2>
                 </div>
-                {invoiceSourceMode === INVOICE_SOURCE_PO ? (
-                <div className="ux90-field" style={{ gridColumn: "1 / -1" }} data-testid="po-source-picker">
-                  <span>Ambil dari PO <span className="ux90-req">*</span></span>
-                  <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={multiPoMode}
-                      data-testid="toggle-multi-po-invoice"
-                      disabled={previewLoading || formBusy || multiPoPreviewLoading}
-                      onChange={(e) => {
-                        const on = e.target.checked;
-                        setMultiPoMode(on);
-                        if (on) {
-                          setSelectedPoId("");
-                          setPreviewData(null);
-                          setPreviewErr("");
-                          loadAvailablePOs();
-                        } else {
-                          setSelectedPoIds([]);
-                          setMultiPoPreviewsById({});
-                          setMultiPoLineQuantities({});
-                          setMultiPoLinePrices({});
-                          setMultiPoPreviewErr("");
-                        }
-                      }}
-                    />
-                    <span>Gabungkan beberapa PO</span>
-                  </label>
-                  {!multiPoMode ? (
-                  <LookupSearchSelect
-                    options={availablePOs}
-                    value={selectedPoId}
-                    onChange={handleSelectPoId}
-                    getOptionValue={(p) => p.id}
-                    getOptionLabel={invoicePoOptionLabel}
-                    getOptionMeta={invoicePoOptionMeta}
-                    getSearchText={invoicePoSearchText}
-                    fetchOptions={fetchInvoicePoOptions}
-                    isOptionDisabled={isInvoicePoDisabled}
-                    getOptionDisabledReason={invoicePoDisabledReason}
-                    placeholder={loadingPOs ? "Memuat PO…" : "Ketik nomor PO atau customer…"}
-                    noResultLabel="PO tidak ditemukan"
-                    disabled={previewLoading || formBusy || loadingPOs}
-                    testId="po-selector"
-                  />
-                  ) : (
-                  <div data-testid="multi-po-invoice-picker">
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                      <input
-                        className="ux90-input"
-                        style={{ flex: "1 1 220px" }}
-                        placeholder="Filter customer / no. PO…"
-                        value={multiPoCustomerFilter}
-                        onChange={(e) => setMultiPoCustomerFilter(e.target.value)}
-                        disabled={formBusy}
-                        data-testid="multi-po-customer-filter"
-                      />
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => loadAvailablePOs()}
-                        disabled={loadingPOs || formBusy}
-                        data-testid="multi-po-load-btn"
-                      >
-                        {loadingPOs ? "Memuat…" : "Muat PO"}
-                      </button>
+                <div className="ux90-fp-panel-body">
+                  <div className="ux90-fp-source-toolbar">
+                    <div className="ux90-field ux90-fp-source-mode" data-testid="invoice-source-mode">
+                      <span className="ux90-fp-sr-only">Sumber Faktur <span className="ux90-req">*</span></span>
+                      <div className="ux90-fp-source-toggle" role="radiogroup" aria-label="Sumber Faktur">
+                        <label className={"ux90-fp-source-option" + (invoiceSourceMode === INVOICE_SOURCE_PO ? " is-active" : "")}>
+                          <input
+                            type="radio"
+                            name="invoice-source-mode"
+                            checked={invoiceSourceMode === INVOICE_SOURCE_PO}
+                            onChange={() => {
+                              setInvoiceSourceMode(INVOICE_SOURCE_PO);
+                              setSelectedSjIds([]);
+                              setSjPreviewLines([]);
+                              setSjRelations([]);
+                              setSjLineQuantities({});
+                              setSjPreviewErr("");
+                            }}
+                            disabled={previewLoading || formBusy || sjPreviewLoading || multiPoPreviewLoading}
+                            data-testid="invoice-source-mode-po"
+                          />
+                          <span className="ux90-fp-source-option-text">Dari PO</span>
+                        </label>
+                        <label className={"ux90-fp-source-option" + (invoiceSourceMode === INVOICE_SOURCE_SJ ? " is-active" : "")}>
+                          <input
+                            type="radio"
+                            name="invoice-source-mode"
+                            checked={invoiceSourceMode === INVOICE_SOURCE_SJ}
+                            onChange={() => {
+                              setInvoiceSourceMode(INVOICE_SOURCE_SJ);
+                              setSelectedPoId("");
+                              setPreviewData(null);
+                              setPreviewErr("");
+                              setMultiPoMode(false);
+                              setSelectedPoIds([]);
+                              setMultiPoPreviewsById({});
+                              setMultiPoLineQuantities({});
+                              setMultiPoLinePrices({});
+                              setMultiPoPreviewErr("");
+                              loadAvailableSJs(sjCustomerFilter);
+                            }}
+                            disabled={previewLoading || formBusy || sjPreviewLoading || multiPoPreviewLoading}
+                            data-testid="invoice-source-mode-sj"
+                          />
+                          <span className="ux90-fp-source-option-text">Dari Surat Jalan</span>
+                        </label>
+                      </div>
                     </div>
-                    <div className="ux90-table-wrap" style={{ maxHeight: 180, overflow: "auto" }}>
-                      <table className="ux90-table">
-                        <thead>
-                          <tr>
-                            <th style={{ width: 36 }} />
-                            <th>No. PO</th>
-                            <th>Customer</th>
-                            <th>Sisa</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {compatibleMultiPoOptions.length === 0 ? (
-                            <tr>
-                              <td colSpan={4} style={{ textAlign: "center", color: "#9ca3af", padding: 16 }}>
-                                {loadingPOs ? "Memuat PO…" : "Tidak ada PO kompatibel. Sesuaikan filter customer."}
-                              </td>
-                            </tr>
-                          ) : (
-                            compatibleMultiPoOptions.map((po) => {
-                              const checked = selectedPoIds.includes(po.id);
-                              const disabled = formBusy || multiPoPreviewLoading || (!checked && po._mergeCompatible === false);
-                              return (
-                                <tr key={po.id} style={{ opacity: disabled && !checked ? 0.55 : 1 }}>
-                                  <td>
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      disabled={disabled}
-                                      data-testid={`multi-po-check-${po.id}`}
-                                      onChange={() => {
-                                        const next = checked
-                                          ? selectedPoIds.filter((id) => id !== po.id)
-                                          : [...selectedPoIds, po.id];
-                                        rebuildMultiPoPreview(next);
-                                      }}
-                                    />
-                                  </td>
-                                  <td>{po.po_number || po.id}</td>
-                                  <td>{po.customer || po.customer_name || "-"}</td>
-                                  <td>
-                                    {po.invoiceable_summary?.total_remaining_invoice_qty != null
-                                      ? Number(po.invoiceable_summary.total_remaining_invoice_qty).toLocaleString("id-ID")
-                                      : (po.total_quantity != null ? Number(po.total_quantity).toLocaleString("id-ID") : "-")}
-                                  </td>
-                                </tr>
-                              );
-                            })
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    {selectedPoIds.length > 0 && selectedPoIds.length < 2 ? (
-                      <p className="ux90-hint" data-testid="multi-po-min-hint" style={{ marginTop: 8 }}>
-                        Pilih minimal 2 PO untuk Faktur gabungan. Satu PO memakai alur legacy yang sama.
-                      </p>
+                    {invoiceSourceMode === INVOICE_SOURCE_PO ? (
+                      <label className="ux90-fp-merge-toggle">
+                        <input
+                          type="checkbox"
+                          checked={multiPoMode}
+                          data-testid="toggle-multi-po-invoice"
+                          disabled={previewLoading || formBusy || multiPoPreviewLoading}
+                          onChange={(e) => {
+                            const on = e.target.checked;
+                            setMultiPoMode(on);
+                            if (on) {
+                              setSelectedPoId("");
+                              setPreviewData(null);
+                              setPreviewErr("");
+                              loadAvailablePOs();
+                            } else {
+                              setSelectedPoIds([]);
+                              setMultiPoPreviewsById({});
+                              setMultiPoLineQuantities({});
+                              setMultiPoLinePrices({});
+                              setMultiPoPreviewErr("");
+                            }
+                          }}
+                        />
+                        <span className="ux90-fp-merge-toggle-text">Gabungkan beberapa PO</span>
+                      </label>
                     ) : null}
                   </div>
+
+                  {invoiceSourceMode === INVOICE_SOURCE_PO ? (
+                    <div className="ux90-field ux90-fp-source-doc" data-testid="po-source-picker">
+                      <div className="ux90-fp-source-dochead">
+                        <span className="ux90-fp-source-doclabel">Ambil dari PO <span className="ux90-req">*</span></span>
+                      </div>
+                      {!multiPoMode ? (
+                        <div className="ux90-fp-dlrow-po ux90-fp-source-lookup" data-testid="fp-po-switch">
+                          <LookupSearchSelect
+                            options={availablePOs}
+                            value={selectedPoId}
+                            onChange={handleSelectPoId}
+                            getOptionValue={(p) => p.id}
+                            getOptionLabel={invoicePoOptionLabel}
+                            getOptionMeta={invoicePoOptionMeta}
+                            getSearchText={invoicePoSearchText}
+                            fetchOptions={fetchInvoicePoOptions}
+                            isOptionDisabled={isInvoicePoDisabled}
+                            getOptionDisabledReason={invoicePoDisabledReason}
+                            placeholder={loadingPOs ? "Memuat PO…" : "Cari nomor PO atau nama pelanggan…"}
+                            noResultLabel="PO tidak ditemukan"
+                            disabled={previewLoading || formBusy || loadingPOs}
+                            testId="po-selector"
+                          />
+                          <input type="hidden" readOnly value={previewData?.po_number || ""} data-testid="snapshot-po-number" />
+                        </div>
+                      ) : (
+                        <div data-testid="multi-po-invoice-picker">
+                          <div className="ux90-fp-source-tools">
+                            <input
+                              className="ux90-input"
+                              placeholder="Filter customer / no. PO…"
+                              value={multiPoCustomerFilter}
+                              onChange={(e) => setMultiPoCustomerFilter(e.target.value)}
+                              disabled={formBusy}
+                              data-testid="multi-po-customer-filter"
+                            />
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              onClick={() => loadAvailablePOs()}
+                              disabled={loadingPOs || formBusy}
+                              data-testid="multi-po-load-btn"
+                            >
+                              <RefreshCw size={14} aria-hidden="true" />
+                              {loadingPOs ? "Memuat…" : "Muat PO"}
+                            </button>
+                          </div>
+                          <div className="ux90-table-wrap ux90-fp-source-table">
+                            <table className="ux90-table">
+                              <thead>
+                                <tr>
+                                  <th style={{ width: 36 }} />
+                                  <th>No. PO</th>
+                                  <th>Customer</th>
+                                  <th>Sisa</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {compatibleMultiPoOptions.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={4} className="ux90-fp-empty-cell">
+                                      {loadingPOs ? "Memuat PO…" : "Tidak ada PO kompatibel. Sesuaikan filter customer."}
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  compatibleMultiPoOptions.map((po) => {
+                                    const checked = selectedPoIds.includes(po.id);
+                                    const disabled = formBusy || multiPoPreviewLoading || (!checked && po._mergeCompatible === false);
+                                    return (
+                                      <tr key={po.id} style={{ opacity: disabled && !checked ? 0.55 : 1 }}>
+                                        <td>
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            disabled={disabled}
+                                            data-testid={`multi-po-check-${po.id}`}
+                                            onChange={() => {
+                                              const next = checked
+                                                ? selectedPoIds.filter((id) => id !== po.id)
+                                                : [...selectedPoIds, po.id];
+                                              rebuildMultiPoPreview(next);
+                                            }}
+                                          />
+                                        </td>
+                                        <td>{po.po_number || po.id}</td>
+                                        <td>{po.customer || po.customer_name || "-"}</td>
+                                        <td>
+                                          {po.invoiceable_summary?.total_remaining_invoice_qty != null
+                                            ? Number(po.invoiceable_summary.total_remaining_invoice_qty).toLocaleString("id-ID")
+                                            : (po.total_quantity != null ? Number(po.total_quantity).toLocaleString("id-ID") : "-")}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                          {selectedPoIds.length > 0 && selectedPoIds.length < 2 ? (
+                            <p className="ux90-hint" data-testid="multi-po-min-hint">
+                              Pilih minimal 2 PO untuk Faktur gabungan. Satu PO memakai alur legacy yang sama.
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
+                      <p className="ux90-hint" data-testid="multi-invoice-hint">
+                        Satu PO dapat difakturkan sebagian lebih dari sekali sesuai sisa yang valid.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="ux90-field ux90-fp-source-doc" data-testid="sj-source-picker">
+                      <div className="ux90-fp-source-dochead">
+                        <span className="ux90-fp-source-doclabel">Ambil dari Surat Jalan <span className="ux90-req">*</span></span>
+                      </div>
+                      <div className="ux90-fp-source-tools">
+                        <input
+                          className="ux90-input"
+                          placeholder="Filter customer / no. SJ…"
+                          value={sjCustomerFilter}
+                          onChange={(e) => setSjCustomerFilter(e.target.value)}
+                          disabled={previewLoading || formBusy}
+                          data-testid="sj-customer-filter"
+                        />
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => loadAvailableSJs(sjCustomerFilter)}
+                          disabled={loadingSJs || formBusy}
+                          data-testid="sj-load-btn"
+                        >
+                          <RefreshCw size={14} aria-hidden="true" />
+                          {loadingSJs ? "Memuat…" : "Muat SJ"}
+                        </button>
+                      </div>
+                      <div className="ux90-table-wrap ux90-fp-source-table" data-testid="sj-multi-select-list">
+                        <table className="ux90-table">
+                          <thead>
+                            <tr>
+                              <th style={{ width: 36 }} />
+                              <th>No. SJ</th>
+                              <th>Customer</th>
+                              <th>PO</th>
+                              <th>Tanggal</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {availableSJs.length === 0 ? (
+                              <tr>
+                                <td colSpan={5} className="ux90-fp-empty-cell">
+                                  {loadingSJs ? "Memuat SJ…" : "Tidak ada SJ aktif. Sesuaikan filter customer."}
+                                </td>
+                              </tr>
+                            ) : (
+                              availableSJs.map((sj) => {
+                                const checked = selectedSjIds.includes(sj.id);
+                                return (
+                                  <tr key={sj.id}>
+                                    <td>
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        data-testid={`sj-select-${sj.id}`}
+                                        disabled={formBusy || sjPreviewLoading}
+                                        onChange={() => {
+                                          const next = checked
+                                            ? selectedSjIds.filter((id) => id !== sj.id)
+                                            : [...selectedSjIds, sj.id];
+                                          rebuildSjPreview(next);
+                                        }}
+                                      />
+                                    </td>
+                                    <td>{sj.sj_number || sj.number || sj.id}</td>
+                                    <td>{sj.customer || "-"}</td>
+                                    <td>{sj.po_number || (sj.source_po_ids || []).join(", ") || "-"}</td>
+                                    <td>{sj.delivery_date || "-"}</td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="ux90-hint">
+                        Multi-select SJ aktif → tentukan Qty Faktur per baris (≤ qty SJ / sisa). Mode tidak mencampur PO.
+                      </p>
+                    </div>
                   )}
                 </div>
-                ) : (
-                <div className="ux90-field" style={{ gridColumn: "1 / -1" }} data-testid="sj-source-picker">
-                  <span>Ambil dari Surat Jalan <span className="ux90-req">*</span></span>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                    <input
-                      className="ux90-input"
-                      style={{ flex: "1 1 220px" }}
-                      placeholder="Filter customer / no. SJ…"
-                      value={sjCustomerFilter}
-                      onChange={(e) => setSjCustomerFilter(e.target.value)}
-                      disabled={previewLoading || formBusy}
-                      data-testid="sj-customer-filter"
-                    />
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={() => loadAvailableSJs(sjCustomerFilter)}
-                      disabled={loadingSJs || formBusy}
-                      data-testid="sj-load-btn"
-                    >
-                      {loadingSJs ? "Memuat…" : "Muat SJ"}
-                    </button>
-                  </div>
-                  <div className="ux90-table-wrap" data-testid="sj-multi-select-list" style={{ maxHeight: 180, overflow: "auto" }}>
-                    <table className="ux90-table">
-                      <thead>
-                        <tr>
-                          <th style={{ width: 36 }} />
-                          <th>No. SJ</th>
-                          <th>Customer</th>
-                          <th>PO</th>
-                          <th>Tanggal</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {availableSJs.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} style={{ textAlign: "center", color: "#9ca3af", padding: 16 }}>
-                              {loadingSJs ? "Memuat SJ…" : "Tidak ada SJ aktif. Sesuaikan filter customer."}
-                            </td>
-                          </tr>
-                        ) : (
-                          availableSJs.map((sj) => {
-                            const checked = selectedSjIds.includes(sj.id);
-                            return (
-                              <tr key={sj.id}>
-                                <td>
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    data-testid={`sj-select-${sj.id}`}
-                                    disabled={formBusy || sjPreviewLoading}
-                                    onChange={() => {
-                                      const next = checked
-                                        ? selectedSjIds.filter((id) => id !== sj.id)
-                                        : [...selectedSjIds, sj.id];
-                                      rebuildSjPreview(next);
-                                    }}
-                                  />
-                                </td>
-                                <td>{sj.sj_number || sj.number || sj.id}</td>
-                                <td>{sj.customer || "-"}</td>
-                                <td>{sj.po_number || (sj.source_po_ids || []).join(", ") || "-"}</td>
-                                <td>{sj.delivery_date || "-"}</td>
-                              </tr>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-                )}
-              </div>
-              {invoiceSourceMode === INVOICE_SOURCE_PO ? (
-                multiPoMode ? (
-                <div data-testid="multi-po-invoice-workspace" style={{ marginTop: 8 }}>
-                  <p className="ux90-hint" style={{ margin: "0 0 8px" }}>
-                    Multi-select PO kompatibel → Qty Faktur per baris sumber (≤ sisa). Produk sama dari PO berbeda tetap terpisah.
-                  </p>
-                  {multiPoPreviewLoading ? (
-                    <div className="ux90-gate" data-testid="multi-po-preview-loading">Memuat baris PO…</div>
-                  ) : null}
-                  {multiPoCreateCalculations.lines.length > 0 ? (
-                    <>
-                      <div className="ux90-table-wrap" data-testid="multi-po-invoice-lines">
-                        <div className="ux90-table-head">
-                          <h3>Barang dari PO</h3>
-                          <span className="ux90-hint">PO sumber · Qty · Harga</span>
-                        </div>
-                        <table className="ux90-table">
-                          <thead>
-                            <tr>
-                              <th>PO</th>
-                              <th>Produk</th>
-                              <th className="is-num">Qty PO</th>
-                              <th className="is-num">Sudah Faktur</th>
-                              <th className="is-num">Sisa</th>
-                              <th className="is-num">Qty Faktur</th>
-                              <th className="is-num">Harga</th>
-                              <th className="is-num">Subtotal</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {multiPoCreateCalculations.lines.map((l) => (
-                              <tr key={l.rowKey} data-testid={`multi-po-line-${l.rowKey}`}>
-                                <td>{l.source_po_number || l.source_po_id}</td>
-                                <td>{l.item_name}</td>
-                                <td className="is-num">{Number(l.ordered_qty || 0).toLocaleString("id-ID")}</td>
-                                <td className="is-num">{Number(l.invoiced_cumulative || 0).toLocaleString("id-ID")}</td>
-                                <td className="is-num">{Number(l.remaining_invoice_qty || 0).toLocaleString("id-ID")}</td>
-                                <td className="is-num">
-                                  <input
-                                    className="ux90-input"
-                                    style={{ width: 72, textAlign: "right" }}
-                                    type="number"
-                                    min={0}
-                                    max={l.remaining_invoice_qty}
-                                    value={multiPoLineQuantities[l.rowKey] ?? 0}
-                                    data-testid={`multi-po-qty-${l.rowKey}`}
-                                    onChange={(e) => {
-                                      const v = e.target.value;
-                                      setMultiPoLineQuantities((prev) => ({
-                                        ...prev,
-                                        [l.rowKey]: v === "" ? "" : Number(v),
-                                      }));
-                                    }}
-                                  />
-                                </td>
-                                <td className="is-num">
-                                  {l.price_from_order || (l.numericPrice != null && multiPoLinePrices[l.rowKey] !== "") ? (
-                                    formatRupiah(l.numericPrice || 0)
-                                  ) : (
-                                    <input
-                                      className="ux90-input"
-                                      style={{ width: 96, textAlign: "right" }}
-                                      type="number"
-                                      min={0}
-                                      value={multiPoLinePrices[l.rowKey] ?? ""}
-                                      data-testid={`multi-po-price-${l.rowKey}`}
-                                      onChange={(e) => {
-                                        setMultiPoLinePrices((prev) => ({ ...prev, [l.rowKey]: e.target.value }));
-                                      }}
-                                    />
-                                  )}
-                                </td>
-                                <td className="is-num">{formatRupiah(l.lineSubtotal || 0)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="ux90-fp-dlrow" style={{ marginTop: 8 }} data-testid="multi-po-invoice-totals">
-                        <span>Subtotal {formatRupiah(multiPoCreateCalculations.subtotal)}</span>
-                        {" · "}
-                        <span>PPN {formatRupiah(multiPoCreateCalculations.ppnAmount)}</span>
-                        {" · "}
-                        <strong>Total {formatRupiah(multiPoCreateCalculations.grandTotal)}</strong>
-                      </div>
-                      {multiPoAnchorPreview ? (
-                        <div className="ux90-hint" data-testid="multi-po-customer-snapshot" style={{ marginTop: 8 }}>
-                          Customer: {multiPoAnchorPreview.customer || "-"} · PO terpilih: {selectedPoIds.length}
-                        </div>
-                      ) : null}
-                      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
-                        <label className="ux90-field">
-                          <span>Tanggal Faktur <span className="ux90-req">*</span></span>
-                          <SalesInvoiceDateField
-                            ref={createDateRef}
-                            valueIso={invoiceDate}
-                            onChange={setInvoiceDate}
-                            testId="multi-po-invoice-date-input"
-                            calendarLabel="Kalender tanggal faktur multi-PO"
-                          />
-                        </label>
-                        <label className="ux90-field">
-                          <span>Diskon</span>
-                          <input
-                            className="ux90-input"
-                            type="number"
-                            min={0}
-                            value={discountAmount}
-                            onChange={(e) => setDiscountAmount(e.target.value)}
-                            data-testid="multi-po-discount-input"
-                          />
-                        </label>
-                        <label className="ux90-field">
-                          <span>PPN %</span>
-                          <input
-                            className="ux90-input"
-                            type="number"
-                            min={0}
-                            value={ppnPercent}
-                            onChange={(e) => setPpnPercent(e.target.value)}
-                            data-testid="multi-po-ppn-input"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="btn-primary"
-                          data-testid="multi-po-save-invoice"
-                          disabled={formBusy || multiPoPreviewLoading || multiPoCreateCalculations.hasErrors || multiPoCreateCalculations.totalQty <= 0}
-                          onClick={(e) => handleSaveInvoice(e)}
-                        >
-                          {formBusy ? "Menyimpan…" : selectedPoIds.length >= 2 ? "Buat Faktur dari beberapa PO" : "Simpan Faktur"}
-                        </button>
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-                ) : (
-                <>
-              <p className="ux90-hint" data-testid="multi-invoice-hint" style={{ margin: "0 0 8px" }}>
-                Satu PO dapat difakturkan sebagian berkali-kali. Setelah PO dipilih, tabel qty dan ringkasan faktur muncul di sini.
-              </p>
-              <div className="ux90-table-wrap" style={{ opacity: 0.55, pointerEvents: "none" }} aria-hidden="true" data-testid="fp-gate-table-preview">
-                <div className="ux90-table-head"><h3>Daftar Barang</h3><span className="ux90-hint">Preview struktur — aktif setelah PO dipilih</span></div>
-                <table className="ux90-table">
-                  <thead>
-                    <tr>
-                      <th>Produk</th>
-                      <th className="is-num">Qty PO</th>
-                      <th className="is-num">Sudah Faktur</th>
-                      <th className="is-num">Sisa</th>
-                      <th className="is-num">Qty Faktur</th>
-                      <th className="is-num">Harga</th>
-                      <th className="is-num">Subtotal</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr><td colSpan={7} style={{ textAlign: "center", color: "#9ca3af", padding: 24 }}>Pilih PO untuk mengisi baris faktur</td></tr>
-                  </tbody>
-                </table>
-              </div>
-                </>
-                )
-              ) : (
-                <div data-testid="sj-invoice-workspace" style={{ marginTop: 8 }}>
-                  <p className="ux90-hint" style={{ margin: "0 0 8px" }}>
-                    Multi-select SJ aktif → tentukan Qty Faktur per baris (≤ qty SJ / sisa). Mode tidak mencampur PO.
-                  </p>
-                  {sjPreviewLoading ? (
-                    <div className="ux90-gate" data-testid="sj-preview-loading">Memuat baris SJ…</div>
-                  ) : null}
-                  {sjPreviewLines.length > 0 ? (
-                    <>
-                      <div className="ux90-table-wrap" data-testid="sj-invoice-lines">
-                        <div className="ux90-table-head">
-                          <h3>Barang dari SJ</h3>
-                          <span className="ux90-hint">SJ → PO → Qty Faktur</span>
-                        </div>
-                        <table className="ux90-table">
-                          <thead>
-                            <tr>
-                              <th>SJ</th>
-                              <th>PO</th>
-                              <th>Produk</th>
-                              <th className="is-num">Qty SJ</th>
-                              <th className="is-num">Sisa</th>
-                              <th className="is-num">Qty Faktur</th>
-                              <th className="is-num">Harga</th>
-                              <th className="is-num">Subtotal</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {sjCreateCalculations.lines.map((l) => (
-                              <tr key={l.rowKey}>
-                                <td>{l.source_sj_number || l.source_sj_id}</td>
-                                <td>{l.source_po_number || l.source_po_id}</td>
-                                <td>{l.item_name}</td>
-                                <td className="is-num">{l.sj_line_qty}</td>
-                                <td className="is-num">{l.remaining_invoice_qty}</td>
-                                <td className="is-num">
-                                  <input
-                                    className="ux90-input"
-                                    style={{ width: 72, textAlign: "right" }}
-                                    type="number"
-                                    min={0}
-                                    max={l.remaining_invoice_qty}
-                                    value={sjLineQuantities[l.rowKey] ?? 0}
-                                    data-testid={`sj-qty-${l.rowKey}`}
-                                    onChange={(e) => {
-                                      const v = e.target.value;
-                                      setSjLineQuantities((prev) => ({ ...prev, [l.rowKey]: v === "" ? "" : Number(v) }));
-                                    }}
-                                  />
-                                </td>
-                                <td className="is-num">{l.numericPrice == null ? "-" : formatRupiah(l.numericPrice)}</td>
-                                <td className="is-num">{formatRupiah(l.lineSubtotal || 0)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="ux90-fp-dlrow" style={{ marginTop: 8 }} data-testid="sj-invoice-totals">
-                        <span>Subtotal {formatRupiah(sjCreateCalculations.subtotal)}</span>
-                        {" · "}
-                        <span>PPN {formatRupiah(sjCreateCalculations.ppnAmount)}</span>
-                        {" · "}
-                        <strong>Total {formatRupiah(sjCreateCalculations.grandTotal)}</strong>
-                      </div>
-                      <div className="ux90-hint" data-testid="sj-po-faktur-preview" style={{ marginTop: 8 }}>
-                        Relasi:
-                        {(sjRelations || []).slice(0, 12).map((r) => (
-                          <span key={`${r.sjId}-${r.poId}-${r.lineId}`} style={{ display: "inline-block", marginRight: 8 }}>
-                            {r.sjNumber} → {r.poNumber || r.poId} → Faktur
-                          </span>
-                        ))}
-                      </div>
-                      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "end" }}>
-                        <label className="ux90-field">
-                          <span>Tanggal Faktur <span className="ux90-req">*</span></span>
-                          <SalesInvoiceDateField
-                            ref={createDateRef}
-                            valueIso={invoiceDate}
-                            onChange={setInvoiceDate}
-                            testId="sj-invoice-date-input"
-                            calendarLabel="Kalender tanggal faktur SJ"
-                          />
-                        </label>
-                        <label className="ux90-field">
-                          <span>Diskon</span>
-                          <input
-                            className="ux90-input"
-                            type="number"
-                            min={0}
-                            value={discountAmount}
-                            onChange={(e) => setDiscountAmount(e.target.value)}
-                            data-testid="sj-discount-input"
-                          />
-                        </label>
-                        <label className="ux90-field">
-                          <span>PPN %</span>
-                          <input
-                            className="ux90-input"
-                            type="number"
-                            min={0}
-                            value={ppnPercent}
-                            onChange={(e) => setPpnPercent(e.target.value)}
-                            data-testid="sj-ppn-input"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="btn-primary"
-                          data-testid="sj-save-invoice"
-                          disabled={formBusy || sjPreviewLoading}
-                          onClick={(e) => handleSaveInvoice(e)}
-                        >
-                          {formBusy ? "Menyimpan…" : "Buat Faktur dari SJ"}
-                        </button>
-                      </div>
-                    </>
-                  ) : null}
-                </div>
-              )}
-              {(previewErr || sjPreviewErr || multiPoPreviewErr || formErr) ? (
-                <div className="alert-box error" data-testid="create-error-alert" style={{ marginTop: 12 }}>
-                  <AlertCircle size={16} /> <span>{formErr || multiPoPreviewErr || sjPreviewErr || previewErr}</span>
-                </div>
-              ) : null}
-            </div>
-          )}
+              </section>
 
-          {previewLoading && !multiPoMode ? (
-            <div className="ux90-gate" data-testid="fp-preview-loading">Memuat data PO...</div>
-          ) : null}
-
-          {previewData && !multiPoMode ? (
-            <form
-              className="sd-form-fill fp-create-fill ux90-create-shell ux90-fp-filled ux90-fp-doc-host"
-              data-form-tab={invoiceFormTab}
-              data-testid="fp-doc-host"
-              onSubmit={handleSaveInvoice}
-            >
-              <div className="ux90-fp-doc">
-                <div className="ux90-fp-doc-header" data-testid="po-snapshot-card">
-                  <div className="ux90-fp-dh-grid ux90-fp-dh-compact" data-testid="invoice-essential-terms">
-                    <div className="ux90-fp-dlrow ux90-fp-dlrow-po" data-testid="fp-po-switch">
-                      <label>Ambil dari PO <span className="ux90-req">*</span></label>
-                      <div className="ux90-fp-dlrow-control">
-                        <LookupSearchSelect
-                          options={availablePOs}
-                          value={selectedPoId}
-                          onChange={handleSelectPoId}
-                          getOptionValue={(p) => p.id}
-                          getOptionLabel={invoicePoOptionLabel}
-                          getOptionMeta={invoicePoOptionMeta}
-                          getSearchText={invoicePoSearchText}
-                          fetchOptions={fetchInvoicePoOptions}
-                          isOptionDisabled={isInvoicePoDisabled}
-                          getOptionDisabledReason={invoicePoDisabledReason}
-                          placeholder="Ketik nomor PO atau customer…"
-                          noResultLabel="PO tidak ditemukan"
-                          disabled={previewLoading || formBusy}
-                          testId="po-selector"
-                        />
-                        <input type="hidden" readOnly value={previewData.po_number || ""} data-testid="snapshot-po-number" />
-                      </div>
-                    </div>
-                    <div className="ux90-fp-dlrow">
+              {/* 02 — Informasi Faktur */}
+              <section className="ux90-fp-panel ux90-fp-info-panel" data-testid="po-snapshot-card">
+                <div className="ux90-fp-panel-head">
+                  <span className="ux90-fp-panel-index">02</span>
+                  <h2>Informasi Faktur</h2>
+                </div>
+                <div className="ux90-fp-panel-body">
+                  <div className="ux90-fp-dh-grid ux90-fp-dh-compact ux90-fp-info-grid" data-testid="invoice-essential-terms">
+                    <div className="ux90-fp-dlrow ux90-fp-info-pelanggan">
                       <label htmlFor="fp-snapshot-customer">Pelanggan</label>
                       <div className="ux90-fp-dlrow-control">
-                        <input id="fp-snapshot-customer" className="ux90-input" readOnly value={previewData.customer || ""} data-testid="snapshot-customer" />
+                        <input
+                          id="fp-snapshot-customer"
+                          className="ux90-input"
+                          readOnly
+                          value={infoCustomer}
+                          data-testid="snapshot-customer"
+                        />
                       </div>
                     </div>
-                    <div className="ux90-fp-dlrow">
-                      <label htmlFor="invoice-date-input">Tanggal <span className="ux90-req">*</span></label>
+                    <div className="ux90-fp-dlrow ux90-fp-info-tanggal">
+                      <label htmlFor={dateTestId}>Tanggal Faktur <span className="ux90-req">*</span></label>
                       <div className="ux90-fp-dlrow-control ux90-fp-date-control">
                         <SalesInvoiceDateField
                           ref={createDateRef}
                           valueIso={invoiceDate}
                           onChange={setInvoiceDate}
-                          testId="invoice-date-input"
+                          testId={dateTestId}
                           calendarLabel="Kalender tanggal faktur"
                         />
                       </div>
                     </div>
-                    <div className="ux90-fp-dlrow">
+                    <div className="ux90-fp-dlrow ux90-fp-info-referensi">
+                      <label htmlFor="fp-snapshot-reference">Dokumen Referensi</label>
+                      <div className="ux90-fp-dlrow-control">
+                        <input
+                          id="fp-snapshot-reference"
+                          className="ux90-input"
+                          readOnly
+                          value={infoReference}
+                          data-testid="snapshot-reference"
+                        />
+                      </div>
+                    </div>
+                    <div className="ux90-fp-dlrow ux90-fp-info-outlet">
                       <label htmlFor="fp-snapshot-outlet">Outlet / Cabang</label>
                       <div className="ux90-fp-dlrow-control">
-                        <input id="fp-snapshot-outlet" className="ux90-input" readOnly value={previewData.outlet || "-"} data-testid="snapshot-outlet" />
+                        <input
+                          id="fp-snapshot-outlet"
+                          className="ux90-input"
+                          readOnly
+                          value={previewData?.outlet || (isMultiPo || isSjMode ? "—" : "Belum dipilih")}
+                          data-testid="snapshot-outlet"
+                        />
                       </div>
                     </div>
-                    <div className="ux90-fp-dlrow ux90-fp-dlrow-sisa">
-                      <label>Sisa qty</label>
-                      <div className="ux90-fp-dlrow-control ux90-fp-remaining">
-                        <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"}>
-                          {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
-                        </strong>
+                    <div className="ux90-fp-dlrow ux90-fp-info-nofaktur">
+                      <label>No. Faktur</label>
+                      <div className="ux90-fp-dlrow-control">
+                        <input className="ux90-input" readOnly value="Otomatis saat disimpan" aria-label="Nomor faktur otomatis" />
                       </div>
                     </div>
+                    {singlePoReady ? (
+                      <div className="ux90-fp-dlrow ux90-fp-dlrow-sisa ux90-fp-info-meta">
+                        <label>Sisa qty</label>
+                        <div className="ux90-fp-dlrow-control ux90-fp-remaining">
+                          <strong data-testid="snapshot-remaining-qty" className={createCalculations.totalRemaining > 0 ? "is-due" : "is-paid"}>
+                            {Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs
+                          </strong>
+                        </div>
+                      </div>
+                    ) : null}
+                    {isMultiPo && multiPoAnchorPreview ? (
+                      <div className="ux90-hint ux90-fp-info-meta" data-testid="multi-po-customer-snapshot">
+                        Customer: {multiPoAnchorPreview.customer || "-"} · PO terpilih: {selectedPoIds.length}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
+              </section>
 
+              {(previewLoading && !multiPoMode) ? (
+                <div className="ux90-gate ux90-fp-inline-status" data-testid="fp-preview-loading">Memuat data PO...</div>
+              ) : null}
+              {multiPoPreviewLoading ? (
+                <div className="ux90-gate ux90-fp-inline-status" data-testid="multi-po-preview-loading">Memuat baris PO…</div>
+              ) : null}
+              {sjPreviewLoading ? (
+                <div className="ux90-gate ux90-fp-inline-status" data-testid="sj-preview-loading">Memuat baris SJ…</div>
+              ) : null}
+
+              {/* 03 — Rincian */}
+              <section className="ux90-fp-panel ux90-fp-lines-panel" data-testid={isSjMode ? "sj-invoice-workspace" : (isMultiPo ? "multi-po-invoice-workspace" : "fp-lines-panel")}>
+                <div className="ux90-fp-panel-head">
+                  <span className="ux90-fp-panel-index">03</span>
+                  <h2>Rincian Faktur</h2>
+                </div>
                 <div className="ux90-fp-doc-body">
                   <nav className="ux90-fp-vtabs" role="tablist" aria-label="Bagian faktur">
                     <button
@@ -3660,7 +3530,7 @@ export default function FakturPenjualan() {
                       onClick={() => setInvoiceFormTab("items")}
                     >
                       <Package size={18} aria-hidden="true" />
-                      <span>Rincian</span>
+                      <span>Rincian Barang</span>
                     </button>
                     <button
                       type="button"
@@ -3671,7 +3541,7 @@ export default function FakturPenjualan() {
                       onClick={() => setInvoiceFormTab("info")}
                     >
                       <Info size={18} aria-hidden="true" />
-                      <span>Info</span>
+                      <span>Informasi Lainnya</span>
                     </button>
                     <button
                       type="button"
@@ -3690,78 +3560,286 @@ export default function FakturPenjualan() {
                     <div className="ux90-fp-pane-panel ux90-fp-pane-items fp-items sd-pane-items ux90-invoice-lines" data-pane="items">
                       <div className="ux90-fp-pane-title">
                         <h3>Rincian Barang <span className="ux90-req">*</span></h3>
-                        <span className="ux90-hint">Qty faktur ≤ sisa · multi-faktur per PO</span>
+                        <span className="ux90-hint">
+                          {isSjMode
+                            ? "SJ → PO → Qty Faktur"
+                            : isMultiPo
+                              ? "PO sumber · Qty · Harga — produk sama dari PO berbeda tetap terpisah"
+                              : "Qty faktur ≤ sisa · multi-faktur per PO"}
+                        </span>
                       </div>
-                      <div className="ux90-table-scroll" data-testid="invoice-lines-scroll">
-                        <table className="ux90-table fp-lines">
-                          <thead>
-                            <tr>
-                              <th>Produk</th>
-                              <th className="is-num">Qty PO</th>
-                              <th className="is-num">Sudah Faktur</th>
-                              <th className="is-num">Sisa</th>
-                              <th className="is-num">Qty Faktur</th>
-                              <th className="is-num">Harga</th>
-                              <th className="is-num">Subtotal</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {createCalculations.lines.map((li) => (
-                              <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
-                                <td>
-                                  <div className="ux90-item-name">{li.item_name}</div>
-                                  {li.color ? <div className="ux90-item-meta">Warna: {li.color}</div> : null}
-                                </td>
-                                <td className="is-num" data-testid={`create-line-ordered-${li.line_idx}`}>
-                                  {Number(li.ordered_qty || 0).toLocaleString("id-ID")}
-                                </td>
-                                <td className="is-num" data-testid={`create-line-invoiced-${li.line_idx}`}>
-                                  {Number(li.invoiced_cumulative || 0).toLocaleString("id-ID")}
-                                </td>
-                                <td className="is-num">
-                                  <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
-                                </td>
-                                <td className="is-num">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max={li.remaining}
-                                    value={lineQuantities[li.line_idx] !== undefined ? lineQuantities[li.line_idx] : li.remaining}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
-                                    }}
-                                    data-testid={`qty-input-${li.line_idx}`}
-                                    className={`ux90-qty-input${li.isQtyOver ? " is-over" : ""}`}
-                                  />
-                                  {li.isQtyOver ? <div className="ux90-inline-err">Maks {li.remaining}</div> : null}
-                                </td>
-                                <td className="is-num">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="any"
-                                    value={linePrices[li.line_idx] !== undefined ? linePrices[li.line_idx] : ""}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
-                                    }}
-                                    readOnly={Boolean(li.price_from_order)}
-                                    placeholder={li.price_from_order ? "" : "Isi harga"}
-                                    data-testid={`unit-price-input-${li.line_idx}`}
-                                    className="ux90-price-input"
-                                  />
-                                  {li.price_from_order ? <div className="ux90-inline-ok">Harga dari pesanan</div> : null}
-                                  {li.priceMissing && li.numericQty > 0 ? <div className="ux90-inline-warn">Lengkapi harga jual</div> : null}
-                                </td>
-                                <td className="is-num" data-testid={`line-total-${li.line_idx}`}>
-                                  {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
+
+                      {isMultiPo ? (
+                        multiPoCreateCalculations.lines.length > 0 ? (
+                          <div className="ux90-table-wrap" data-testid="multi-po-invoice-lines">
+                            <table className="ux90-table">
+                              <thead>
+                                <tr>
+                                  <th>PO</th>
+                                  <th>Produk</th>
+                                  <th className="is-num">Qty Sumber</th>
+                                  <th className="is-num">Sudah Faktur</th>
+                                  <th className="is-num">Sisa</th>
+                                  <th className="is-num">Qty Faktur</th>
+                                  <th className="is-num">Harga</th>
+                                  <th className="is-num">Subtotal</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {multiPoCreateCalculations.lines.map((l) => (
+                                  <tr key={l.rowKey} data-testid={`multi-po-line-${l.rowKey}`}>
+                                    <td>{l.source_po_number || l.source_po_id}</td>
+                                    <td>{l.item_name}</td>
+                                    <td className="is-num">{Number(l.ordered_qty || 0).toLocaleString("id-ID")}</td>
+                                    <td className="is-num">{Number(l.invoiced_cumulative || 0).toLocaleString("id-ID")}</td>
+                                    <td className="is-num">{Number(l.remaining_invoice_qty || 0).toLocaleString("id-ID")}</td>
+                                    <td className="is-num">
+                                      <input
+                                        className="ux90-input"
+                                        style={{ width: 72, textAlign: "right" }}
+                                        type="number"
+                                        min={0}
+                                        max={l.remaining_invoice_qty}
+                                        value={multiPoLineQuantities[l.rowKey] ?? 0}
+                                        data-testid={`multi-po-qty-${l.rowKey}`}
+                                        onChange={(e) => {
+                                          const v = e.target.value;
+                                          setMultiPoLineQuantities((prev) => ({
+                                            ...prev,
+                                            [l.rowKey]: v === "" ? "" : Number(v),
+                                          }));
+                                        }}
+                                      />
+                                    </td>
+                                    <td className="is-num">
+                                      {l.price_from_order || (l.numericPrice != null && multiPoLinePrices[l.rowKey] !== "") ? (
+                                        formatRupiah(l.numericPrice || 0)
+                                      ) : (
+                                        <input
+                                          className="ux90-input"
+                                          style={{ width: 96, textAlign: "right" }}
+                                          type="number"
+                                          min={0}
+                                          value={multiPoLinePrices[l.rowKey] ?? ""}
+                                          data-testid={`multi-po-price-${l.rowKey}`}
+                                          onChange={(e) => {
+                                            setMultiPoLinePrices((prev) => ({ ...prev, [l.rowKey]: e.target.value }));
+                                          }}
+                                        />
+                                      )}
+                                    </td>
+                                    <td className="is-num">{formatRupiah(l.lineSubtotal || 0)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className="ux90-table-wrap" data-testid="fp-gate-table-preview">
+                            <table className="ux90-table">
+                              <thead>
+                                <tr>
+                                  <th>PO</th>
+                                  <th>Produk</th>
+                                  <th className="is-num">Qty Sumber</th>
+                                  <th className="is-num">Sudah Faktur</th>
+                                  <th className="is-num">Sisa</th>
+                                  <th className="is-num">Qty Faktur</th>
+                                  <th className="is-num">Harga</th>
+                                  <th className="is-num">Subtotal</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td colSpan={8} className="ux90-fp-empty-state">
+                                    <FileText size={28} aria-hidden="true" />
+                                    <span>Belum ada rincian faktur. Pilih beberapa PO kompatibel di bagian atas.</span>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        )
+                      ) : isSjMode ? (
+                        sjPreviewLines.length > 0 ? (
+                          <div className="ux90-table-wrap" data-testid="sj-invoice-lines">
+                            <table className="ux90-table">
+                              <thead>
+                                <tr>
+                                  <th>SJ</th>
+                                  <th>PO</th>
+                                  <th>Produk</th>
+                                  <th className="is-num">Qty SJ</th>
+                                  <th className="is-num">Sisa</th>
+                                  <th className="is-num">Qty Faktur</th>
+                                  <th className="is-num">Harga</th>
+                                  <th className="is-num">Subtotal</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sjCreateCalculations.lines.map((l) => (
+                                  <tr key={l.rowKey}>
+                                    <td>{l.source_sj_number || l.source_sj_id}</td>
+                                    <td>{l.source_po_number || l.source_po_id}</td>
+                                    <td>{l.item_name}</td>
+                                    <td className="is-num">{l.sj_line_qty}</td>
+                                    <td className="is-num">{l.remaining_invoice_qty}</td>
+                                    <td className="is-num">
+                                      <input
+                                        className="ux90-input"
+                                        style={{ width: 72, textAlign: "right" }}
+                                        type="number"
+                                        min={0}
+                                        max={l.remaining_invoice_qty}
+                                        value={sjLineQuantities[l.rowKey] ?? 0}
+                                        data-testid={`sj-qty-${l.rowKey}`}
+                                        onChange={(e) => {
+                                          const v = e.target.value;
+                                          setSjLineQuantities((prev) => ({ ...prev, [l.rowKey]: v === "" ? "" : Number(v) }));
+                                        }}
+                                      />
+                                    </td>
+                                    <td className="is-num">{l.numericPrice == null ? "-" : formatRupiah(l.numericPrice)}</td>
+                                    <td className="is-num">{formatRupiah(l.lineSubtotal || 0)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className="ux90-table-wrap" data-testid="fp-gate-table-preview">
+                            <table className="ux90-table">
+                              <thead>
+                                <tr>
+                                  <th>SJ</th>
+                                  <th>PO</th>
+                                  <th>Produk</th>
+                                  <th className="is-num">Qty SJ</th>
+                                  <th className="is-num">Sisa</th>
+                                  <th className="is-num">Qty Faktur</th>
+                                  <th className="is-num">Harga</th>
+                                  <th className="is-num">Subtotal</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td colSpan={8} className="ux90-fp-empty-state">
+                                    <FileText size={28} aria-hidden="true" />
+                                    <span>Belum ada rincian faktur. Pilih Surat Jalan di bagian atas.</span>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        )
+                      ) : singlePoReady ? (
+                        <div className="ux90-table-scroll" data-testid="invoice-lines-scroll">
+                          <table className="ux90-table fp-lines">
+                            <thead>
+                              <tr>
+                                <th>Produk</th>
+                                <th className="is-num">Qty Sumber</th>
+                                <th className="is-num">Sudah Faktur</th>
+                                <th className="is-num">Sisa</th>
+                                <th className="is-num">Qty Faktur</th>
+                                <th className="is-num">Harga</th>
+                                <th className="is-num">Subtotal</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {createCalculations.lines.map((li) => (
+                                <tr key={li.line_idx} data-testid={`create-line-${li.line_idx}`}>
+                                  <td>
+                                    <div className="ux90-item-name">{li.item_name}</div>
+                                    {li.color ? <div className="ux90-item-meta">Warna: {li.color}</div> : null}
+                                  </td>
+                                  <td className="is-num" data-testid={`create-line-ordered-${li.line_idx}`}>
+                                    {Number(li.ordered_qty || 0).toLocaleString("id-ID")}
+                                  </td>
+                                  <td className="is-num" data-testid={`create-line-invoiced-${li.line_idx}`}>
+                                    {Number(li.invoiced_cumulative || 0).toLocaleString("id-ID")}
+                                  </td>
+                                  <td className="is-num">
+                                    <strong>{Number(li.remaining).toLocaleString("id-ID")}</strong> {li.unit || "pcs"}
+                                  </td>
+                                  <td className="is-num">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max={li.remaining}
+                                      value={lineQuantities[li.line_idx] !== undefined ? lineQuantities[li.line_idx] : li.remaining}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setLineQuantities((prev) => ({ ...prev, [li.line_idx]: val }));
+                                      }}
+                                      data-testid={`qty-input-${li.line_idx}`}
+                                      className={`ux90-qty-input${li.isQtyOver ? " is-over" : ""}`}
+                                    />
+                                    {li.isQtyOver ? <div className="ux90-inline-err">Maks {li.remaining}</div> : null}
+                                  </td>
+                                  <td className="is-num">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="any"
+                                      value={linePrices[li.line_idx] !== undefined ? linePrices[li.line_idx] : ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setLinePrices((prev) => ({ ...prev, [li.line_idx]: val }));
+                                      }}
+                                      readOnly={Boolean(li.price_from_order)}
+                                      placeholder={li.price_from_order ? "" : "Isi harga"}
+                                      data-testid={`unit-price-input-${li.line_idx}`}
+                                      className="ux90-price-input"
+                                    />
+                                    {li.price_from_order ? <div className="ux90-inline-ok">Harga dari pesanan</div> : null}
+                                    {li.priceMissing && li.numericQty > 0 ? <div className="ux90-inline-warn">Lengkapi harga jual</div> : null}
+                                  </td>
+                                  <td className="is-num" data-testid={`line-total-${li.line_idx}`}>
+                                    {li.lineTotal === null ? "—" : formatRupiah(li.lineTotal)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="ux90-table-wrap" data-testid="fp-gate-table-preview">
+                          <div className="ux90-table-head"><h3>Daftar Barang</h3><span className="ux90-hint">Struktur tetap terlihat sebelum PO dipilih</span></div>
+                          <table className="ux90-table">
+                            <thead>
+                              <tr>
+                                <th>Produk</th>
+                                <th className="is-num">Qty Sumber</th>
+                                <th className="is-num">Sudah Faktur</th>
+                                <th className="is-num">Sisa</th>
+                                <th className="is-num">Qty Faktur</th>
+                                <th className="is-num">Harga</th>
+                                <th className="is-num">Subtotal</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr>
+                                <td colSpan={7} className="ux90-fp-empty-state">
+                                  <FileText size={28} aria-hidden="true" />
+                                  <span>Belum ada rincian faktur. Pilih PO atau Surat Jalan di bagian atas. Rincian dan sisa qty akan terisi otomatis.</span>
                                 </td>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {isSjMode && sjPreviewLines.length > 0 ? (
+                        <div className="ux90-hint" data-testid="sj-po-faktur-preview">
+                          Relasi:
+                          {(sjRelations || []).slice(0, 12).map((r) => (
+                            <span key={`${r.sjId}-${r.poId}-${r.lineId}`} style={{ display: "inline-block", marginRight: 8 }}>
+                              {r.sjNumber} → {r.poNumber || r.poId} → Faktur
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="ux90-fp-pane-panel ux90-fp-pane-info fp-terms sd-pane-terms" data-pane="info">
@@ -3774,7 +3852,13 @@ export default function FakturPenjualan() {
                           <div className="ux90-fp-dlrow">
                             <label htmlFor="fp-snapshot-address">Alamat</label>
                             <div className="ux90-fp-dlrow-control">
-                              <input id="fp-snapshot-address" className="ux90-input" readOnly value={previewData.address || "-"} data-testid="snapshot-address" />
+                              <input
+                                id="fp-snapshot-address"
+                                className="ux90-input"
+                                readOnly
+                                value={previewData?.address || "-"}
+                                data-testid="snapshot-address"
+                              />
                             </div>
                           </div>
                           <div className="ux90-fp-dlrow">
@@ -3794,10 +3878,16 @@ export default function FakturPenjualan() {
                               />
                             </div>
                           </div>
-                          <p className="ux90-doc-hint" data-testid="multi-invoice-hint">
-                            Sisa qty PO: <strong data-testid="invoice-remaining-qty-summary">{Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs</strong>
-                            {" · "}PO {previewData.po_number}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
-                          </p>
+                          {singlePoReady ? (
+                            <p className="ux90-doc-hint" data-testid="multi-invoice-hint-detail">
+                              Sisa qty PO: <strong data-testid="invoice-remaining-qty-summary">{Number(createCalculations.totalRemaining || 0).toLocaleString("id-ID")} pcs</strong>
+                              {" · "}PO {previewData.po_number}. Faktur parsial diperbolehkan selama qty tidak melebihi sisa.
+                            </p>
+                          ) : (
+                            <p className="ux90-doc-hint">
+                              Field administrasi aktif setelah dokumen sumber dimuat. Harga kosong tidak dijadikan Rp0.
+                            </p>
+                          )}
                         </section>
                         <section className="ux90-fp-info-col" aria-label="Pembayaran dan pajak">
                           <h4 className="ux90-fp-info-h">Pembayaran &amp; pajak</h4>
@@ -3813,6 +3903,7 @@ export default function FakturPenjualan() {
                                 onChange={(e) => setPaymentTermDays(e.target.value)}
                                 data-testid="invoice-term-input"
                                 placeholder="0"
+                                disabled={!singlePoReady && !isMultiPo && !isSjMode}
                               />
                             </div>
                           </div>
@@ -3823,10 +3914,10 @@ export default function FakturPenjualan() {
                             </div>
                           </div>
                           <div className="ux90-fp-dlrow">
-                            <label htmlFor="invoice-ppn-input">PPN (%)</label>
+                            <label htmlFor={ppnTestId}>PPN (%)</label>
                             <div className="ux90-fp-dlrow-control">
                               <input
-                                id="invoice-ppn-input"
+                                id={ppnTestId}
                                 className="ux90-input ux90-num"
                                 type="number"
                                 min="0"
@@ -3834,22 +3925,22 @@ export default function FakturPenjualan() {
                                 step="any"
                                 value={ppnPercent}
                                 onChange={(e) => setPpnPercent(e.target.value)}
-                                data-testid="invoice-ppn-input"
+                                data-testid={ppnTestId}
                                 placeholder="0"
                               />
                             </div>
                           </div>
                           <div className="ux90-fp-dlrow">
-                            <label htmlFor="invoice-discount-input">Diskon Global (Rp)</label>
+                            <label htmlFor={discountTestId}>Diskon Global (Rp)</label>
                             <div className="ux90-fp-dlrow-control">
                               <input
-                                id="invoice-discount-input"
+                                id={discountTestId}
                                 className="ux90-input ux90-num"
                                 type="number"
                                 min="0"
                                 value={discountAmount}
                                 onChange={(e) => setDiscountAmount(e.target.value)}
-                                data-testid="invoice-discount-input"
+                                data-testid={discountTestId}
                                 placeholder="0"
                               />
                             </div>
@@ -3865,7 +3956,7 @@ export default function FakturPenjualan() {
                       <OtherChargesEditor
                         rows={otherCharges}
                         accounts={chargeAccounts}
-                        disabled={formBusy}
+                        disabled={formBusy || (!singlePoReady && !isMultiPo && !isSjMode)}
                         showErrors={showChargeErrors}
                         onChange={setOtherCharges}
                         idPrefix="create"
@@ -3873,87 +3964,166 @@ export default function FakturPenjualan() {
                     </div>
                   </div>
                 </div>
+              </section>
 
-                {createCalculations.totalRemaining <= 0 ? (
-                  <div className="ux90-fp-banner" data-testid="fully-invoiced-banner">
-                    <AlertCircle size={16} />
-                    Pesanan Penjualan ini sudah difakturkan sepenuhnya. Tidak ada sisa kuantitas untuk difakturkan.
-                  </div>
-                ) : null}
+              {singlePoReady && createCalculations.totalRemaining <= 0 ? (
+                <div className="ux90-fp-banner" data-testid="fully-invoiced-banner">
+                  <AlertCircle size={16} />
+                  Pesanan Penjualan ini sudah difakturkan sepenuhnya. Tidak ada sisa kuantitas untuk difakturkan.
+                </div>
+              ) : null}
 
-                {formErr ? (
-                  <div className="alert-box error" data-testid="create-error-alert">
-                    <AlertCircle size={16} />
-                    <span>{formErr}</span>
-                  </div>
-                ) : null}
-              </div>
+              {(previewErr || sjPreviewErr || multiPoPreviewErr || formErr) ? (
+                <div className="alert-box error" data-testid="create-error-alert">
+                  <AlertCircle size={16} />
+                  <span>{formErr || multiPoPreviewErr || sjPreviewErr || previewErr}</span>
+                </div>
+              ) : null}
 
+              {/* 04 — Perhitungan + action bar */}
               <div className="ux90-footer invoice-actions ux90-doc-footer ux90-fp-doc-footer">
-                <div className="ux90-fp-totals" data-testid="invoice-breakdown">
-                  <div className="ux90-fp-totals-lines">
-                    <div className="ux90-fp-tot-row">
-                      <span>Subtotal</span>
-                      <strong className="ux90-fp-tot-amt">{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                <div className="ux90-fp-calc-block">
+                  <div className="ux90-fp-panel-head ux90-fp-calc-head">
+                    <span className="ux90-fp-panel-index">04</span>
+                    <h2>Perhitungan Faktur</h2>
+                  </div>
+                  {isSjMode ? (
+                    <div className="ux90-fp-totals" data-testid="sj-invoice-totals">
+                      <div className="ux90-fp-totals-lines">
+                        <div className="ux90-fp-tot-row">
+                          <span>Subtotal</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(sjCreateCalculations.subtotal || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>Diskon</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(sjCreateCalculations.discount || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>PPN</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(sjCreateCalculations.ppnAmount || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row is-total">
+                          <span>Total Faktur</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(sjCreateCalculations.grandTotal || 0)}</strong>
+                        </div>
+                      </div>
                     </div>
-                    <div className="ux90-fp-tot-row">
-                      <span>Diskon</span>
-                      <strong className="ux90-fp-tot-amt">{formatRupiah(createCalculations.discount)}</strong>
+                  ) : isMultiPo ? (
+                    <div className="ux90-fp-totals" data-testid="multi-po-invoice-totals">
+                      <div className="ux90-fp-totals-lines">
+                        <div className="ux90-fp-tot-row">
+                          <span>Subtotal</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(multiPoCreateCalculations.subtotal || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>Diskon</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(multiPoCreateCalculations.discount || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>PPN</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(multiPoCreateCalculations.ppnAmount || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row is-total">
+                          <span>Total Faktur</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(multiPoCreateCalculations.grandTotal || 0)}</strong>
+                        </div>
+                      </div>
                     </div>
-                    <div className="ux90-fp-tot-row">
-                      <span>DPP</span>
-                      <strong className="ux90-fp-tot-amt" data-testid="invoice-dpp">
-                        {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}
-                      </strong>
+                  ) : (
+                    <div className="ux90-fp-totals" data-testid="invoice-breakdown">
+                      <div className="ux90-fp-totals-lines">
+                        <div className="ux90-fp-tot-row">
+                          <span>Subtotal</span>
+                          <strong className="ux90-fp-tot-amt">{invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.subtotal) : "Belum lengkap"}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>Diskon</span>
+                          <strong className="ux90-fp-tot-amt">{formatRupiah(createCalculations.discount || 0)}</strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>DPP</span>
+                          <strong className="ux90-fp-tot-amt" data-testid="invoice-dpp">
+                            {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.afterDiscount) : "Belum lengkap"}
+                          </strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>PPN ({createCalculations.ppnPercent}%)</span>
+                          <strong className="ux90-fp-tot-amt" data-testid="invoice-ppn">
+                            {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}
+                          </strong>
+                        </div>
+                        <div className="ux90-fp-tot-row">
+                          <span>Biaya Lainnya</span>
+                          <strong className="ux90-fp-tot-amt" data-testid="invoice-other-charges-total">
+                            {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal || 0)}
+                          </strong>
+                        </div>
+                        <div className="ux90-fp-tot-row is-total">
+                          <span>Total Faktur</span>
+                          <strong className="ux90-fp-tot-amt" data-testid="invoice-grand-total">
+                            {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
+                              ? formatRupiah(createCalculations.grandTotal)
+                              : "Belum lengkap"}
+                          </strong>
+                        </div>
+                      </div>
                     </div>
-                    <div className="ux90-fp-tot-row">
-                      <span>PPN ({createCalculations.ppnPercent}%)</span>
-                      <strong className="ux90-fp-tot-amt" data-testid="invoice-ppn">
-                        {invoiceCompleteness.totalsReady ? formatRupiah(createCalculations.ppn) : "Belum lengkap"}
-                      </strong>
-                    </div>
-                    <div className="ux90-fp-tot-row">
-                      <span>Biaya Lainnya</span>
-                      <strong className="ux90-fp-tot-amt" data-testid="invoice-other-charges-total">
-                        {createCalculations.chargesIncomplete ? "Belum lengkap" : formatRupiah(createCalculations.chargesTotal)}
-                      </strong>
-                    </div>
-                    <div className="ux90-fp-tot-row is-total">
-                      <span>Total Faktur</span>
-                      <strong className="ux90-fp-tot-amt" data-testid="invoice-grand-total">
-                        {invoiceCompleteness.totalsReady && createCalculations.grandTotal !== null
-                          ? formatRupiah(createCalculations.grandTotal)
-                          : "Belum lengkap"}
-                      </strong>
-                    </div>
+                  )}
+                </div>
+                <div className="ux90-fp-action-bar ux90-doc-footer-actions">
+                  <p className="ux90-hint ux90-fp-footer-hint">
+                    Struktur workspace tetap sama sebelum dan sesudah sumber dipilih.
+                  </p>
+                  <div className="ux90-fp-action-buttons">
+                    <button
+                      type="button"
+                      className="ux90-btn-ghost"
+                      onClick={() => {
+                        setSearchParams({});
+                        setViewMode("list");
+                      }}
+                      disabled={formBusy}
+                    >
+                      Batal
+                    </button>
+                    {isSjMode ? (
+                      <button
+                        type="button"
+                        className="ux90-btn-primary primary"
+                        disabled={saveDisabled}
+                        data-testid="sj-save-invoice"
+                        onClick={(e) => handleSaveInvoice(e)}
+                      >
+                        {saveLabel}
+                      </button>
+                    ) : isMultiPo ? (
+                      <button
+                        type="button"
+                        className="ux90-btn-primary primary"
+                        disabled={saveDisabled}
+                        data-testid="multi-po-save-invoice"
+                        onClick={(e) => handleSaveInvoice(e)}
+                      >
+                        {saveLabel}
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="ux90-btn-primary primary"
+                        disabled={saveDisabled}
+                        data-testid="save-invoice-btn"
+                      >
+                        {saveLabel}
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="ux90-doc-footer-actions">
-                  <button
-                    type="button"
-                    className="ux90-btn-ghost"
-                    onClick={() => {
-                      setSearchParams({});
-                      setViewMode("list");
-                    }}
-                    disabled={formBusy}
-                  >
-                    Batal
-                  </button>
-                  <button
-                    type="submit"
-                    className="ux90-btn-primary primary"
-                    disabled={formBusy || createCalculations.hasErrors || createCalculations.totalRemaining <= 0 || createCalculations.totalQty <= 0}
-                    data-testid="save-invoice-btn"
-                  >
-                    {formBusy ? "Menyimpan..." : "Simpan Faktur"}
-                  </button>
-                </div>
               </div>
-            </form>
-          ) : null}
+            </div>
+          </form>
         </div>
-      )}
+        );
+      })()}
 
       {/* VIEW: DETAIL / EDIT */}
       {viewMode === "detail" && (
