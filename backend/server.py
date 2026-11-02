@@ -13147,6 +13147,7 @@ _SALES_ORDER_LIST_PROJECTION = {
     "order_date": 1,
     "created_at": 1,
     "customer": 1,
+    "customer_id": 1,
     "outlet": 1,
     "total_quantity": 1,
     "sales": 1,

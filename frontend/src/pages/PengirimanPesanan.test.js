@@ -177,6 +177,53 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/data-testid="input-delivery-notes"/);
   });
 
+  test("CREATE SJ Rincian table remains scrollable under multi-PO header (layout regression)", () => {
+    // Multi-PO searchable picker uses CSS-capped class (not inline maxHeight:160 that starved the body).
+    expect(src).toMatch(/data-testid="multi-po-picker"/);
+    expect(src).toMatch(/className="ux90-multi-po-picker"/);
+    expect(src).toMatch(/LookupMultiSearchSelect/);
+    expect(src).toMatch(/testId="multi-po-lookup"/);
+    expect(src).not.toMatch(/\.slice\(0,\s*40\)/);
+    expect(src).toMatch(/ux90-table-scroll/);
+    expect(src).toMatch(/ux90-delivery-doc-header/);
+    expect(src).toMatch(/ux90-delivery-doc-body/);
+    expect(src).toMatch(/ux90-pj-delivery-host/);
+    expect(src).not.toMatch(/maxHeight:\s*160/);
+
+    const css = fs.readFileSync(path.join(__dirname, "ux90SalesCreate.css"), "utf8");
+    // Host table-wrap must shrink (min-height 0) so overflow:hidden ancestors do not clip tbody.
+    expect(css).toMatch(
+      /\.ux90-pj-delivery-host[\s\S]*?\[data-form-tab="items"\][\s\S]*?delivery-lines[\s\S]*?min-height:\s*0\s*!important/
+    );
+    // Legacy non-host min-height 220 must not win over host shrink rule.
+    expect(css).toMatch(/\.ux90-pj-delivery\s+\.ux90-table-wrap\[data-ux90-region="delivery-lines"\]\s*\{[^}]*min-height:\s*220px/);
+    // Multi-PO picker + header capped so Rincian/footer stay reachable.
+    expect(css).toMatch(/\.ux90-pj-delivery-host\s+\.ux90-multi-po-picker\s*\{[^}]*max-height:\s*min\(112px,\s*14vh\)\s*!important/);
+    expect(css).toMatch(/\.ux90-pj-delivery-host\s+\.ux90-delivery-doc-header\s*\{[^}]*max-height:\s*min\(42vh,\s*280px\)\s*!important/);
+    expect(css).toMatch(/\.ux90-pj-delivery-host\s+\.ux90-table-scroll\s*\{[^}]*overflow:\s*auto\s*!important/);
+    expect(css).toMatch(/\.ux90-pj-delivery-host\s+\.ux90-pj-delivery\s+\.ux90-table\s+thead\s+th\s*\{[^}]*position:\s*sticky/);
+    expect(css).toMatch(/\.ux90-pj-delivery-host\s+\.ux90-doc-summary\.is-delivery-compact\s*\{[^}]*flex:\s*0\s+0\s+auto\s*!important/);
+    // Footer stays in flex flow (not overlaying table rows).
+    expect(css).toMatch(
+      /\.ux90-pj-delivery-host\s+\.ux90-pj-delivery\s+\.ux90-footer[\s\S]*?flex:\s*0\s+0\s+auto\s*!important/
+    );
+  });
+
+  test("multi-PO create uses searchable select + authoritative qty summary + customer_id gate", () => {
+    expect(src).toMatch(/fetchMultiPoOptions/);
+    expect(src).toMatch(/applyMultiPoSelection/);
+    expect(src).toMatch(/multiPoQtySummary/);
+    expect(src).toMatch(/summarizeMultiPoDeliveryQty/);
+    expect(src).toMatch(/anchorMultiCustomerId/);
+    expect(src).toMatch(/customer_id/);
+    expect(src).toMatch(/data-testid="multi-po-total-ordered"/);
+    expect(src).toMatch(/data-testid="multi-po-total-shipped"/);
+    expect(src).toMatch(/data-testid="multi-po-remaining-after"/);
+    expect(src).toMatch(/status:\s*"aktif"/);
+    expect(src).not.toMatch(/page_size:\s*40/);
+    expect(src).not.toMatch(/multi-po-check-/);
+  });
+
   test("adds Proses ke Pengiriman Pesanan button and summary to PesananPenjualan", () => {
     expect(salesOrderSrc).toMatch(/Tanggal Kirim/);
     expect(salesOrderSrc).toMatch(/so-act-ship/);
@@ -764,5 +811,85 @@ describe("PWA WhatsApp follows the selected Surat Jalan", () => {
     expect(empty.container.querySelector(".mop-delivery-maps").getAttribute("href")).toContain("Melati");
     act(() => empty.root.unmount());
     empty.container.remove();
+  });
+});
+
+describe("Pengiriman CREATE layout scroll ownership (multi-PO safe)", () => {
+  const cssSrc = fs.readFileSync(path.join(__dirname, "ux90SalesCreate.css"), "utf8");
+  const pageSrc = fs.readFileSync(path.join(__dirname, "PengirimanPesanan.jsx"), "utf8");
+
+  test("create shell keeps footer outside clipped workspace and owns table scroll", () => {
+    expect(pageSrc).toMatch(/ux90-pj-delivery-host/);
+    expect(pageSrc).toMatch(/data-testid="delivery-lines-scroll"/);
+    expect(pageSrc).toMatch(/className="ux90-multi-po-picker"/);
+    expect(pageSrc).toMatch(/data-testid="multi-po-picker"/);
+    expect(pageSrc).toMatch(/data-testid="btn-cancel-delivery"/);
+    expect(pageSrc).toMatch(/data-testid="btn-submit-delivery-order"/);
+    expect(pageSrc).toMatch(/ux90-footer sd-form-footer/);
+    // Footer must remain a sibling of workspace (not nested inside overflow:hidden body)
+    const createForm = pageSrc.slice(
+      pageSrc.indexOf('viewMode === "create" &&'),
+      pageSrc.indexOf('{/* VIEW: LIST DELIVERIES */}'),
+    );
+    expect(createForm.indexOf("ux90-workspace")).toBeGreaterThan(-1);
+    expect(createForm.indexOf("ux90-footer sd-form-footer")).toBeGreaterThan(
+      createForm.indexOf("</div>\n          </div>\n\n          <div className=\"ux90-footer"),
+    );
+  });
+
+  test("host CSS caps multi-PO header and allows table flex shrink (no tbody clip)", () => {
+    expect(cssSrc).toMatch(/\.ux90-pj-delivery-host \.ux90-multi-po-picker/);
+    expect(cssSrc).toMatch(/max-height:\s*min\(112px,\s*14vh\)/);
+    expect(cssSrc).toMatch(/\.ux90-pj-delivery-host \.ux90-delivery-doc-header/);
+    expect(cssSrc).toMatch(/max-height:\s*min\(42vh,\s*280px\)/);
+    // Critical regression guard: host items-tab table wrap must shrink (min-height: 0)
+    expect(cssSrc).toContain(
+      '.ux90-pj-delivery-host .ux90-pj-delivery[data-form-tab="items"] .ux90-table-wrap[data-ux90-region="delivery-lines"]',
+    );
+    const itemsTableBlock = cssSrc.slice(
+      cssSrc.indexOf(
+        '.ux90-pj-delivery-host .ux90-pj-delivery[data-form-tab="items"] .ux90-table-wrap[data-ux90-region="delivery-lines"]',
+      ),
+      cssSrc.indexOf('.ux90-pj-delivery-host .ux90-table-wrap[data-ux90-region="delivery-lines"][hidden]'),
+    );
+    expect(itemsTableBlock).toMatch(/min-height:\s*0\s*!important/);
+    expect(itemsTableBlock).not.toMatch(/min-height:\s*180px/);
+    expect(cssSrc).toContain(".ux90-pj-delivery-host .ux90-table-scroll");
+    expect(cssSrc).toMatch(/\.ux90-pj-delivery-host \.ux90-table-scroll\s*\{[^}]*overflow:\s*auto\s*!important/s);
+    expect(cssSrc).toMatch(
+      /\.ux90-pj-delivery-host \.ux90-pj-delivery \.ux90-table thead th\s*\{[^}]*position:\s*sticky\s*!important/s,
+    );
+    expect(cssSrc).toMatch(
+      /\.ux90-pj-delivery-host \.ux90-doc-summary\.is-delivery-compact\s*\{[^}]*flex:\s*0 0 auto\s*!important/s,
+    );
+  });
+
+  test("multi-PO submit is not gated on single-PO poSummary null", () => {
+    expect(pageSrc).toContain("multiPoReadyForSubmit");
+    expect(pageSrc).toContain("multiPoSummariesReady");
+    expect(pageSrc).toMatch(/multiPoMode\s*\?\s*!multiPoReadyForSubmit/);
+    expect(pageSrc).toMatch(/Ringkasan PO belum lengkap/);
+    expect(pageSrc).not.toContain(
+      "disabled={formBusy || !poSummary || totalShippingQty <= 0 || overshipmentErrors.length > 0}",
+    );
+  });
+
+  test("multi-PO customer safety: incomplete summary / BE reject preserve selection", () => {
+    expect(pageSrc).toMatch(/multiPoReadyForSubmit/);
+    expect(pageSrc).toMatch(/validateMultiSourceSelection\(poSummariesById\)/);
+    expect(pageSrc).toMatch(/customer_id kanonik|customer_id\)/);
+    // Create failure only sets formErr — does not clear selectedPoIds / line_qtys.
+    const catchIdx = pageSrc.indexOf("} catch (err) {");
+    const finallyIdx = pageSrc.indexOf("} finally {", catchIdx);
+    expect(catchIdx).toBeGreaterThan(-1);
+    expect(finallyIdx).toBeGreaterThan(catchIdx);
+    const catchBlock = pageSrc.slice(catchIdx, finallyIdx);
+    expect(catchBlock).toMatch(/setFormErr/);
+    expect(catchBlock).toMatch(/Gagal membuat Pengiriman Pesanan/);
+    expect(catchBlock).not.toMatch(/setSelectedPoIds/);
+    expect(catchBlock).not.toMatch(/setPoSummariesById/);
+    expect(catchBlock).not.toMatch(/line_qtys/);
+    expect(pageSrc).not.toMatch(/\.slice\(0,\s*40\)/);
+    expect(pageSrc).toMatch(/LookupMultiSearchSelect/);
   });
 });

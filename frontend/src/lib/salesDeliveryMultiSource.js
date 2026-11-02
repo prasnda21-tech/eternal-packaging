@@ -52,13 +52,64 @@ export function validateMultiSourceSelection(summaries) {
     return "Setiap PO harus punya customer_id kanonik. Penggabungan ditolak.";
   }
   if (new Set(customerIds).size > 1) {
-    return "Customer harus sama untuk menggabungkan PO.";
+    return "Penggabungan PO ditolak: seluruh PO harus dari pelanggan yang sama (customer_id). Nama pelanggan tidak dipakai sebagai dasar.";
   }
   const addresses = list.map((s) => String(s.address || "").trim().toLowerCase().replace(/\s+/g, " "));
   if (addresses.some((a) => !a) || new Set(addresses).size > 1) {
     return "Alamat tujuan harus sama persis pada semua PO.";
   }
   return "";
+}
+
+/** True only when every selected PO has an authoritative delivery summary loaded. */
+export function multiPoSummariesReady(selectedPoIds, summariesByPoId) {
+  const ids = (selectedPoIds || []).map((id) => String(id || "").trim()).filter(Boolean);
+  if (ids.length < 2) return false;
+  const map = summariesByPoId || {};
+  return ids.every((id) => Boolean(map[id]));
+}
+
+/**
+ * Aggregate qty across selected PO summaries without merging product lines.
+ * Each PO line remains independent; totals are sums of line remaining/ordered/shipped.
+ */
+export function summarizeMultiPoDeliveryQty(summariesByPoId, allocatedByLineKey = {}) {
+  const list = Object.values(summariesByPoId || {}).filter(Boolean);
+  if (!list.length) {
+    return {
+      ready: false,
+      po_count: 0,
+      total_ordered: 0,
+      total_shipped: 0,
+      total_remaining_before: 0,
+      total_allocated: 0,
+      total_remaining_after: 0,
+    };
+  }
+  let totalOrdered = 0;
+  let totalShipped = 0;
+  let totalRemainingBefore = 0;
+  list.forEach((summary) => {
+    totalOrdered += Number(summary.total_ordered) || 0;
+    totalShipped += Number(summary.total_shipped) || 0;
+    totalRemainingBefore += Number(summary.total_remaining) || 0;
+  });
+  let totalAllocated = 0;
+  // Count only keys belonging to selected source POs (poId::lineIdx). Never collapse by product name.
+  Object.entries(allocatedByLineKey || {}).forEach(([key, qty]) => {
+    const poId = String(key || "").split("::")[0];
+    if (!Object.prototype.hasOwnProperty.call(summariesByPoId || {}, poId)) return;
+    totalAllocated += Number(qty) || 0;
+  });
+  return {
+    ready: true,
+    po_count: list.length,
+    total_ordered: totalOrdered,
+    total_shipped: totalShipped,
+    total_remaining_before: totalRemainingBefore,
+    total_allocated: totalAllocated,
+    total_remaining_after: Math.max(0, totalRemainingBefore - totalAllocated),
+  };
 }
 
 export function formatSourcePoLabel(delivery) {

@@ -37,6 +37,8 @@ describe("LookupSearchSelect contract", () => {
     expect(faktur).toMatch(/testId="po-selector"/);
     expect(faktur).toMatch(/fetchOptions=\{fetchInvoicePoOptions\}/);
     expect(kirim).toMatch(/testId="select-po-for-delivery"/);
+    expect(kirim).toMatch(/LookupMultiSearchSelect/);
+    expect(kirim).toMatch(/testId="multi-po-lookup"/);
     expect(terima).toMatch(/testId="select-receipt-invoice"/);
     expect(terima).toMatch(/testId="select-receipt-cash-bank"/);
     expect(terima).toMatch(/overModal/);
