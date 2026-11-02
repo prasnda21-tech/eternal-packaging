@@ -53,6 +53,13 @@ trap cleanup_stage EXIT
 install -m 755 "$SOURCE_DIR/eternal-actions-gate" "$STAGE_DIR/eternal-actions-gate"
 install -m 755 "$SOURCE_DIR/eternal-deploy-runner.sh" "$STAGE_DIR/eternal-deploy-runner.sh"
 install -m 644 "$SOURCE_DIR/lib.sh" "$STAGE_DIR/lib.sh"
+# Owner-installed SHA-scoped migration approvals (fail-closed if absent/mismatched).
+if [[ -d "$SOURCE_DIR/migration-approvals" ]]; then
+  mkdir -p "$STAGE_DIR/migration-approvals"
+  # Copy only *.v1 manifests; never execute anything from this directory.
+  find "$SOURCE_DIR/migration-approvals" -maxdepth 1 -type f -name '*.v1' -exec \
+    install -m 644 {} "$STAGE_DIR/migration-approvals/" \;
+fi
 
 probe_out="$(
   SSH_ORIGINAL_COMMAND=probe \
@@ -84,6 +91,12 @@ fi
 install -m 755 "$STAGE_DIR/eternal-actions-gate" "$TARGET_DIR/eternal-actions-gate.new"
 install -m 755 "$STAGE_DIR/eternal-deploy-runner.sh" "$TARGET_DIR/eternal-deploy-runner.sh"
 install -m 644 "$STAGE_DIR/lib.sh" "$TARGET_DIR/lib.sh"
+if [[ -d "$STAGE_DIR/migration-approvals" ]]; then
+  rm -rf "$TARGET_DIR/migration-approvals"
+  mkdir -p "$TARGET_DIR/migration-approvals"
+  find "$STAGE_DIR/migration-approvals" -maxdepth 1 -type f -name '*.v1' -exec \
+    install -m 644 {} "$TARGET_DIR/migration-approvals/" \;
+fi
 mv -f "$TARGET_DIR/eternal-actions-gate.new" "$TARGET_DIR/eternal-actions-gate"
 
 live_out="$(SSH_ORIGINAL_COMMAND=probe "$TARGET_DIR/eternal-actions-gate")"

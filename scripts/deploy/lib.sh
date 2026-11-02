@@ -117,6 +117,165 @@ eternal_collect_blocked_migrations() {
   return 1
 }
 
+# Directory of Owner-installed SHA-scoped migration approvals (sibling of lib.sh).
+# Not env-overridable on the production path — tests pass an explicit dir argument.
+eternal_default_migration_approvals_dir() {
+  printf '%s\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/migration-approvals"
+}
+
+# Resolve blob id for path at sha. Prints 40-hex blob or returns 1.
+eternal_git_blob_at() {
+  local sha="$1"
+  local path="$2"
+  local git_dir="${3:-}"
+  local work_tree="${4:-}"
+  local blob=""
+  if [[ -n "$git_dir" ]]; then
+    blob="$(git --git-dir="$git_dir" rev-parse --verify --quiet "${sha}:${path}" 2>/dev/null || true)"
+  elif [[ -n "$work_tree" ]]; then
+    blob="$(git -C "$work_tree" rev-parse --verify --quiet "${sha}:${path}" 2>/dev/null || true)"
+  else
+    return 1
+  fi
+  eternal_is_sha40 "$blob" || return 1
+  printf '%s\n' "$blob"
+}
+
+# Parse one approval file. Sets:
+#   ETERNAL_APPROVAL_TARGET_SHA
+#   ETERNAL_APPROVAL_PATHS (newline-separated, sorted)
+#   ETERNAL_APPROVAL_BLOB_<hashpath> via parallel arrays is awkward in bash —
+#   instead fills ETERNAL_APPROVAL_PAIRS as "path<TAB>blob" lines sorted by path.
+# Returns 0 if schema-valid; 1 otherwise.
+eternal_parse_migration_approval_file() {
+  local file="$1"
+  ETERNAL_APPROVAL_TARGET_SHA=""
+  ETERNAL_APPROVAL_PAIRS=""
+  local schema=""
+  local pending_path=""
+  local line key value
+  local pairs=()
+
+  [[ -f "$file" && -r "$file" ]] || return 1
+  # Refuse world-writable approval files (arbitrary-user rewrite).
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    local mode
+    mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%OLp' "$file" 2>/dev/null || echo 666)"
+    if [[ "$mode" == *[!0-9]* ]]; then
+      mode="666"
+    fi
+    # last octal digit (other) must not be writable; also reject sticky weirdness via 2/3/6/7 in other
+    local other="$((10#${mode: -1}))"
+    if (( other & 2 )); then
+      return 1
+    fi
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ "$key" == "$line" ]] && return 1
+    case "$key" in
+      schema)
+        schema="$value"
+        ;;
+      target_sha)
+        ETERNAL_APPROVAL_TARGET_SHA="$value"
+        ;;
+      path)
+        [[ -z "$pending_path" ]] || return 1
+        pending_path="$value"
+        ;;
+      blob)
+        [[ -n "$pending_path" ]] || return 1
+        eternal_is_sha40 "$value" || return 1
+        pairs+=("${pending_path}"$'\t'"${value}")
+        pending_path=""
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done <"$file"
+
+  [[ -z "$pending_path" ]] || return 1
+  [[ "$schema" == "eternal.deploy.migration_approval.v1" ]] || return 1
+  eternal_is_sha40 "$ETERNAL_APPROVAL_TARGET_SHA" || return 1
+  ((${#pairs[@]} > 0)) || return 1
+
+  local sorted
+  sorted="$(printf '%s\n' "${pairs[@]}" | LC_ALL=C sort -u)"
+  ETERNAL_APPROVAL_PAIRS="$sorted"
+  return 0
+}
+
+# Return 0 when every blocked migration path in from..to is covered by a
+# SHA-scoped approval (exact target SHA + exact path set + exact blob ids).
+# Does not execute migrations. Fail-closed on any mismatch.
+eternal_blocked_migrations_are_approved() {
+  local from_sha="$1"
+  local to_sha="$2"
+  local git_dir="${3:-}"
+  local work_tree="${4:-}"
+  local approvals_dir="${5:-}"
+  local blocked_raw=""
+  local blocked_sorted=""
+  local file
+  local matched=0
+
+  eternal_is_sha40 "$to_sha" || return 1
+  if [[ -z "$approvals_dir" ]]; then
+    approvals_dir="$(eternal_default_migration_approvals_dir)"
+  fi
+  [[ -d "$approvals_dir" ]] || return 1
+
+  if ! blocked_raw="$(eternal_collect_blocked_migrations "$from_sha" "$to_sha" "$git_dir" "$work_tree")"; then
+    # No migration-sensitive paths in range — nothing to approve.
+    return 0
+  fi
+  blocked_sorted="$(printf '%s\n' "$blocked_raw" | LC_ALL=C sort -u)"
+
+  shopt -s nullglob
+  local files=("$approvals_dir"/*.v1)
+  shopt -u nullglob
+  ((${#files[@]} > 0)) || return 1
+
+  for file in "${files[@]}"; do
+    eternal_parse_migration_approval_file "$file" || continue
+    [[ "$ETERNAL_APPROVAL_TARGET_SHA" == "$to_sha" ]] || continue
+
+    local approved_paths approved_pairs
+    approved_pairs="$ETERNAL_APPROVAL_PAIRS"
+    approved_paths="$(printf '%s\n' "$approved_pairs" | cut -f1)"
+
+    # Exact set equality: approved paths <-> blocked paths (full deploy-range scan).
+    if [[ "$approved_paths" != "$blocked_sorted" ]]; then
+      continue
+    fi
+
+    local pair path blob actual
+    local blobs_ok=1
+    while IFS=$'\t' read -r path blob; do
+      [[ -z "$path" ]] && continue
+      actual="$(eternal_git_blob_at "$to_sha" "$path" "$git_dir" "$work_tree" || true)"
+      if [[ "$actual" != "$blob" ]]; then
+        blobs_ok=0
+        break
+      fi
+    done <<<"$approved_pairs"
+
+    if [[ "$blobs_ok" == "1" ]]; then
+      matched=1
+      eternal_deploy_log "migration approval matched file=$(basename "$file") target_sha=$to_sha"
+      break
+    fi
+  done
+
+  [[ "$matched" == "1" ]]
+}
+
 eternal_paths_touch_backend() {
   local path="$1"
   case "$path" in

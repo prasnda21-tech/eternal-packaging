@@ -775,8 +775,15 @@ cmd_deploy() {
   if [[ "$prev_sha" != "none" && "$prev_sha" != "baseline-active" && "$ETERNAL_ALLOW_MIGRATIONS" != "1" ]]; then
     local blocked
     if blocked="$(eternal_collect_blocked_migrations "$prev_sha" "$sha" "$ETERNAL_MIRROR_DIR" "")"; then
-      eternal_safe_echo "blocked migration paths:"$'\n'"$blocked"
-      eternal_deploy_die "unapproved business/database migration files in deploy range; refuse"
+      # SHA-scoped approvals (exact target SHA + exact path set + exact blobs).
+      # Installed with the runner/lib — not an env bypass, does not run migrations.
+      local approvals_dir
+      approvals_dir="$(eternal_default_migration_approvals_dir)"
+      if ! eternal_blocked_migrations_are_approved "$prev_sha" "$sha" "$ETERNAL_MIRROR_DIR" "" "$approvals_dir"; then
+        eternal_safe_echo "blocked migration paths:"$'\n'"$blocked"
+        eternal_deploy_die "unapproved business/database migration files in deploy range; refuse"
+      fi
+      eternal_deploy_log "SHA-scoped migration approval accepted for target_sha=$sha (paths only; migrations not executed)"
     fi
   elif [[ "$ETERNAL_ALLOW_MIGRATIONS" == "1" ]]; then
     eternal_deploy_log "ALLOW_MIGRATIONS=1 (explicit operator override)"
