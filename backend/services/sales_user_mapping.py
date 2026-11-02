@@ -18,10 +18,20 @@ SALES_PWA_PERM = "sales.pwa.view"
 SURFACE_LOCK_DETAIL = "Role sales_eternal hanya dapat memakai PWA Sales"
 
 STATUS_MATCHED = "matched"
+STATUS_MATCHED_MASTER = "matched_master"
+STATUS_IDENTITY_CONFLICT = "identity_conflict"
 STATUS_UNMATCHED = "unmatched"
 STATUS_EMPTY = "empty"
 ADMIN_STATUS_MAPPED = "terpetakan"
 ADMIN_STATUS_NEEDS_VERIFICATION = "perlu verifikasi"
+
+# Distinguishable ownership resolution source on new PO writes only.
+SOURCE_MAPPING = "mapping"
+SOURCE_MASTER_ALIAS = "master_alias"
+SOURCE_CONFLICT = "identity_conflict"
+SOURCE_NONE = None
+
+_MATCHED_STATUSES = frozenset({STATUS_MATCHED, STATUS_MATCHED_MASTER})
 
 SALES_ETERNAL_ALLOWED_PREFIXES = (
     "/api/auth",
@@ -178,12 +188,18 @@ def apply_sales_user_id(doc: dict, user_id: Optional[str]) -> None:
 
 def sales_needs_verification(status: Optional[str], sales_user_id: Any = None) -> bool:
     st = str(status or "").strip()
+    if st in _MATCHED_STATUSES:
+        return False
+    if st == STATUS_IDENTITY_CONFLICT:
+        return True
     if st:
-        return st != STATUS_MATCHED
+        return st not in _MATCHED_STATUSES
     return not str(sales_user_id or "").strip()
 
 
 def sales_ownership_admin_label(status: Optional[str], sales_user_id: Any = None) -> str:
+    if str(status or "").strip() == STATUS_IDENTITY_CONFLICT:
+        return "konflik identitas"
     if sales_needs_verification(status, sales_user_id):
         return ADMIN_STATUS_NEEDS_VERIFICATION
     return ADMIN_STATUS_MAPPED
@@ -236,17 +252,113 @@ async def resolve_sales_user_id(db, sales_label: Any) -> Tuple[Optional[str], st
     return resolve_from_map(mapping, sales_label)
 
 
+async def _eligible_sales_eternal_user_id(db, user_id: Any) -> Optional[str]:
+    """Return users.id only when active sales_eternal. Else None."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return None
+    row = await db.users.find_one(
+        {"id": uid},
+        {"_id": 0, "id": 1, "role": 1, "status": 1},
+    )
+    if not row:
+        return None
+    if exact_sales_label(row.get("role")) != SALES_PWA_ROLE:
+        return None
+    status = exact_sales_label(row.get("status") or "active") or "active"
+    if status != "active":
+        return None
+    return str(row.get("id") or "").strip() or None
+
+
+async def resolve_master_alias_user_id(db, sales_label: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Exact alias → one active Master → eligible Eternal user.
+
+    Returns (user_id, sales_master_id). Never fuzzy. Never invents users.
+    """
+    label = exact_sales_label(sales_label)
+    if not label:
+        return None, None
+    from services import sales_master_aliases as aliases
+
+    mid, st = await aliases.resolve_master_id_for_label(db, label)
+    if st != "matched" or not mid:
+        return None, None
+    master = await db.sales_master.find_one({"id": mid}, {"_id": 0, "id": 1, "active": 1, "user_id": 1})
+    if not master:
+        return None, None
+    if master.get("active") is False:
+        return None, mid
+    linked = await _eligible_sales_eternal_user_id(db, master.get("user_id"))
+    if not linked:
+        return None, mid
+    return linked, mid
+
+
+async def resolve_new_po_ownership(
+    db,
+    sales_label: Any,
+    *,
+    mapping: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[str], str, Optional[str]]:
+    """Ownership for NEW PO writes only.
+
+    Priority:
+    1) exact sales_user_mapping
+    2) if mapping empty/unmatched → verified alias → active Master.user_id (sales_eternal)
+    Conflict when both resolve to different users → no assignment.
+
+    Returns (user_id, status, source).
+    """
+    if mapping is None:
+        mapping = await load_mapping_dict(db)
+    map_uid, map_status = resolve_from_map(mapping, sales_label)
+    master_uid, _master_id = await resolve_master_alias_user_id(db, sales_label)
+
+    if map_status == STATUS_EMPTY:
+        return None, STATUS_EMPTY, SOURCE_NONE
+
+    if map_uid and master_uid and map_uid != master_uid:
+        return None, STATUS_IDENTITY_CONFLICT, SOURCE_CONFLICT
+
+    if map_uid:
+        return map_uid, STATUS_MATCHED, SOURCE_MAPPING
+
+    if master_uid:
+        return master_uid, STATUS_MATCHED_MASTER, SOURCE_MASTER_ALIAS
+
+    return None, STATUS_UNMATCHED if map_status == STATUS_UNMATCHED else map_status, SOURCE_NONE
+
+
 async def attach_sales_ownership(
     db,
     doc: dict,
     mapping: Optional[Dict[str, str]] = None,
+    *,
+    allow_master_fallback: bool = False,
 ) -> Tuple[Optional[str], str]:
+    """Attach sales_user_id from mapping (default) or mapping+Master fallback.
+
+    allow_master_fallback=True is for NEW imported/synced inserts only.
+    Never use to rewrite historical ownership in place.
+    """
+    if allow_master_fallback:
+        uid, status, source = await resolve_new_po_ownership(
+            db, doc.get("sales"), mapping=mapping,
+        )
+        apply_sales_user_id(doc, uid)
+        doc["sales_ownership_status"] = status
+        doc["sales_ownership_source"] = source
+        attach_sales_ownership_admin_fields(doc)
+        return uid, status
+
     if mapping is None:
         uid, status = await resolve_sales_user_id(db, doc.get("sales"))
     else:
         uid, status = resolve_from_map(mapping, doc.get("sales"))
     apply_sales_user_id(doc, uid)
     doc["sales_ownership_status"] = status
+    doc["sales_ownership_source"] = SOURCE_MAPPING if uid else SOURCE_NONE
     attach_sales_ownership_admin_fields(doc)
     return uid, status
 

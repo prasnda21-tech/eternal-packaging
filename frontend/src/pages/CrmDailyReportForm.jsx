@@ -237,15 +237,30 @@ export default function CrmDailyReportForm() {
     return () => window.clearTimeout(handle);
   }, [poQ, form.customer_id, form.status_customer, mode]);
 
+  // Operational sales identity from Master Sales catalog (meta.sales_catalog).
+  // Does not call /crm-daily-reports/sales (mapping→users) and does not touch CRM outlet ownership.
   useEffect(() => {
     if (mode !== "edit") return undefined;
-    const handle = window.setTimeout(() => {
-      api.crmDailyReportSales({ q: salesQ })
-        .then((r) => setSalesOptions(r.sales || []))
-        .catch(() => setSalesOptions([]));
-    }, 150);
-    return () => window.clearTimeout(handle);
-  }, [salesQ, mode]);
+    const catalog = Array.isArray(meta?.sales_catalog) ? meta.sales_catalog : [];
+    const needle = String(salesQ || "").trim().toLowerCase();
+    const rows = catalog
+      .filter((row) => row && String(row.id || "").trim() && String(row.sales_name || "").trim())
+      .filter((row) => {
+        if (!needle) return true;
+        const name = String(row.sales_name || "").toLowerCase();
+        const uid = String(row.user_id || "").toLowerCase();
+        return name.includes(needle) || uid.includes(needle);
+      })
+      .map((row) => ({
+        sales_master_id: String(row.id),
+        user_id: String(row.user_id || "").trim(),
+        label: String(row.sales_name || "").trim(),
+        sales_name: String(row.sales_name || "").trim(),
+        name: String(row.sales_name || "").trim(),
+      }));
+    setSalesOptions(rows);
+    return undefined;
+  }, [salesQ, mode, meta]);
 
   const reporterName = meta?.reporter?.name || user?.name || "—";
 
@@ -843,15 +858,18 @@ export default function CrmDailyReportForm() {
                 {salesOpen && !salesLocked ? (
                   <ul className="cdr-customer-results cdr-sales-results" id={salesListId} data-testid="cdr-sales-results">
                     {salesOptions.map((row) => (
-                      <li key={row.user_id}>
+                      <li key={row.sales_master_id || row.user_id || row.label}>
                         <button type="button" onClick={() => applySalesSelection(row)}>
-                          {row.label}{row.name && row.name !== row.label ? ` · ${row.name}` : ""}
+                          {row.label || row.sales_name}
+                          {row.user_id ? "" : " · tanpa akun Eternal"}
                         </button>
                       </li>
                     ))}
                     {!salesOptions.length ? (
                       <li className="cdr-empty-hit" data-testid="cdr-sales-empty">
-                        Tidak ada Sales yang cocok
+                        {(meta?.sales_catalog || []).length
+                          ? "Tidak ada Sales yang cocok"
+                          : "Tidak ada Sales aktif di Master Sales untuk cabang Anda"}
                       </li>
                     ) : null}
                     {allowManualSales ? (

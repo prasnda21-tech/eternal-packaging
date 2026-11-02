@@ -1,5 +1,5 @@
 import { resolveDesktopSidebar, roleSidebarPreview } from "./desktopSidebarModel";
-import { NAV_KEYS, SETTINGS_TAB_IDS, SETTINGS_TILE_LABELS, cashBankMenuItems, dashboardMenuItems, employeeAdminMenuItems, hrPayrollMenuItems, inventoryMenuItems, ledgerMenuItems, productionMenuItems, purchasingMenuItems, reportsMenuItems, salesMenuItems, settingsMenuItems, taskMenuItems } from "./navAccess";
+import { NAV_KEYS, SETTINGS_TAB_IDS, SETTINGS_TILE_LABELS, cashBankMenuItems, dashboardMenuItems, employeeAdminMenuItems, hrPayrollMenuItems, inventoryMenuItems, ledgerMenuItems, productionMenuItems, purchasingMenuItems, reportsMenuItems, salesMenuItems, settingsMenuItems, settingsNavVisible, taskMenuItems } from "./navAccess";
 import {
   SIDEBAR_EXPANDED_WIDTH,
   SIDEBAR_RAIL_WIDTH,
@@ -133,9 +133,18 @@ describe("desktop sidebar presentation", () => {
       "Riwayat Payroll",
       "Rekonsiliasi Payroll",
     ]);
-    expect(group(rails, "settings").sections[0].items.map((item) => item.key)).toEqual([...SETTINGS_TAB_IDS]);
+    const settingsVisibility = settingsNavVisible(allow);
+    const visibleSettingsIds = SETTINGS_TAB_IDS.filter((id) => settingsVisibility[id]);
+    const settingsKeys = group(rails, "settings").sections[0].items.map((item) => item.key);
+    expect(settingsKeys).toEqual(visibleSettingsIds);
+    expect(settingsKeys.filter((id) => id === "pengaturan-sales")).toHaveLength(1);
+    expect(settingsKeys).not.toContain("sales-master");
+    expect(settingsKeys).not.toContain("sales-user-mapping");
+    expect(settingsVisibility["sales-master"]).toBe(false);
+    expect(settingsVisibility["sales-user-mapping"]).toBe(false);
+    expect(SETTINGS_TAB_IDS).toEqual(expect.arrayContaining(["pengaturan-sales", "sales-master", "sales-user-mapping"]));
     expect(group(rails, "settings").sections[0].items.map((item) => item.label)).toEqual(
-      SETTINGS_TAB_IDS.map((id) => SETTINGS_TILE_LABELS[id]),
+      visibleSettingsIds.map((id) => SETTINGS_TILE_LABELS[id]),
     );
     const destinations = new Set(sidebarLeaves(rails).map((leaf) => leaf.to));
     [

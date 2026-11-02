@@ -36,6 +36,12 @@ from services.physical_stock_engine import (
 )
 from services.delivery_schedule import persistable_delivery_location
 from services.sales_activity.util import normalize_whatsapp
+from services.sales_delivery_sales_identity import (
+    load_proven_sales_master_labels,
+    po_sales_snapshot,
+    resolve_sj_sales_from_orders,
+    validate_orders_sales_identity_compatible,
+)
 from services.sales_delivery_allocations import (
     ALLOCATION_COMMIT_PENDING_FIELD,
     activate_delivery_allocation_commit,
@@ -779,8 +785,9 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
             if not zone_val:
                 zone_val = (master_outlet.get("delivery_zone") or "").strip()
 
-        # Secondary fallback: check recent order history for this customer
-        if not address_val or not recipient_val or not zone_val or not sales_val:
+        # Secondary fallback: address/recipient/zone from recent same-customer PO.
+        # Do NOT borrow Sales — SJ Sales must follow this PO's own snapshot only.
+        if not address_val or not recipient_val or not zone_val:
             try:
                 recent_cust_po = await db.orders.find_one(
                     {
@@ -801,8 +808,6 @@ async def get_po_delivery_summary(db, po_id_or_doc: Any) -> Dict[str, Any]:
                     recipient_val = (recent_cust_po.get("recipient") or "").strip()
                 if not zone_val:
                     zone_val = (recent_cust_po.get("delivery_zone") or "").strip()
-                if not sales_val:
-                    sales_val = (recent_cust_po.get("sales") or recent_cust_po.get("seller") or "").strip()
 
     # Active SJ that allocate from this PO (legacy po_id and multi-source membership).
     # summarize_po_delivery_quantities filters cancelled/status and attributes by source.
@@ -1151,13 +1156,15 @@ async def create_sales_delivery(db, payload: Dict[str, Any], user: dict) -> Dict
         delivery_date = str(payload.get("delivery_date") or now[:10]).strip()
         po_number = order.get("po_number")
 
-        # Resolve edited snapshot values with fallback to PO snapshot
+        # Resolve edited snapshot values with fallback to PO snapshot.
+        # Sales is server-authoritative from the associated PO — never client override.
+        validate_orders_sales_identity_compatible([order])
         final_customer = summary["customer"]
         final_outlet = str(payload.get("outlet") if payload.get("outlet") is not None else summary["outlet"]).strip()
         final_recipient = str(payload.get("recipient") if payload.get("recipient") is not None else summary["recipient"]).strip()
         final_address = str(payload.get("address") if payload.get("address") is not None else summary["address"]).strip()
         final_zone = str(payload.get("delivery_zone") if payload.get("delivery_zone") is not None else summary["delivery_zone"]).strip()
-        final_sales = str(payload.get("sales") if payload.get("sales") is not None else summary["sales"]).strip()
+        final_sales, _final_sales_master_id = resolve_sj_sales_from_orders([order])
         final_expedition = str(payload.get("expedition") if payload.get("expedition") is not None else summary["expedition"]).strip()
         final_notes = str(payload.get("notes") if payload.get("notes") is not None else "").strip()
         sj_location = persistable_delivery_location(payload.get("delivery_location"))
@@ -1474,7 +1481,13 @@ async def _create_multi_source_sales_delivery(
                 if row["source_po_id"] == pid:
                     row["source_po_id"] = str(order["id"])
         source_ids = list(orders.keys())
-        validate_orders_merge_compatible([orders[pid] for pid in source_ids])
+        source_orders = [orders[pid] for pid in source_ids]
+        validate_orders_merge_compatible(source_orders)
+        proven_master_labels = await load_proven_sales_master_labels(db, source_orders)
+        validate_orders_sales_identity_compatible(
+            source_orders,
+            proven_master_labels=proven_master_labels,
+        )
 
         summaries: Dict[str, dict] = {}
         for pid in source_ids:
@@ -1653,7 +1666,11 @@ async def _create_multi_source_sales_delivery(
         final_recipient = str(payload.get("recipient") if payload.get("recipient") is not None else primary_summary["recipient"]).strip()
         final_address = str(payload.get("address") if payload.get("address") is not None else primary_summary["address"]).strip()
         final_zone = str(payload.get("delivery_zone") if payload.get("delivery_zone") is not None else primary_summary["delivery_zone"]).strip()
-        final_sales = str(payload.get("sales") if payload.get("sales") is not None else primary_summary["sales"]).strip()
+        # Sales from validated source POs only — ignore client payload.sales.
+        final_sales, _final_sales_master_id = resolve_sj_sales_from_orders(
+            source_orders,
+            proven_master_labels=proven_master_labels,
+        )
         final_expedition = str(
             payload.get("expedition") if payload.get("expedition") is not None else primary_summary["expedition"]
         ).strip()

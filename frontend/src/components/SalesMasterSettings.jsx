@@ -233,7 +233,15 @@ function ColumnFilterPopover({
   );
 }
 
-export default function SalesMasterSettings({ notify, canEdit }) {
+export default function SalesMasterSettings({
+  notify,
+  canEdit,
+  canViewMapping = false,
+  canEditMapping = false,
+  focusSalesId = "",
+  onFocusConsumed,
+  compact = false,
+}) {
   const formId = useId();
   const { user } = useAuth() || {};
   const prefsUserId = user?.id || "";
@@ -246,6 +254,13 @@ export default function SalesMasterSettings({ notify, canEdit }) {
   const [fieldError, setFieldError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(null);
+  const [aliases, setAliases] = useState([]);
+  const [aliasesLoading, setAliasesLoading] = useState(false);
+  const [originalSalesName, setOriginalSalesName] = useState("");
+  const [renameAck, setRenameAck] = useState(false);
+  const [mappingAck, setMappingAck] = useState(false);
+  const [originalUserId, setOriginalUserId] = useState("");
+  const focusHandledRef = useRef("");
   const [query, setQuery] = useState("");
   const [colOrder, setColOrder] = useState(initialPrefs.order);
   const [colWidths, setColWidths] = useState(initialPrefs.widths);
@@ -340,12 +355,22 @@ export default function SalesMasterSettings({ notify, canEdit }) {
   const openCreate = () => {
     setFieldError("");
     setErr("");
+    setRenameAck(false);
+    setMappingAck(false);
+    setOriginalSalesName("");
+    setOriginalUserId("");
+    setAliases([]);
     setDraft({ ...EMPTY_DRAFT, sort_order: (items.length + 1) * 10 });
   };
 
   const openEdit = (row) => {
     setFieldError("");
     setErr("");
+    setRenameAck(false);
+    setMappingAck(false);
+    setOriginalSalesName(String(row.sales_name || "").trim());
+    setOriginalUserId(String(row.user_id || "").trim());
+    setAliases([]);
     setDraft({
       id: row.id,
       sales_name: row.sales_name || "",
@@ -357,10 +382,72 @@ export default function SalesMasterSettings({ notify, canEdit }) {
     });
   };
 
+  useEffect(() => {
+    const sid = String(draft?.id || "").trim();
+    if (!sid) {
+      setAliases([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setAliasesLoading(true);
+    Promise.resolve()
+      .then(() => (typeof api.salesMasterAliases === "function"
+        ? api.salesMasterAliases(sid)
+        : { items: [] }))
+      .then((res) => {
+        if (!cancelled) setAliases((res && res.items) || []);
+      })
+      .catch(() => {
+        if (!cancelled) setAliases([]);
+      })
+      .finally(() => {
+        if (!cancelled) setAliasesLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [draft?.id]);
+
+  useEffect(() => {
+    const fid = String(focusSalesId || "").trim();
+    if (!fid || loading || !items.length) return;
+    if (focusHandledRef.current === fid) return;
+    const row = items.find((item) => String(item.id) === fid);
+    if (!row) {
+      focusHandledRef.current = fid;
+      onFocusConsumed?.();
+      return;
+    }
+    focusHandledRef.current = fid;
+    openEdit(row);
+    onFocusConsumed?.();
+  }, [focusSalesId, loading, items, onFocusConsumed]);
+
   const closeDraft = () => {
     setDraft(null);
     setFieldError("");
+    setRenameAck(false);
+    setMappingAck(false);
+    setOriginalSalesName("");
+    setOriginalUserId("");
+    setAliases([]);
   };
+
+  const renamePending = Boolean(
+    draft?.id
+    && String(draft.sales_name || "").trim() !== String(originalSalesName || "").trim(),
+  );
+
+  const eternalLinkPending = Boolean(
+    draft
+    && String(draft.user_id || "").trim() !== String(originalUserId || "").trim(),
+  );
+
+  useEffect(() => {
+    if (!renamePending && renameAck) setRenameAck(false);
+  }, [renamePending, renameAck]);
+
+  useEffect(() => {
+    if (!eternalLinkPending && mappingAck) setMappingAck(false);
+  }, [eternalLinkPending, mappingAck]);
 
   const save = async () => {
     if (!draft || !canEdit) return;
@@ -379,6 +466,15 @@ export default function SalesMasterSettings({ notify, canEdit }) {
         setFieldError("Nama Sales wajib diisi");
         return;
       }
+      // Rename requires explicit ack; closing the drawer without save = cancel (no PATCH).
+      if (draft.id && payload.sales_name !== String(originalSalesName || "").trim() && !renameAck) {
+        setErr("Konfirmasi rename wajib sebelum menyimpan perubahan nama.");
+        return;
+      }
+      if (eternalLinkPending && !mappingAck) {
+        setErr("Konfirmasi dampak atribusi wajib sebelum mengubah akun Eternal.");
+        return;
+      }
       if (draft.id) {
         payload.doc_version = draft.doc_version;
         await api.salesMasterUpdate(draft.id, payload);
@@ -388,6 +484,8 @@ export default function SalesMasterSettings({ notify, canEdit }) {
         notify?.("Master Sales ditambahkan");
       }
       setDraft(null);
+      setRenameAck(false);
+      setOriginalSalesName("");
       await load();
     } catch (e) {
       setErr(errText(e));
@@ -634,7 +732,7 @@ export default function SalesMasterSettings({ notify, canEdit }) {
             </h4>
             <label className={`sales-master-field${fieldError ? " is-invalid" : ""}`}>
               <span className="sales-master-field-label">
-                Nama Sales (label Accurate) <span className="sales-master-req" aria-hidden="true">*</span>
+                Nama Sales resmi <span className="sales-master-req" aria-hidden="true">*</span>
               </span>
               <input
                 id={`${formId}-name`}
@@ -642,14 +740,57 @@ export default function SalesMasterSettings({ notify, canEdit }) {
                 onChange={(e) => patchDraft("sales_name", e.target.value)}
                 data-testid="sales-master-name"
                 autoComplete="off"
-                placeholder="Contoh: Ayub MS"
+                placeholder="Contoh: Ayub"
               />
               {fieldError ? (
                 <p className="sales-master-field-error" data-testid="sales-master-name-error">{fieldError}</p>
               ) : (
-                <p className="hint">Nama harus identik dengan label di Accurate.</p>
+                <p className="hint">Identitas operasional resmi (`sales_master.sales_name`). Alias Accurate dikelola terpisah.</p>
               )}
             </label>
+
+            <div className="sales-master-field" data-testid="sales-master-aliases">
+              <span className="sales-master-field-label">Label / alias Accurate</span>
+              {!draft.id ? (
+                <p className="hint">Setelah disimpan, nama resmi otomatis menjadi alias exact. Label impor lain diverifikasi di tab Perlu Verifikasi.</p>
+              ) : aliasesLoading ? (
+                <p className="hint" data-testid="sales-master-aliases-loading">Memuat alias…</p>
+              ) : aliases.length === 0 ? (
+                <p className="hint" data-testid="sales-master-aliases-empty">Belum ada alias tersimpan.</p>
+              ) : (
+                <ul className="sales-master-alias-list" data-testid="sales-master-aliases-list">
+                  {aliases.map((a) => (
+                    <li key={a.id || a.exact_label}>
+                      <code>{a.exact_label}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {renamePending ? (
+              <div className="sales-master-rename-warn" data-testid="sales-master-rename-warning" role="alert">
+                <p>
+                  Rename mengubah nama resmi Master saja. Alias Accurate lama tetap terhubung,
+                  dan <code>sales_user_mapping</code> tidak diubah otomatis — atribusi laporan
+                  historis (invoice label → mapping → users.id) tetap sama. PO/faktur tidak di-rewrite.
+                </p>
+                <p className="sales-master-rename-warn-hint">
+                  Ubah mapping login hanya lewat tindakan terpisah dengan permission mapping.manage.
+                  Batalkan dengan menutup drawer tanpa Simpan.
+                </p>
+                <label className="sales-master-field" style={{ margin: 0 }}>
+                  <span className="sales-master-field-label">
+                    <input
+                      type="checkbox"
+                      checked={renameAck}
+                      onChange={(e) => setRenameAck(e.target.checked)}
+                      data-testid="sales-master-rename-ack"
+                    />
+                    {" "}Saya paham: rename tidak mengubah mapping / atribusi, lanjut ubah nama resmi
+                  </span>
+                </label>
+              </div>
+            ) : null}
             <label className="sales-master-field">
               <span className="sales-master-field-label">
                 Urutan <span className="sales-master-req" aria-hidden="true">*</span>
@@ -681,7 +822,43 @@ export default function SalesMasterSettings({ notify, canEdit }) {
                   <option key={u.id} value={u.id}>{u.name} · {u.email} · {u.role}</option>
                 ))}
               </select>
-              <p className="hint">Hubungkan ke akun user Eternal jika ada.</p>
+              <p className="hint" data-testid="sales-master-pwa-hint">
+                Opsional. Persetujuan alias saja tidak memberi akses PWA.
+                PWA memakai <code>orders.sales_user_id</code>: prioritas mapping Accurate → akun Eternal;
+                jika mapping kosong, akun Eternal aktif + alias terverifikasi dapat dipakai hanya untuk PO impor baru.
+              </p>
+              {draft.user_id ? (
+                <p className="hint" data-testid="sales-master-pwa-status">
+                  Status PWA: akun Eternal terhubung — pastikan alias Accurate juga terverifikasi agar impor baru bisa teratribusi.
+                </p>
+              ) : (
+                <p className="hint" data-testid="sales-master-pwa-status">
+                  Status PWA: belum ada akun Eternal — alias/Master saja tidak membuka PO di PWA.
+                </p>
+              )}
+              {eternalLinkPending ? (
+                <div className="sales-master-rename-warn" data-testid="sales-master-mapping-warning" role="alert">
+                  <p>
+                    Mengubah akun Eternal memengaruhi fallback ownership impor baru (alias → Master → akun)
+                    dan tampilan status PWA. <code>sales_user_mapping</code> serta snapshot invoice/PO/SJ
+                    tidak diubah otomatis dari sini. Ubah mapping hanya lewat tindakan mapping.manage terpisah.
+                  </p>
+                  {!canEditMapping ? (
+                    <p className="hint">Permission <code>settings.sales_user_mapping.manage</code> tetap diperlukan untuk mengubah mapping label.</p>
+                  ) : null}
+                  <label className="sales-master-field" style={{ margin: 0 }}>
+                    <span className="sales-master-field-label">
+                      <input
+                        type="checkbox"
+                        checked={mappingAck}
+                        onChange={(e) => setMappingAck(e.target.checked)}
+                        data-testid="sales-master-mapping-ack"
+                      />
+                      {" "}Saya paham: ini mengubah tautan akun / fallback PWA, bukan mapping historis otomatis
+                    </span>
+                  </label>
+                </div>
+              ) : null}
             </label>
           </section>
 
@@ -730,8 +907,27 @@ export default function SalesMasterSettings({ notify, canEdit }) {
         </div>
 
         <footer className="sales-master-drawer-foot">
-          <button type="button" className="ghost sm" onClick={closeDraft} disabled={busy}>Batal</button>
-          <button type="button" className="primary sm" onClick={save} disabled={busy} data-testid="sales-master-save">
+          <button
+            type="button"
+            className="ghost sm"
+            onClick={closeDraft}
+            disabled={busy}
+            data-testid="sales-master-cancel"
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            className="primary sm"
+            onClick={save}
+            disabled={busy || (renamePending && !renameAck) || (eternalLinkPending && !mappingAck)}
+            data-testid="sales-master-save"
+            title={
+              (renamePending && !renameAck) || (eternalLinkPending && !mappingAck)
+                ? "Centang konfirmasi terlebih dahulu"
+                : undefined
+            }
+          >
             <Save size={14} aria-hidden="true" />
             {busy ? "Menyimpan…" : "Simpan"}
           </button>
@@ -742,10 +938,12 @@ export default function SalesMasterSettings({ notify, canEdit }) {
 
   return (
     <div className="sales-master-panel" data-testid="sales-master-tab">
-      <p className="muted small sales-master-intro">
-        Katalog Sales operasional. Nama harus identik dengan label Accurate.
-        Mapping Accurate → user Eternal tetap di tab terpisah.
-      </p>
+      {!compact ? (
+        <p className="muted small sales-master-intro">
+          Katalog Sales operasional. Alias Accurate dan akun Eternal dikelola di drawer ini.
+          Verifikasi label impor ada di tab Perlu Verifikasi.
+        </p>
+      ) : null}
       <p className="muted small sales-master-intro" data-testid="sales-master-filter-scope-note">
         Filter dan pencarian berlaku pada data katalog yang sudah dimuat (hingga batas daftar server).
       </p>

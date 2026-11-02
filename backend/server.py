@@ -11028,8 +11028,14 @@ async def _persist_imported_po(preview: Dict[str, Any], *, source: str, user: di
     from services.physical_stock_engine import attach_order_stock_snapshot
     stock_warnings = await validate_sales_order_availability(db, new.get("line_items") or [])
     await attach_order_stock_snapshot(db, new)
-    await attach_sales_ownership(db, new)
+    await attach_sales_ownership(db, new, allow_master_fallback=True)
     await db.orders.insert_one(new)
+    # Candidate / alias bookkeeping — must not fail the PO import.
+    try:
+        from services.sales_master import after_import_sales_identity
+        await after_import_sales_identity(db, new)
+    except Exception:
+        pass
     # If we have a source PDF uploaded during preview, record it in db.files
     # so the /api/files/{path} route (soft-delete aware) can serve it.
     sp = preview.get("source_pdf")
@@ -17994,6 +18000,14 @@ register_sales_user_mapping_routes(
     Depends=Depends,
 )
 register_sales_master_routes(
+    api_router,
+    get_db=lambda: db,
+    current_user=current_user,
+    require_any_perm=_require_any_perm,
+    Depends=Depends,
+)
+from services.sales_label_candidates_http import register_sales_label_candidates_routes
+register_sales_label_candidates_routes(
     api_router,
     get_db=lambda: db,
     current_user=current_user,

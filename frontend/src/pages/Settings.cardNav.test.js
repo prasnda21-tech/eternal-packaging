@@ -38,6 +38,7 @@ describe("Settings category card navigation", () => {
       "sales-activity",
       "route-optimizer",
       "accurate-creators",
+      "pengaturan-sales",
       "sales-user-mapping",
       "sales-master",
       "crm-daily-report-options",
@@ -72,6 +73,10 @@ describe("Settings category card navigation", () => {
     expect(settingsSrc).toMatch(/"purchase-accounting":\s*canViewPurchaseAccounting/);
     expect(settingsSrc).toMatch(/"payroll-accounting":\s*canViewPayrollAccounting/);
     expect(settingsSrc).toMatch(/"pricing-catalog":\s*canViewCustomerPricing \|\| canViewPublicCatalog/);
+    expect(settingsSrc).toMatch(/"pengaturan-sales":\s*canViewPengaturanSales/);
+    // Duplicate legacy sales cards removed from menu (routes kept).
+    expect(settingsSrc).toMatch(/"sales-user-mapping":\s*false/);
+    expect(settingsSrc).toMatch(/"sales-master":\s*false/);
   });
 
   test("only active panel content is conditionally rendered", () => {

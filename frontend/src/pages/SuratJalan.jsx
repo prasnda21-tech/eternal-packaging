@@ -6,6 +6,7 @@ import { formatDate, formatDeadline } from "../lib/constants";
 import { formatApiError } from "../lib/errors";
 import DeliveryProofPanel from "../components/DeliveryProofPanel";
 import PoIdentityBadges from "../components/PoIdentityBadges";
+import { operationalSalesSnapshotLabel } from "../lib/operationalSalesSnapshot";
 
 export function latestTimelineEvent(order, stage) {
   return order?.timeline?.filter((event) => event.stage === stage).slice(-1)[0] || null;
@@ -84,7 +85,12 @@ export default function SuratJalan() {
           <div>
             <h4>Info Pengiriman</h4>
             <p><b>Ekspedisi:</b> {order.expedition}</p>
-            <p><b>Sales:</b> {order.sales || order.sales_user || <em style={{ color: "#9ea6ab" }}>Perlu verifikasi</em>}</p>
+            <p data-testid="sj-sales">
+              <b>Sales:</b>{" "}
+              {operationalSalesSnapshotLabel(order) || (
+                <em style={{ color: "#9ea6ab" }}>Perlu verifikasi</em>
+              )}
+            </p>
             <p><b>User / Pembuat PO:</b> {order.created_by_user || <em style={{ color: "#9ea6ab" }}>Perlu verifikasi</em>}</p>
             <p><b>Termin bayar:</b> {order.payment_terms}</p>
             <p><b>Tanggal Pengiriman:</b> {formatDeadline(

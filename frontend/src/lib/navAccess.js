@@ -1278,6 +1278,7 @@ export const SETTINGS_TAB_IDS = [
   "sales-activity",
   "route-optimizer",
   "accurate-creators",
+  "pengaturan-sales",
   "sales-user-mapping",
   "sales-master",
   "crm-daily-report-options",
@@ -1312,6 +1313,7 @@ export const SETTINGS_TILE_TONES = {
   "sales-activity": "green",
   "route-optimizer": "blue",
   "accurate-creators": "purple",
+  "pengaturan-sales": "teal",
   "sales-user-mapping": "teal",
   "sales-master": "teal",
   "crm-daily-report-options": "cyan",
@@ -1345,16 +1347,19 @@ export const SETTINGS_TILE_LABELS = {
   "sales-activity": "Sales Activity & Ownership",
   "route-optimizer": "Optimasi Rute",
   "accurate-creators": "Pembuat PO Accurate",
+  "pengaturan-sales": "Pengaturan Sales",
   "sales-user-mapping": "Mapping Sales Accurate",
   "sales-master": "Master Sales",
   "crm-daily-report-options": "Dropdown Laporan Harian CRM",
   audit: "Audit Log",
 };
 
-/** Legacy Settings paths → canonical pricing-catalog section. */
+/** Legacy Settings paths → canonical tab + section. */
 export const SETTINGS_ROUTE_ALIASES = {
   "customer-pricing": { tab: "pricing-catalog", section: "harga" },
   "public-catalog": { tab: "pricing-catalog", section: "katalog" },
+  "sales-master": { tab: "pengaturan-sales", section: "semua" },
+  "sales-user-mapping": { tab: "pengaturan-sales", section: "semua" },
 };
 
 /** Resolve an existing Settings section from path or legacy ?tab=. */
@@ -1442,6 +1447,7 @@ export function settingsNavVisible(hasPerm) {
   const salesMaster = canSeeNav(hasPerm, "settings.sales_master.view")
     || canSeeNav(hasPerm, "settings.sales_master.manage")
     || canSeeNav(hasPerm, "permissions.manage");
+  const pengaturanSales = salesMaster || salesUserMapping;
   const crmDailyReportOptions = canSeeNav(hasPerm, "settings.crm_daily_report.view")
     || canSeeNav(hasPerm, "settings.crm_daily_report.manage")
     || canSeeNav(hasPerm, "permissions.manage");
@@ -1469,8 +1475,10 @@ export function settingsNavVisible(hasPerm) {
     "sales-activity": Boolean(parentGranted && salesActivity),
     "route-optimizer": Boolean(parentGranted && routeOptimizer),
     "accurate-creators": Boolean(parentGranted && accurateCreators),
-    "sales-user-mapping": Boolean(parentGranted && salesUserMapping),
-    "sales-master": Boolean(parentGranted && salesMaster),
+    "pengaturan-sales": Boolean(parentGranted && pengaturanSales),
+    // Dual-run: keep routes/aliases; hide duplicate Settings flyout/cards.
+    "sales-user-mapping": false,
+    "sales-master": false,
     "crm-daily-report-options": Boolean(parentGranted && crmDailyReportOptions),
     audit: Boolean(parentGranted && audit),
   };

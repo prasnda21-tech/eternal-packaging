@@ -94,6 +94,7 @@ from services.sales_user_mapping import (
     is_sales_pwa_role,
     load_mapping_doc,
 )
+from services.sales_report_master_display import attach_master_display_to_sales_rows
 
 PERM_VIEW = "reports.sales.view"
 PERM_EXPORT = "reports.sales.export"
@@ -220,6 +221,9 @@ SALES_COLUMNS = (
     {"key": "sales_user_id", "label": "ID Sales", "align": "left", "default": False},
     {"key": "attribution_status", "label": "Status Atribusi", "align": "left", "default": True},
     {"key": "status_user", "label": "Status User", "align": "left", "default": True},
+    {"key": "sales_master_name", "label": "Master Sales", "align": "left", "default": False},
+    {"key": "sales_master_id", "label": "ID Master Sales", "align": "left", "default": False},
+    {"key": "sales_master_match_status", "label": "Status Master", "align": "left", "default": False},
     {"key": "jumlah_faktur", "label": "Jumlah Faktur", "align": "right", "default": True, "numeric": True},
     {"key": "kuantitas", "label": "Kuantitas (PCS)", "align": "right", "default": True, "numeric": True},
     {"key": "penjualan", "label": "Penjualan", "align": "right", "default": True, "numeric": True, "money": True},
@@ -1605,6 +1609,12 @@ def _project_sales(row: dict, columns: Sequence[dict]) -> dict:
             raw = row.get("penjualan")
         elif key == "label_mapping":
             raw = row.get("label_mapping") or ""
+        elif key == "sales_master_name":
+            raw = row.get("sales_master_name") or ""
+        elif key == "sales_master_id":
+            raw = row.get("sales_master_id") or ""
+        elif key == "sales_master_match_status":
+            raw = row.get("sales_master_match_status") or ""
         else:
             raw = row.get(key)
         values[key] = _cell(column, raw)
@@ -1721,6 +1731,8 @@ async def run_report(
             for row in await _iter_docs(db, "users", {"id": {"$in": user_ids}}):
                 users_by_id[_text(row.get("id"))] = row
         full = _sales_rows(lines, mapping, ambiguous, users_by_id)
+        # Optional Master display only — does not alter attribution buckets or totals.
+        full = await attach_master_display_to_sales_rows(db, full)
         if attr_filter == ATTR_MAPPED:
             full = [row for row in full if row.get("attribution_status") == ATTR_MAPPED]
         elif attr_filter == ATTR_UNVERIFIED:
@@ -1734,6 +1746,7 @@ async def run_report(
             "attribution_mode": "mapping_current",
             "mapping_updated_at": mapping_doc.get("updated_at"),
             "ambiguous_labels": sorted(ambiguous),
+            "master_display": "optional_exact_only",
         }
         grouped = False
     else:
@@ -1790,6 +1803,7 @@ async def run_report(
     if report_id == "penjualan-per-sales":
         gap_parts = [
             "Berdasarkan Mapping Saat Ini (bukan atribusi historis permanen).",
+            "Kolom Master Sales bersifat informatif (exact match); tidak mengubah omzet atau bucket atribusi.",
         ]
         if any(row.get("attribution_status") == ATTR_UNVERIFIED for row in full):
             gap_parts.append("Sebagian faktur masuk Belum Terverifikasi.")

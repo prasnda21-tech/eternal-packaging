@@ -563,7 +563,14 @@ export default function SalesDashboard({ embedded = false, managed = null }) {
                 <ol className="sd-ranking">
                   {salesShown.map((row) => (
                     <li key={row.key}>
-                      <span className="sd-sales-name" title={row.label}>{row.label}</span>
+                      <span className="sd-sales-name" title={row.label}>
+                        {row.label}
+                        {row.sales_master_name && row.sales_master_match_status === "matched" ? (
+                          <em className="sd-sales-master" data-testid={`sales-master-${row.key}`}>
+                            {" "}· Master: {row.sales_master_name}
+                          </em>
+                        ) : null}
+                      </span>
                       <span className="sd-bar" aria-hidden="true"><i style={{ width: `${row.omzet > 0 ? Math.min(100, (Number(row.omzet) / salesMax) * 100) : 0}%`, background: row.key === "unassigned" || Number(row.omzet) < 0 ? COLOR.muted : COLOR.omzet }} /></span>
                       <strong>{displayAmount(salesStatus, row.omzet)}</strong>
                     </li>

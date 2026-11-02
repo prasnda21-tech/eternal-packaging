@@ -150,6 +150,7 @@ const TILE_ICONS = {
   "sales-activity": Contact,
   "route-optimizer": Route,
   "accurate-creators": Users,
+  "pengaturan-sales": Users,
   "sales-user-mapping": Users,
   "sales-master": Users,
   "crm-daily-report-options": ClipboardList,

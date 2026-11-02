@@ -39,6 +39,7 @@ import SalesActivitySettings from "../components/SalesActivitySettings";
 import RouteOptimizerSettings from "../components/RouteOptimizerSettings";
 import SalesUserMappingSettings from "../components/SalesUserMappingSettings";
 import SalesMasterSettings from "../components/SalesMasterSettings";
+import SalesSettingsHub from "./SalesSettingsHub";
 import CrmDailyReportOptionsSettings from "../components/CrmDailyReportOptionsSettings";
 
 const ROLE_LABELS = {
@@ -2449,8 +2450,9 @@ const SETTINGS_NAV_ITEMS = [
   { id: "sales-activity", label: "Sales Activity & Ownership", description: "Aktivitas & ownership", Icon: ClipboardList, tone: "teal", testid: "settings-tab-sales-activity" },
   { id: "route-optimizer", label: "Optimasi Rute", description: "Pengaturan rute", Icon: Route, tone: "blue", testid: "settings-tab-route-optimizer" },
   { id: "accurate-creators", label: "Pembuat PO Accurate", description: "Mapping createdBy", Icon: Users, tone: "sky", testid: "settings-tab-accurate-creators" },
-  { id: "sales-user-mapping", label: "Mapping Sales Accurate", description: "Label Accurate → users.id", Icon: Users, tone: "teal", testid: "settings-tab-sales-user-mapping" },
-  { id: "sales-master", label: "Master Sales", description: "Katalog Sales operasional multi-cabang", Icon: Users, tone: "teal", testid: "settings-tab-sales-master" },
+  { id: "pengaturan-sales", label: "Pengaturan Sales", description: "Master Sales, alias Accurate, verifikasi label", Icon: Users, tone: "teal", testid: "settings-tab-pengaturan-sales" },
+  { id: "sales-user-mapping", label: "Mapping Sales Accurate", description: "Label Accurate → users.id (legacy)", Icon: Users, tone: "teal", testid: "settings-tab-sales-user-mapping" },
+  { id: "sales-master", label: "Master Sales", description: "Katalog Sales operasional (legacy)", Icon: Users, tone: "teal", testid: "settings-tab-sales-master" },
   { id: "crm-daily-report-options", label: "Dropdown Laporan Harian CRM", description: "Alasan / komplain / kendala", Icon: ClipboardList, tone: "cyan", testid: "settings-tab-crm-daily-report-options" },
   { id: "audit", label: "Audit Log", description: "Riwayat perubahan", Icon: ScrollText, tone: "slate", testid: "settings-tab-audit" },
 ];
@@ -2521,6 +2523,7 @@ export default function Settings() {
   const canEditSalesUserMapping = hasPerm("settings.sales_user_mapping.manage") || hasPerm("permissions.manage");
   const canViewSalesMaster = hasPerm("settings.sales_master.view") || hasPerm("settings.sales_master.manage") || hasPerm("permissions.manage");
   const canEditSalesMaster = hasPerm("settings.sales_master.manage") || hasPerm("permissions.manage");
+  const canViewPengaturanSales = canViewSalesMaster || canViewSalesUserMapping;
   const canViewCrmDailyReportOptions = hasPerm("settings.crm_daily_report.view") || hasPerm("settings.crm_daily_report.manage") || hasPerm("permissions.manage");
   const canEditCrmDailyReportOptions = hasPerm("settings.crm_daily_report.manage") || hasPerm("permissions.manage");
   const canViewSidebarAccess = canManagePerms;
@@ -2574,8 +2577,10 @@ export default function Settings() {
     "sales-activity": canViewSalesActivity,
     "route-optimizer": canViewRouteOptimizer,
     "accurate-creators": canViewAccurateCreators,
-    "sales-user-mapping": canViewSalesUserMapping,
-    "sales-master": canViewSalesMaster,
+    "pengaturan-sales": canViewPengaturanSales,
+    // Legacy cards hidden from Settings menu; URLs/components remain via alias + tab panels.
+    "sales-user-mapping": false,
+    "sales-master": false,
     "crm-daily-report-options": canViewCrmDailyReportOptions,
     audit: canViewAudit,
   };
@@ -2638,7 +2643,8 @@ export default function Settings() {
 
   const designCetakanPage = !showCategoryNav && tab === "design-cetakan";
   const pricingCatalogPage = !showCategoryNav && tab === "pricing-catalog";
-  const hideSharedSettingsHeading = designCetakanPage || pricingCatalogPage;
+  const pengaturanSalesPage = !showCategoryNav && tab === "pengaturan-sales";
+  const hideSharedSettingsHeading = designCetakanPage || pricingCatalogPage || pengaturanSalesPage;
 
   return (
     <div data-testid="settings-page" className={"settings-page" + (tab === "roles" ? " settings-fit-roles" : "") + (tab === "employees" ? " settings-fit-employees" : "")}>
@@ -2744,6 +2750,15 @@ export default function Settings() {
         <HrPayrollSettings notify={notify} canEdit={canViewHrPayroll}/>
       )}
       {tab === "accurate-creators" && canViewAccurateCreators && <AccurateCreatorSettingsTab notify={notify} canEdit={canEditAccurateCreators}/>}
+      {tab === "pengaturan-sales" && canViewPengaturanSales && (
+        <SalesSettingsHub
+          notify={notify}
+          canViewMaster={canViewSalesMaster}
+          canEditMaster={canEditSalesMaster}
+          canViewMapping={canViewSalesUserMapping}
+          canEditMapping={canEditSalesUserMapping}
+        />
+      )}
       {tab === "sales-user-mapping" && canViewSalesUserMapping && (
         <SalesUserMappingSettings notify={notify} canEdit={canEditSalesUserMapping}/>
       )}
