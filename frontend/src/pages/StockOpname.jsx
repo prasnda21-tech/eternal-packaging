@@ -11,7 +11,9 @@ import {
 } from "../lib/physicalStockView";
 import {
   STOCK_OPNAME_TZ_LABEL,
+  combineWibDateAndTime,
   formatWibDateTime,
+  formatWibPeriod,
   isoToWibLocalInput,
 } from "../lib/stockOpnameTime";
 import { buildStockOpnameCountPayload } from "../lib/stockOpnameCounts";
@@ -49,6 +51,11 @@ export default function StockOpname() {
   const [warehouses, setWarehouses] = useState([]);
   const [warehouseId, setWarehouseId] = useState("");
   const [createMode, setCreateMode] = useState("freeze");
+  /** Owner count period — date (YYYY-MM-DD) + time (HH:mm) as WIB wall clock. */
+  const [createStartDate, setCreateStartDate] = useState("");
+  const [createStartTime, setCreateStartTime] = useState("");
+  const [createEndDate, setCreateEndDate] = useState("");
+  const [createEndTime, setCreateEndTime] = useState("");
   const [sessions, setSessions] = useState([]);
   const [session, setSession] = useState(null);
   const [drafts, setDrafts] = useState({});
@@ -118,7 +125,12 @@ export default function StockOpname() {
     setDrafts(nextQty);
     setTimeDrafts(nextTime);
     setApplyBulkTime(false);
-    setBulkCountAt("");
+    // Prefill bulk editor from session akhir / default (does not auto-apply until Owner checks).
+    setBulkCountAt(
+      isoToWibLocalInput(
+        session.default_physical_count_at || session.physical_count_period_end_at,
+      ) || "",
+    );
   }, [sessionDraftKey, session]);
 
   async function refreshList() {
@@ -140,6 +152,32 @@ export default function StockOpname() {
       setError("Pilih gudang operasional.");
       return;
     }
+    const operationalCreate = createMode === "operational";
+    let periodStartIso = null;
+    let periodEndIso = null;
+    if (operationalCreate) {
+      periodStartIso = combineWibDateAndTime(createStartDate, createStartTime);
+      periodEndIso = combineWibDateAndTime(createEndDate, createEndTime);
+      if (!periodStartIso || !periodEndIso) {
+        setError(
+          `Mode Operational wajib mengisi Tanggal/Jam Mulai dan Tanggal/Jam Akhir (${STOCK_OPNAME_TZ_LABEL}).`,
+        );
+        return;
+      }
+      if (new Date(periodStartIso).getTime() > new Date(periodEndIso).getTime()) {
+        setError("Tanggal/Jam Mulai tidak boleh setelah Tanggal/Jam Akhir.");
+        return;
+      }
+      // Client-side future guard (server re-validates). Same 60s clock-skew
+      // tolerance as parse_physical_count_at: now..+60s accepted; beyond +60s rejected.
+      if (new Date(periodEndIso).getTime() > Date.now() + 60_000
+          || new Date(periodStartIso).getTime() > Date.now() + 60_000) {
+        setError(
+          "Waktu pelaksanaan hitung terlalu jauh di masa depan (toleransi jam ±60 detik).",
+        );
+        return;
+      }
+    }
     setBusy(true);
     setError("");
     setSuccessNote("");
@@ -151,7 +189,13 @@ export default function StockOpname() {
       const created = active || await api.createStockOpnameSession({
         branch_id: warehouse.branch_id,
         warehouse_id: warehouse.id,
-        mode: createMode === "operational" ? "operational" : "freeze",
+        mode: operationalCreate ? "operational" : "freeze",
+        ...(periodStartIso && periodEndIso ? {
+          physical_count_period_start_at: periodStartIso,
+          physical_count_period_end_at: periodEndIso,
+          // Akhir = default waktu hitung baris (bukan mulai).
+          default_physical_count_at: periodEndIso,
+        } : {}),
         idempotency_key: newKey(),
       });
       const counting = created.status === "DRAFT"
@@ -429,13 +473,88 @@ export default function StockOpname() {
                     data-testid="opname-create-mode"
                   >
                     <option value="freeze">Freeze — pergerakan stok gudang diblok selama hitung</option>
-                    <option value="operational">Operational — pergerakan tetap berjalan, diperhitungkan saat konfirmasi</option>
+                    <option value="operational">Operational — hitung historis / gudang tetap buka; target = hitung + net setelah waktu hitung</option>
                   </select>
                 </label>
+                {createMode === "operational" && (
+                  <div className="stock-opname-period" data-testid="opname-create-period" lang="id">
+                    <div className="stock-opname-period-grid">
+                      <div className="stock-opname-period-block" data-testid="opname-create-start">
+                        <span className="stock-opname-period-title">Mulai hitung ({STOCK_OPNAME_TZ_LABEL})</span>
+                        <div className="stock-opname-period-pair">
+                          <label className="stock-opname-field">
+                            <span>Tanggal Mulai</span>
+                            <input
+                              type="date"
+                              value={createStartDate}
+                              onChange={(event) => setCreateStartDate(event.target.value)}
+                              onInput={(event) => setCreateStartDate(event.target.value)}
+                              data-testid="opname-create-start-date"
+                              aria-required="true"
+                            />
+                          </label>
+                          <label className="stock-opname-field">
+                            <span>Jam Mulai</span>
+                            <input
+                              type="time"
+                              step="60"
+                              value={createStartTime}
+                              onChange={(event) => setCreateStartTime(event.target.value)}
+                              onInput={(event) => setCreateStartTime(event.target.value)}
+                              data-testid="opname-create-start-time"
+                              aria-required="true"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <div className="stock-opname-period-block" data-testid="opname-create-end">
+                        <span className="stock-opname-period-title">Akhir hitung ({STOCK_OPNAME_TZ_LABEL})</span>
+                        <div className="stock-opname-period-pair">
+                          <label className="stock-opname-field">
+                            <span>Tanggal Akhir</span>
+                            <input
+                              type="date"
+                              value={createEndDate}
+                              onChange={(event) => setCreateEndDate(event.target.value)}
+                              onInput={(event) => setCreateEndDate(event.target.value)}
+                              data-testid="opname-create-end-date"
+                              aria-required="true"
+                            />
+                          </label>
+                          <label className="stock-opname-field">
+                            <span>Jam Akhir</span>
+                            <input
+                              type="time"
+                              step="60"
+                              value={createEndTime}
+                              onChange={(event) => setCreateEndTime(event.target.value)}
+                              onInput={(event) => setCreateEndTime(event.target.value)}
+                              data-testid="opname-create-end-time"
+                              aria-required="true"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="muted small" data-testid="opname-period-note">
+                      Hasil fisik dianggap posisi pada waktu akhir, kecuali waktu hitung barang diisi berbeda.
+                    </p>
+                  </div>
+                )}
                 <p className="muted small" data-testid="opname-mode-hint">
-                  Default freeze untuk sesi baru. Mode sesi yang sudah berjalan tidak diganti dari layar ini.
+                  {createMode === "operational"
+                    ? "Periode = pelaksanaan hitung. Target = hasil hitung + net mutasi setelah waktu hitung baris. Bukan cutoff Freeze / waktu dibuat sesi."
+                    : "Default freeze untuk sesi baru. Mode sesi yang sudah berjalan tidak diganti dari layar ini."}
                 </p>
-                <button type="button" className="primary" onClick={start} disabled={busy || !warehouseId} data-testid="opname-start">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={start}
+                  disabled={busy || !warehouseId || (createMode === "operational" && !(
+                    createStartDate && createStartTime && createEndDate && createEndTime
+                  ))}
+                  data-testid="opname-start"
+                >
                   Mulai Stock Opname
                 </button>
               </>
@@ -482,9 +601,34 @@ export default function StockOpname() {
               <strong data-testid="opname-warehouse-name">{opnameLocationLabel(session)}</strong>
             </div>
             <div className="stock-opname-summary-item">
-              <span className="stock-opname-summary-label">Cutoff</span>
+              <span className="stock-opname-summary-label">
+                {isOperational ? "Cutoff daftar (bukan waktu hitung)" : "Cutoff / awal blokir Freeze"}
+              </span>
               <strong data-testid="opname-cutoff">{session.cutoff_at ? formatDate(session.cutoff_at) : "-"}</strong>
             </div>
+            {isOperational && (
+              <div className="stock-opname-summary-item stock-opname-summary-item--wide">
+                <span className="stock-opname-summary-label">Periode hitung ({STOCK_OPNAME_TZ_LABEL})</span>
+                <strong data-testid="opname-count-period">
+                  {formatWibPeriod(
+                    session.physical_count_period_start_at,
+                    session.physical_count_period_end_at || session.default_physical_count_at,
+                  )}
+                </strong>
+              </div>
+            )}
+            {isOperational && (
+              <div className="stock-opname-summary-item">
+                <span className="stock-opname-summary-label">Default waktu baris (= akhir)</span>
+                <strong data-testid="opname-default-count-at">
+                  {session.default_physical_count_at || session.physical_count_period_end_at
+                    ? formatWibDateTime(
+                      session.default_physical_count_at || session.physical_count_period_end_at,
+                    )
+                    : "—"}
+                </strong>
+              </div>
+            )}
             <div className="stock-opname-summary-item">
               <span className="stock-opname-summary-label">Jumlah barang</span>
               <strong data-testid="opname-item-count">{session.item_count ?? lines.length}</strong>
@@ -494,12 +638,14 @@ export default function StockOpname() {
           {(counting || reviewState) && !isOperational && (
             <p className="stock-opname-banner stock-opname-banner--freeze" data-testid="opname-freeze">
               Mode Freeze: gudang dibekukan. Pergerakan fisik gudang ini ditahan sampai konfirmasi atau pembatalan.
+              Freeze tidak berlaku surut — waktu cutoff di atas adalah awal blokir, bukan tanggal hitung historis.
             </p>
           )}
           {(counting || reviewState) && isOperational && (
             <p className="stock-opname-banner stock-opname-banner--ops" data-testid="opname-operational-banner">
-              Mode Operational: pergerakan gudang tetap berjalan. Target = hasil hitung + net pergerakan setelah waktu hitung.
-              Angka review dari API; final diverifikasi ulang saat konfirmasi. Waktu hitung memakai {STOCK_OPNAME_TZ_LABEL}.
+              Mode Operational: target = hasil hitung + net mutasi setelah waktu hitung baris
+              (bukan setelah Tanggal Mulai). Waktu baris harus dalam periode mulai–akhir.
+              Periode ≠ waktu dibuat sesi ≠ awal blokir Freeze.
             </p>
           )}
 
@@ -657,17 +803,17 @@ export default function StockOpname() {
                   <th>Nama Barang</th>
                   <th>Satuan Dasar</th>
                   <th>Stock Buku</th>
-                  {isOperational && <th>Buku Saat Review</th>}
+                  {isOperational && <th>Saldo Buku Sekarang</th>}
                   <th>Qty Pesanan</th>
                   <th title="Barang siap kirim belum terbukti keluar — bukan stok fisik. Selisih opname = Stock Fisik − Stock Buku.">
                     Qty Siap Belum Terkirim
                   </th>
-                  <th>Stock Fisik</th>
-                  <th>Waktu Hitung ({STOCK_OPNAME_TZ_LABEL})</th>
+                  <th>Hasil Hitung Fisik</th>
+                  <th>Tgl/Jam Hitung ({STOCK_OPNAME_TZ_LABEL})</th>
                   <th>Waktu Impor</th>
-                  {isOperational && <th>Net Setelah Hitung</th>}
-                  {isOperational && <th>Target Fisik</th>}
-                  <th>{isOperational ? "Adjustment (perkiraan)" : "Selisih"}</th>
+                  {isOperational && <th>Net Mutasi Setelah Hitung</th>}
+                  {isOperational && <th>Target Saldo Sekarang</th>}
+                  <th>{isOperational ? "Adjustment (target − buku)" : "Selisih"}</th>
                   <th>Qty Tersedia Setelah Opname</th>
                   <th>Status Hitung</th>
                 </tr>
@@ -796,6 +942,7 @@ export default function StockOpname() {
                 <th>Nomor / Session</th>
                 <th>Lokasi</th>
                 <th>Mode</th>
+                <th>Periode Hitung</th>
                 <th>Tanggal Cutoff</th>
                 <th>Status</th>
                 <th>Jumlah Barang</th>
@@ -809,6 +956,17 @@ export default function StockOpname() {
                   <td className="opname-col-name">{row.opname_number}</td>
                   <td data-testid={`opname-history-location-${row.opname_number}`}>{opnameLocationLabel(row)}</td>
                   <td className="opname-col-center">{modeLabel(sessionMode(row))}</td>
+                  <td
+                    className="opname-col-center"
+                    data-testid={`opname-history-period-${row.opname_number}`}
+                  >
+                    {sessionMode(row) === "operational"
+                      ? formatWibPeriod(
+                        row.physical_count_period_start_at,
+                        row.physical_count_period_end_at || row.default_physical_count_at,
+                      )
+                      : "—"}
+                  </td>
                   <td className="opname-col-center">{row.cutoff_at ? formatDate(row.cutoff_at) : "-"}</td>
                   <td className="opname-col-center">{statusLabel(row.status)}</td>
                   <td className="opname-col-center">{row.item_count ?? (row.lines || []).length}</td>

@@ -38,13 +38,38 @@ export function wibLocalInputToIso(local) {
   return new Date(asUtcMs - WIB_OFFSET_MS).toISOString();
 }
 
-/** Display ISO in WIB for read-only labels. */
+/** Display ISO in WIB for read-only labels (DD/MM/YYYY HH:mm). */
 export function formatWibDateTime(iso) {
   const local = isoToWibLocalInput(iso);
   if (!local) return "—";
   const [date, time] = local.split("T");
   const [y, m, d] = date.split("-");
   return `${d}/${m}/${y} ${time} WIB`;
+}
+
+/** Split datetime-local WIB into { date: YYYY-MM-DD, time: HH:mm }. */
+export function splitWibLocalInput(local) {
+  const text = String(local || "").trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+  if (!match) return { date: "", time: "" };
+  return { date: match[1], time: match[2] };
+}
+
+/** Combine type=date + type=time (WIB wall) into UTC ISO. */
+export function combineWibDateAndTime(dateStr, timeStr) {
+  const d = String(dateStr || "").trim();
+  const t = String(timeStr || "").trim();
+  if (!d || !t) return null;
+  return wibLocalInputToIso(`${d}T${t.length === 5 ? t : t.slice(0, 5)}`);
+}
+
+/** Format Owner count period for summary/history; missing start → no invention. */
+export function formatWibPeriod(startIso, endIso) {
+  const start = formatWibDateTime(startIso);
+  const end = formatWibDateTime(endIso);
+  if (start === "—" && end === "—") return "—";
+  if (start === "—") return `s/d ${end}`;
+  return `${start} – ${end}`;
 }
 
 export const STOCK_OPNAME_TZ_LABEL = "WIB (UTC+7)";

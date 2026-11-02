@@ -126,14 +126,23 @@ def _line(session, item_id):
     raise AssertionError(item_id)
 
 
-async def _open_operational(db, branch_id, warehouse_id, item_id, book_qty=100, *, open_at=None):
+async def _open_operational(db, branch_id, warehouse_id, item_id, book_qty=100, *, open_at=None, count_at=None, period_start=None, period_end=None):
     # Opening must be dated before physical_count_at so it is not treated as post-count net.
+    # Period end defaults near now so later per-test line count_at overrides still fit mulai–akhir.
     stamp = open_at or _iso(datetime.now(timezone.utc) - timedelta(hours=2))
+    # End near now+30s (within 60s future skew) so subsequent line count_at overrides stay in-range.
+    end_stamp = period_end or count_at or _iso(datetime.now(timezone.utc) + timedelta(seconds=30))
+    start_stamp = period_start or _iso(
+        datetime.fromisoformat(str(end_stamp).replace("Z", "+00:00")) - timedelta(hours=2)
+    )
     await _open(db, item_id, branch_id, warehouse_id, book_qty, when=stamp)
     created = await create_stock_opname_session(db, {
         "branch_id": branch_id,
         "warehouse_id": warehouse_id,
         "mode": MODE_OPERATIONAL,
+        "physical_count_period_start_at": start_stamp,
+        "physical_count_period_end_at": end_stamp,
+        "default_physical_count_at": end_stamp,
         "notes": "operational",
     }, USER)
     counting = await start_stock_opname_cutoff(db, created["id"], USER)
@@ -175,20 +184,38 @@ async def test_operational_allows_delivery_and_receipt_during_count(db):
 
 
 async def test_ambiguous_count_time_rejects_confirm_without_posting(db):
+    from services.stock_opname_sessions import COLLECTION as OPNAME_COLL
+
     branch_id, warehouse_id = await _location(db)
     item = await _item(db, name="Lid", code="LID-1")
     counting = await _open_operational(db, branch_id, warehouse_id, item, 50)
-    line = _line(counting, item)
+    # Simulate wiped/legacy lines without count time (import must not invent one).
+    raw = await db[OPNAME_COLL].find_one({"id": counting["id"]}, {"_id": 0})
+    wiped = []
+    for row in raw.get("lines") or []:
+        row = dict(row)
+        row["physical_count_at"] = None
+        wiped.append(row)
+    await db[OPNAME_COLL].update_one({"id": counting["id"]}, {"$set": {"lines": wiped}})
+    line = _line({**counting, "lines": wiped}, item)
     counted = await record_stock_opname_counts(db, counting["id"], {
         "lines": [{"line_id": line["line_id"], "physical_count_qty": 48}],
         "source": "import",
     }, USER)
     assert _line(counted, item)["imported_at"]
-    assert _line(counted, item)["physical_count_at"] is None
-    reviewed = await submit_stock_opname_review(db, counting["id"], USER)
-    assert reviewed["status"] == "REVIEW"
+    # Session default still applies when line time empty — clear default too.
+    await db[OPNAME_COLL].update_one(
+        {"id": counting["id"]},
+        {"$set": {
+            "default_physical_count_at": None,
+            "lines": [
+                {**dict(row), "physical_count_at": None}
+                for row in (await db[OPNAME_COLL].find_one({"id": counting["id"]}))["lines"]
+            ],
+        }},
+    )
     with pytest.raises(HTTPException) as exc:
-        await confirm_stock_opname_session(db, counting["id"], {"idempotency_key": "amb-1"}, USER)
+        await submit_stock_opname_review(db, counting["id"], USER)
     assert exc.value.status_code == 400
     assert "waktu hitung" in str(exc.value.detail).lower() or "physical_count_at" in str(exc.value.detail)
     assert await _qty(db, item, branch_id, warehouse_id) == 50
@@ -530,14 +557,17 @@ async def test_warehouse_scope_ignores_other_warehouse_movements(db):
     open_at = _iso(datetime.now(timezone.utc) - timedelta(hours=2))
     await _open(db, item, branch_a, wh_a, 100, key="a", when=open_at)
     await _open(db, item, branch_a, wh_b, 100, key="b", when=open_at)
+    count_at = datetime.now(timezone.utc) - timedelta(minutes=3)
     counting = await create_stock_opname_session(db, {
         "branch_id": branch_a,
         "warehouse_id": wh_a,
         "mode": MODE_OPERATIONAL,
+        "physical_count_period_start_at": _iso(count_at - timedelta(hours=1)),
+        "physical_count_period_end_at": _iso(count_at),
+        "default_physical_count_at": _iso(count_at),
     }, USER)
     counting = await start_stock_opname_cutoff(db, counting["id"], USER)
     line = _line(counting, item)
-    count_at = datetime.now(timezone.utc) - timedelta(minutes=3)
     after = count_at + timedelta(minutes=1)
     await record_stock_opname_counts(db, counting["id"], {
         "lines": [{
@@ -589,6 +619,9 @@ async def test_demand_without_location_remains_unallocated(db):
         "branch_id": branch_id,
         "warehouse_id": warehouse_id,
         "mode": MODE_OPERATIONAL,
+        "physical_count_period_start_at": _iso(datetime.now(timezone.utc) - timedelta(hours=1)),
+        "physical_count_period_end_at": _iso(datetime.now(timezone.utc) - timedelta(minutes=10)),
+        "default_physical_count_at": _iso(datetime.now(timezone.utc) - timedelta(minutes=10)),
     }, USER)
     counting = await start_stock_opname_cutoff(db, created["id"], USER)
     line = _line(counting, item)

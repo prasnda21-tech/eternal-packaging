@@ -31,6 +31,42 @@ from services.status_po import (
 
 WIB = ZoneInfo("Asia/Jakarta")
 
+# Subfields required by delivery_remaining / process-only exclusion when the
+# caller already projects dotted line_items.* (STATUS_PO_PROJECTION). Never mix
+# these with parent "line_items": 1 — MongoDB rejects that as path collision 31250.
+_STATUS_PO_RINCIAN_LINE_ITEM_FIELDS = (
+    "line_items.quantity",
+    "line_items.unit",
+    "line_items.item_type",
+    "line_items.physical_fulfillment",
+    "line_items.production_process",
+)
+
+
+def merge_status_po_rincian_projection(projection: Optional[dict]) -> dict:
+    """Ensure rincian fields without parent/child inclusion collisions.
+
+    STATUS_PO_PROJECTION uses dotted ``line_items.*`` paths. Forcing parent
+    ``line_items: 1`` on top of those paths raises OperationFailure 31250.
+    When dotted children are present (or required), keep/add children only.
+    When neither parent nor children exist, include the full ``line_items`` array.
+    """
+    out = dict(projection or {})
+    for key in ("qty_delivered", "delivery_status", "current_stage", "total_quantity"):
+        out[key] = 1
+
+    has_parent = "line_items" in out
+    has_children = any(str(k).startswith("line_items.") for k in out)
+    if has_children:
+        # Never leave parent + child together (MongoDB path collision 31250).
+        out.pop("line_items", None)
+        for path in _STATUS_PO_RINCIAN_LINE_ITEM_FIELDS:
+            out[path] = 1
+    elif not has_parent:
+        out["line_items"] = 1
+    return out
+
+
 WIDGET_META: Dict[str, dict] = {
     # produksi
     "po_aktif": {
@@ -525,16 +561,17 @@ async def _status_po_rincian(
     if branch_scope:
         clauses.append(branch_scope)
     query = {"$and": clauses} if len(clauses) > 1 else clauses[0]
-    proj = projection or {
-        "id": 1, "po_number": 1, "customer": 1, "order_date": 1, "priority": 1,
-        "hold": 1, "qty_delivered": 1, "current_stage": 1, "deadline": 1,
-        "delivery_deadline_status": 1, "delivery_deadline_effective": 1,
-        "design_status": 1, "payment_status": 1, "design_bypassed": 1,
-        "payment_bypassed": 1, "line_items": 1, "cancelled": 1,
-        "total_quantity": 1, "shipments": 1, "buffer_stock": 1, "delivery_status": 1,
-    }
-
-    proj = {**proj, "line_items": 1, "qty_delivered": 1, "delivery_status": 1, "current_stage": 1, "total_quantity": 1}
+    proj = merge_status_po_rincian_projection(
+        projection
+        or {
+            "id": 1, "po_number": 1, "customer": 1, "order_date": 1, "priority": 1,
+            "hold": 1, "qty_delivered": 1, "current_stage": 1, "deadline": 1,
+            "delivery_deadline_status": 1, "delivery_deadline_effective": 1,
+            "design_status": 1, "payment_status": 1, "design_bypassed": 1,
+            "payment_bypassed": 1, "line_items": 1, "cancelled": 1,
+            "total_quantity": 1, "shipments": 1, "buffer_stock": 1, "delivery_status": 1,
+        }
+    )
     eligible_keys: List[tuple] = []
     cursor = db.orders.find(query, proj).sort([("order_date", 1), ("po_number", 1), ("id", 1)])
     async for raw in cursor:

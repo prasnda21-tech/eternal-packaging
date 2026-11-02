@@ -9343,6 +9343,17 @@ button.ghost.sm.icon{padding:4px 6px}
 .stock-opname-heading{align-items:flex-start}
 .stock-opname-start{display:grid;gap:12px;padding:14px 16px;border:1px solid #d7e3dc;border-radius:10px;background:#fff}
 .stock-opname-field{display:flex;flex-direction:column;gap:6px;min-width:0;font:600 12px/1.2 'IBM Plex Sans',sans-serif;color:#334155}
+.stock-opname-period{display:grid;gap:8px}
+.stock-opname-period-grid{display:grid;gap:12px;grid-template-columns:1fr}
+.stock-opname-period-block{display:grid;gap:8px;padding:10px 12px;border:1px solid #d7e3dc;border-radius:8px;background:#fafcfb}
+.stock-opname-period-title{font:600 12px/1.2 'IBM Plex Sans',sans-serif;color:#17613b}
+.stock-opname-period-pair{display:grid;gap:8px;grid-template-columns:1fr;min-width:0}
+@media (min-width:480px){
+  .stock-opname-period-pair{grid-template-columns:1.2fr .8fr}
+}
+@media (min-width:768px){
+  .stock-opname-period-grid{grid-template-columns:1fr 1fr}
+}
 .stock-opname-field select,
 .stock-opname-field input,
 .stock-opname-input{

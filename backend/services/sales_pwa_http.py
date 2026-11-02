@@ -280,6 +280,42 @@ def register_sales_pwa_routes(
         from services.sales_pwa_deliveries import list_sales_today_deliveries
         return await list_sales_today_deliveries(get_db(), user)
 
+    @api_router.get("/sales-pwa/deliveries/history")
+    async def sales_pwa_deliveries_history(
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        customer_q: Optional[str] = None,
+        po_q: Optional[str] = None,
+        sj_q: Optional[str] = None,
+        item_q: Optional[str] = None,
+        qty_min: Optional[int] = None,
+        qty_max: Optional[int] = None,
+        status: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 25,
+        sales_user_id: Optional[str] = None,
+        sales_id: Optional[str] = None,
+        user=Depends(_pwa_user),
+    ):
+        """Read-only confirmed delivery history. Spoofed sales ids are ignored."""
+        _ignore_spoofed_sales_id(sales_user_id, sales_id)
+        from services.sales_pwa_delivery_history import list_sales_delivery_history
+        return await list_sales_delivery_history(
+            get_db(),
+            user,
+            date_from=date_from or "",
+            date_to=date_to or "",
+            customer_q=customer_q or "",
+            po_q=po_q or "",
+            sj_q=sj_q or "",
+            item_q=item_q or "",
+            qty_min=qty_min,
+            qty_max=qty_max,
+            status=status or "",
+            skip=skip,
+            limit=limit,
+        )
+
     @api_router.get("/sales-pwa/invoices")
     async def sales_pwa_invoices(
         month: Optional[str] = None,

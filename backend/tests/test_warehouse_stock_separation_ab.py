@@ -89,6 +89,18 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _operational_period_fields(*, end: datetime | None = None) -> dict:
+    """Operational create payloads must set explicit Owner count period (mulai/akhir)."""
+    end_dt = end or (datetime.now(timezone.utc) + timedelta(seconds=30))
+    start_dt = end_dt - timedelta(hours=2)
+    end_stamp = _iso(end_dt)
+    return {
+        "physical_count_period_start_at": _iso(start_dt),
+        "physical_count_period_end_at": end_stamp,
+        "default_physical_count_at": end_stamp,
+    }
+
+
 async def _fixture(db):
     """Same master item in warehouse A (YGY) and B (SMG) — IDs, not names."""
     branch_a = str(uuid.uuid4())
@@ -199,6 +211,7 @@ async def test_ab_sequential_opname_receipt_delivery_keeps_b(
         "warehouse_id": wa,
         "mode": MODE_OPERATIONAL,
         "idempotency_key": "ab-seq-opname",
+        **_operational_period_fields(),
     }, ADMIN)
     counting = await start_stock_opname_cutoff(db, created["id"], ADMIN)
     line = _line(counting, item)
@@ -435,6 +448,7 @@ async def test_ab_demand_without_location_unallocated_and_not_assigned_to_b(db):
         "branch_id": fx["branch_b"],
         "warehouse_id": fx["wh_b"],
         "mode": MODE_OPERATIONAL,
+        **_operational_period_fields(),
     }, ADMIN)
     counting_b = await start_stock_opname_cutoff(db, created_b["id"], ADMIN)
     line_b = _line(counting_b, fx["item"])
@@ -446,6 +460,7 @@ async def test_ab_demand_without_location_unallocated_and_not_assigned_to_b(db):
         "branch_id": fx["branch_a"],
         "warehouse_id": fx["wh_a"],
         "mode": MODE_OPERATIONAL,
+        **_operational_period_fields(),
     }, ADMIN)
     counting_a = await start_stock_opname_cutoff(db, created_a["id"], ADMIN)
     line_a = _line(counting_a, fx["item"])
@@ -476,6 +491,7 @@ async def test_ab_user_for_a_cannot_read_or_mutate_b(db):
             "branch_id": fx["branch_b"],
             "warehouse_id": fx["wh_b"],
             "mode": MODE_OPERATIONAL,
+            **_operational_period_fields(),
         }, user_a)
     assert create_denied.value.status_code in (403, 400)
 
@@ -483,6 +499,7 @@ async def test_ab_user_for_a_cannot_read_or_mutate_b(db):
         "branch_id": fx["branch_b"],
         "warehouse_id": fx["wh_b"],
         "mode": MODE_OPERATIONAL,
+        **_operational_period_fields(),
     }, ADMIN)
     listed = await list_stock_opname_sessions(db, user=user_a)
     ids = {str(row.get("id")) for row in listed}

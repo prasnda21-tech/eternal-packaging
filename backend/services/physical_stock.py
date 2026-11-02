@@ -3140,25 +3140,34 @@ async def adjust_physical_stock_to_target(
 
 
 async def post_opening_balance(db, item_id: str, raw: dict, *, actor_id: str) -> dict:
-    """Create the one-time OPENING_BALANCE movement through the R2 transaction engine."""
+    """Create the one-time OPENING_BALANCE movement through the R2 transaction engine.
+
+    Optional ``occurred_at`` is forwarded to ``post_movement`` so openings can be
+    dated to an Owner count_at. Guards (no prior ledger/balance), idempotency,
+    and zero-qty allowance for OPENING_BALANCE remain unchanged.
+    """
     payload = raw or {}
     branch_id = _as_text(payload.get("branch_id"), "branch_id")
     warehouse_id = _as_text(payload.get("warehouse_id"), "warehouse_id")
     physical_qty = _as_physical_qty(payload.get("physical_qty"))
     reason = str(payload.get("reason") or "").strip() or "Saldo awal"
+    movement_raw = {
+        "master_item_id": _as_text(item_id, "master_item_id"),
+        "branch_id": branch_id,
+        "warehouse_id": warehouse_id,
+        "movement_type": MOVEMENT_OPENING_BALANCE,
+        "qty_delta": physical_qty,
+        "reference_type": MOVEMENT_OPENING_BALANCE,
+        "reference_id": opening_reference_id(item_id, branch_id, warehouse_id),
+        "reason": reason,
+        "idempotency_key": _as_text(payload.get("idempotency_key"), "idempotency_key"),
+    }
+    occurred_at = str(payload.get("occurred_at") or "").strip()
+    if occurred_at:
+        movement_raw["occurred_at"] = occurred_at
     movement = await post_movement(
         db,
-        {
-            "master_item_id": _as_text(item_id, "master_item_id"),
-            "branch_id": branch_id,
-            "warehouse_id": warehouse_id,
-            "movement_type": MOVEMENT_OPENING_BALANCE,
-            "qty_delta": physical_qty,
-            "reference_type": MOVEMENT_OPENING_BALANCE,
-            "reference_id": opening_reference_id(item_id, branch_id, warehouse_id),
-            "reason": reason,
-            "idempotency_key": _as_text(payload.get("idempotency_key"), "idempotency_key"),
-        },
+        movement_raw,
         actor_id=actor_id,
     )
     return {

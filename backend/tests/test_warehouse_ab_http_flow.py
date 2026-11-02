@@ -161,11 +161,18 @@ async def test_http_login_opname_receipt_delivery_ledger(seeded):
         assert float(row["physical_qty"]) == 1000
 
         # Opname A → 950 (HTTP session routes)
+        # Operational create requires explicit Owner count period (mulai/akhir WIB→UTC).
+        period_end = datetime.now(timezone.utc) - timedelta(minutes=1)
+        period_start = period_end - timedelta(hours=2)
+        count_at = (period_end - timedelta(minutes=4)).isoformat()
         create = await client.post("/api/stock-opname-sessions", headers=headers, json={
             "branch_id": fx["branch_a"],
             "warehouse_id": fx["wh_a"],
             "mode": "operational",
             "idempotency_key": "http-opname-1",
+            "physical_count_period_start_at": period_start.isoformat(),
+            "physical_count_period_end_at": period_end.isoformat(),
+            "default_physical_count_at": period_end.isoformat(),
         })
         assert create.status_code in (200, 201), create.text
         session_id = create.json()["id"]
@@ -175,7 +182,6 @@ async def test_http_login_opname_receipt_delivery_ledger(seeded):
             r for r in cutoff.json()["lines"]
             if r["master_item_id"] == fx["item"]
         )
-        count_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         counted = await client.post(
             f"/api/stock-opname-sessions/{session_id}/counts",
             headers=headers,
