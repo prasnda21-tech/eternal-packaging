@@ -100,6 +100,21 @@ describe("crmDailyReport helpers", () => {
     const manualWithPo = { ...manualOk, order_id: "ord-1" };
     expect(canUseManualSales(manualWithPo)).toBe(false);
     expect(validateCrmDailyReportForm(manualWithPo).sales_label).toBeTruthy();
+
+    // Active Master without Eternal account is verified (not manual).
+    const masterNoUser = {
+      ...base,
+      sales_master_id: "sm-offline",
+      sales_label: "Sales Offline",
+      sales_user_id: "",
+      sales_source: SALES_SOURCE_EXISTING,
+      sales_choice: "sm-offline",
+    };
+    expect(validateCrmDailyReportForm(masterNoUser).sales_label).toBeFalsy();
+    expect(validateCrmDailyReportForm({
+      ...manualOk,
+      sales_master_id: "sm-offline",
+    }).sales_label).toMatch(/Master Sales/);
   });
 
   test("payload clears inactive conditional fields and sets sales_source", () => {
@@ -137,10 +152,43 @@ describe("crmDailyReport helpers", () => {
       sales_source: SALES_SOURCE_MANUAL,
       sales_label: "Manual Name",
       sales_user_id: "should-clear",
+      sales_master_id: "should-clear",
     });
     expect(manualPayload.sales_source).toBe(SALES_SOURCE_MANUAL);
     expect(manualPayload.sales_user_id).toBeNull();
+    expect(manualPayload.sales_master_id).toBeNull();
     expect(manualPayload.sales_label).toBe("Manual Name");
+
+    const masterNoUserPayload = toCrmDailyReportPayload({
+      ...emptyCrmDailyReportForm("2026-04-16"),
+      whatsapp: "0812",
+      status_order: "ORDER",
+      sales_master_id: "sm-offline",
+      sales_label: "Sales Offline",
+      sales_user_id: "",
+      sales_source: SALES_SOURCE_EXISTING,
+      sales_choice: "sm-offline",
+    });
+    expect(masterNoUserPayload.sales_source).toBe(SALES_SOURCE_EXISTING);
+    expect(masterNoUserPayload.sales_master_id).toBe("sm-offline");
+    expect(masterNoUserPayload.sales_user_id).toBeNull();
+  });
+
+  test("master without account opens as existing, not legacy/manual", () => {
+    const form = formFromCrmDailyReport({
+      report_date: "2026-04-16",
+      status_customer: "New",
+      whatsapp: "0812",
+      status_order: "ORDER",
+      sales_label: "Sales Offline",
+      sales_user_id: null,
+      sales_master_id: "sm-offline",
+      sales_source: "existing",
+    });
+    expect(form.sales_source).toBe(SALES_SOURCE_EXISTING);
+    expect(form.sales_choice).toBe("sm-offline");
+    expect(form.sales_master_id).toBe("sm-offline");
+    expect(validateCrmDailyReportForm(form).sales_label).toBeFalsy();
   });
 
   test("legacy sales form opens without forcing remapping", () => {

@@ -220,7 +220,10 @@ describe("Pengiriman Pesanan UI & Data Invariants", () => {
     expect(src).toMatch(/data-testid="multi-po-total-shipped"/);
     expect(src).toMatch(/data-testid="multi-po-remaining-after"/);
     expect(src).toMatch(/status:\s*"aktif"/);
-    expect(src).not.toMatch(/page_size:\s*40/);
+    expect(src).toMatch(/MULTI_PO_LOOKUP_PAGE_SIZE\s*=\s*40/);
+    expect(src).toMatch(/page_size:\s*pageSize|MULTI_PO_LOOKUP_PAGE_SIZE/);
+    expect(src).toMatch(/do not preload all aktif POs/);
+    expect(src).not.toMatch(/listSalesOrders\(\{\s*status:\s*"aktif"\s*\}\)/);
     expect(src).not.toMatch(/multi-po-check-/);
   });
 

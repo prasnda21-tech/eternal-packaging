@@ -4,11 +4,49 @@ import { filterFacetOptions, listboxViewState } from "./FacetSearchSelect";
 import { placeMasterItemListBox } from "./MasterItemSearchSelect";
 import "./masterItemSearchSelect.css";
 
-export const LOOKUP_MULTI_SEARCH_DEBOUNCE_MS = 150;
+export const LOOKUP_MULTI_SEARCH_DEBOUNCE_MS = 200;
+export const LOOKUP_MULTI_DEFAULT_PAGE_SIZE = 40;
+/** Hard DOM cap — never render thousands of option rows. */
+export const LOOKUP_MULTI_MAX_RENDERED = 50;
+export const LOOKUP_MULTI_QUERY_CACHE_TTL_MS = 30_000;
+
+/**
+ * Normalize fetchOptions return value into { items, hasMore, page }.
+ * Accepts legacy array or { items/orders, hasMore, page }.
+ */
+export function normalizeLookupMultiFetchResult(rowsOrPage, {
+  page = 1,
+  pageSize = LOOKUP_MULTI_DEFAULT_PAGE_SIZE,
+} = {}) {
+  if (Array.isArray(rowsOrPage)) {
+    return {
+      items: rowsOrPage,
+      hasMore: rowsOrPage.length >= pageSize,
+      page,
+    };
+  }
+  const raw = rowsOrPage && typeof rowsOrPage === "object" ? rowsOrPage : {};
+  const items = Array.isArray(raw.items)
+    ? raw.items
+    : (Array.isArray(raw.orders) ? raw.orders : []);
+  const hasMore = typeof raw.hasMore === "boolean"
+    ? raw.hasMore
+    : (typeof raw.has_more === "boolean" ? raw.has_more : items.length >= pageSize);
+  return {
+    items,
+    hasMore: Boolean(hasMore),
+    page: Number(raw.page) > 0 ? Number(raw.page) : page,
+  };
+}
+
+function cacheKey(query, page, pageSize) {
+  return `${String(query || "").trim()}::${page}::${pageSize}`;
+}
 
 /**
  * Searchable multi-select lookup for create forms.
  * Selected ids are stable across query changes; typing never invents identities.
+ * Async mode: one stable query → one request (plus explicit load-more pages).
  */
 export default function LookupMultiSearchSelect({
   options = [],
@@ -27,11 +65,14 @@ export default function LookupMultiSearchSelect({
   isOptionDisabled = null,
   getOptionDisabledReason = null,
   selectedCountLabel = null,
+  pageSize = LOOKUP_MULTI_DEFAULT_PAGE_SIZE,
 }) {
   const listId = useId();
   const rootRef = useRef(null);
   const listRef = useRef(null);
   const reqSeq = useRef(0);
+  const abortRef = useRef(null);
+  const cacheRef = useRef(new Map());
   const gettersRef = useRef({
     getOptionValue,
     getOptionLabel,
@@ -58,7 +99,10 @@ export default function LookupMultiSearchSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [pending, setPending] = useState(false);
-  const [filtered, setFiltered] = useState(options || []);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [filtered, setFiltered] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [page, setPage] = useState(1);
   const [highlight, setHighlight] = useState(0);
   const [listBox, setListBox] = useState(null);
   const [knownOptions, setKnownOptions] = useState(options || []);
@@ -72,6 +116,17 @@ export default function LookupMultiSearchSelect({
     const fn = gettersRef.current.getOptionValue;
     return String(fn?.(opt) || "");
   }, []);
+
+  const mergeKnown = useCallback((rows) => {
+    setKnownOptions((prev) => {
+      const map = new Map();
+      [...(prev || []), ...(options || []), ...(rows || [])].forEach((row) => {
+        const key = resolveValue(row);
+        if (key) map.set(key, row);
+      });
+      return Array.from(map.values());
+    });
+  }, [options, resolveValue]);
 
   const selectedOptions = useMemo(() => {
     const pool = [...(knownOptions || []), ...(options || [])];
@@ -88,11 +143,27 @@ export default function LookupMultiSearchSelect({
     ? selectedCountLabel(selectedIds.length)
     : (selectedIds.length ? `${selectedIds.length} PO terpilih` : "");
 
+  const visibleOptions = useMemo(
+    () => (filtered || []).slice(0, LOOKUP_MULTI_MAX_RENDERED),
+    [filtered],
+  );
+
+  // Primary fetch: open / query change → page 1 only. Never depend on selectedOptions
+  // (that previously caused setKnownOptions → selectedOptions → fetch loop).
   useEffect(() => {
     if (!open || disabled) return undefined;
     setPending(true);
+    setLoadingMore(false);
     setFiltered([]);
+    setHasMore(false);
+    setPage(1);
+    setHighlight(0);
+
     const requestId = ++reqSeq.current;
+    abortRef.current?.abort?.();
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    abortRef.current = controller;
+
     const handle = window.setTimeout(async () => {
       const {
         getOptionLabel: labelFn,
@@ -100,34 +171,51 @@ export default function LookupMultiSearchSelect({
       } = gettersRef.current;
       try {
         if (asyncMode) {
-          const rows = await fetchOptions(query);
-          if (requestId !== reqSeq.current) return;
-          const list = Array.isArray(rows) ? rows : [];
-          setKnownOptions((prev) => {
-            const map = new Map();
-            [...(prev || []), ...list, ...selectedOptions].forEach((row) => {
-              const key = resolveValue(row);
-              if (key) map.set(key, row);
+          const key = cacheKey(query, 1, pageSize);
+          const hit = cacheRef.current.get(key);
+          let normalized;
+          if (hit && (Date.now() - hit.at) < LOOKUP_MULTI_QUERY_CACHE_TTL_MS) {
+            normalized = hit.payload;
+          } else {
+            const rows = await fetchOptions(query, {
+              page: 1,
+              pageSize,
+              signal: controller?.signal,
             });
-            return Array.from(map.values());
-          });
-          setFiltered(list);
+            if (requestId !== reqSeq.current) return;
+            normalized = normalizeLookupMultiFetchResult(rows, { page: 1, pageSize });
+            cacheRef.current.set(key, { at: Date.now(), payload: normalized });
+          }
+          if (requestId !== reqSeq.current) return;
+          mergeKnown(normalized.items);
+          setFiltered(normalized.items.slice(0, LOOKUP_MULTI_MAX_RENDERED));
+          setHasMore(Boolean(normalized.hasMore));
+          setPage(1);
         } else {
           const resolveSearch = searchFn || labelFn;
-          setFiltered(filterFacetOptions(options, query, resolveSearch));
+          const local = filterFacetOptions(options, query, resolveSearch);
+          setFiltered(local.slice(0, LOOKUP_MULTI_MAX_RENDERED));
+          setHasMore(local.length > LOOKUP_MULTI_MAX_RENDERED);
+          setPage(1);
         }
-        setHighlight(0);
         setPending(false);
-      } catch {
+      } catch (err) {
+        if (err?.name === "CanceledError" || err?.code === "ERR_CANCELED" || err?.name === "AbortError") {
+          return;
+        }
         if (requestId !== reqSeq.current) return;
         setFiltered([]);
+        setHasMore(false);
         setPending(false);
       }
     }, LOOKUP_MULTI_SEARCH_DEBOUNCE_MS);
+
     return () => {
       window.clearTimeout(handle);
       reqSeq.current += 1;
+      controller?.abort?.();
     };
+    // Intentionally omit selectedOptions / knownOptions — those must not re-fetch.
   }, [
     query,
     open,
@@ -135,8 +223,73 @@ export default function LookupMultiSearchSelect({
     asyncMode,
     fetchOptions,
     asyncMode ? null : options,
+    pageSize,
+    mergeKnown,
+  ]);
+
+  const loadMore = useCallback(async () => {
+    if (!asyncMode || !open || disabled || pending || loadingMore || !hasMore) return;
+    if (filtered.length >= LOOKUP_MULTI_MAX_RENDERED) {
+      setHasMore(false);
+      return;
+    }
+    const nextPage = page + 1;
+    setLoadingMore(true);
+    const requestId = ++reqSeq.current;
+    abortRef.current?.abort?.();
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    abortRef.current = controller;
+    try {
+      const key = cacheKey(query, nextPage, pageSize);
+      const hit = cacheRef.current.get(key);
+      let normalized;
+      if (hit && (Date.now() - hit.at) < LOOKUP_MULTI_QUERY_CACHE_TTL_MS) {
+        normalized = hit.payload;
+      } else {
+        const rows = await fetchOptions(query, {
+          page: nextPage,
+          pageSize,
+          signal: controller?.signal,
+        });
+        if (requestId !== reqSeq.current) return;
+        normalized = normalizeLookupMultiFetchResult(rows, { page: nextPage, pageSize });
+        cacheRef.current.set(key, { at: Date.now(), payload: normalized });
+      }
+      if (requestId !== reqSeq.current) return;
+      mergeKnown(normalized.items);
+      setFiltered((prev) => {
+        const map = new Map();
+        [...(prev || []), ...(normalized.items || [])].forEach((row) => {
+          const id = resolveValue(row);
+          if (id) map.set(id, row);
+        });
+        return Array.from(map.values()).slice(0, LOOKUP_MULTI_MAX_RENDERED);
+      });
+      const reachedCap = (filtered.length + (normalized.items || []).length) >= LOOKUP_MULTI_MAX_RENDERED;
+      setHasMore(Boolean(normalized.hasMore) && !reachedCap);
+      setPage(nextPage);
+    } catch (err) {
+      if (err?.name === "CanceledError" || err?.code === "ERR_CANCELED" || err?.name === "AbortError") {
+        return;
+      }
+      if (requestId !== reqSeq.current) return;
+    } finally {
+      if (requestId === reqSeq.current) setLoadingMore(false);
+    }
+  }, [
+    asyncMode,
+    open,
+    disabled,
+    pending,
+    loadingMore,
+    hasMore,
+    filtered.length,
+    page,
+    query,
+    pageSize,
+    fetchOptions,
+    mergeKnown,
     resolveValue,
-    selectedOptions,
   ]);
 
   const placeList = useCallback(() => {
@@ -178,7 +331,7 @@ export default function LookupMultiSearchSelect({
       window.removeEventListener("resize", placeList);
       window.removeEventListener("scroll", placeList, true);
     };
-  }, [open, disabled, placeList, filtered, pending, selectedIds.length]);
+  }, [open, disabled, placeList, visibleOptions.length, pending, selectedIds.length, hasMore, loadingMore]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -227,7 +380,7 @@ export default function LookupMultiSearchSelect({
     pending,
     loading: false,
     error: "",
-    itemCount: filtered.length,
+    itemCount: visibleOptions.length,
   });
 
   const onKeyDown = (event) => {
@@ -235,13 +388,13 @@ export default function LookupMultiSearchSelect({
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setOpen(true);
-      setHighlight((h) => Math.min(h + 1, Math.max(filtered.length - 1, 0)));
+      setHighlight((h) => Math.min(h + 1, Math.max(visibleOptions.length - 1, 0)));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setHighlight((h) => Math.max(h - 1, 0));
     } else if (event.key === "Enter" && open) {
       event.preventDefault();
-      if (!pending && filtered[highlight]) toggle(filtered[highlight]);
+      if (!pending && visibleOptions[highlight]) toggle(visibleOptions[highlight]);
     } else if (event.key === "Backspace" && !query && selectedIds.length) {
       event.preventDefault();
       removeId(selectedIds[selectedIds.length - 1]);
@@ -274,7 +427,7 @@ export default function LookupMultiSearchSelect({
       {view === "empty" && (
         <li className="mis-status" data-testid={`${testId}-empty`}>{noResultLabel}</li>
       )}
-      {view === "results" && filtered.map((opt, index) => {
+      {view === "results" && visibleOptions.map((opt, index) => {
         const {
           getOptionLabel: labelFn,
           getOptionMeta: metaFn,
@@ -307,6 +460,24 @@ export default function LookupMultiSearchSelect({
           </li>
         );
       })}
+      {view === "results" && hasMore ? (
+        <li className="mis-status">
+          <button
+            type="button"
+            className="mis-option"
+            disabled={loadingMore || pending}
+            onClick={() => { void loadMore(); }}
+            data-testid={`${testId}-load-more`}
+          >
+            {loadingMore ? "Memuat…" : "Muat lebih banyak"}
+          </button>
+        </li>
+      ) : null}
+      {view === "results" && filtered.length >= LOOKUP_MULTI_MAX_RENDERED ? (
+        <li className="mis-status" data-testid={`${testId}-cap-hint`}>
+          Menampilkan {LOOKUP_MULTI_MAX_RENDERED} hasil. Ketik untuk mempersempit pencarian.
+        </li>
+      ) : null}
     </ul>
   ) : null;
 

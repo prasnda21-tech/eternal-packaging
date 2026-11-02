@@ -16,7 +16,7 @@ import {
 import { useAuth } from "../lib/auth";
 import api from "../lib/api";
 import { NAV_KEYS } from "../lib/navAccess";
-import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import CustomerSearchSelect, { CUSTOMER_OPTIONS_LOAD_ERROR } from "../components/CustomerSearchSelect";
 import LookupSearchSelect from "../components/LookupSearchSelect";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
@@ -110,6 +110,7 @@ export default function PraPoPage() {
   const [createTab, setCreateTab] = useState("items");
   const [returnReason, setReturnReason] = useState("");
   const [masterCustomers, setMasterCustomers] = useState([]);
+  const [customerOptionsState, setCustomerOptionsState] = useState("loading");
   const [salesCatalog, setSalesCatalog] = useState([]);
   const [salesCatalogState, setSalesCatalogState] = useState("loading");
   const [searchInput, setSearchInput] = useState("");
@@ -159,6 +160,7 @@ export default function PraPoPage() {
   }, [canViewAll, page, pageSize, statusFilter, searchQ]);
 
   const loadOptions = useCallback(async () => {
+    setCustomerOptionsState("loading");
     try {
       const [data, warehouseRes] = await Promise.all([
         api.salesOrderOptions(),
@@ -172,8 +174,10 @@ export default function PraPoPage() {
         (Array.isArray(warehouseRes?.items) ? warehouseRes.items : [])
           .filter((wh) => wh && wh.active !== false),
       );
+      setCustomerOptionsState("ready");
     } catch {
       setMasterCustomers([]);
+      setCustomerOptionsState("error");
     }
   }, []);
 
@@ -628,6 +632,11 @@ export default function PraPoPage() {
                               disabled={busy}
                               required
                               testId="pra-po-customer"
+                              customersLoading={customerOptionsState === "loading"}
+                              loadError={
+                                customerOptionsState === "error" ? CUSTOMER_OPTIONS_LOAD_ERROR : ""
+                              }
+                              onRetryLoad={loadOptions}
                             />
                             <button
                               type="button"

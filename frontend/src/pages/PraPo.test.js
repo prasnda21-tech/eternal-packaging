@@ -16,6 +16,16 @@ describe("Pra PO page source contract — SO parity", () => {
     expect(src).toMatch(/CustomerSearchSelect/);
     expect(src).toMatch(/MasterItemSearchSelect/);
     expect(src).toMatch(/api\.salesCatalogProducts/);
+    const searchSrc = fs.readFileSync(
+      path.join(__dirname, "../components/CustomerSearchSelect.jsx"),
+      "utf8"
+    );
+    expect(searchSrc).toMatch(/openList/);
+    expect(searchSrc).toMatch(/createPortal/);
+    expect(searchSrc).not.toMatch(/Ketik untuk mencari customer aktif/);
+    expect(src).toMatch(/customerOptionsState/);
+    expect(src).toMatch(/CUSTOMER_OPTIONS_LOAD_ERROR/);
+    expect(src).toMatch(/onRetryLoad=\{loadOptions\}/);
   });
 
   test("does not render editable raw master_item_id field", () => {

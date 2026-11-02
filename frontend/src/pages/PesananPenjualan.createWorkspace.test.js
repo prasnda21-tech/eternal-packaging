@@ -142,6 +142,20 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     await act(async () => document.body.querySelector(`[data-testid="line-item-search-${index}-option-a${index}"]`).click());
   }
 
+  async function chooseCustomer(query, customerId) {
+    await act(async () => {
+      const input = container.querySelector('[data-testid="input-customer"]');
+      input.focus();
+      setNativeValue(input, query);
+    });
+    await tick(180);
+    const option = document.body.querySelector(`[data-testid="input-customer-option-${customerId}"]`);
+    expect(option).toBeTruthy();
+    await act(async () => {
+      option.click();
+    });
+  }
+
   test("list page is unchanged and create workspace is isolated", async () => {
     await renderPage();
     const page = container.querySelector('[data-testid="sales-order-page"]');
@@ -216,21 +230,9 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
       sales_options: [],
     });
     await openCreate();
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Maju");
-    });
-    await tick(180);
-    await act(async () => {
-      container.querySelector('[data-testid="input-customer-option-c1"]').click();
-    });
+    await chooseCustomer("Maju", "c1");
     expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("Pusat");
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Baru");
-    });
-    await tick(180);
-    await act(async () => {
-      container.querySelector('[data-testid="input-customer-option-c2"]').click();
-    });
+    await chooseCustomer("Baru", "c2");
     expect(container.querySelector('[data-testid="input-outlet"]').value).toBe("");
     expect(container.querySelector('[data-testid="so-order-summary"]').textContent).not.toContain("Pusat");
   });
@@ -326,13 +328,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(api.salesOrderOptions).toHaveBeenCalledTimes(3);
     expect(container.querySelector('[data-testid="input-po-number"]').value).toBe("PO-AUTO-2");
 
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Maju");
-    });
-    await tick(180);
-    await act(async () => {
-      container.querySelector('[data-testid="input-customer-option-c1"]').click();
-    });
+    await chooseCustomer("Maju", "c1");
     expect(container.querySelector('[data-testid="badge-customer-registered"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="btn-repeat-order"]').disabled).toBe(false);
 
@@ -483,13 +479,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Belum Lengkap");
     expect(validateSalesOrderCreate(formFromScreen())).not.toBe("");
 
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Maju");
-    });
-    await tick(180);
-    await act(async () => {
-      container.querySelector('[data-testid="input-customer-option-c1"]').click();
-    });
+    await chooseCustomer("Maju", "c1");
     expect(requiredMarker("po_number")).toBe(false);
     expect(requiredMarker("order_date")).toBe(false);
     expect(requiredMarker("customer")).toBe(true);
@@ -515,13 +505,7 @@ describe("Buat Pesanan Penjualan compact workspace", () => {
     expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("0/4 wajib");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Belum Lengkap");
 
-    await act(async () => {
-      setNativeValue(container.querySelector('[data-testid="input-customer"]'), "Maju");
-    });
-    await tick(180);
-    await act(async () => {
-      container.querySelector('[data-testid="input-customer-option-c1"]').click();
-    });
+    await chooseCustomer("Maju", "c1");
     expect(container.querySelector('[data-testid="so-progress-label"]').textContent).toBe("1/2 pelanggan & barang");
     expect(container.querySelector('[data-testid="so-status-chip"]').textContent).toBe("Belum Lengkap");
 
