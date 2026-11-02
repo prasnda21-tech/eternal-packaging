@@ -843,4 +843,9 @@ describe("Pengiriman CREATE layout scroll ownership (multi-PO safe)", () => {
     );
   });
 
+  test("multi-PO submit is not gated on single-PO poSummary null", () => {
+    expect(pageSrc).toMatch(
+      /multiPoMode \? selectedPoIds\.length < 2 \|\| combinedAllocRows\.length === 0 : !poSummary/,
+    );
+  });
 });
