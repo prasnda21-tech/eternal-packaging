@@ -5033,6 +5033,30 @@ async def list_physical_stock_catalog(
                 row["qty_tersedia_note"] = (
                     f"{existing_note} {recon_note}".strip()
                 )
+        # YGY Accurate ATS cutover overlay (read-only). Never rewrites balances.
+        # READY only when caller/env supplies complete post-cutoff evidence;
+        # default evidence_complete=False → UNVERIFIED with explicit gaps.
+        if selected_warehouse and str(selected_warehouse.get("id") or "") == (
+            "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24"
+        ):
+            try:
+                from services.stock_ats_ygy_runtime import (
+                    apply_ats_overlay_to_ssi_row,
+                    ats_ygy_enabled,
+                )
+                if ats_ygy_enabled():
+                    apply_ats_overlay_to_ssi_row(
+                        row,
+                        warehouse_id=str(selected_warehouse.get("id") or ""),
+                        as_of=now_iso(),
+                        reservations_at_cutoff=(),
+                        events=(),
+                        evidence_complete=False,
+                    )
+            except Exception as ats_exc:  # fail closed — keep legacy SSI fields
+                row["ats_cutover_status"] = "UNAVAILABLE"
+                row["ats_cutover_reason"] = "ATS_OVERLAY_ERROR"
+                row["ats_cutover_error"] = str(ats_exc)
         rows.append(row)
     # rows already equals the requested page (built only for page_masters).
     await _attach_last_stock_actors(db, rows)
