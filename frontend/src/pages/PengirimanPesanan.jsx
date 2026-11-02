@@ -1260,9 +1260,9 @@ export default function PengirimanPesanan() {
                           data-testid="display-po-number"
                         />
                       ) : multiPoMode ? (
-                        <div data-testid="multi-po-picker" style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 160, overflow: "auto", border: "1px solid #e5e7eb", borderRadius: 6, padding: 8 }}>
+                        <div data-testid="multi-po-picker" className="ux90-multi-po-picker">
                           {(availablePOs || []).slice(0, 40).map((p) => (
-                            <label key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                            <label key={p.id} className="ux90-multi-po-picker-row">
                               <input
                                 type="checkbox"
                                 checked={selectedPoIds.includes(p.id)}
@@ -1435,7 +1435,7 @@ export default function PengirimanPesanan() {
                   ) : <span />}
                   <h3>Alokasi Qty Surat Jalan <span className="ux90-req">*</span></h3>
                 </div>
-                <div className="ux90-table-scroll">
+                <div className="ux90-table-scroll" data-testid="delivery-lines-scroll">
                   {poSummaryLoading && !multiPoMode ? (
                     <div style={{ padding: 24, textAlign: "center", color: "#64748b" }}>Memuat rincian PO...</div>
                   ) : multiPoMode ? (

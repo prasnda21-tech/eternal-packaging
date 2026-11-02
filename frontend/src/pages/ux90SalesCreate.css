@@ -1984,7 +1984,59 @@
   gap: 4px 28px !important;
   padding: 2px 4px 8px !important;
   border-bottom: 1px solid #eef2f7 !important;
-  flex: 0 0 auto !important;
+  flex: 0 1 auto !important;
+  min-height: 0 !important;
+  /* Cap header so multi-PO picker cannot starve Rincian / footer */
+  max-height: min(42vh, 280px) !important;
+  overflow: auto !important;
+}
+
+/* Multi-PO checkbox list: bounded height; scroll inside picker, not page */
+.ux90-pj-delivery-host .ux90-multi-po-picker {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+  max-height: min(112px, 14vh) !important;
+  overflow: auto !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 6px !important;
+  padding: 8px !important;
+  min-height: 0 !important;
+}
+
+.ux90-pj-delivery-host .ux90-multi-po-picker-row {
+  display: flex !important;
+  gap: 8px !important;
+  align-items: center !important;
+  font-size: 13px !important;
+  min-width: 0 !important;
+}
+
+.ux90-pj-delivery-host .ux90-multi-po-picker-row > span {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.ux90-pj-delivery-host .ux90-dlrow.ux90-field-po {
+  align-items: start !important;
+  min-height: 0 !important;
+}
+
+.ux90-pj-delivery-host .ux90-dlrow.ux90-field-po > label {
+  padding-top: 8px !important;
+}
+
+/* Host overrides legacy empty/table min-heights that fight flex shrink */
+.ux90-pj-delivery-host .ux90-pj-delivery .ux90-table-wrap[data-ux90-region="delivery-lines"],
+.ux90-pj-delivery-host .ux90-pj-delivery .ux90-table-wrap[data-empty="true"],
+.ux90-pj-delivery-host .ux90-pj-delivery .ux90-table-wrap:has(.ux90-empty-alloc) {
+  min-height: 0 !important;
+}
+
+.ux90-pj-delivery-host .ux90-pj-delivery .ux90-empty-alloc {
+  min-height: 96px !important;
 }
 
 .ux90-pj-delivery-host .ux90-delivery-doc-col {
@@ -2208,10 +2260,16 @@
   flex: 0 0 0 !important;
 }
 
-/* Table dominates remaining viewport (items tab only) */
+/*
+ * Table dominates remaining viewport (items tab only).
+ * min-height MUST be 0 so the flex chain can shrink under a tall header /
+ * multi-PO picker; otherwise overflow:hidden ancestors clip tbody while
+ * thead / "Alokasi Qty" title still paint. Legacy .ux90-pj-delivery rule
+ * uses min-height: 220 — override here with !important.
+ */
 .ux90-pj-delivery-host .ux90-pj-delivery[data-form-tab="items"] .ux90-table-wrap[data-ux90-region="delivery-lines"] {
   flex: 1 1 auto !important;
-  min-height: 180px !important;
+  min-height: 0 !important;
   display: flex !important;
   flex-direction: column !important;
   border: 1px solid #e5e7eb !important;
@@ -2259,6 +2317,7 @@
   min-height: 0 !important;
   max-height: none !important;
   overflow: auto !important;
+  -webkit-overflow-scrolling: touch;
 }
 
 .ux90-pj-delivery-host .ux90-pj-delivery .ux90-table {
@@ -2267,9 +2326,9 @@
 }
 
 .ux90-pj-delivery-host .ux90-pj-delivery .ux90-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 2 !important;
   background: #166534 !important;
   color: #fff !important;
   font-size: 11px !important;
@@ -2307,8 +2366,9 @@
   font-size: 13px !important;
 }
 
-/* One-line compact qty summary under table */
+/* One-line compact qty summary under table — never steal scroll from rows */
 .ux90-pj-delivery-host .ux90-doc-summary.is-delivery-compact {
+  flex: 0 0 auto !important;
   flex-direction: row !important;
   align-items: center !important;
   justify-content: flex-end !important;
