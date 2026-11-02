@@ -3667,9 +3667,11 @@ def collect_blank_open_commitment_by_master(
           "sisa_belum_cetak": {master_id: {qty, status, reason}},
         }
 
-    Sisa Belum Cetak reuses print-parent completion evidence
-    (ordered − proven completed) — never a second formula, never subtracts
-    shipment again. SERVICE/process masters in exclude_master_ids never contribute.
+    Sisa Belum Cetak uses print-parent ``operator_splits.qty_completed`` for
+    that ``line_idx`` (ordered − proven completed) — never a second formula,
+    never subtracts shipment again, never invents qty when ops evidence is
+    absent. Order-wide process_gate does not discard per-line ops evidence for
+    sisa. SERVICE/process masters in exclude_master_ids never contribute.
     """
     from quantity_rules import is_print_line
     from services.order_line_addon import (
@@ -3896,12 +3898,25 @@ def collect_blank_open_commitment_by_master(
                 "status": need["status"],
                 "reason": need.get("reason"),
             })
-            # Same print completion evidence — do not invent a second formula.
-            sisa = sisa_belum_cetak_for_print_line(
-                ordered_qty=ordered,
-                print_completed_qty=print_completed,
-                print_completion_proven=proven,
-            )
+            # Sisa Belum Cetak (#683 formula unchanged):
+            #   max(0, print_ordered − proven_completed)
+            # Authoritative proven_completed = sum(operator_splits.qty_completed)
+            # for this print parent line_idx. Order-wide process_gate_unproven
+            # (unlinked SERVICE Add On / orphan print sibling / ambiguous
+            # unassigned splits) must not discard that line evidence, and must
+            # not invent a number when the line has no operator_splits at all.
+            if ops_evidence:
+                sisa = sisa_belum_cetak_for_print_line(
+                    ordered_qty=ordered,
+                    print_completed_qty=float(parent_completed),
+                    print_completion_proven=True,
+                )
+            else:
+                sisa = sisa_belum_cetak_for_print_line(
+                    ordered_qty=ordered,
+                    print_completed_qty=None,
+                    print_completion_proven=False,
+                )
             sisa_needs.append({
                 "master_item_id": mid,
                 "qty": sisa["qty"],
@@ -4255,6 +4270,7 @@ def _warehouse_engine_catalog_envelope(
     r2_on: bool,
     standalone_on: bool,
     selected_warehouse: Optional[dict],
+    orders_fetch_capped: bool = False,
 ) -> dict:
     """Shared Stock Saat Ini envelope for warehouse-engine reads (R2 or standalone).
 
@@ -4298,6 +4314,9 @@ def _warehouse_engine_catalog_envelope(
         ),
         "demand_scope": "BRANCH",
         "physical_qty_note": note,
+        # True when orders.find(...).to_list(ORDERS_FETCH_LIMIT) hit the hard
+        # cap — Sisa Belum Cetak must fail-closed (see resolve_sisa_...).
+        "orders_fetch_capped": bool(orders_fetch_capped),
     }
 
 
@@ -4450,6 +4469,8 @@ async def list_physical_stock_catalog(
         aggregate_legacy_delivered_qty,
     )
 
+    from services.stock_saat_ini_excel import ORDERS_FETCH_LIMIT
+
     legacy_settings = await get_mode_b_legacy_demand_settings(db)
     # Demand is branch-scoped. Default excludes unattributed orders; optional
     # Mode B legacy policy may attribute historical Accurate/null ids to one
@@ -4460,10 +4481,15 @@ async def list_physical_stock_catalog(
     else:
         # No resolvable branch → no inventable demand.
         order_query = {"_id": {"$exists": False}}
-    orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
+    orders_raw = await db.orders.find(order_query, {"_id": 0}).to_list(
+        ORDERS_FETCH_LIMIT
+    )
+    # Cap is on the raw Mongo fetch (before Mode B Python filter). Hitting the
+    # limit means applicable SO may be missing from the walk.
+    orders_fetch_capped = len(orders_raw) >= ORDERS_FETCH_LIMIT
     # Defense in depth: filter again in Python (cabang_id / stray docs / cutoff).
     orders = _orders_for_branch(
-        orders, operational_id, legacy_settings=legacy_settings,
+        orders_raw, operational_id, legacy_settings=legacy_settings,
     )
     # Full branch order aggregate remains required: page-row demand can depend on
     # SERVICE process Add On lines linked on the same order (exclude from qty only).
@@ -4609,6 +4635,7 @@ async def list_physical_stock_catalog(
     )
     blank_commit_by_master = blank_pack.get("blank_open_commitment") or {}
     sisa_belum_cetak_by_master = blank_pack.get("sisa_belum_cetak") or {}
+    from services.stock_saat_ini_excel import resolve_sisa_belum_cetak_catalog_slot
     # Selected warehouse: blank SO demand stays branch-scoped — never fabricate WH ATP.
     blank_warehouse_scoped = bool(selected_warehouse)
 
@@ -4915,21 +4942,22 @@ async def list_physical_stock_catalog(
             ),
         )
         # Option A: blank commitment + Stock Polos Dapat Dijual (≠ Jalur A ATP)
-        # + Sisa Belum Cetak (same print completion walk).
+        # + Sisa Belum Cetak (print-parent ops walk; catalog slot fail-closed
+        # when orders fetch hit ORDERS_FETCH_LIMIT).
         if proven_no_activity:
             blank_slot = {"qty": 0.0, "status": "READY", "reason": None}
-            sisa_slot = {"qty": 0.0, "status": "READY", "reason": None}
         else:
             blank_slot = blank_commit_by_master.get(str(mid) or mid) or {
                 "qty": 0.0,
                 "status": "READY",
                 "reason": None,
             }
-            sisa_slot = sisa_belum_cetak_by_master.get(str(mid) or mid) or {
-                "qty": 0.0,
-                "status": "READY",
-                "reason": None,
-            }
+        sisa_slot = resolve_sisa_belum_cetak_catalog_slot(
+            sisa_belum_cetak_by_master,
+            mid,
+            proven_no_activity=bool(proven_no_activity),
+            orders_fetch_capped=bool(orders_fetch_capped),
+        )
         excel["blank_open_commitment"] = blank_slot.get("qty")
         excel["blank_open_commitment_status"] = blank_slot.get("status") or "READY"
         excel["blank_open_commitment_reason"] = blank_slot.get("reason")
@@ -5016,6 +5044,7 @@ async def list_physical_stock_catalog(
         r2_on=r2_on,
         standalone_on=standalone_on,
         selected_warehouse=selected_warehouse,
+        orders_fetch_capped=bool(orders_fetch_capped),
     )
 
 
