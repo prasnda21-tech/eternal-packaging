@@ -27,7 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
 import HeaderSelectFilter from "../components/HeaderSelectFilter";
 import HeaderFieldFilter from "../components/HeaderFieldFilter";
 import MasterItemSearchSelect from "../components/MasterItemSearchSelect";
-import CustomerSearchSelect from "../components/CustomerSearchSelect";
+import CustomerSearchSelect, { CUSTOMER_OPTIONS_LOAD_ERROR } from "../components/CustomerSearchSelect";
 import LookupSearchSelect from "../components/LookupSearchSelect";
 import SalesInvoiceDateField from "../components/SalesInvoiceDateField";
 import StockAllocationEditor from "../components/StockAllocationEditor";
@@ -641,6 +641,7 @@ export default function PesananPenjualan() {
     process_label_options: [],
     master_items: [],
     suggested_po_number: "",
+    master_customers_state: "idle",
   });
   const [optionsLoading, setOptionsLoading] = useState(false);
 
@@ -772,6 +773,10 @@ export default function PesananPenjualan() {
 
   const loadOptions = useCallback(async ({ applySuggestedPo = false } = {}) => {
     setOptionsLoading(true);
+    setOptions((prev) => ({
+      ...prev,
+      master_customers_state: "loading",
+    }));
     try {
       // Guard: tests/mocks may omit salesMasterCatalog or return a non-thenable.
       const catalogPromise = Promise.resolve()
@@ -798,6 +803,7 @@ export default function PesananPenjualan() {
         sales_options: Array.isArray(data?.sales_options) ? data.sales_options : [],
         sales_master_catalog: catalog,
         sales_catalog_state: "ready",
+        master_customers_state: "ready",
       });
       setWarehouses(
         (Array.isArray(warehouseRes?.items) ? warehouseRes.items : [])
@@ -815,6 +821,7 @@ export default function PesananPenjualan() {
         ...prev,
         sales_master_catalog: Array.isArray(prev.sales_master_catalog) ? prev.sales_master_catalog : [],
         sales_catalog_state: "error",
+        master_customers_state: "error",
       }));
     } finally {
       setOptionsLoading(false);
@@ -2758,6 +2765,13 @@ export default function PesananPenjualan() {
                           disabled={formBusy}
                           required
                           testId="input-customer"
+                          customersLoading={optionsLoading || options.master_customers_state === "loading"}
+                          loadError={
+                            !optionsLoading && options.master_customers_state === "error"
+                              ? CUSTOMER_OPTIONS_LOAD_ERROR
+                              : ""
+                          }
+                          onRetryLoad={() => loadOptions({ applySuggestedPo: false })}
                         />
                       </div>
                     </SoField>

@@ -330,6 +330,13 @@ describe("Pesanan Penjualan customer live search contracts", () => {
     expect(searchSrc).toMatch(/onTextChange/);
     expect(searchSrc).toMatch(/data-testid=\{testId\}/);
     expect(searchSrc).toMatch(/masterItemSearchSelect\.css/);
+    expect(searchSrc).toMatch(/openList/);
+    expect(searchSrc).toMatch(/createPortal/);
+    expect(searchSrc).not.toMatch(/Ketik untuk mencari customer aktif/);
+    expect(searchSrc).toMatch(/CUSTOMER_OPTIONS_LOAD_ERROR/);
+    expect(searchSrc).toMatch(/loadErrorMessage/);
+    expect(src).toMatch(/master_customers_state/);
+    expect(src).toMatch(/onRetryLoad=\{\(\) => loadOptions/);
   });
 
   test("registered badge and repeat gate follow customer_id only", () => {
