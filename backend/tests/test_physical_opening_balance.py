@@ -277,6 +277,22 @@ async def test_read_status_writes_nothing_and_reads_integrate(db):
         assert name not in source
 
 
+async def test_opening_forwards_occurred_at_to_movement(db):
+    item, branch, warehouse = await _seed(db)
+    count_at = "2026-10-30T10:00:00Z"
+    body = _body(branch, warehouse, 100, key="open-count-at") | {"occurred_at": count_at}
+    result = await post_opening_balance(db, item["id"], body, actor_id="actor-1")
+    movement = result["movement"]
+    assert movement["occurred_at"] == count_at
+    assert movement["qty_delta"] == 100
+    # Retry same key + occurred_at must not insert a second ledger row.
+    again = await post_opening_balance(db, item["id"], body, actor_id="actor-1")
+    assert again["movement"]["id"] == movement["id"]
+    assert await db[LEDGER_COLLECTION].count_documents({"movement_type": MOVEMENT_OPENING_BALANCE}) == 1
+    doc = await db[LEDGER_COLLECTION].find_one({"id": movement["id"]}, {"_id": 0})
+    assert doc["occurred_at"] == count_at
+
+
 async def test_forced_abort_leaves_no_partial_write(db):
     item, branch, warehouse = await _seed(db)
     set_fail_after_balance(True)
