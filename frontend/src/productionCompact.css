@@ -415,6 +415,39 @@
   height: auto;
   min-height: calc(var(--production-row-h) * var(--production-sheet-zoom, 1));
 }
+/* Jadwal Produksi desktop: unify data cells at 12px (headers/toolbar unchanged). */
+.prod-schedule-page.production-compact {
+  --prod-sheet-data-fs: calc(12px * var(--production-sheet-zoom, 1));
+  --prod-sheet-data-lh: 1.3;
+}
+.prod-schedule-page.production-compact .production-sheet-table tbody td,
+.prod-schedule-page.production-compact .production-sheet-table tbody td.small,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .small,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .muted,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .muted.small,
+.prod-schedule-page.production-compact .production-sheet-table tbody td a,
+.prod-schedule-page.production-compact .production-sheet-table tbody td strong,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-op-name,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-op-line,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-date-line,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-line-qty-name,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-schedule-item-line,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .mop-ops-item-name,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .mop-ops-item-qty,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-schedule-qty-value,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-schedule-progress,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-schedule-progress-label,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-schedule-nonprint-placeholder,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .pill,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .pill.sm,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-status-akhir,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .urgent-badge,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .standard-badge,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .buffer-stock-badge,
+.prod-schedule-page.production-compact .production-sheet-table tbody td .prod-prio-normal {
+  font-size: var(--prod-sheet-data-fs);
+  line-height: var(--prod-sheet-data-lh);
+}
 .production-compact .production-sheet-table .prod-op-line {
   margin-bottom: calc(1px * var(--production-sheet-zoom, 1));
   gap: calc(4px * var(--production-sheet-zoom, 1));

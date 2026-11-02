@@ -11,6 +11,7 @@ import {
   operatorWorkQtyCell,
   scheduledPrintQtyCell,
 } from "../lib/productionScheduleQty";
+import { NON_PRINT_ONLY_ITEM_LABEL } from "../lib/productionScheduleDisplayRows";
 import { screenSizeLabel } from "../lib/screenSize";
 import {
   PRODUCTION_SCHEDULE_TABLE_COLS,
@@ -151,6 +152,20 @@ function TotalQtyCell({ qtyProg }) {
 }
 
 function ItemCell({ row, variant }) {
+  if (row.displayNonPrintOnly) {
+    return (
+      <span
+        className={variant === "desktop"
+          ? "prod-schedule-nonprint-placeholder muted small"
+          : "muted small"}
+        data-testid={variant === "desktop"
+          ? `prod-item-non-print-${row.po_number}`
+          : `mobile-schedule-item-non-print-${row.po_number}`}
+      >
+        {NON_PRINT_ONLY_ITEM_LABEL}
+      </span>
+    );
+  }
   const items = operatorPrintableItems(row.displayOperator?.splits || []);
   if (!items.length) return <span className="muted small">—</span>;
   return items.map((item) => {
@@ -201,6 +216,13 @@ function OperatorAssignmentBlock({ op, testid }) {
 }
 
 function OperatorCell({ row, qtyProg, variant }) {
+  if (row.displayNonPrintOnly) {
+    return (
+      <span className="muted small" data-testid={operatorCellTestId(row, variant)}>
+        —
+      </span>
+    );
+  }
   if (row.displayOperatorKey) {
     const op = row.displayOperator;
     if (!op) {
@@ -269,6 +291,7 @@ function cellContent(col, ctx) {
           to={poHref}
           state={poLinkState}
           onClick={onPoOpen}
+          title={row.po_number || undefined}
           data-testid={`prod-po-link-${row.po_number}`}
         >
           {row.po_number}
@@ -308,14 +331,34 @@ function cellContent(col, ctx) {
       if (ctx.opsBadge) {
         return <span className={`mop-ops-badge mop-ops-badge-${ctx.opsBadge.tone}`}>{ctx.opsBadge.label}</span>;
       }
-      // Column "prio" is urgent-only; buffer has its own column (no NORMAL badge).
-      return isPoUrgent(row) ? (
-        <span className="urgent-badge" data-testid={`prod-prio-${row.po_number}-urgent`}>URGENT</span>
-      ) : null;
+      // Desktop: urgent vs normal badges (existing tokens). Mobile keeps urgent-only compact mark.
+      if (isPoUrgent(row)) {
+        return <span className="urgent-badge" data-testid={`prod-prio-${row.po_number}-urgent`}>URGENT</span>;
+      }
+      if (variant === "desktop") {
+        return (
+          <span
+            className="standard-badge prod-prio-normal"
+            data-testid={`prod-prio-${row.po_number}-normal`}
+          >
+            NORMAL
+          </span>
+        );
+      }
+      return null;
     case "buffer":
-      return row.buffer_stock
-        ? <span className="buffer-stock-badge" data-testid={`prod-buffer-${row.po_number}`}>BUFFER STOCK</span>
-        : null;
+      if (row.buffer_stock) {
+        return (
+          <span
+            className="buffer-stock-badge"
+            title="BUFFER STOCK"
+            data-testid={`prod-buffer-${row.po_number}`}
+          >
+            BUFFER STOCK
+          </span>
+        );
+      }
+      return variant === "desktop" ? <span className="muted">-</span> : null;
     case "item":
       return <ItemCell row={row} variant={variant} />;
     case "qty":
@@ -346,7 +389,7 @@ function cellContent(col, ctx) {
     case "qty_operator": {
       const cell = operatorWorkQtyCell(row);
       if (!cell.available) return <span className="muted" title={cell.title}>{cell.text}</span>;
-      return cell.text;
+      return <span className="prod-schedule-qty-value">{cell.text}</span>;
     }
     case "qty_cetak":
       if (variant === "mobile") {
@@ -358,10 +401,30 @@ function cellContent(col, ctx) {
           />
         );
       }
-      return scheduledPrintQtyCell(row).text;
+      {
+        const scheduled = scheduledPrintQtyCell(row);
+        if (!scheduled.available) return <span className="muted">{scheduled.text}</span>;
+        return <span className="prod-schedule-qty-value">{scheduled.text}</span>;
+      }
     case "progress": {
       const cell = operatorScheduleProgressCell(row);
       if (cell.text === "-") return <span className="muted" title={cell.title}>{cell.text}</span>;
+      if (variant === "desktop" && cell.percent != null && Number.isFinite(cell.percent)) {
+        const pct = cell.percent;
+        const barWidth = Math.max(0, Math.min(100, pct));
+        const tone = pct > 100 ? "over" : pct >= 100 ? "done" : pct <= 0 ? "zero" : "partial";
+        return (
+          <span className="prod-schedule-progress" title={cell.title}>
+            <span className="prod-schedule-progress-label">{cell.text}</span>
+            <span className="prod-schedule-progress-track" aria-hidden="true">
+              <span
+                className={`prod-schedule-progress-fill is-${tone}`}
+                style={{ width: `${barWidth}%` }}
+              />
+            </span>
+          </span>
+        );
+      }
       return cell.text;
     }
     case "operator":

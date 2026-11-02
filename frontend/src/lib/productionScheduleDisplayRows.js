@@ -31,11 +31,15 @@ export function productionScheduleDisplayRowKey(orderId, operatorKey, assignment
   return `${orderId || "po"}::${person}`;
 }
 
+/** Visible label for PO in scope that have no printable schedule lines. */
+export const NON_PRINT_ONLY_ITEM_LABEL = "Tidak ada item cetak";
+
 export function toProductionScheduleDisplayRow(row, {
   operatorKey,
   displayOperator,
   displayWorkDate,
   assignmentKey,
+  displayNonPrintOnly = false,
 } = {}) {
   const key = operatorKey || "unassigned";
   const next = {
@@ -44,8 +48,9 @@ export function toProductionScheduleDisplayRow(row, {
     displayOperatorKey: key,
     displayOperator: displayOperator || null,
     displayWorkDate: displayWorkDate || null,
+    displayNonPrintOnly: Boolean(displayNonPrintOnly),
   };
-  if (displayOperator || assignmentKey) {
+  if (displayOperator || assignmentKey || displayNonPrintOnly) {
     next.work_date = displayWorkDate || row.work_date || null;
     next.operator_work_dates = displayWorkDate
       ? [{
@@ -131,16 +136,38 @@ export function buildGroupedDisplayOperator(splits) {
   return grouped;
 }
 
+function pushNonPrintOnlyPlaceholder(out, row) {
+  out.push(toProductionScheduleDisplayRow(row, {
+    operatorKey: "non_print",
+    displayOperator: null,
+    displayWorkDate: row.work_date || null,
+    assignmentKey: "non-print-only",
+    displayNonPrintOnly: true,
+  }));
+}
+
+/**
+ * Expand canonical PO rows to spreadsheet rows (1 printable split → 1 row).
+ * Non-print-only POs stay visible as a single placeholder row so counters and
+ * the sheet share the same PO set (no silent drop).
+ */
 export function buildProductionScheduleDisplayRows(rows) {
   const out = [];
   for (const row of rows || []) {
     const rawOps = Array.isArray(row.operators) ? row.operators : [];
     const ops = rawOps.filter(isPrintableScheduleSplit);
     if (!ops.length) {
-      if (rawOps.length) continue;
+      if (rawOps.length) {
+        // Operators exist but none are printable — keep PO traceable.
+        pushNonPrintOnlyPlaceholder(out, row);
+        continue;
+      }
       const printTarget = Number(row?.print_qty_total);
       const nonPrint = Number(row?.non_print_qty_total);
-      if (printTarget === 0 && nonPrint > 0) continue;
+      if (printTarget === 0 && nonPrint > 0) {
+        pushNonPrintOnlyPlaceholder(out, row);
+        continue;
+      }
       out.push(toProductionScheduleDisplayRow(row, {
         operatorKey: "unassigned",
         displayOperator: null,

@@ -266,11 +266,14 @@ export function operatorScheduleProgressCell(row) {
   if (!done.available || !scheduled.available || !(scheduled.value > 0)) {
     return {
       text: "-",
+      percent: null,
       title: done.available ? undefined : OPERATOR_WORK_QTY_UNAVAILABLE,
     };
   }
+  const percent = (done.value / scheduled.value) * 100;
   return {
-    text: formatProgressPercent((done.value / scheduled.value) * 100),
+    text: formatProgressPercent(percent),
+    percent,
     title: `${done.text} / ${scheduled.text}`,
   };
 }

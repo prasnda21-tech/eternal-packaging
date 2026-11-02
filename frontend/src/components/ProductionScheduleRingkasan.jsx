@@ -5,10 +5,15 @@ import { productionScheduleSummaryLines } from "../lib/productionScheduleSummary
 export function ProductionScheduleSearchCluster({
   value,
   onChange,
+  onSearch,
   inputTestId,
   searchButtonTestId,
   placeholder = "Cari PO / Customer / Outlet",
 }) {
+  const runSearch = () => {
+    if (typeof onSearch === "function") onSearch(value);
+  };
+
   return (
     <div className="production-schedule-search-cluster">
       <div className="production-schedule-search-field">
@@ -16,14 +21,20 @@ export function ProductionScheduleSearchCluster({
           placeholder={placeholder}
           value={value}
           onChange={onChange}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              runSearch();
+            }
+          }}
           data-testid={inputTestId}
         />
         <button
           type="button"
           className="production-schedule-search-btn"
-          tabIndex={-1}
           aria-label="Cari"
           data-testid={searchButtonTestId}
+          onClick={runSearch}
         >
           <Search size={13} />
         </button>
@@ -32,7 +43,11 @@ export function ProductionScheduleSearchCluster({
   );
 }
 
-export default function ProductionScheduleRingkasan({ metrics, testidPrefix = "prod" }) {
+export default function ProductionScheduleRingkasan({
+  metrics,
+  testidPrefix = "prod",
+  basisNote = "Basis: PO terfilter (termasuk tab status & filter aktif).",
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const lines = productionScheduleSummaryLines(metrics);
@@ -60,6 +75,11 @@ export default function ProductionScheduleRingkasan({ metrics, testidPrefix = "p
       </button>
       {open ? (
         <div className="production-schedule-ringkasan-panel" data-testid={`${testidPrefix}-ringkasan-panel`}>
+          {basisNote ? (
+            <p className="muted small" data-testid={`${testidPrefix}-ringkasan-basis`}>
+              {basisNote}
+            </p>
+          ) : null}
           {lines.map((line) => (
             <div key={line.key} className="production-schedule-ringkasan-row" data-testid={`${testidPrefix}-ringkasan-${line.key}`}>
               <span>{line.label}</span>

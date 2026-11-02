@@ -331,6 +331,7 @@ describe("operator Qty Cetak display", () => {
     expect(scheduledPrintQtyCell(row).text).toBe("10.000");
     expect(operatorWorkQtyCell(row).text).toBe("3.000");
     expect(operatorScheduleProgressCell(row).text).toBe("30%");
+    expect(operatorScheduleProgressCell(row).percent).toBe(30);
     expect(desktopPrintQtyDisplay(row).text).toBe("20.000");
     expect(desktopPrintQtyDisplay(row).text).not.toBe("25.000");
     expect(scheduledPrintQtyCell(row).text).not.toBe("20.000");
@@ -375,6 +376,15 @@ describe("operator Qty Cetak display", () => {
       print_qty_total: 5000,
       displayOperator: null,
     }).text).toBe("-");
+  });
+
+  test("progress above 100% keeps unclamped percent value", () => {
+    const over = {
+      displayOperator: { splits: [{ quantity: 100, qty_completed: 150, qty_reported: true }] },
+    };
+    const cell = operatorScheduleProgressCell(over);
+    expect(cell.text).toBe("150%");
+    expect(cell.percent).toBe(150);
   });
 
   test("operator assigned qty is formatted separately from PO total", () => {
