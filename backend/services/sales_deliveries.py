@@ -1865,7 +1865,10 @@ async def _create_multi_source_sales_delivery(
                             {"id": pid},
                             {"$pull": {"shipments": {"id": delivery_id}}},
                         )
-                    await db.sales_deliveries.delete_one({"id": delivery_id})
+                    # Do not delete SJ before the outer compensation releases
+                    # committed allocation claims. If this worker crashes here,
+                    # the pending SJ must remain discoverable for safe recovery.
+                    # The outer handler releases claims first, then deletes SJ.
                     raise
 
             try:
