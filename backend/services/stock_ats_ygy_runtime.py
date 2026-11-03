@@ -250,6 +250,8 @@ def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) ->
     absent/empty, default the full line qty to YGY-MAIN (unit must match baseline).
     Explicit allocations still win: only YGY-MAIN qty cuts ATS; other-WH-only skips.
     Never invents remaining unallocated qty when some allocations are present.
+    Partial under-allocation (sum of allocation qty < line qty) is a visible
+    coverage gap (ALLOCATION_SHORTFALL) — READY is refused until complete.
     """
     from services.stock_allocation import is_inventory_line, qty_num
 
@@ -263,21 +265,24 @@ def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) ->
             "gap": f"UNIT_MISMATCH_LINE:{line_unit}!={base_unit}",
             "skip_non_inventory": False,
         }
+    line_qty = quantity(
+        qty_num(
+            line.get("quantity") if line.get("quantity") is not None else line.get("qty")
+        )
+    )
     allocs = line.get("stock_allocations")
     if not isinstance(allocs, list) or not allocs:
         # Owner default: empty allocation → full line qty on YGY-MAIN.
-        line_qty = qty_num(
-            line.get("quantity") if line.get("quantity") is not None else line.get("qty")
-        )
         if line_qty <= 0:
             return {"qty": Decimal(0), "gap": None, "skip_non_inventory": False}
         return {
-            "qty": quantity(line_qty),
+            "qty": line_qty,
             "gap": None,
             "skip_non_inventory": False,
             "defaulted_ygy_main": True,
         }
     ygy_qty = Decimal(0)
+    allocated_total = Decimal(0)
     other_wh = False
     ambiguous = False
     for entry in allocs:
@@ -298,25 +303,46 @@ def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) ->
         qty = qty_num(entry.get("qty") if entry.get("qty") is not None else entry.get("quantity"))
         if qty <= 0:
             continue
+        q = quantity(qty)
+        allocated_total += q
         if wid == warehouse_id:
-            ygy_qty += quantity(qty)
+            ygy_qty += q
         else:
             other_wh = True
+    shortfall_gap = None
+    if line_qty > 0 and allocated_total < line_qty:
+        short = line_qty - allocated_total
+        shortfall_gap = (
+            f"ALLOCATION_SHORTFALL:line={line_qty}:allocated={allocated_total}:short={short}"
+        )
     if ambiguous and ygy_qty <= 0:
         return {
             "qty": Decimal(0),
             "gap": "ALLOCATION_AMBIGUOUS: missing/invalid warehouse_id on allocation rows",
             "skip_non_inventory": False,
+            "shortfall_gap": shortfall_gap,
         }
     if ygy_qty > 0:
-        return {"qty": ygy_qty, "gap": None, "skip_non_inventory": False}
+        return {
+            "qty": ygy_qty,
+            "gap": None,
+            "skip_non_inventory": False,
+            "shortfall_gap": shortfall_gap,
+        }
     if other_wh:
         # Explicit other-warehouse demand — do not cut YGY ATS.
-        return {"qty": Decimal(0), "gap": None, "skip_non_inventory": False, "other_wh_only": True}
+        return {
+            "qty": Decimal(0),
+            "gap": None,
+            "skip_non_inventory": False,
+            "other_wh_only": True,
+            "shortfall_gap": shortfall_gap,
+        }
     return {
         "qty": Decimal(0),
         "gap": "RESERVE_NO_YGY_ALLOCATION_QTY: allocations present but none for YGY-MAIN",
         "skip_non_inventory": False,
+        "shortfall_gap": shortfall_gap,
     }
 
 
@@ -456,7 +482,12 @@ async def collect_ats_stream_for_ygy(
                 continue
             if alloc.get("gap"):
                 _append_gap(pack, f"{alloc['gap']}:order={oid}")
+                if alloc.get("shortfall_gap"):
+                    _append_gap(pack, f"{alloc['shortfall_gap']}:order={oid}")
                 continue
+            # Owner: partial under-allocation must be visible (fail-closed READY).
+            if alloc.get("shortfall_gap"):
+                _append_gap(pack, f"{alloc['shortfall_gap']}:order={oid}")
             reserved_qty = quantity(alloc["qty"])
             if reserved_qty <= 0:
                 if alloc.get("other_wh_only"):

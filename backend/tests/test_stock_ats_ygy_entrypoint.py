@@ -782,7 +782,8 @@ async def test_entrypoint_partial_ygy_allocation_cuts_only_ygy_qty(db):
         db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
     )
     pack = stream["by_master"][MID_100032]
-    assert pack["evidence_complete"] is True
+    assert pack["evidence_complete"] is True  # 700+300 covers line 1000
+    assert not any("ALLOCATION_SHORTFALL" in g for g in pack["gaps"])
     reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
     assert len(reserves) == 1
     assert str(reserves[0].qty) == "700"
@@ -790,8 +791,48 @@ async def test_entrypoint_partial_ygy_allocation_cuts_only_ygy_qty(db):
     assert row["stock_dapat_dijual"] == 19300.0  # 20000 - 700
 
 
+async def test_entrypoint_other_wh_partial_shortfall_visible(db):
+    """Other-WH alloc 300 of line 1000 → no YGY cut; ALLOCATION_SHORTFALL gap."""
+    await _seed_master_wh(db)
+    await db[WAREHOUSES_COLLECTION].insert_one({
+        "id": OTHER_WH_ID,
+        "branch_id": YGY_BRANCH_ID,
+        "code": "YGY-OTHER",
+        "name": "Other WH",
+        "active": True,
+        "is_operational": True,
+    })
+    oid = f"so-ows-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-ows",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(300, warehouse_id=OTHER_WH_ID),
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert not any(e.kind == "RESERVE" for e in pack["events"])
+    assert any("SKIP_OTHER_WAREHOUSE_ALLOCATION" in s for s in pack["skipped"])
+    assert any("ALLOCATION_SHORTFALL" in g and "short=700" in g for g in pack["gaps"])
+    assert pack["evidence_complete"] is False
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "UNAVAILABLE"
+    assert row["stock_dapat_dijual"] is None
+    assert row["physical_qty"] == -19300
+
+
 async def test_entrypoint_partial_ygy_only_does_not_invent_remainder(db):
-    """Allocations present with YGY 400 of line 1000 → cut 400, do not invent 600."""
+    """Allocations present with YGY 400 of line 1000 → RESERVE 400; shortfall visible."""
     await _seed_master_wh(db)
     oid = f"so-pyr-{uuid.uuid4().hex[:6]}"
     await db.orders.insert_one({
@@ -808,9 +849,21 @@ async def test_entrypoint_partial_ygy_only_does_not_invent_remainder(db):
             "stock_allocations": _ygy_alloc(400),
         }],
     })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
+    assert len(reserves) == 1
+    assert str(reserves[0].qty) == "400"
+    assert pack["evidence_complete"] is False
+    assert any("ALLOCATION_SHORTFALL" in g and "short=600" in g for g in pack["gaps"])
     _, row = await _catalog_row(db)
-    assert row["ats_cutover_status"] == "READY"
-    assert row["stock_dapat_dijual"] == 19600.0  # 20000 - 400
+    # Shortfall must be visible — refuse READY ATS until allocation complete.
+    assert row["ats_cutover_status"] == "UNAVAILABLE"
+    assert row["stock_dapat_dijual"] is None
+    assert any("ALLOCATION_SHORTFALL" in g for g in (row.get("ats_coverage_gaps") or []))
+    assert row["physical_qty"] == -19300
 
 
 async def test_entrypoint_pre_cutoff_no_alloc_does_not_re_cut_baseline(db):
