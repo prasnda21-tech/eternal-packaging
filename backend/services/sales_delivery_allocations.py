@@ -822,6 +822,17 @@ async def claim_source_line_allocation(
                 "replayed": True,
             }
         remain = max(0, int(ordered_qty) - int((cur or {}).get("allocated_qty") or 0))
+        # Diagnostic only, on a rejected allocation. Never auto-release a
+        # committed claim just because its SJ document is missing: it could
+        # reflect a partial cross-document failure requiring operator review.
+        for prior_sid, prior_claim in ((cur or {}).get("claims_by_delivery") or {}).items():
+            if _claim_is_committed(prior_claim) and not await _sales_delivery_exists(db, str(prior_sid)):
+                raise HTTPException(
+                    409,
+                    "Alokasi ditolak: klaim SJ committed tanpa dokumen SJ ditemukan. "
+                    "Perlu rekonsiliasi read-only dan persetujuan operator; "
+                    "counter tidak diubah.",
+                )
         raise HTTPException(
             409,
             f"Alokasi gagal: sisa tersedia {remain} (permintaan {qty}). "
