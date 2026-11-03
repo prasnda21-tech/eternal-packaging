@@ -573,9 +573,16 @@ async def _seed_counter_allocated_from_deliveries(
             "is_cancelled": 1,
             "status": 1,
             "cancelled": 1,
+            RECOVERY_FENCE_FIELD: 1,
         },
     )
     async for delivery in cursor:
+        # Seed from the same operational SJ population used by the PO remaining
+        # summary. Cancelled/superseded SJ must not permanently consume quantity.
+        if not delivery_is_operationally_active(delivery):
+            continue
+        if _norm(delivery.get("status")).lower() in {"superseded", "cancelled", "deleted"}:
+            continue
         for line in delivery.get("line_items") or []:
             if not isinstance(line, dict):
                 continue
