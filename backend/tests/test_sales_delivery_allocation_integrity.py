@@ -231,6 +231,42 @@ async def test_genuine_active_legacy_sj_still_blocks_overallocation():
 
 
 @pytest.mark.anyio
+async def test_legacy_changed_line_id_still_counts_active_sj_by_source_index():
+    """Do not free live SJ qty when old line_id differs from edited PO line ID."""
+    po_id = str(uuid.uuid4())
+    current_line_id = f"{po_id}_current"
+    old_line_id = f"{po_id}_old"
+    await server.db.sales_deliveries.insert_one({
+        "id": str(uuid.uuid4()),
+        "po_id": po_id,
+        "is_cancelled": False,
+        "line_items": [{"line_id": old_line_id, "line_idx": 0, "qty": 500}],
+    })
+    await server.db[ALLOCATION_COUNTERS].insert_one({
+        "id": f"{po_id}::{current_line_id}",
+        "source_po_id": po_id,
+        "source_line_id": current_line_id,
+        "source_line_idx": 0,
+        "ordered_qty": 500,
+        "allocated_qty": 500,
+        "claims_by_delivery": {},
+        "active_delivery_ids": [],
+    })
+    with pytest.raises(HTTPException) as exc:
+        await claim_source_line_allocation(
+            server.db,
+            source_po_id=po_id,
+            source_line_id=current_line_id,
+            source_line_idx=0,
+            ordered_qty=500,
+            qty=500,
+            sales_delivery_id=str(uuid.uuid4()),
+        )
+    assert exc.value.status_code == 409
+    assert int((await _counter(po_id, current_line_id))["allocated_qty"]) == 500
+
+
+@pytest.mark.anyio
 async def test_ambiguous_legacy_active_id_fails_closed():
     po_id = str(uuid.uuid4())
     line_id = f"{po_id}_l0"
