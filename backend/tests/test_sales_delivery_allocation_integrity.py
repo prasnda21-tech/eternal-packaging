@@ -117,6 +117,25 @@ async def _counter(po_id: str, line_id: str) -> dict:
     return await server.db[ALLOCATION_COUNTERS].find_one({"id": cid}, {"_id": 0}) or {}
 
 
+def test_multi_source_provisional_delete_only_after_claim_release():
+    """Guard crash-recovery ordering when standalone shipment sync fails."""
+    import inspect
+    from services.sales_deliveries import _create_multi_source_sales_delivery
+
+    source = inspect.getsource(_create_multi_source_sales_delivery)
+    inner = source.split("async def _persist_without_txn() -> None:", 1)[1].split(
+        "await require_reserved_allocations(db, line_claims)", 1
+    )[0]
+    assert 'db.sales_deliveries.delete_one({"id": delivery_id})' not in inner
+
+    compensate = source.split("async def _compensate_provisional_multi() -> None:", 1)[1].split(
+        "async def _persist_without_txn() -> None:", 1
+    )[0]
+    assert compensate.index("await release_claimed_allocations(db, line_claims)") < (
+        compensate.index('await db.sales_deliveries.delete_one({"id": delivery_id})')
+    )
+
+
 @pytest.mark.anyio
 async def test_release_idempotent_no_double_decrement():
     po_id = str(uuid.uuid4())
