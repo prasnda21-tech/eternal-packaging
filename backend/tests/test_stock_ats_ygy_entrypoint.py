@@ -253,10 +253,17 @@ async def test_entrypoint_baseline_only_ready_20000(db):
     assert row["stock_dapat_dijual"] == 20000.0
     assert row["qty_siap_jual"] == 20000.0
     assert row["physical_qty"] == -19300
+    assert row["ats_baseline"] == 20000.0
+    assert row["ats_penambahan"] == 0.0
+    assert row["ats_pengurangan"] == 0.0
+    assert row["ats_sekarang"] == 20000.0
+    assert row.get("ats_coverage_gaps") == []
     # list page fields agree with detail-style single-row fetch
     _, detail = await _catalog_row(db, q="100032")
     assert detail["stock_dapat_dijual"] == row["stock_dapat_dijual"]
     assert detail["ats_cutover_status"] == row["ats_cutover_status"]
+    assert detail["ats_baseline"] == row["ats_baseline"]
+    assert detail["ats_sekarang"] == row["ats_sekarang"]
     assert catalog.get("warehouse_stock_standalone") is True
 
 
@@ -362,6 +369,10 @@ async def test_entrypoint_new_po_reserve_and_ship_reserved(db):
     _, row1 = await _catalog_row(db)
     assert row1["ats_cutover_status"] == "READY"
     assert row1["stock_dapat_dijual"] == 18000.0  # 20000 - 2000 RESERVE
+    assert row1["ats_baseline"] == 20000.0
+    assert row1["ats_pengurangan"] == 2000.0
+    assert row1["ats_penambahan"] == 0.0
+    assert row1["ats_sekarang"] == 18000.0
 
     await _insert_delivery(
         db, order_id=oid, line_id="ln-new", line_idx=0, qty=1000, occurred_at=AFTER,
@@ -371,6 +382,8 @@ async def test_entrypoint_new_po_reserve_and_ship_reserved(db):
     # SHIP_RESERVED does not re-cut free stock
     assert row2["stock_dapat_dijual"] == 18000.0
     assert row2["qty_siap_jual"] == row2["stock_dapat_dijual"]
+    assert row2["ats_pengurangan"] == 2000.0  # ship effect 0 — no double cut
+    assert row2["ats_sekarang"] == 18000.0
     assert row2["physical_qty"] == -19300
 
 
@@ -427,6 +440,10 @@ async def test_entrypoint_purchase_receipt_receive_free(db):
     _, row = await _catalog_row(db)
     assert row["ats_cutover_status"] == "READY"
     assert row["stock_dapat_dijual"] == 20500.0
+    assert row["ats_baseline"] == 20000.0
+    assert row["ats_penambahan"] == 500.0
+    assert row["ats_pengurangan"] == 0.0
+    assert row["ats_sekarang"] == 20500.0
 
 
 async def test_entrypoint_unmapped_ledger_keeps_evidence_incomplete(db):

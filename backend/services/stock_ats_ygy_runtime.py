@@ -826,6 +826,31 @@ async def collect_ats_stream_for_ygy(
     }
 
 
+def _effect_totals(effects: Iterable[dict]) -> Dict[str, float]:
+    """Split projector effects into penambahan (+) and pengurangan (−abs).
+
+    SHIP_RESERVED contributes effect 0 (no double-cut). RESERVE/ISSUE_FREE reduce;
+    RELEASE/RECEIVE_FREE increase.
+    """
+    penambahan = Decimal(0)
+    pengurangan = Decimal(0)
+    for item in effects or ():
+        if not isinstance(item, dict):
+            continue
+        try:
+            effect = quantity(item.get("effect"))
+        except CutoverError:
+            continue
+        if effect > 0:
+            penambahan += effect
+        elif effect < 0:
+            pengurangan += abs(effect)
+    return {
+        "penambahan": float(penambahan),
+        "pengurangan": float(pengurangan),
+    }
+
+
 def project_master_ats(
     *,
     master_item_id: str,
@@ -837,25 +862,35 @@ def project_master_ats(
     base = baseline_for_master(master_item_id)
     if base is None:
         man = load_baseline_manifest()
-        inactive = {
-            str(r.get("master_item_id"))
+        inactive_rows = {
+            str(r.get("master_item_id")): r
             for r in (man.get("rows") or [])
             if isinstance(r, dict) and not r.get("eligible_master")
         }
-        if str(master_item_id) in inactive:
+        if str(master_item_id) in inactive_rows:
+            row = inactive_rows[str(master_item_id)]
             return {
                 "status": "EXCLUDED",
                 "reason": REASON_ATS_INACTIVE_MASTER,
                 "available_qty": None,
+                "baseline_qty": float(quantity(row.get("accurate_ats"))),
+                "penambahan": None,
+                "pengurangan": None,
+                "kode": row.get("kode"),
                 "source": SOURCE_ATS,
+                "cutoff_at": CUTOFF_AT,
             }
         return {
             "status": "EXCLUDED",
             "reason": REASON_ATS_NOT_IN_BASELINE,
             "available_qty": None,
+            "baseline_qty": None,
+            "penambahan": None,
+            "pengurangan": None,
             "source": SOURCE_ATS,
             "note": "Rows outside ATS file are not auto-zeroed",
         }
+    baseline_qty = float(quantity(base.available_qty))
     try:
         projected = project_available(
             base,
@@ -870,14 +905,21 @@ def project_master_ats(
             "reason": REASON_ATS_COVERAGE_GAP,
             "error": str(exc),
             "available_qty": None,
+            "baseline_qty": baseline_qty,
+            "penambahan": None,
+            "pengurangan": None,
             "source": SOURCE_ATS,
             "cutoff_at": base.cutoff_at,
         }
+    totals = _effect_totals(projected["effects"])
     return {
         "status": "READY",
         "reason": None,
         "available_qty": float(Decimal(projected["available_qty"])),
         "available_qty_str": projected["available_qty"],
+        "baseline_qty": baseline_qty,
+        "penambahan": totals["penambahan"],
+        "pengurangan": totals["pengurangan"],
         "remaining_reservations": projected["remaining_reservations"],
         "effects": projected["effects"],
         "source": SOURCE_ATS,
@@ -924,6 +966,11 @@ def apply_ats_overlay_to_ssi_row(
     row["ats_cutover_reason"] = result.get("reason")
     row["ats_cutover_source"] = SOURCE_ATS
     row["ats_cutover_cutoff_at"] = result.get("cutoff_at") or CUTOFF_AT
+    # Owner preview columns (list/detail/export share this overlay).
+    row["ats_baseline"] = result.get("baseline_qty")
+    row["ats_penambahan"] = result.get("penambahan")
+    row["ats_pengurangan"] = result.get("pengurangan")
+    row["ats_sekarang"] = result.get("available_qty")
     if skipped:
         row["ats_cutover_skipped"] = list(skipped)
     if result.get("status") == "READY":
@@ -939,6 +986,7 @@ def apply_ats_overlay_to_ssi_row(
         )
         row["ats_cutover_available_qty"] = qty
         row["physical_stock_verified"] = False
+        row["ats_coverage_gaps"] = []
     elif result.get("status") == "UNAVAILABLE":
         row["stock_dapat_dijual"] = None
         row["qty_siap_jual"] = None
@@ -953,7 +1001,9 @@ def apply_ats_overlay_to_ssi_row(
                 has_stock_allocations=False,
                 event_stream_complete=False,
             )
-    # EXCLUDED: leave legacy SSI figures; do not force zero
+    elif result.get("status") == "EXCLUDED":
+        # Leave legacy SSI figures; never force ATS zero for out-of-file rows.
+        row["ats_coverage_gaps"] = [result.get("reason") or REASON_ATS_NOT_IN_BASELINE]
     return row
 
 
