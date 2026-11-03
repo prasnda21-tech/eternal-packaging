@@ -137,6 +137,34 @@ def test_multi_source_provisional_delete_only_after_claim_release():
 
 
 @pytest.mark.anyio
+async def test_missing_committed_sj_claim_is_reported_without_counter_mutation():
+    """Failed allocation diagnoses orphan claim but never releases it silently."""
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    old_sid = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    first = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+        ordered_qty=500, qty=500, sales_delivery_id=old_sid,
+    )
+    await commit_claimed_allocations(server.db, [first])
+    # Simulate a missing SJ document after successful counter commit.
+    assert await server.db.sales_deliveries.find_one({"id": old_sid}) is None
+    with pytest.raises(HTTPException) as exc:
+        await claim_source_line_allocation(
+            server.db,
+            source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+            ordered_qty=500, qty=100, sales_delivery_id=str(uuid.uuid4()),
+        )
+    assert exc.value.status_code == 409
+    assert "klaim SJ committed tanpa dokumen SJ" in str(exc.value.detail)
+    counter = await _counter(po_id, line_id)
+    assert counter["allocated_qty"] == 500
+    assert old_sid in counter["claims_by_delivery"]
+
+
+@pytest.mark.anyio
 async def test_release_idempotent_no_double_decrement():
     po_id = str(uuid.uuid4())
     line_id = f"{po_id}_l0"
