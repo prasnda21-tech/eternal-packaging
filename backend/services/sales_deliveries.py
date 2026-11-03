@@ -658,6 +658,7 @@ def summarize_po_delivery_quantities(
     filter, line_idx fallback, and raw multi-unit sum. It does not decide a
     new business rule.
     """
+    from services.sales_delivery_allocations import HARD_DELETE_PENDING_FIELD
     existing_deliveries: List[dict] = []
     for doc in shipments or []:
         if not isinstance(doc, dict):
@@ -665,6 +666,8 @@ def summarize_po_delivery_quantities(
         if doc.get("is_cancelled") is True:
             continue
         if doc.get(ALLOCATION_COMMIT_PENDING_FIELD) is True:
+            continue
+        if doc.get(HARD_DELETE_PENDING_FIELD) is True:
             continue
         status = str(doc.get("status") or "").strip().lower()
         if status in _DETAIL_EXCLUDED_SHIPMENT_STATUSES:
