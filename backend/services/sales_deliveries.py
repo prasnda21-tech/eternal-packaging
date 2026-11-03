@@ -658,6 +658,7 @@ def summarize_po_delivery_quantities(
     filter, line_idx fallback, and raw multi-unit sum. It does not decide a
     new business rule.
     """
+    from services.sales_delivery_allocations import HARD_DELETE_PENDING_FIELD
     existing_deliveries: List[dict] = []
     for doc in shipments or []:
         if not isinstance(doc, dict):
@@ -665,6 +666,8 @@ def summarize_po_delivery_quantities(
         if doc.get("is_cancelled") is True:
             continue
         if doc.get(ALLOCATION_COMMIT_PENDING_FIELD) is True:
+            continue
+        if doc.get(HARD_DELETE_PENDING_FIELD) is True:
             continue
         status = str(doc.get("status") or "").strip().lower()
         if status in _DETAIL_EXCLUDED_SHIPMENT_STATUSES:
@@ -1865,7 +1868,10 @@ async def _create_multi_source_sales_delivery(
                             {"id": pid},
                             {"$pull": {"shipments": {"id": delivery_id}}},
                         )
-                    await db.sales_deliveries.delete_one({"id": delivery_id})
+                    # Do not delete SJ before the outer compensation releases
+                    # committed allocation claims. If this worker crashes here,
+                    # the pending SJ must remain discoverable for safe recovery.
+                    # The outer handler releases claims first, then deletes SJ.
                     raise
 
             try:

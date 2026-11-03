@@ -168,6 +168,10 @@ def shipped_qty_by_source_line(
             continue
         if delivery.get("is_cancelled") is True or delivery.get("cancelled"):
             continue
+        if delivery.get(HARD_DELETE_PENDING_FIELD) is True:
+            continue
+        if delivery_is_allocation_pending(delivery):
+            continue
         status = _norm(delivery.get("status")).lower()
         if status in {"dibatalkan", "cancelled", "deleted", "batal"}:
             continue
@@ -187,13 +191,14 @@ def shipped_qty_by_source_line(
 def active_deliveries_query_for_po(po_id: str) -> dict:
     """Mongo filter: legacy po_id OR multi-source membership.
 
-    Provisional inserts (`allocation_commit_pending`) are excluded so a Race-A
-    loser cannot inflate remaining/shipped before ownership is committed.
+    Provisional inserts (`allocation_commit_pending`) and hard-delete fences are
+    excluded so a Race-A loser / mid-delete SJ cannot inflate remaining/shipped.
     """
     pid = _norm(po_id)
     return {
         "is_cancelled": {"$ne": True},
         ALLOCATION_COMMIT_PENDING_FIELD: {"$ne": True},
+        HARD_DELETE_PENDING_FIELD: {"$ne": True},
         "$or": [
             {"po_id": pid},
             {"source_po_ids": pid},
@@ -211,6 +216,7 @@ def delivery_is_operationally_active(delivery: Optional[dict]) -> bool:
     """Canonical gate: legacy (no pending flag) and activated SJ are operational.
 
     Provisional (`allocation_commit_pending=True`) is never operational.
+    Hard-delete fence (`hard_delete_pending=True`) is never operational.
     Cancelled docs are never operational.
     """
     if not isinstance(delivery, dict):
@@ -220,6 +226,8 @@ def delivery_is_operationally_active(delivery: Optional[dict]) -> bool:
     if delivery_is_allocation_pending(delivery):
         return False
     if delivery.get(RECOVERY_FENCE_FIELD) is True:
+        return False
+    if delivery.get(HARD_DELETE_PENDING_FIELD) is True:
         return False
     return True
 
@@ -483,6 +491,9 @@ ALLOCATION_LEASE_SECONDS = 90
 ALLOCATION_COMMIT_PENDING_FIELD = "allocation_commit_pending"
 # Orphan recovery ownership fence — blocks late activate by crashed create workers.
 RECOVERY_FENCE_FIELD = "allocation_recovery_fence"
+# Hard-delete fence: SJ stays addressable until counters are released, but is
+# excluded from remaining/seed so release-before-delete cannot overship.
+HARD_DELETE_PENDING_FIELD = "hard_delete_pending"
 
 
 def allocation_counter_id(source_po_id: str, source_line_id: str) -> str:
@@ -573,9 +584,16 @@ async def _seed_counter_allocated_from_deliveries(
             "is_cancelled": 1,
             "status": 1,
             "cancelled": 1,
+            RECOVERY_FENCE_FIELD: 1,
         },
     )
     async for delivery in cursor:
+        # Seed from the same operational SJ population used by the PO remaining
+        # summary. Cancelled/superseded SJ must not permanently consume quantity.
+        if not delivery_is_operationally_active(delivery):
+            continue
+        if _norm(delivery.get("status")).lower() in {"superseded", "cancelled", "deleted"}:
+            continue
         for line in delivery.get("line_items") or []:
             if not isinstance(line, dict):
                 continue
@@ -815,6 +833,17 @@ async def claim_source_line_allocation(
                 "replayed": True,
             }
         remain = max(0, int(ordered_qty) - int((cur or {}).get("allocated_qty") or 0))
+        # Diagnostic only, on a rejected allocation. Never auto-release a
+        # committed claim just because its SJ document is missing: it could
+        # reflect a partial cross-document failure requiring operator review.
+        for prior_sid, prior_claim in ((cur or {}).get("claims_by_delivery") or {}).items():
+            if _claim_is_committed(prior_claim) and not await _sales_delivery_exists(db, str(prior_sid)):
+                raise HTTPException(
+                    409,
+                    "Alokasi ditolak: klaim SJ committed tanpa dokumen SJ ditemukan. "
+                    "Perlu rekonsiliasi read-only dan persetujuan operator; "
+                    "counter tidak diubah.",
+                )
         raise HTTPException(
             409,
             f"Alokasi gagal: sisa tersedia {remain} (permintaan {qty}). "
@@ -1033,11 +1062,13 @@ async def release_source_line_allocation(
     source_line_id: str,
     qty: int,
     sales_delivery_id: str,
+    session=None,
 ) -> dict:
     """Idempotent release gated by claims_by_delivery.<sj_id> existence.
 
     Decrements using stored claim qty (dict or legacy int). Concurrent double
-    release is a no-op.
+    release is a no-op. Optional Mongo session keeps release inside a txn with
+    hard-delete document removal.
     """
     sid = _norm(sales_delivery_id)
     source_po_id = _norm(source_po_id)
@@ -1045,9 +1076,13 @@ async def release_source_line_allocation(
     if not sid or not source_po_id or not source_line_id:
         return {"released": False, "replayed": True, "reason": "missing_identity"}
 
+    kw: Dict[str, Any] = {}
+    if session is not None:
+        kw["session"] = session
+
     cid = allocation_counter_id(source_po_id, source_line_id)
     claim_path = _claim_qty_field(sid)
-    cur = await _counters(db).find_one({"id": cid}, {"_id": 0})
+    cur = await _counters(db).find_one({"id": cid}, {"_id": 0}, **kw)
     if not cur:
         return {"released": False, "replayed": True, "reason": "no_counter"}
 
@@ -1063,6 +1098,7 @@ async def release_source_line_allocation(
                 {"id": cid, "active_delivery_ids": sid},
                 {"$pull": {"active_delivery_ids": sid}},
                 return_document=ReturnDocument.AFTER,
+                **kw,
             )
             return {"released": False, "replayed": True, "reason": "legacy_id_only"}
         from pymongo import ReturnDocument
@@ -1077,6 +1113,7 @@ async def release_source_line_allocation(
                 "$pull": {"active_delivery_ids": sid},
             },
             return_document=ReturnDocument.AFTER,
+            **kw,
         )
         if not result:
             return {"released": False, "replayed": True, "reason": "legacy_race_or_missing"}
@@ -1098,6 +1135,7 @@ async def release_source_line_allocation(
                 "$pull": {"active_delivery_ids": sid},
             },
             return_document=ReturnDocument.AFTER,
+            **kw,
         )
         return {"released": False, "replayed": True, "reason": "zero_claim"}
 
@@ -1124,9 +1162,10 @@ async def release_source_line_allocation(
             "$pull": {"active_delivery_ids": sid},
         },
         return_document=ReturnDocument.AFTER,
+        **kw,
     )
     if not result:
-        cur2 = await _counters(db).find_one({"id": cid}, {"_id": 0})
+        cur2 = await _counters(db).find_one({"id": cid}, {"_id": 0}, **kw)
         if cur2 and (cur2.get("claims_by_delivery") or {}).get(sid) is None:
             return {"released": False, "replayed": True, "reason": "lost_race_already_released"}
         raise HTTPException(
@@ -1141,7 +1180,9 @@ async def release_source_line_allocation(
     }
 
 
-async def release_claimed_allocations(db, claims: Sequence[dict]) -> List[dict]:
+async def release_claimed_allocations(
+    db, claims: Sequence[dict], *, session=None,
+) -> List[dict]:
     results = []
     for claim in claims or []:
         if not isinstance(claim, dict):
@@ -1153,12 +1194,15 @@ async def release_claimed_allocations(db, claims: Sequence[dict]) -> List[dict]:
                 source_line_id=str(claim.get("source_line_id") or ""),
                 qty=int(claim.get("qty") or 0),
                 sales_delivery_id=str(claim.get("sales_delivery_id") or ""),
+                session=session,
             )
         )
     return results
 
 
-async def release_delivery_allocations(db, delivery: Optional[dict]) -> List[dict]:
+async def release_delivery_allocations(
+    db, delivery: Optional[dict], *, session=None,
+) -> List[dict]:
     """Release every source-line claim held by one SJ document (idempotent)."""
     if not isinstance(delivery, dict):
         return []
@@ -1174,9 +1218,66 @@ async def release_delivery_allocations(db, delivery: Optional[dict]) -> List[dic
                 source_line_id=str(alloc.get("source_line_id") or ""),
                 qty=int(alloc.get("allocated_qty") or 0),
                 sales_delivery_id=delivery_id,
+                session=session,
             )
         )
     return results
+
+
+async def fence_sales_delivery_for_hard_delete(db, sales_delivery_id: str) -> dict:
+    """Mark SJ inactive for remaining/seed before counter release.
+
+    Fail-closed: identity is preserved until callers finish release + delete.
+    Crash recovery re-enters when ``hard_delete_pending`` is already set.
+    """
+    sid = _norm(sales_delivery_id)
+    if not sid:
+        raise HTTPException(404, "Pengiriman Pesanan tidak ditemukan.")
+    token = str(uuid_mod.uuid4())
+    from pymongo import ReturnDocument
+    fenced = await db.sales_deliveries.find_one_and_update(
+        {
+            "id": sid,
+            "is_cancelled": {"$ne": True},
+            "status": {
+                "$nin": [
+                    "DIBATALKAN", "CANCELLED", "DELETED",
+                    "cancelled", "dibatalkan", "deleted",
+                ],
+            },
+            HARD_DELETE_PENDING_FIELD: {"$ne": True},
+        },
+        {
+            "$set": {
+                HARD_DELETE_PENDING_FIELD: True,
+                "hard_delete_token": token,
+                "hard_delete_started_at": _now_iso_safe(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if fenced:
+        fenced.pop("_id", None)
+        return fenced
+    cur = await db.sales_deliveries.find_one({"id": sid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Pengiriman Pesanan tidak ditemukan.")
+    if (
+        cur.get("is_cancelled") is True
+        or str(cur.get("status") or "").strip().lower()
+        in {"cancelled", "dibatalkan", "deleted"}
+    ):
+        raise HTTPException(
+            409,
+            "Surat Jalan sudah dibatalkan; gunakan jalur soft-cancel, bukan hard-delete.",
+        )
+    if cur.get(HARD_DELETE_PENDING_FIELD) is True:
+        # Prior worker crashed after fence — continue release + delete.
+        return cur
+    raise HTTPException(
+        409,
+        "Surat Jalan berubah selama penghapusan; ulangi permintaan.",
+    )
 
 
 async def _find_counter_claims_for_delivery(db, sales_delivery_id: str) -> List[dict]:

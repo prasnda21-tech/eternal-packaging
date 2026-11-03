@@ -117,6 +117,53 @@ async def _counter(po_id: str, line_id: str) -> dict:
     return await server.db[ALLOCATION_COUNTERS].find_one({"id": cid}, {"_id": 0}) or {}
 
 
+def test_multi_source_provisional_delete_only_after_claim_release():
+    """Guard crash-recovery ordering when standalone shipment sync fails."""
+    import inspect
+    from services.sales_deliveries import _create_multi_source_sales_delivery
+
+    source = inspect.getsource(_create_multi_source_sales_delivery)
+    inner = source.split("async def _persist_without_txn() -> None:", 1)[1].split(
+        "await require_reserved_allocations(db, line_claims)", 1
+    )[0]
+    assert 'db.sales_deliveries.delete_one({"id": delivery_id})' not in inner
+
+    compensate = source.split("async def _compensate_provisional_multi() -> None:", 1)[1].split(
+        "async def _persist_without_txn() -> None:", 1
+    )[0]
+    assert compensate.index("await release_claimed_allocations(db, line_claims)") < (
+        compensate.index('await db.sales_deliveries.delete_one({"id": delivery_id})')
+    )
+
+
+@pytest.mark.anyio
+async def test_missing_committed_sj_claim_is_reported_without_counter_mutation():
+    """Failed allocation diagnoses orphan claim but never releases it silently."""
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    old_sid = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    first = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+        ordered_qty=500, qty=500, sales_delivery_id=old_sid,
+    )
+    await commit_claimed_allocations(server.db, [first])
+    # Simulate a missing SJ document after successful counter commit.
+    assert await server.db.sales_deliveries.find_one({"id": old_sid}) is None
+    with pytest.raises(HTTPException) as exc:
+        await claim_source_line_allocation(
+            server.db,
+            source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+            ordered_qty=500, qty=100, sales_delivery_id=str(uuid.uuid4()),
+        )
+    assert exc.value.status_code == 409
+    assert "klaim SJ committed tanpa dokumen SJ" in str(exc.value.detail)
+    counter = await _counter(po_id, line_id)
+    assert counter["allocated_qty"] == 500
+    assert old_sid in counter["claims_by_delivery"]
+
+
 @pytest.mark.anyio
 async def test_release_idempotent_no_double_decrement():
     po_id = str(uuid.uuid4())
@@ -146,6 +193,40 @@ async def test_release_idempotent_no_double_decrement():
     assert int(cur.get("allocated_qty") or 0) == 0
     assert sj not in (cur.get("active_delivery_ids") or [])
     assert sj not in (cur.get("claims_by_delivery") or {})
+
+
+@pytest.mark.anyio
+async def test_bootstrap_excludes_cancelled_and_superseded_deliveries():
+    """Historical inactive SJ must not exhaust a new line allocation counter."""
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    for status, cancelled, qty in [
+        ("TERKIRIM", False, 200),       # active shipment must count
+        ("TERKIRIM", True, 500),        # cancelled=True legacy SJ
+        ("superseded", False, 500),     # replaced SJ without cancel boolean
+    ]:
+        await server.db.sales_deliveries.insert_one({
+            "id": str(uuid.uuid4()),
+            "po_id": po_id,
+            "status": status,
+            "cancelled": cancelled,
+            "line_items": [{"line_id": line_id, "line_idx": 0, "qty": qty}],
+        })
+
+    claim = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id,
+        source_line_id=line_id,
+        source_line_idx=0,
+        ordered_qty=1000,
+        qty=500,
+        sales_delivery_id=str(uuid.uuid4()),
+    )
+    assert claim["qty"] == 500
+    counter = await _counter(po_id, line_id)
+    assert int(counter["allocated_qty"]) == 700
+    assert int(counter["ordered_qty"]) == 1000
 
 
 @pytest.mark.anyio
@@ -1479,3 +1560,701 @@ async def test_pending_t16_legacy_without_pending_flag_valid():
     assert doc["id"] == sj
     listed = await list_sales_deliveries(server.db, po_id=po_id)
     assert sj in {d["id"] for d in listed.get("deliveries") or []}
+
+
+# ── Hard-delete / file-delete / bulk allocation safety (PR #726 continuation) ─
+
+
+def test_hard_delete_helper_releases_before_identity_loss():
+    """Source contract: fence → release → delete (never delete-then-release)."""
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    helper = src[
+        src.index("async def _hard_delete_draft_sales_delivery")
+        : src.index("async def _bulk_hard_delete_sales_deliveries_atomic")
+    ]
+    assert "fence_sales_delivery_for_hard_delete" in helper
+    assert "release_delivery_allocations" in helper
+    # Non-txn path: release precedes delete_one on the fenced document.
+    standalone = helper.split("else:", 1)[1]
+    assert "release_delivery_allocations" in standalone
+    assert standalone.index("release_delivery_allocations") < standalone.index(
+        "delete_one"
+    )
+
+
+def test_po_file_delete_generated_uses_canonical_hard_delete():
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    block_start = src.index("async def delete_surat_jalan_file(")
+    nxt = src.find("\nasync def ", block_start + 10)
+    block = src[block_start:nxt]
+    assert "_hard_delete_draft_sales_delivery" in block
+    assert "SJ_MULTI_PO_FILE_DELETE_BLOCKED" in block
+    assert 'sales_deliveries.delete_one({"id": linked_delivery["id"]})' not in block
+    assert 'require_perm(_SJ_DELETE_FILE)' in block or 'delivery_note.delete_file' in block
+
+
+@pytest.mark.anyio
+async def test_po_file_delete_generated_releases_counter():
+    """1. Hapus generated SJ dari detail PO → counter konsisten."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po = await _po(po_number=f"PO/FD/{uuid.uuid4().hex[:6].upper()}", qty=80, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 40,
+                }],
+            })
+            assert res.status_code == 200, res.text
+            delivery = res.json()["delivery"]
+            sid = delivery["id"]
+            cur = await _counter(po["id"], po["line_items"][0]["line_id"])
+            assert int(cur.get("allocated_qty") or 0) == 40
+
+            deleted = await client.delete(
+                f"/api/orders/{po['id']}/surat-jalan/files/{sid}"
+            )
+            assert deleted.status_code == 200, deleted.text
+            assert await server.db.sales_deliveries.find_one({"id": sid}) is None
+            cur = await _counter(po["id"], po["line_items"][0]["line_id"])
+            assert int(cur.get("allocated_qty") or 0) == 0
+            assert sid not in (cur.get("claims_by_delivery") or {})
+            body = deleted.json().get("order") or deleted.json()
+            summary = body.get("sales_delivery_summary") or {}
+            assert int(summary.get("total_remaining") or 0) == 80
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_po_file_delete_manual_is_file_only():
+    """2. Hapus manual SJ file-only — no sales_delivery cascade."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po = await _po(po_number=f"PO/FM/{uuid.uuid4().hex[:6].upper()}", qty=50, customer_id=cust)
+    file_id = str(uuid.uuid4())
+    await server.db.orders.update_one(
+        {"id": po["id"]},
+        {"$set": {
+            "surat_jalan_files": [{
+                "id": file_id,
+                "name": "manual.pdf",
+                "storage_path": "p/manual.pdf",
+                "source": "MANUAL_UPLOAD",
+                "uploaded_at": "2026-09-10T00:00:00+00:00",
+                "uploaded_by": "admin@eternalpackaging.com",
+            }],
+            "delivery_note_number": "SJ-MANUAL",
+            "delivery_note_created_at": "2026-09-10T00:00:00+00:00",
+            "delivery_note_created_by": "admin@eternalpackaging.com",
+        }},
+    )
+    # Unrelated SJ should stay.
+    sj_id = str(uuid.uuid4())
+    await server.db.sales_deliveries.insert_one({
+        "id": sj_id, "po_id": po["id"], "sj_number": "SJ/KEEP",
+        "is_cancelled": False, "line_items": [],
+    })
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            deleted = await client.delete(
+                f"/api/orders/{po['id']}/surat-jalan/files/{file_id}"
+            )
+            assert deleted.status_code == 200, deleted.text
+            assert await server.db.sales_deliveries.find_one({"id": sj_id}) is not None
+            order = (deleted.json().get("order") or deleted.json())
+            assert not any(
+                f.get("id") == file_id for f in (order.get("surat_jalan_files") or [])
+            )
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_po_file_delete_multi_po_blocked():
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/MP/A/{uuid.uuid4().hex[:5].upper()}", qty=100, customer_id=cust)
+    po_b = await _po(po_number=f"PO/MP/B/{uuid.uuid4().hex[:5].upper()}", qty=100, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            create = await client.post("/api/sales-deliveries", json={
+                "source_allocations": [
+                    {
+                        "source_po_id": po_a["id"],
+                        "source_line_id": po_a["line_items"][0]["line_id"],
+                        "source_line_idx": 0,
+                        "allocated_qty": 20,
+                    },
+                    {
+                        "source_po_id": po_b["id"],
+                        "source_line_id": po_b["line_items"][0]["line_id"],
+                        "source_line_idx": 0,
+                        "allocated_qty": 15,
+                    },
+                ],
+            })
+            assert create.status_code == 200, create.text
+            delivery = create.json()["delivery"]
+            blocked = await client.delete(
+                f"/api/orders/{po_a['id']}/surat-jalan/files/{delivery['id']}"
+            )
+            assert blocked.status_code == 400, blocked.text
+            detail = blocked.json().get("detail") or {}
+            if isinstance(detail, dict):
+                assert detail.get("code") == "SJ_MULTI_PO_FILE_DELETE_BLOCKED"
+            assert await server.db.sales_deliveries.find_one({"id": delivery["id"]}) is not None
+            assert int((await _counter(po_a["id"], po_a["line_items"][0]["line_id"])).get("allocated_qty") or 0) == 20
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_single_hard_delete_counter_consistent_and_retry_safe():
+    """3 + 7. Single hard delete + concurrent/retry safety."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po = await _po(po_number=f"PO/HD/{uuid.uuid4().hex[:6].upper()}", qty=60, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 25,
+                }],
+            })
+            assert res.status_code == 200, res.text
+            delivery = res.json()["delivery"]
+            d1, d2 = await asyncio.gather(
+                client.delete(f"/api/sales-deliveries/{delivery['id']}"),
+                client.delete(f"/api/sales-deliveries/{delivery['id']}"),
+            )
+            statuses = sorted([d1.status_code, d2.status_code])
+            assert statuses[0] in {200, 404, 409}
+            assert statuses[1] in {200, 404, 409}
+            assert 200 in statuses or all(s in {404, 409} for s in statuses)
+            # At least one succeeded or both raced after first win → doc gone, counter 0.
+            # Allow brief settle: retry once for heal path.
+            if await server.db.sales_deliveries.find_one({"id": delivery["id"]}):
+                again = await client.delete(f"/api/sales-deliveries/{delivery['id']}")
+                assert again.status_code in {200, 404, 409}
+            assert await server.db.sales_deliveries.find_one({"id": delivery["id"]}) is None
+            cur = await _counter(po["id"], po["line_items"][0]["line_id"])
+            assert int(cur.get("allocated_qty") or 0) == 0
+            assert int(cur.get("allocated_qty") or 0) >= 0
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_multi_po_hard_delete_all_source_lines_consistent():
+    """4. Hapus multi-PO SJ → semua source line konsisten."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po_a = await _po(po_number=f"PO/MH/A/{uuid.uuid4().hex[:5].upper()}", qty=100, customer_id=cust)
+    po_b = await _po(po_number=f"PO/MH/B/{uuid.uuid4().hex[:5].upper()}", qty=100, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            create = await client.post("/api/sales-deliveries", json={
+                "source_allocations": [
+                    {
+                        "source_po_id": po_a["id"],
+                        "source_line_id": po_a["line_items"][0]["line_id"],
+                        "source_line_idx": 0,
+                        "allocated_qty": 30,
+                    },
+                    {
+                        "source_po_id": po_b["id"],
+                        "source_line_id": po_b["line_items"][0]["line_id"],
+                        "source_line_idx": 0,
+                        "allocated_qty": 20,
+                    },
+                ],
+            })
+            assert create.status_code == 200, create.text
+            delivery = create.json()["delivery"]
+            deleted = await client.delete(f"/api/sales-deliveries/{delivery['id']}")
+            assert deleted.status_code == 200, deleted.text
+            for pid, lid, expect in (
+                (po_a["id"], po_a["line_items"][0]["line_id"], 0),
+                (po_b["id"], po_b["line_items"][0]["line_id"], 0),
+            ):
+                cur = await _counter(pid, lid)
+                assert int(cur.get("allocated_qty") or 0) == expect
+                order = await server.db.orders.find_one({"id": pid}, {"_id": 0})
+                active = [
+                    sh for sh in (order.get("shipments") or [])
+                    if str(sh.get("sales_delivery_id") or sh.get("id")) == delivery["id"]
+                    and not sh.get("is_cancelled")
+                ]
+                assert active == []
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_crash_before_and_after_counter_release_fencing():
+    """6. Process crash sebelum/sesudah counter release — fence fail-closed."""
+    from services.sales_delivery_allocations import (
+        HARD_DELETE_PENDING_FIELD,
+        fence_sales_delivery_for_hard_delete,
+    )
+
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    sj = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    await server.db.sales_deliveries.delete_many({"id": sj})
+    claim = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+        ordered_qty=100, qty=40, sales_delivery_id=sj,
+    )
+    await commit_claimed_allocations(server.db, [claim])
+    await server.db.sales_deliveries.insert_one({
+        "id": sj, "po_id": po_id, "sj_number": "SJ/CRASH",
+        "is_cancelled": False,
+        "source_allocations": [{
+            "source_po_id": po_id, "source_line_id": line_id, "allocated_qty": 40,
+        }],
+        "line_items": [{"line_id": line_id, "qty": 40, "source_po_id": po_id}],
+    })
+
+    # Crash BEFORE release: fence held, counter still claimed, SJ identity present.
+    fenced = await fence_sales_delivery_for_hard_delete(server.db, sj)
+    assert fenced.get(HARD_DELETE_PENDING_FIELD) is True
+    assert int((await _counter(po_id, line_id)).get("allocated_qty") or 0) == 40
+    assert await server.db.sales_deliveries.find_one({"id": sj}) is not None
+
+    # Crash AFTER release: counters free, fenced SJ still present (no orphan claim).
+    released = await release_delivery_allocations(server.db, fenced)
+    assert any(r.get("released") for r in released)
+    assert int((await _counter(po_id, line_id)).get("allocated_qty") or 0) == 0
+    assert await server.db.sales_deliveries.find_one({"id": sj}) is not None
+
+    # Recovery retry: re-enter fence, idempotent release, then delete.
+    again = await fence_sales_delivery_for_hard_delete(server.db, sj)
+    assert again.get(HARD_DELETE_PENDING_FIELD) is True
+    r2 = await release_delivery_allocations(server.db, again)
+    assert all(r.get("replayed") for r in r2)
+    await server.db.sales_deliveries.delete_one({
+        "id": sj, HARD_DELETE_PENDING_FIELD: True,
+    })
+    assert await server.db.sales_deliveries.find_one({"id": sj}) is None
+    assert int((await _counter(po_id, line_id)).get("allocated_qty") or 0) == 0
+
+
+@pytest.mark.anyio
+async def test_soft_cancel_operational_releases_and_no_loading_auto_cancel():
+    """8. Soft-cancel + stock reversal path (operational) + Loading untouched."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po = await _po(po_number=f"PO/SC/{uuid.uuid4().hex[:6].upper()}", qty=70, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 35,
+                }],
+            })
+            assert res.status_code == 200, res.text
+            delivery = res.json()["delivery"]
+            # Seed a Loading confirmation so hard-delete is blocked → soft-cancel path.
+            await server.db.orders.update_one(
+                {"id": po["id"]},
+                {"$push": {"loading_confirmations": {
+                    "id": str(uuid.uuid4()),
+                    "surat_jalan_id": delivery["id"],
+                    "lines": [{"line_idx": 0, "qty": 35}],
+                }}},
+            )
+            cancel = await client.delete(f"/api/sales-deliveries/{delivery['id']}")
+            assert cancel.status_code == 200, cancel.text
+            body = cancel.json()
+            assert body.get("soft_cancelled") is True or body.get("cancelled") is True
+            cur = await _counter(po["id"], po["line_items"][0]["line_id"])
+            assert int(cur.get("allocated_qty") or 0) == 0
+            order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert order.get("loading_confirmations")
+            assert any(
+                str(lc.get("surat_jalan_id")) == delivery["id"]
+                for lc in (order.get("loading_confirmations") or [])
+            )
+            # Retry soft-cancel is idempotent.
+            again = await client.delete(f"/api/sales-deliveries/{delivery['id']}")
+            assert again.status_code == 200, again.text
+            assert int((await _counter(po["id"], po["line_items"][0]["line_id"])).get("allocated_qty") or 0) == 0
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_bibble_bake_two_orphan_committed_claims_fail_closed():
+    """9 + 11. Orphan committed claims diagnosed, never auto-released (BIBBLE BAKE)."""
+    po_id = str(uuid.uuid4())
+    line_a = f"{po_id}_line_0"
+    line_b = f"{po_id}_line_1"
+    orphan_a = str(uuid.uuid4())
+    orphan_b = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+
+    for lid, sid in ((line_a, orphan_a), (line_b, orphan_b)):
+        claim = await claim_source_line_allocation(
+            server.db,
+            source_po_id=po_id, source_line_id=lid, source_line_idx=0,
+            ordered_qty=500, qty=500, sales_delivery_id=sid,
+        )
+        await commit_claimed_allocations(server.db, [claim])
+        assert await server.db.sales_deliveries.find_one({"id": sid}) is None
+
+    for lid, sid in ((line_a, orphan_a), (line_b, orphan_b)):
+        with pytest.raises(HTTPException) as exc:
+            await claim_source_line_allocation(
+                server.db,
+                source_po_id=po_id, source_line_id=lid, source_line_idx=0,
+                ordered_qty=500, qty=100, sales_delivery_id=str(uuid.uuid4()),
+            )
+        assert exc.value.status_code == 409
+        assert "klaim SJ committed tanpa dokumen SJ" in str(exc.value.detail)
+        cur = await _counter(po_id, lid)
+        assert int(cur.get("allocated_qty") or 0) == 500
+        assert sid in (cur.get("claims_by_delivery") or {})
+
+
+@pytest.mark.anyio
+async def test_no_overship_no_negative_counter_after_delete_cycle():
+    """10. Tidak ada overship dan tidak ada counter negatif setelah create/delete cycle."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po = await _po(po_number=f"PO/OV/{uuid.uuid4().hex[:6].upper()}", qty=100, customer_id=cust)
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 60,
+                }],
+            })
+            assert first.status_code == 200, first.text
+            d1 = first.json()["delivery"]
+            # Remaining 40 — second SJ ok.
+            second = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 40,
+                }],
+            })
+            assert second.status_code == 200, second.text
+            # Overship blocked.
+            over = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 1,
+                }],
+            })
+            assert over.status_code in {400, 409}, over.text
+            await client.delete(f"/api/sales-deliveries/{d1['id']}")
+            cur = await _counter(po["id"], po["line_items"][0]["line_id"])
+            assert int(cur.get("allocated_qty") or 0) == 40
+            assert int(cur.get("allocated_qty") or 0) >= 0
+            # Freed 60 can be re-claimed without going negative / overship.
+            again = await client.post("/api/sales-deliveries", json={
+                "po_id": po["id"],
+                "line_items": [{
+                    "line_idx": 0,
+                    "line_id": po["line_items"][0]["line_id"],
+                    "qty": 60,
+                }],
+            })
+            assert again.status_code == 200, again.text
+            cur = await _counter(po["id"], po["line_items"][0]["line_id"])
+            assert int(cur.get("allocated_qty") or 0) == 100
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+def test_loading_pod_invoice_guards_not_weakened_in_delete_blocker():
+    """12. Guard Loading/POD tetap di delete blocker (regresi source)."""
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    block = src[
+        src.index("async def _sales_delivery_delete_blocker")
+        : src.index("async def _remove_matching_business_sj_shipment")
+    ]
+    assert "Loading" in block
+    assert "Pengiriman" in block
+    assert "loading_confirmations" in block
+    assert "delivery_confirmations" in block or "delivery_proofs" in block
+
+
+# ── Owner final safety review (PR #726) ──────────────────────────────────────
+
+
+def test_po_file_delete_generated_missing_delivery_is_fail_closed_source():
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    block_start = src.index("async def delete_surat_jalan_file(")
+    nxt = src.find("\nasync def ", block_start + 10)
+    block = src[block_start:nxt]
+    assert "SJ_GENERATED_FILE_ORPHAN_DELIVERY" in block
+    assert "SJ_GENERATED_FILE_MISSING_DELIVERY_ID" in block
+    # Must raise before falling through to file-only remove.
+    assert block.index("SJ_GENERATED_FILE_ORPHAN_DELIVERY") < block.index(
+        "removed = _sj_remove_file"
+    )
+
+
+def test_hard_delete_conflict_does_not_claim_success_source():
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    helper = src[
+        src.index("async def _hard_delete_draft_sales_delivery")
+        : src.index("async def _bulk_hard_delete_sales_deliveries_atomic")
+    ]
+    standalone = helper.split("else:", 1)[1]
+    assert "deleted_count != 1" in standalone
+    assert "HARD_DELETE_CONFLICT" in standalone
+    # Conflict when doc still present must raise, not fall through as success.
+    assert standalone.index("still is not None") < standalone.index(
+        '"deleted": True'
+    )
+    assert standalone.index("HARD_DELETE_CONFLICT") < standalone.index(
+        '"deleted": True'
+    )
+
+
+@pytest.mark.anyio
+async def test_po_file_delete_generated_missing_delivery_keeps_audit_evidence():
+    """Generated file without sales_deliveries doc → 409; file remains."""
+    cust = f"cust-{uuid.uuid4().hex[:8]}"
+    po = await _po(po_number=f"PO/OR/{uuid.uuid4().hex[:6].upper()}", qty=40, customer_id=cust)
+    orphan_sid = str(uuid.uuid4())
+    await server.db.orders.update_one(
+        {"id": po["id"]},
+        {"$set": {
+            "surat_jalan_files": [{
+                "id": orphan_sid,
+                "name": "SJ-orphan.pdf",
+                "storage_path": "p/orphan.pdf",
+                "source": "SYSTEM_GENERATED",
+                "uploaded_at": "2026-09-10T00:00:00+00:00",
+                "uploaded_by": "admin@eternalpackaging.com",
+                "sj_number": "SJ/ORPHAN",
+                "shipment_id": orphan_sid,
+            }],
+            "delivery_note_number": "SJ/ORPHAN",
+            "delivery_note_created_at": "2026-09-10T00:00:00+00:00",
+            "delivery_note_created_by": "admin@eternalpackaging.com",
+        }},
+    )
+    assert await server.db.sales_deliveries.find_one({"id": orphan_sid}) is None
+    app.dependency_overrides[current_user] = _admin
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            res = await client.delete(
+                f"/api/orders/{po['id']}/surat-jalan/files/{orphan_sid}"
+            )
+            assert res.status_code == 409, res.text
+            detail = res.json().get("detail") or {}
+            assert isinstance(detail, dict)
+            assert detail.get("code") == "SJ_GENERATED_FILE_ORPHAN_DELIVERY"
+            order = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            ids = [f.get("id") for f in (order.get("surat_jalan_files") or [])]
+            assert orphan_sid in ids
+            # Retry remains fail-closed and idempotent (no silent file wipe).
+            again = await client.delete(
+                f"/api/orders/{po['id']}/surat-jalan/files/{orphan_sid}"
+            )
+            assert again.status_code == 409
+            order2 = await server.db.orders.find_one({"id": po["id"]}, {"_id": 0})
+            assert orphan_sid in [f.get("id") for f in (order2.get("surat_jalan_files") or [])]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.anyio
+async def test_hard_delete_deleted_count_conflict_when_doc_still_present():
+    """deleted_count!=1 + doc still present → 409, not deleted=True."""
+    from services.sales_delivery_allocations import HARD_DELETE_PENDING_FIELD
+    from unittest.mock import AsyncMock, patch
+    from motor.motor_asyncio import AsyncIOMotorCollection
+
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    sj = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    await server.db.sales_deliveries.delete_many({"id": sj})
+    claim = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+        ordered_qty=50, qty=10, sales_delivery_id=sj,
+    )
+    await commit_claimed_allocations(server.db, [claim])
+    delivery = {
+        "id": sj,
+        "po_id": po_id,
+        "sj_number": "SJ/CONFLICT",
+        "is_cancelled": False,
+        "source_allocations": [{
+            "source_po_id": po_id, "source_line_id": line_id, "allocated_qty": 10,
+        }],
+        "line_items": [{"line_id": line_id, "qty": 10, "source_po_id": po_id}],
+    }
+    await server.db.sales_deliveries.insert_one(dict(delivery))
+
+    class _ZeroDelete:
+        deleted_count = 0
+
+    original_delete = AsyncIOMotorCollection.delete_one
+
+    async def _miss_sales_delivery_delete(self, *args, **kwargs):
+        # Motor returns a new Collection per getattr — patch at class level.
+        if getattr(self, "name", None) == "sales_deliveries":
+            return _ZeroDelete()
+        return await original_delete(self, *args, **kwargs)
+
+    with patch(
+        "services.sales_delivery_allocations.mongo_transactions_available",
+        new=AsyncMock(return_value=False),
+    ), patch.object(
+        AsyncIOMotorCollection, "delete_one", new=_miss_sales_delivery_delete,
+    ), patch.object(
+        server, "_remove_matching_business_sj_shipment", new=AsyncMock(),
+    ) as sync, patch.object(
+        server, "_write_audit", new=AsyncMock(),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await server._hard_delete_draft_sales_delivery(
+                delivery,
+                user=_admin(),
+                actor_id="admin-1",
+                write_audit=True,
+            )
+        assert exc.value.status_code == 409
+        detail = exc.value.detail
+        assert isinstance(detail, dict)
+        assert detail.get("code") == "HARD_DELETE_CONFLICT"
+        sync.assert_not_awaited()
+
+    still = await server.db.sales_deliveries.find_one({"id": sj}, {"_id": 0})
+    assert still is not None
+    assert still.get(HARD_DELETE_PENDING_FIELD) is True
+    assert int((await _counter(po_id, line_id)).get("allocated_qty") or 0) == 0
+
+    with patch(
+        "services.sales_delivery_allocations.mongo_transactions_available",
+        new=AsyncMock(return_value=False),
+    ), patch.object(
+        server, "_write_audit", new=AsyncMock(),
+    ):
+        recovered = await server._hard_delete_draft_sales_delivery(
+            delivery,
+            user=_admin(),
+            actor_id="admin-1",
+            write_audit=True,
+        )
+    assert recovered.get("deleted") is True
+    assert await server.db.sales_deliveries.find_one({"id": sj}) is None
+    assert int((await _counter(po_id, line_id)).get("allocated_qty") or 0) == 0
+
+
+@pytest.mark.anyio
+async def test_hard_delete_deleted_count_zero_when_doc_gone_is_replayed():
+    """deleted_count!=1 + doc proven absent → deleted=True, replayed=True."""
+    from unittest.mock import AsyncMock, patch
+    from motor.motor_asyncio import AsyncIOMotorCollection
+
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    sj = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    await server.db.sales_deliveries.delete_many({"id": sj})
+    claim = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id, source_line_id=line_id, source_line_idx=0,
+        ordered_qty=50, qty=12, sales_delivery_id=sj,
+    )
+    await commit_claimed_allocations(server.db, [claim])
+    delivery = {
+        "id": sj,
+        "po_id": po_id,
+        "sj_number": "SJ/REPLAY",
+        "is_cancelled": False,
+        "source_allocations": [{
+            "source_po_id": po_id, "source_line_id": line_id, "allocated_qty": 12,
+        }],
+        "line_items": [{"line_id": line_id, "qty": 12, "source_po_id": po_id}],
+    }
+    await server.db.sales_deliveries.insert_one(dict(delivery))
+    await server.db.orders.update_one(
+        {"id": po_id},
+        {"$setOnInsert": {
+            "id": po_id, "cancelled": False,
+            "line_items": [{"line_id": line_id, "quantity": 50, "name": "X"}],
+            "shipments": [{"id": sj, "sales_delivery_id": sj, "total_qty": 12}],
+        }},
+        upsert=True,
+    )
+
+    class _ZeroDelete:
+        deleted_count = 0
+
+    original_delete = AsyncIOMotorCollection.delete_one
+
+    async def _delete_then_gone(self, *args, **kwargs):
+        if getattr(self, "name", None) == "sales_deliveries":
+            await original_delete(self, {"id": sj})
+            return _ZeroDelete()
+        return await original_delete(self, *args, **kwargs)
+
+    with patch(
+        "services.sales_delivery_allocations.mongo_transactions_available",
+        new=AsyncMock(return_value=False),
+    ), patch.object(
+        AsyncIOMotorCollection, "delete_one", new=_delete_then_gone,
+    ), patch.object(
+        server, "_write_audit", new=AsyncMock(),
+    ):
+        out = await server._hard_delete_draft_sales_delivery(
+            delivery,
+            user=_admin(),
+            actor_id="admin-1",
+            write_audit=True,
+        )
+    assert out.get("deleted") is True
+    assert out.get("replayed") is True
+    assert await server.db.sales_deliveries.find_one({"id": sj}) is None
+    assert int((await _counter(po_id, line_id)).get("allocated_qty") or 0) == 0
+
+    with patch(
+        "services.sales_delivery_allocations.mongo_transactions_available",
+        new=AsyncMock(return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await server._hard_delete_draft_sales_delivery(
+                delivery,
+                user=_admin(),
+                actor_id="admin-1",
+                write_audit=False,
+            )
+        assert exc.value.status_code == 404
