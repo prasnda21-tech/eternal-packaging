@@ -118,6 +118,211 @@ async def _counter(po_id: str, line_id: str) -> dict:
 
 
 @pytest.mark.anyio
+async def test_superseded_and_cancelled_legacy_sj_not_seeded_as_shipped():
+    """Old SJ ignored by PO summary must also be ignored by counter bootstrap."""
+    cases = [
+        {"status": "superseded", "cancelled": False},
+        {"status": "cancelled", "cancelled": False},
+        {"status": "SEBAGIAN", "cancelled": True},
+    ]
+    for flags in cases:
+        po_id = str(uuid.uuid4())
+        line_id = f"{po_id}_l0"
+        await server.db.sales_deliveries.insert_one({
+            "id": str(uuid.uuid4()),
+            "po_id": po_id,
+            "line_items": [{"line_id": line_id, "line_idx": 0, "qty": 500}],
+            "is_cancelled": False,
+            **flags,
+        })
+        claim = await claim_source_line_allocation(
+            server.db,
+            source_po_id=po_id,
+            source_line_id=line_id,
+            source_line_idx=0,
+            ordered_qty=500,
+            qty=500,
+            sales_delivery_id=str(uuid.uuid4()),
+        )
+        assert claim["qty"] == 500
+        assert int((await _counter(po_id, line_id))["allocated_qty"]) == 500
+
+
+@pytest.mark.anyio
+async def test_cancelled_legacy_seed_counter_drift_reconciles_before_new_sj():
+    """A seed from a subsequently deleted legacy SJ must not permanently block qty."""
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    old_sj_id = str(uuid.uuid4())
+    await server.db.sales_deliveries.insert_one({
+        "id": old_sj_id, "po_id": po_id, "is_cancelled": False,
+        "line_items": [{"line_id": line_id, "line_idx": 0, "qty": 500}],
+    })
+    # Legacy bootstrap stored only aggregate, not per-SJ claims.
+    await server.db[ALLOCATION_COUNTERS].insert_one({
+        "id": f"{po_id}::{line_id}",
+        "source_po_id": po_id,
+        "source_line_id": line_id,
+        "source_line_idx": 0,
+        "ordered_qty": 500,
+        "allocated_qty": 500,
+        "claims_by_delivery": {},
+        "active_delivery_ids": [],
+    })
+    # Historical SJ was cancelled and removed, PO now shows 500 remaining.
+    await server.db.sales_deliveries.delete_one({"id": old_sj_id})
+    fresh_sid = str(uuid.uuid4())
+    claim = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id,
+        source_line_id=line_id,
+        source_line_idx=0,
+        ordered_qty=500,
+        qty=500,
+        sales_delivery_id=fresh_sid,
+    )
+    assert claim["qty"] == 500
+    cur = await _counter(po_id, line_id)
+    assert int(cur["allocated_qty"]) == 500
+    assert fresh_sid in cur["claims_by_delivery"]
+
+
+@pytest.mark.anyio
+async def test_legacy_baseline_repair_preserves_live_reserved_claims():
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    live_sid = str(uuid.uuid4())
+    await claim_source_line_allocation(
+        server.db, source_po_id=po_id, source_line_id=line_id,
+        source_line_idx=0, ordered_qty=100, qty=30, sales_delivery_id=live_sid,
+    )
+    # Simulate an old untracked legacy baseline subsequently cancelled.
+    await server.db[ALLOCATION_COUNTERS].update_one(
+        {"id": f"{po_id}::{line_id}"}, {"$inc": {"allocated_qty": 70}},
+    )
+    new_sid = str(uuid.uuid4())
+    claim = await claim_source_line_allocation(
+        server.db, source_po_id=po_id, source_line_id=line_id,
+        source_line_idx=0, ordered_qty=100, qty=70, sales_delivery_id=new_sid,
+    )
+    assert claim["qty"] == 70
+    cur = await _counter(po_id, line_id)
+    assert int(cur["allocated_qty"]) == 100
+    assert live_sid in cur["claims_by_delivery"]
+    assert new_sid in cur["claims_by_delivery"]
+
+
+@pytest.mark.anyio
+async def test_genuine_active_legacy_sj_still_blocks_overallocation():
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    await server.db.sales_deliveries.insert_one({
+        "id": str(uuid.uuid4()), "po_id": po_id, "is_cancelled": False,
+        "line_items": [{"line_id": line_id, "line_idx": 0, "qty": 500}],
+    })
+    with pytest.raises(HTTPException) as exc:
+        await claim_source_line_allocation(
+            server.db, source_po_id=po_id, source_line_id=line_id,
+            source_line_idx=0, ordered_qty=500, qty=500,
+            sales_delivery_id=str(uuid.uuid4()),
+        )
+    assert exc.value.status_code == 409
+    assert int((await _counter(po_id, line_id))["allocated_qty"]) == 500
+
+
+@pytest.mark.anyio
+async def test_legacy_changed_line_id_still_counts_active_sj_by_source_index():
+    """Do not free live SJ qty when old line_id differs from edited PO line ID."""
+    po_id = str(uuid.uuid4())
+    current_line_id = f"{po_id}_current"
+    old_line_id = f"{po_id}_old"
+    await server.db.sales_deliveries.insert_one({
+        "id": str(uuid.uuid4()),
+        "po_id": po_id,
+        "is_cancelled": False,
+        "line_items": [{"line_id": old_line_id, "line_idx": 0, "qty": 500}],
+    })
+    await server.db[ALLOCATION_COUNTERS].insert_one({
+        "id": f"{po_id}::{current_line_id}",
+        "source_po_id": po_id,
+        "source_line_id": current_line_id,
+        "source_line_idx": 0,
+        "ordered_qty": 500,
+        "allocated_qty": 500,
+        "claims_by_delivery": {},
+        "active_delivery_ids": [],
+    })
+    with pytest.raises(HTTPException) as exc:
+        await claim_source_line_allocation(
+            server.db,
+            source_po_id=po_id,
+            source_line_id=current_line_id,
+            source_line_idx=0,
+            ordered_qty=500,
+            qty=500,
+            sales_delivery_id=str(uuid.uuid4()),
+        )
+    assert exc.value.status_code == 409
+    assert int((await _counter(po_id, current_line_id))["allocated_qty"]) == 500
+
+
+@pytest.mark.anyio
+async def test_ambiguous_legacy_active_id_fails_closed():
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    await server.db[ALLOCATION_COUNTERS].insert_one({
+        "id": f"{po_id}::{line_id}",
+        "source_po_id": po_id,
+        "source_line_id": line_id,
+        "source_line_idx": 0,
+        "ordered_qty": 500,
+        "allocated_qty": 500,
+        "claims_by_delivery": {},
+        "active_delivery_ids": [str(uuid.uuid4())],
+    })
+    with pytest.raises(HTTPException) as exc:
+        await claim_source_line_allocation(
+            server.db, source_po_id=po_id, source_line_id=line_id,
+            source_line_idx=0, ordered_qty=500, qty=500,
+            sales_delivery_id=str(uuid.uuid4()),
+        )
+    assert exc.value.status_code == 409
+    assert int((await _counter(po_id, line_id))["allocated_qty"]) == 500
+
+
+@pytest.mark.anyio
+async def test_legacy_counter_cas_race_allows_only_one_full_claim():
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_l0"
+    await server.db[ALLOCATION_COUNTERS].insert_one({
+        "id": f"{po_id}::{line_id}",
+        "source_po_id": po_id,
+        "source_line_id": line_id,
+        "source_line_idx": 0,
+        "ordered_qty": 100,
+        "allocated_qty": 100,
+        "claims_by_delivery": {},
+        "active_delivery_ids": [],
+    })
+    async def attempt(sid):
+        return await claim_source_line_allocation(
+            server.db, source_po_id=po_id, source_line_id=line_id,
+            source_line_idx=0, ordered_qty=100, qty=100,
+            sales_delivery_id=sid,
+        )
+    outcomes = await asyncio.gather(
+        attempt(str(uuid.uuid4())), attempt(str(uuid.uuid4())),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    errors = [item for item in outcomes if isinstance(item, HTTPException)]
+    assert len(errors) == 1 and errors[0].status_code == 409
+    cur = await _counter(po_id, line_id)
+    assert int(cur["allocated_qty"]) == 100
+    assert len(cur["claims_by_delivery"]) == 1
+
+
+@pytest.mark.anyio
 async def test_release_idempotent_no_double_decrement():
     po_id = str(uuid.uuid4())
     line_id = f"{po_id}_l0"

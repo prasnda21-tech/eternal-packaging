@@ -559,9 +559,15 @@ async def _seed_counter_allocated_from_deliveries(
     source_po_id: str,
     source_line_id: str,
     source_line_idx: int,
+    exclude_delivery_ids: Optional[Sequence[str]] = None,
 ) -> int:
-    """Sum active SJ allocations for this PO line (legacy + multi-source)."""
+    """Sum active SJ allocations for this PO line (legacy + multi-source).
+
+    Exclusion is used only to avoid double-counting claims already tracked in
+    the atomic counter when reconciling an older, untracked legacy baseline.
+    """
     shipped = 0
+    excluded = {_norm(sid) for sid in (exclude_delivery_ids or ())}
     cursor = db.sales_deliveries.find(
         active_deliveries_query_for_po(source_po_id),
         {
@@ -576,6 +582,14 @@ async def _seed_counter_allocated_from_deliveries(
         },
     )
     async for delivery in cursor:
+        # Match summarize_po_delivery_quantities: cancelled/superseded SJ
+        # must not consume remaining PO quantity during counter bootstrap.
+        if delivery.get("cancelled") or delivery.get("is_cancelled") is True:
+            continue
+        if _norm(delivery.get("status")).lower() in {"superseded", "cancelled", "deleted"}:
+            continue
+        if _norm(delivery.get("id")) in excluded:
+            continue
         for line in delivery.get("line_items") or []:
             if not isinstance(line, dict):
                 continue
@@ -583,9 +597,10 @@ async def _seed_counter_allocated_from_deliveries(
                 continue
             lid = _norm(line.get("source_line_id") or line.get("line_id"))
             idx = source_line_idx_for_po(delivery, line, source_po_id)
-            if lid and lid == _norm(source_line_id):
-                shipped += _as_int(line.get("qty"), default=_as_int(line.get("quantity")))
-            elif not lid and idx is not None and idx == int(source_line_idx):
+            # PO remaining math attributes legacy SJ by line index. Count an
+            # active SJ when either stable ID or source index matches; the
+            # conservative OR prevents undercount when old line IDs changed.
+            if (lid and lid == _norm(source_line_id)) or (idx is not None and idx == int(source_line_idx)):
                 shipped += _as_int(line.get("qty"), default=_as_int(line.get("quantity")))
     return shipped
 
@@ -689,6 +704,72 @@ async def heal_expired_reservations_for_line(
             )
             out.append({"sales_delivery_id": sid, "action": "released_orphan", **released})
     return out
+
+
+async def reconcile_proven_legacy_counter_drift(
+    db,
+    *,
+    source_po_id: str,
+    source_line_id: str,
+    source_line_idx: int,
+) -> bool:
+    """CAS-reduce only a provably untracked *legacy seed*, never a live claim.
+
+    Old counters seeded allocated_qty from existing SJ documents but stored no
+    per-SJ claim. Cancelling those SJ can leave an untracked residual, while the
+    PO summary correctly excludes the cancelled delivery. To avoid overship:
+    retain the full quantity of every tracked claim (even if its SJ is missing),
+    plus quantities of still-active SJ without tracked claims. Never change a
+    counter when active_delivery_ids references an unknown claim, or when the
+    observed total is not strictly lower. The snapshot CAS fails closed if a
+    concurrent worker claims/releases anything in the meantime.
+    """
+    cid = allocation_counter_id(source_po_id, source_line_id)
+    coll = _counters(db)
+    cur = await coll.find_one({"id": cid}, {"_id": 0})
+    if not cur:
+        return False
+    claims = cur.get("claims_by_delivery")
+    active_ids = cur.get("active_delivery_ids")
+    if not isinstance(claims, dict) or not isinstance(active_ids, list):
+        return False
+    if any(not _norm(sid) or _norm(sid) not in claims for sid in active_ids):
+        return False
+    if any(not _norm(sid) or _claim_record_qty(rec) <= 0 for sid, rec in claims.items()):
+        return False
+
+    old_allocated = _as_int(cur.get("allocated_qty"))
+    tracked_qty = sum(_claim_record_qty(rec) for rec in claims.values())
+    if old_allocated <= 0 or tracked_qty > old_allocated:
+        return False
+    untracked_active_qty = await _seed_counter_allocated_from_deliveries(
+        db,
+        source_po_id=source_po_id,
+        source_line_id=source_line_id,
+        source_line_idx=source_line_idx,
+        exclude_delivery_ids=list(claims),
+    )
+    proven_allocated = tracked_qty + untracked_active_qty
+    if proven_allocated >= old_allocated:
+        return False
+
+    result = await coll.update_one(
+        {
+            "id": cid,
+            "allocated_qty": old_allocated,
+            "claims_by_delivery": claims,
+            "active_delivery_ids": active_ids,
+        },
+        {"$set": {"allocated_qty": proven_allocated}},
+    )
+    if result.modified_count != 1:
+        return False
+    import logging
+    logging.getLogger(__name__).warning(
+        "SJ legacy allocation counter reconciled (CAS): counter=%s old=%s proven=%s",
+        cid, old_allocated, proven_allocated,
+    )
+    return True
 
 
 async def claim_source_line_allocation(
@@ -798,6 +879,35 @@ async def claim_source_line_allocation(
         },
         return_document=ReturnDocument.AFTER,
     )
+    if not result:
+        # A failed reservation can be a true concurrent conflict OR a stale
+        # untracked legacy seed. Reconcile only what existing SJ evidence proves,
+        # then retry the same atomic cap-and-identity claim exactly once.
+        healed = await reconcile_proven_legacy_counter_drift(
+            db,
+            source_po_id=source_po_id,
+            source_line_id=source_line_id,
+            source_line_idx=int(source_line_idx),
+        )
+        if healed:
+            result = await _counters(db).find_one_and_update(
+                {
+                    "id": cid,
+                    "allocated_qty": {"$lte": cap},
+                    claim_path: {"$exists": False},
+                },
+                {
+                    "$inc": {"allocated_qty": int(qty)},
+                    "$set": {
+                        "ordered_qty": int(ordered_qty),
+                        "source_line_idx": int(source_line_idx),
+                        "last_sales_delivery_id": sid,
+                        claim_path: record,
+                    },
+                    "$addToSet": {"active_delivery_ids": sid},
+                },
+                return_document=ReturnDocument.AFTER,
+            )
     if not result:
         cur = await _counters(db).find_one({"id": cid}, {"_id": 0})
         prior = ((cur or {}).get("claims_by_delivery") or {}).get(sid)
