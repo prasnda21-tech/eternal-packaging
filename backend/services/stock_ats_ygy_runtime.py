@@ -360,6 +360,8 @@ async def collect_ats_stream_for_ygy(
     Owner 2026-11-03: empty/absent allocations on post-cutoff YGY inventory
     lines default the full line qty to YGY-MAIN. Explicit other-warehouse
     allocations never cut YGY ATS; partial YGY allocations cut only the YGY qty.
+    Under-allocation (sum alloc < line qty) emits ALLOCATION_SHORTFALL and
+    refuses READY until the line is fully allocated.
 
     Adoption: reservations_at_cutoff is always empty unless a future Owner
     snapshot supplies WH-proven keys. Pre-cutoff PO ship/cancel never become
