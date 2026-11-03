@@ -43,6 +43,16 @@ def test_source_bulk_no_longer_uses_unsafe_delete_many():
     assert "require_transaction_support" in helper
     assert "reverse_r2_deliveries_for_sales_delivery" in helper
     assert "start_transaction" in helper
+    # Counter release must happen inside the transactional apply helper, not
+    # only after docs are already gone.
+    apply_helper = src[
+        src.index("async def _apply_bulk_hard_deletes_in_session")
+        : src.index("async def _hard_delete_draft_sales_delivery")
+    ]
+    assert "release_delivery_allocations" in apply_helper
+    assert apply_helper.index("release_delivery_allocations") < apply_helper.index(
+        "delete_one"
+    )
     # Point-10: txn preflight must precede any reverse call.
     assert helper.index("require_transaction_support") < helper.index(
         "reverse_r2_deliveries_for_sales_delivery"
@@ -268,21 +278,33 @@ def test_1_and_6_atomic_success_reverses_once_then_deletes():
 
     mock_db = MagicMock()
     mock_db.sales_deliveries.find_one = AsyncMock(side_effect=[copy.deepcopy(d1), copy.deepcopy(d2)])
+    mock_db.sales_deliveries.update_one = AsyncMock()
     mock_db.sales_deliveries.delete_one = AsyncMock(return_value=_DeleteResult())
 
     async def _run():
-        # Session-body path (document + shipment sync)
+        # Session-body path (fence + counter release + document + shipment sync)
         with patch.object(server, "db", mock_db), patch.object(
             server, "_sales_delivery_delete_blocker", new=AsyncMock(return_value=None),
         ), patch.object(
             server, "_remove_matching_business_sj_shipment", new=AsyncMock(),
-        ) as sync:
-            await server._apply_bulk_hard_deletes_in_session(MagicMock(), deliveries)
+        ) as sync, patch(
+            "services.sales_delivery_allocations.release_delivery_allocations",
+            new=AsyncMock(return_value=[{"released": True}]),
+        ) as release:
+            out_releases = await server._apply_bulk_hard_deletes_in_session(
+                MagicMock(), deliveries,
+            )
             assert mock_db.sales_deliveries.delete_one.await_count == 2
+            assert mock_db.sales_deliveries.update_one.await_count == 2
             assert sync.await_count == 2
+            assert release.await_count == 2
+            assert len(out_releases) == 2
 
         # Orchestration: reverse once per SJ, then session apply, then audit
-        apply = AsyncMock()
+        apply = AsyncMock(return_value=[
+            {"id": "sj-1", "release": []},
+            {"id": "sj-2", "release": []},
+        ])
         with patch(
             "services.physical_stock.reverse_r2_deliveries_for_sales_delivery",
             new=fake_reverse,
@@ -291,6 +313,9 @@ def test_1_and_6_atomic_success_reverses_once_then_deletes():
             new=AsyncMock(),
         ), patch.object(
             server, "_apply_bulk_hard_deletes_in_session", new=apply,
+        ), patch(
+            "services.sales_delivery_allocations.release_delivery_allocations",
+            new=AsyncMock(return_value=[]),
         ), patch.object(
             server.client, "start_session",
         ) as start_session, patch.object(
@@ -332,7 +357,7 @@ def test_5_sibling_not_in_batch_untouched_by_helper_contract():
         return {"reversed_confirmations": [], "confirmation_ids": []}
 
     async def _run():
-        apply = AsyncMock()
+        apply = AsyncMock(return_value=[{"id": "sj-1", "release": []}])
         with patch(
             "services.physical_stock.reverse_r2_deliveries_for_sales_delivery",
             new=fake_reverse,
@@ -341,6 +366,9 @@ def test_5_sibling_not_in_batch_untouched_by_helper_contract():
             new=AsyncMock(),
         ), patch.object(
             server, "_apply_bulk_hard_deletes_in_session", new=apply,
+        ), patch(
+            "services.sales_delivery_allocations.release_delivery_allocations",
+            new=AsyncMock(return_value=[]),
         ), patch.object(
             server, "_write_audit", new=AsyncMock(),
         ):
@@ -377,6 +405,7 @@ def test_7_concurrent_conflict_aborts_without_partial_success_flag():
 
     mock_db = MagicMock()
     mock_db.sales_deliveries.find_one = AsyncMock(return_value=copy.deepcopy(d1))
+    mock_db.sales_deliveries.update_one = AsyncMock()
     mock_db.sales_deliveries.delete_one = AsyncMock(return_value=_DeleteResult())
 
     async def _run():
@@ -384,7 +413,10 @@ def test_7_concurrent_conflict_aborts_without_partial_success_flag():
             server, "_sales_delivery_delete_blocker", new=AsyncMock(return_value=None),
         ), patch.object(
             server, "_remove_matching_business_sj_shipment", new=AsyncMock(),
-        ) as sync:
+        ) as sync, patch(
+            "services.sales_delivery_allocations.release_delivery_allocations",
+            new=AsyncMock(return_value=[]),
+        ):
             with pytest.raises(HTTPException) as exc:
                 await server._apply_bulk_hard_deletes_in_session(MagicMock(), [d1])
             assert exc.value.status_code == 409
