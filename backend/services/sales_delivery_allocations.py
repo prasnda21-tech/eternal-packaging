@@ -597,9 +597,10 @@ async def _seed_counter_allocated_from_deliveries(
                 continue
             lid = _norm(line.get("source_line_id") or line.get("line_id"))
             idx = source_line_idx_for_po(delivery, line, source_po_id)
-            if lid and lid == _norm(source_line_id):
-                shipped += _as_int(line.get("qty"), default=_as_int(line.get("quantity")))
-            elif not lid and idx is not None and idx == int(source_line_idx):
+            # PO remaining math attributes legacy SJ by line index. Count an
+            # active SJ when either stable ID or source index matches; the
+            # conservative OR prevents undercount when old line IDs changed.
+            if (lid and lid == _norm(source_line_id)) or (idx is not None and idx == int(source_line_idx)):
                 shipped += _as_int(line.get("qty"), default=_as_int(line.get("quantity")))
     return shipped
 
