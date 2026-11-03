@@ -6009,117 +6009,138 @@ async def delete_surat_jalan_file(
         delivery_id = str(
             existing.get("id") or existing.get("shipment_id") or file_id or ""
         ).strip()
-        if delivery_id:
-            linked_delivery = await db.sales_deliveries.find_one(
-                {"id": delivery_id}, {"_id": 0},
+        if not delivery_id:
+            raise HTTPException(409, {
+                "message": (
+                    "File Surat Jalan generated tidak memiliki identitas dokumen SJ. "
+                    "Penghapusan ditolak (fail-closed) agar bukti audit tetap ada."
+                ),
+                "code": "SJ_GENERATED_FILE_MISSING_DELIVERY_ID",
+                "file_id": file_id,
+            })
+        linked_delivery = await db.sales_deliveries.find_one(
+            {"id": delivery_id}, {"_id": 0},
+        )
+        if not linked_delivery:
+            # Never treat a generated SJ file as a manual upload when the
+            # sales_deliveries document is missing — keep the file as evidence.
+            raise HTTPException(409, {
+                "message": (
+                    "File Surat Jalan generated merujuk ke dokumen SJ yang tidak "
+                    "ditemukan. Penghapusan ditolak (fail-closed) agar bukti audit "
+                    "tetap ada. Perlu rekonsiliasi operator."
+                ),
+                "code": "SJ_GENERATED_FILE_ORPHAN_DELIVERY",
+                "delivery_id": delivery_id,
+                "file_id": file_id,
+                "sj_number": existing.get("sj_number"),
+            })
+        from services.sales_delivery_allocations import (
+            delivery_source_po_ids,
+            is_multi_source_delivery,
+        )
+        # Never silently wipe a multi-PO SJ from a single PO detail page.
+        if is_multi_source_delivery(linked_delivery):
+            sources = delivery_source_po_ids(linked_delivery)
+            raise HTTPException(400, {
+                "message": (
+                    "Surat Jalan ini menggabungkan beberapa PO. "
+                    "Hapus melalui Pengiriman Pesanan, bukan dari satu PO saja."
+                ),
+                "code": "SJ_MULTI_PO_FILE_DELETE_BLOCKED",
+                "source_po_ids": sources,
+                "id": linked_delivery.get("id"),
+                "sj_number": linked_delivery.get("sj_number"),
+            })
+        already_cancelled = bool(
+            linked_delivery.get("is_cancelled")
+            or str(linked_delivery.get("status") or "").strip().upper()
+            in {"DIBATALKAN", "CANCELLED", "DELETED"}
+        )
+        if already_cancelled:
+            # Soft-cancelled SJ: file-only cleanup on this PO; leave the
+            # cancelled sales_deliveries document (allocation already released).
+            linked_delivery = None
+        else:
+            blocker = await _sales_delivery_delete_blocker(linked_delivery)
+            if blocker:
+                raise HTTPException(400, blocker)
+            from services.physical_stock import (
+                PhysicalStockAbortError,
+                PhysicalStockConflictError,
+                PhysicalStockUnavailableError,
+                PhysicalStockValidationError,
+                _r2_confirmation_ids_for_sales_delivery,
+                assess_sales_delivery_cancel_stock,
+                reverse_r2_deliveries_for_sales_delivery,
             )
-        if linked_delivery:
-            from services.sales_delivery_allocations import (
-                delivery_source_po_ids,
-                is_multi_source_delivery,
-            )
-            # Never silently wipe a multi-PO SJ from a single PO detail page.
-            if is_multi_source_delivery(linked_delivery):
-                sources = delivery_source_po_ids(linked_delivery)
+            # Stock-bearing / soft-cancel SJ must use DELETE /sales-deliveries/{id}.
+            r2_ids = await _r2_confirmation_ids_for_sales_delivery(db, linked_delivery)
+            try:
+                stock_assessment = await assess_sales_delivery_cancel_stock(
+                    db, linked_delivery,
+                )
+            except PhysicalStockValidationError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            stock_mode = str(stock_assessment.get("mode") or "")
+            if r2_ids or stock_mode not in {"", "operational_only"}:
                 raise HTTPException(400, {
                     "message": (
-                        "Surat Jalan ini menggabungkan beberapa PO. "
-                        "Hapus melalui Pengiriman Pesanan, bukan dari satu PO saja."
+                        "Surat Jalan memiliki dependensi stok/operasional. "
+                        "Batalkan melalui Pengiriman Pesanan, bukan hapus file."
                     ),
-                    "code": "SJ_MULTI_PO_FILE_DELETE_BLOCKED",
-                    "source_po_ids": sources,
+                    "code": "SJ_FILE_DELETE_REQUIRES_CANONICAL_CANCEL",
+                    "stock_mode": stock_mode or None,
                     "id": linked_delivery.get("id"),
-                    "sj_number": linked_delivery.get("sj_number"),
                 })
-            already_cancelled = bool(
-                linked_delivery.get("is_cancelled")
-                or str(linked_delivery.get("status") or "").strip().upper()
-                in {"DIBATALKAN", "CANCELLED", "DELETED"}
-            )
-            if already_cancelled:
-                # Soft-cancelled SJ: file-only cleanup on this PO; leave the
-                # cancelled sales_deliveries document (allocation already released).
-                linked_delivery = None
-            else:
-                blocker = await _sales_delivery_delete_blocker(linked_delivery)
-                if blocker:
-                    raise HTTPException(400, blocker)
-                from services.physical_stock import (
-                    PhysicalStockAbortError,
-                    PhysicalStockConflictError,
-                    PhysicalStockUnavailableError,
-                    PhysicalStockValidationError,
-                    _r2_confirmation_ids_for_sales_delivery,
-                    assess_sales_delivery_cancel_stock,
-                    reverse_r2_deliveries_for_sales_delivery,
-                )
-                # Stock-bearing / soft-cancel SJ must use DELETE /sales-deliveries/{id}.
-                r2_ids = await _r2_confirmation_ids_for_sales_delivery(db, linked_delivery)
-                try:
-                    stock_assessment = await assess_sales_delivery_cancel_stock(
-                        db, linked_delivery,
-                    )
-                except PhysicalStockValidationError as exc:
-                    raise HTTPException(400, str(exc)) from exc
-                stock_mode = str(stock_assessment.get("mode") or "")
-                if r2_ids or stock_mode not in {"", "operational_only"}:
-                    raise HTTPException(400, {
-                        "message": (
-                            "Surat Jalan memiliki dependensi stok/operasional. "
-                            "Batalkan melalui Pengiriman Pesanan, bukan hapus file."
-                        ),
-                        "code": "SJ_FILE_DELETE_REQUIRES_CANONICAL_CANCEL",
-                        "stock_mode": stock_mode or None,
-                        "id": linked_delivery.get("id"),
-                    })
-                actor_id = str(user.get("id") or user.get("email") or "user")
-                try:
-                    r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
-                        db,
-                        linked_delivery,
-                        actor_id=actor_id,
-                        reason="Hapus file Surat Jalan (generated)",
-                    )
-                except PhysicalStockAbortError as exc:
-                    raise HTTPException(
-                        503, "Pembatalan stok gagal; file tidak dihapus.",
-                    ) from exc
-                except PhysicalStockUnavailableError as exc:
-                    raise HTTPException(503, str(exc)) from exc
-                except (PhysicalStockValidationError, PhysicalStockConflictError) as exc:
-                    raise HTTPException(400, str(exc)) from exc
-                await _hard_delete_draft_sales_delivery(
+            actor_id = str(user.get("id") or user.get("email") or "user")
+            try:
+                r2_reverse = await reverse_r2_deliveries_for_sales_delivery(
+                    db,
                     linked_delivery,
-                    user=user,
                     actor_id=actor_id,
-                    r2_reverse=r2_reverse,
-                    deleted_reason="delivery_note.delete_file",
-                    write_audit=True,
+                    reason="Hapus file Surat Jalan (generated)",
                 )
-                fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
-                if fresh:
-                    order = fresh
-                # Canonical hard-delete already pulled generated file + shipment.
-                # Refresh timeline/audit on the current order snapshot.
-                still = _sj_find_file(order, file_id)
-                if not still:
-                    add_timeline(
-                        order, 12, user,
-                        note=f"Hapus file Surat Jalan: {existing.get('name') or file_id}",
-                    )
-                    _sync_workflow_stage(order)
-                    await _persist_order(order)
-                    await _audit_po(
-                        order, "delivery_note.delete_file", user,
-                        note=str(existing.get("name") or file_id),
-                    )
-                    order["surat_jalan_created"] = _surat_jalan_created(order)
-                    await _stamp_order_line_item_types(order)
-                    _attach_quantity_snapshot(order)
-                    order["sales_delivery_summary"] = await _get_po_delivery_summary(
-                        db, order,
-                    )
-                    return {"order": _strip_sj_bytes(order)}
+            except PhysicalStockAbortError as exc:
+                raise HTTPException(
+                    503, "Pembatalan stok gagal; file tidak dihapus.",
+                ) from exc
+            except PhysicalStockUnavailableError as exc:
+                raise HTTPException(503, str(exc)) from exc
+            except (PhysicalStockValidationError, PhysicalStockConflictError) as exc:
+                raise HTTPException(400, str(exc)) from exc
+            await _hard_delete_draft_sales_delivery(
+                linked_delivery,
+                user=user,
+                actor_id=actor_id,
+                r2_reverse=r2_reverse,
+                deleted_reason="delivery_note.delete_file",
+                write_audit=True,
+            )
+            fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+            if fresh:
+                order = fresh
+            # Canonical hard-delete already pulled generated file + shipment.
+            # Refresh timeline/audit on the current order snapshot.
+            still = _sj_find_file(order, file_id)
+            if not still:
+                add_timeline(
+                    order, 12, user,
+                    note=f"Hapus file Surat Jalan: {existing.get('name') or file_id}",
+                )
+                _sync_workflow_stage(order)
+                await _persist_order(order)
+                await _audit_po(
+                    order, "delivery_note.delete_file", user,
+                    note=str(existing.get("name") or file_id),
+                )
+                order["surat_jalan_created"] = _surat_jalan_created(order)
+                await _stamp_order_line_item_types(order)
+                _attach_quantity_snapshot(order)
+                order["sales_delivery_summary"] = await _get_po_delivery_summary(
+                    db, order,
+                )
+                return {"order": _strip_sj_bytes(order)}
 
     removed = _sj_remove_file(order, file_id)
     if not removed:
@@ -15408,9 +15429,24 @@ async def _hard_delete_draft_sales_delivery(
                 HARD_DELETE_PENDING_FIELD: True,
             },
         )
+        replayed = False
         if deleted.deleted_count != 1:
-            # Concurrent delete won after our release — heal mirrors from snapshot.
-            pass
+            # Only treat as success when the document is proven already gone
+            # (concurrent delete finished). If it still exists, fail-closed —
+            # do not claim deleted=True or run speculative cleanup.
+            still = await db.sales_deliveries.find_one(
+                {"id": fenced["id"]}, {"_id": 0, "id": 1},
+            )
+            if still is not None:
+                raise HTTPException(409, {
+                    "message": (
+                        "Penghapusan Surat Jalan tidak selesai; dokumen masih ada. "
+                        "Ulangi permintaan."
+                    ),
+                    "code": "HARD_DELETE_CONFLICT",
+                    "id": delivery["id"],
+                })
+            replayed = True
         for src_po in delivery_source_po_ids(fenced) or [fenced.get("po_id")]:
             if src_po:
                 await _remove_matching_business_sj_shipment(
@@ -15418,9 +15454,33 @@ async def _hard_delete_draft_sales_delivery(
                     fenced,
                     deleted_reason=deleted_reason,
                 )
+        result = {
+            "deleted": True,
+            "replayed": replayed,
+            "sj_number": sj_number,
+            "id": delivery["id"],
+            "r2_reversal": r2_reverse,
+            "allocation_release": allocation_release,
+        }
+        if write_audit:
+            await _write_audit(
+                action="sales.delivery.delete",
+                actor=user,
+                target_email=f"delivery:{sj_number}",
+                before={"sj_number": sj_number, "id": delivery["id"]},
+                after={
+                    "deleted": True,
+                    "replayed": replayed,
+                    "r2_reversal": r2_reverse,
+                    "allocation_release": allocation_release,
+                    "engine": "fenced_standalone",
+                },
+            )
+        return result
 
     result = {
         "deleted": True,
+        "replayed": False,
         "sj_number": sj_number,
         "id": delivery["id"],
         "r2_reversal": r2_reverse,
@@ -15434,9 +15494,10 @@ async def _hard_delete_draft_sales_delivery(
             before={"sj_number": sj_number, "id": delivery["id"]},
             after={
                 "deleted": True,
+                "replayed": False,
                 "r2_reversal": r2_reverse,
                 "allocation_release": allocation_release,
-                "engine": "txn" if use_txn else "fenced_standalone",
+                "engine": "txn",
             },
         )
     return result
