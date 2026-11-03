@@ -155,9 +155,10 @@ def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_compl
     gaps: List[str] = []
     if not has_stock_allocations:
         gaps.append(
-            "LIVE_RO_ZERO_STOCK_ALLOCATIONS: cannot WH-scope open PO from allocations; "
-            "Owner ATS baseline adopts free stock at cutoff — pre-cutoff PO must not re-cut ATS "
-            "unless explicit opening Reservation keys are supplied"
+            "LIVE_RO_ZERO_STOCK_ALLOCATIONS: dump has no stock_allocations rows; "
+            "post-cutoff YGY inventory lines default RESERVE to YGY-MAIN (Owner 2026-11-03); "
+            "pre-cutoff PO must not re-cut ATS unless WH-proven opening Reservation keys "
+            "are supplied"
         )
     if not event_stream_complete:
         gaps.append(
@@ -243,22 +244,17 @@ def _line_transaction_unit(line: dict) -> str:
 
 
 def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) -> Dict[str, Any]:
-    """Return YGY-MAIN allocation qty only when unit/warehouse evidence is clear.
+    """Return YGY-MAIN allocation qty for a post-cutoff inventory line.
 
-    Does not invent YGY scope from branch attribution alone.
+    Owner 2026-11-03: all Yogyakarta POs use YGY-MAIN. When stock_allocations is
+    absent/empty, default the full line qty to YGY-MAIN (unit must match baseline).
+    Explicit allocations still win: only YGY-MAIN qty cuts ATS; other-WH-only skips.
+    Never invents remaining unallocated qty when some allocations are present.
     """
     from services.stock_allocation import is_inventory_line, qty_num
 
     if not is_inventory_line(line):
         return {"qty": Decimal(0), "gap": None, "skip_non_inventory": True}
-    allocs = line.get("stock_allocations")
-    if not isinstance(allocs, list) or not allocs:
-        return {
-            "qty": Decimal(0),
-            "gap": "RESERVE_NO_WAREHOUSE_ALLOCATION: post-cutoff inventory line "
-            "lacks stock_allocations — refuse inventing YGY-MAIN reserve",
-            "skip_non_inventory": False,
-        }
     line_unit = _line_transaction_unit(line)
     base_unit = _norm_unit(baseline_unit)
     if line_unit and base_unit and line_unit != base_unit:
@@ -266,6 +262,20 @@ def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) ->
             "qty": Decimal(0),
             "gap": f"UNIT_MISMATCH_LINE:{line_unit}!={base_unit}",
             "skip_non_inventory": False,
+        }
+    allocs = line.get("stock_allocations")
+    if not isinstance(allocs, list) or not allocs:
+        # Owner default: empty allocation → full line qty on YGY-MAIN.
+        line_qty = qty_num(
+            line.get("quantity") if line.get("quantity") is not None else line.get("qty")
+        )
+        if line_qty <= 0:
+            return {"qty": Decimal(0), "gap": None, "skip_non_inventory": False}
+        return {
+            "qty": quantity(line_qty),
+            "gap": None,
+            "skip_non_inventory": False,
+            "defaulted_ygy_main": True,
         }
     ygy_qty = Decimal(0)
     other_wh = False
@@ -320,8 +330,10 @@ async def collect_ats_stream_for_ygy(
 ) -> Dict[str, Any]:
     """Build post-cutoff ATS events from official orders + YGY WH ledger.
 
-    RESERVE requires YGY-MAIN stock_allocations evidence (qty + matching unit);
-    branch attribution alone never invents a YGY warehouse reserve.
+    RESERVE uses YGY-MAIN stock_allocations when present (qty + matching unit).
+    Owner 2026-11-03: empty/absent allocations on post-cutoff YGY inventory
+    lines default the full line qty to YGY-MAIN. Explicit other-warehouse
+    allocations never cut YGY ATS; partial YGY allocations cut only the YGY qty.
 
     Adoption: reservations_at_cutoff is always empty unless a future Owner
     snapshot supplies WH-proven keys. Pre-cutoff PO ship/cancel never become
