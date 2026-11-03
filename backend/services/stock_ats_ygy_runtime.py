@@ -155,9 +155,10 @@ def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_compl
     gaps: List[str] = []
     if not has_stock_allocations:
         gaps.append(
-            "LIVE_RO_ZERO_STOCK_ALLOCATIONS: cannot WH-scope open PO from allocations; "
-            "Owner ATS baseline adopts free stock at cutoff — pre-cutoff PO must not re-cut ATS "
-            "unless explicit opening Reservation keys are supplied"
+            "LIVE_RO_ZERO_STOCK_ALLOCATIONS: dump has no stock_allocations rows; "
+            "post-cutoff YGY inventory lines default RESERVE to YGY-MAIN (Owner 2026-11-03); "
+            "pre-cutoff PO must not re-cut ATS unless WH-proven opening Reservation keys "
+            "are supplied"
         )
     if not event_stream_complete:
         gaps.append(
@@ -243,22 +244,19 @@ def _line_transaction_unit(line: dict) -> str:
 
 
 def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) -> Dict[str, Any]:
-    """Return YGY-MAIN allocation qty only when unit/warehouse evidence is clear.
+    """Return YGY-MAIN allocation qty for a post-cutoff inventory line.
 
-    Does not invent YGY scope from branch attribution alone.
+    Owner 2026-11-03: all Yogyakarta POs use YGY-MAIN. When stock_allocations is
+    absent/empty, default the full line qty to YGY-MAIN (unit must match baseline).
+    Explicit allocations still win: only YGY-MAIN qty cuts ATS; other-WH-only skips.
+    Never invents remaining unallocated qty when some allocations are present.
+    Partial under-allocation (sum of allocation qty < line qty) is a visible
+    coverage gap (ALLOCATION_SHORTFALL) — READY is refused until complete.
     """
     from services.stock_allocation import is_inventory_line, qty_num
 
     if not is_inventory_line(line):
         return {"qty": Decimal(0), "gap": None, "skip_non_inventory": True}
-    allocs = line.get("stock_allocations")
-    if not isinstance(allocs, list) or not allocs:
-        return {
-            "qty": Decimal(0),
-            "gap": "RESERVE_NO_WAREHOUSE_ALLOCATION: post-cutoff inventory line "
-            "lacks stock_allocations — refuse inventing YGY-MAIN reserve",
-            "skip_non_inventory": False,
-        }
     line_unit = _line_transaction_unit(line)
     base_unit = _norm_unit(baseline_unit)
     if line_unit and base_unit and line_unit != base_unit:
@@ -267,7 +265,24 @@ def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) ->
             "gap": f"UNIT_MISMATCH_LINE:{line_unit}!={base_unit}",
             "skip_non_inventory": False,
         }
+    line_qty = quantity(
+        qty_num(
+            line.get("quantity") if line.get("quantity") is not None else line.get("qty")
+        )
+    )
+    allocs = line.get("stock_allocations")
+    if not isinstance(allocs, list) or not allocs:
+        # Owner default: empty allocation → full line qty on YGY-MAIN.
+        if line_qty <= 0:
+            return {"qty": Decimal(0), "gap": None, "skip_non_inventory": False}
+        return {
+            "qty": line_qty,
+            "gap": None,
+            "skip_non_inventory": False,
+            "defaulted_ygy_main": True,
+        }
     ygy_qty = Decimal(0)
+    allocated_total = Decimal(0)
     other_wh = False
     ambiguous = False
     for entry in allocs:
@@ -288,25 +303,46 @@ def _ygy_allocation_qty(line: dict, *, warehouse_id: str, baseline_unit: str) ->
         qty = qty_num(entry.get("qty") if entry.get("qty") is not None else entry.get("quantity"))
         if qty <= 0:
             continue
+        q = quantity(qty)
+        allocated_total += q
         if wid == warehouse_id:
-            ygy_qty += quantity(qty)
+            ygy_qty += q
         else:
             other_wh = True
+    shortfall_gap = None
+    if line_qty > 0 and allocated_total < line_qty:
+        short = line_qty - allocated_total
+        shortfall_gap = (
+            f"ALLOCATION_SHORTFALL:line={line_qty}:allocated={allocated_total}:short={short}"
+        )
     if ambiguous and ygy_qty <= 0:
         return {
             "qty": Decimal(0),
             "gap": "ALLOCATION_AMBIGUOUS: missing/invalid warehouse_id on allocation rows",
             "skip_non_inventory": False,
+            "shortfall_gap": shortfall_gap,
         }
     if ygy_qty > 0:
-        return {"qty": ygy_qty, "gap": None, "skip_non_inventory": False}
+        return {
+            "qty": ygy_qty,
+            "gap": None,
+            "skip_non_inventory": False,
+            "shortfall_gap": shortfall_gap,
+        }
     if other_wh:
         # Explicit other-warehouse demand — do not cut YGY ATS.
-        return {"qty": Decimal(0), "gap": None, "skip_non_inventory": False, "other_wh_only": True}
+        return {
+            "qty": Decimal(0),
+            "gap": None,
+            "skip_non_inventory": False,
+            "other_wh_only": True,
+            "shortfall_gap": shortfall_gap,
+        }
     return {
         "qty": Decimal(0),
         "gap": "RESERVE_NO_YGY_ALLOCATION_QTY: allocations present but none for YGY-MAIN",
         "skip_non_inventory": False,
+        "shortfall_gap": shortfall_gap,
     }
 
 
@@ -320,8 +356,12 @@ async def collect_ats_stream_for_ygy(
 ) -> Dict[str, Any]:
     """Build post-cutoff ATS events from official orders + YGY WH ledger.
 
-    RESERVE requires YGY-MAIN stock_allocations evidence (qty + matching unit);
-    branch attribution alone never invents a YGY warehouse reserve.
+    RESERVE uses YGY-MAIN stock_allocations when present (qty + matching unit).
+    Owner 2026-11-03: empty/absent allocations on post-cutoff YGY inventory
+    lines default the full line qty to YGY-MAIN. Explicit other-warehouse
+    allocations never cut YGY ATS; partial YGY allocations cut only the YGY qty.
+    Under-allocation (sum alloc < line qty) emits ALLOCATION_SHORTFALL and
+    refuses READY until the line is fully allocated.
 
     Adoption: reservations_at_cutoff is always empty unless a future Owner
     snapshot supplies WH-proven keys. Pre-cutoff PO ship/cancel never become
@@ -444,7 +484,12 @@ async def collect_ats_stream_for_ygy(
                 continue
             if alloc.get("gap"):
                 _append_gap(pack, f"{alloc['gap']}:order={oid}")
+                if alloc.get("shortfall_gap"):
+                    _append_gap(pack, f"{alloc['shortfall_gap']}:order={oid}")
                 continue
+            # Owner: partial under-allocation must be visible (fail-closed READY).
+            if alloc.get("shortfall_gap"):
+                _append_gap(pack, f"{alloc['shortfall_gap']}:order={oid}")
             reserved_qty = quantity(alloc["qty"])
             if reserved_qty <= 0:
                 if alloc.get("other_wh_only"):
@@ -826,6 +871,31 @@ async def collect_ats_stream_for_ygy(
     }
 
 
+def _effect_totals(effects: Iterable[dict]) -> Dict[str, float]:
+    """Split projector effects into penambahan (+) and pengurangan (−abs).
+
+    SHIP_RESERVED contributes effect 0 (no double-cut). RESERVE/ISSUE_FREE reduce;
+    RELEASE/RECEIVE_FREE increase.
+    """
+    penambahan = Decimal(0)
+    pengurangan = Decimal(0)
+    for item in effects or ():
+        if not isinstance(item, dict):
+            continue
+        try:
+            effect = quantity(item.get("effect"))
+        except CutoverError:
+            continue
+        if effect > 0:
+            penambahan += effect
+        elif effect < 0:
+            pengurangan += abs(effect)
+    return {
+        "penambahan": float(penambahan),
+        "pengurangan": float(pengurangan),
+    }
+
+
 def project_master_ats(
     *,
     master_item_id: str,
@@ -837,25 +907,35 @@ def project_master_ats(
     base = baseline_for_master(master_item_id)
     if base is None:
         man = load_baseline_manifest()
-        inactive = {
-            str(r.get("master_item_id"))
+        inactive_rows = {
+            str(r.get("master_item_id")): r
             for r in (man.get("rows") or [])
             if isinstance(r, dict) and not r.get("eligible_master")
         }
-        if str(master_item_id) in inactive:
+        if str(master_item_id) in inactive_rows:
+            row = inactive_rows[str(master_item_id)]
             return {
                 "status": "EXCLUDED",
                 "reason": REASON_ATS_INACTIVE_MASTER,
                 "available_qty": None,
+                "baseline_qty": float(quantity(row.get("accurate_ats"))),
+                "penambahan": None,
+                "pengurangan": None,
+                "kode": row.get("kode"),
                 "source": SOURCE_ATS,
+                "cutoff_at": CUTOFF_AT,
             }
         return {
             "status": "EXCLUDED",
             "reason": REASON_ATS_NOT_IN_BASELINE,
             "available_qty": None,
+            "baseline_qty": None,
+            "penambahan": None,
+            "pengurangan": None,
             "source": SOURCE_ATS,
             "note": "Rows outside ATS file are not auto-zeroed",
         }
+    baseline_qty = float(quantity(base.available_qty))
     try:
         projected = project_available(
             base,
@@ -870,14 +950,21 @@ def project_master_ats(
             "reason": REASON_ATS_COVERAGE_GAP,
             "error": str(exc),
             "available_qty": None,
+            "baseline_qty": baseline_qty,
+            "penambahan": None,
+            "pengurangan": None,
             "source": SOURCE_ATS,
             "cutoff_at": base.cutoff_at,
         }
+    totals = _effect_totals(projected["effects"])
     return {
         "status": "READY",
         "reason": None,
         "available_qty": float(Decimal(projected["available_qty"])),
         "available_qty_str": projected["available_qty"],
+        "baseline_qty": baseline_qty,
+        "penambahan": totals["penambahan"],
+        "pengurangan": totals["pengurangan"],
         "remaining_reservations": projected["remaining_reservations"],
         "effects": projected["effects"],
         "source": SOURCE_ATS,
@@ -924,6 +1011,11 @@ def apply_ats_overlay_to_ssi_row(
     row["ats_cutover_reason"] = result.get("reason")
     row["ats_cutover_source"] = SOURCE_ATS
     row["ats_cutover_cutoff_at"] = result.get("cutoff_at") or CUTOFF_AT
+    # Owner preview columns (list/detail/export share this overlay).
+    row["ats_baseline"] = result.get("baseline_qty")
+    row["ats_penambahan"] = result.get("penambahan")
+    row["ats_pengurangan"] = result.get("pengurangan")
+    row["ats_sekarang"] = result.get("available_qty")
     if skipped:
         row["ats_cutover_skipped"] = list(skipped)
     if result.get("status") == "READY":
@@ -939,6 +1031,7 @@ def apply_ats_overlay_to_ssi_row(
         )
         row["ats_cutover_available_qty"] = qty
         row["physical_stock_verified"] = False
+        row["ats_coverage_gaps"] = []
     elif result.get("status") == "UNAVAILABLE":
         row["stock_dapat_dijual"] = None
         row["qty_siap_jual"] = None
@@ -953,7 +1046,9 @@ def apply_ats_overlay_to_ssi_row(
                 has_stock_allocations=False,
                 event_stream_complete=False,
             )
-    # EXCLUDED: leave legacy SSI figures; do not force zero
+    elif result.get("status") == "EXCLUDED":
+        # Leave legacy SSI figures; never force ATS zero for out-of-file rows.
+        row["ats_coverage_gaps"] = [result.get("reason") or REASON_ATS_NOT_IN_BASELINE]
     return row
 
 

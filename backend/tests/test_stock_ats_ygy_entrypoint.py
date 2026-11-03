@@ -253,10 +253,17 @@ async def test_entrypoint_baseline_only_ready_20000(db):
     assert row["stock_dapat_dijual"] == 20000.0
     assert row["qty_siap_jual"] == 20000.0
     assert row["physical_qty"] == -19300
+    assert row["ats_baseline"] == 20000.0
+    assert row["ats_penambahan"] == 0.0
+    assert row["ats_pengurangan"] == 0.0
+    assert row["ats_sekarang"] == 20000.0
+    assert row.get("ats_coverage_gaps") == []
     # list page fields agree with detail-style single-row fetch
     _, detail = await _catalog_row(db, q="100032")
     assert detail["stock_dapat_dijual"] == row["stock_dapat_dijual"]
     assert detail["ats_cutover_status"] == row["ats_cutover_status"]
+    assert detail["ats_baseline"] == row["ats_baseline"]
+    assert detail["ats_sekarang"] == row["ats_sekarang"]
     assert catalog.get("warehouse_stock_standalone") is True
 
 
@@ -362,6 +369,10 @@ async def test_entrypoint_new_po_reserve_and_ship_reserved(db):
     _, row1 = await _catalog_row(db)
     assert row1["ats_cutover_status"] == "READY"
     assert row1["stock_dapat_dijual"] == 18000.0  # 20000 - 2000 RESERVE
+    assert row1["ats_baseline"] == 20000.0
+    assert row1["ats_pengurangan"] == 2000.0
+    assert row1["ats_penambahan"] == 0.0
+    assert row1["ats_sekarang"] == 18000.0
 
     await _insert_delivery(
         db, order_id=oid, line_id="ln-new", line_idx=0, qty=1000, occurred_at=AFTER,
@@ -371,6 +382,8 @@ async def test_entrypoint_new_po_reserve_and_ship_reserved(db):
     # SHIP_RESERVED does not re-cut free stock
     assert row2["stock_dapat_dijual"] == 18000.0
     assert row2["qty_siap_jual"] == row2["stock_dapat_dijual"]
+    assert row2["ats_pengurangan"] == 2000.0  # ship effect 0 — no double cut
+    assert row2["ats_sekarang"] == 18000.0
     assert row2["physical_qty"] == -19300
 
 
@@ -427,6 +440,10 @@ async def test_entrypoint_purchase_receipt_receive_free(db):
     _, row = await _catalog_row(db)
     assert row["ats_cutover_status"] == "READY"
     assert row["stock_dapat_dijual"] == 20500.0
+    assert row["ats_baseline"] == 20000.0
+    assert row["ats_penambahan"] == 500.0
+    assert row["ats_pengurangan"] == 0.0
+    assert row["ats_sekarang"] == 20500.0
 
 
 async def test_entrypoint_unmapped_ledger_keeps_evidence_incomplete(db):
@@ -660,3 +677,338 @@ async def test_entrypoint_reserve_ship_reverse_cancel_returns_baseline(db):
     assert projected["available_qty"] == 20000.0
     rem = projected.get("remaining_reservations") or {}
     assert all(Decimal(v) == 0 for v in rem.values())
+
+
+async def test_entrypoint_owner_default_ygy_main_when_no_allocation(db):
+    """Owner 2026-11-03: empty alloc → YGY-MAIN full line; 100032 20000−1000=19000."""
+    await _seed_master_wh(db)
+    oid = f"so-def-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": "50",
+        "import_source": "accurate_live",
+        "accurate_id": "acc-def-100032",
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-def",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            # No stock_allocations — Owner default YGY-MAIN
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert pack["evidence_complete"] is True
+    reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
+    assert len(reserves) == 1
+    assert str(reserves[0].qty) == "1000"
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "READY"
+    assert row["ats_baseline"] == 20000.0
+    assert row["ats_pengurangan"] == 1000.0
+    assert row["ats_penambahan"] == 0.0
+    assert row["ats_sekarang"] == 19000.0
+    assert row["stock_dapat_dijual"] == 19000.0
+    assert row["physical_qty"] == -19300  # physical untouched
+
+
+async def test_entrypoint_empty_alloc_list_defaults_ygy_main(db):
+    await _seed_master_wh(db)
+    oid = f"so-eal-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-eal",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": [],
+        }],
+    })
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "READY"
+    assert row["stock_dapat_dijual"] == 19000.0
+
+
+async def test_entrypoint_partial_ygy_allocation_cuts_only_ygy_qty(db):
+    """Explicit split: YGY 700 + other 300 on line 1000 → cut 700 only; no double invent."""
+    await _seed_master_wh(db)
+    await db[WAREHOUSES_COLLECTION].insert_one({
+        "id": OTHER_WH_ID,
+        "branch_id": YGY_BRANCH_ID,
+        "code": "YGY-OTHER",
+        "name": "Other WH",
+        "active": True,
+        "is_operational": True,
+    })
+    oid = f"so-part-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-part",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": [
+                {
+                    "allocation_id": "sa-ygy",
+                    "warehouse_id": YGY_WAREHOUSE_ID,
+                    "qty": 700,
+                    "unit": "PCS",
+                },
+                {
+                    "allocation_id": "sa-oth",
+                    "warehouse_id": OTHER_WH_ID,
+                    "qty": 300,
+                    "unit": "PCS",
+                },
+            ],
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert pack["evidence_complete"] is True  # 700+300 covers line 1000
+    assert not any("ALLOCATION_SHORTFALL" in g for g in pack["gaps"])
+    reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
+    assert len(reserves) == 1
+    assert str(reserves[0].qty) == "700"
+    _, row = await _catalog_row(db)
+    assert row["stock_dapat_dijual"] == 19300.0  # 20000 - 700
+
+
+async def test_entrypoint_other_wh_partial_shortfall_visible(db):
+    """Other-WH alloc 300 of line 1000 → no YGY cut; ALLOCATION_SHORTFALL gap."""
+    await _seed_master_wh(db)
+    await db[WAREHOUSES_COLLECTION].insert_one({
+        "id": OTHER_WH_ID,
+        "branch_id": YGY_BRANCH_ID,
+        "code": "YGY-OTHER",
+        "name": "Other WH",
+        "active": True,
+        "is_operational": True,
+    })
+    oid = f"so-ows-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-ows",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(300, warehouse_id=OTHER_WH_ID),
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert not any(e.kind == "RESERVE" for e in pack["events"])
+    assert any("SKIP_OTHER_WAREHOUSE_ALLOCATION" in s for s in pack["skipped"])
+    assert any("ALLOCATION_SHORTFALL" in g and "short=700" in g for g in pack["gaps"])
+    assert pack["evidence_complete"] is False
+    _, row = await _catalog_row(db)
+    assert row["ats_cutover_status"] == "UNAVAILABLE"
+    assert row["stock_dapat_dijual"] is None
+    assert row["physical_qty"] == -19300
+
+
+async def test_entrypoint_partial_ygy_only_does_not_invent_remainder(db):
+    """Allocations present with YGY 400 of line 1000 → RESERVE 400; shortfall visible."""
+    await _seed_master_wh(db)
+    oid = f"so-pyr-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-pyr",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "stock_allocations": _ygy_alloc(400),
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
+    assert len(reserves) == 1
+    assert str(reserves[0].qty) == "400"
+    assert pack["evidence_complete"] is False
+    assert any("ALLOCATION_SHORTFALL" in g and "short=600" in g for g in pack["gaps"])
+    _, row = await _catalog_row(db)
+    # Shortfall must be visible — refuse READY ATS until allocation complete.
+    assert row["ats_cutover_status"] == "UNAVAILABLE"
+    assert row["stock_dapat_dijual"] is None
+    assert any("ALLOCATION_SHORTFALL" in g for g in (row.get("ats_coverage_gaps") or []))
+    assert row["physical_qty"] == -19300
+
+
+async def test_entrypoint_pre_cutoff_no_alloc_does_not_re_cut_baseline(db):
+    await _seed_master_wh(db)
+    oid = f"so-old-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": BEFORE,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-old",
+            "master_item_id": MID_100032,
+            "quantity": 5000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            # empty alloc — must NOT invent RESERVE against baseline
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert not any(e.kind == "RESERVE" for e in pack["events"])
+    _, row = await _catalog_row(db)
+    assert row["stock_dapat_dijual"] == 20000.0
+
+
+async def test_entrypoint_no_alloc_ship_reserved_does_not_double_cut(db):
+    await _seed_master_wh(db)
+    oid = f"so-nds-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": "50",
+        "import_source": "accurate_live",
+        "accurate_id": "acc-nds",
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-nds",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+        }],
+    })
+    await _insert_delivery(
+        db, order_id=oid, line_id="ln-nds", line_idx=0, qty=400, occurred_at=AFTER,
+    )
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    kinds = [e.kind for e in pack["events"]]
+    assert kinds.count("RESERVE") == 1
+    assert kinds.count("SHIP_RESERVED") == 1
+    _, row = await _catalog_row(db)
+    # RESERVE once; SHIP_RESERVED effect 0
+    assert row["stock_dapat_dijual"] == 19000.0
+    assert row["ats_pengurangan"] == 1000.0
+
+
+async def test_entrypoint_no_alloc_cancel_releases_remaining(db):
+    await _seed_master_wh(db)
+    oid = f"so-ncl-{uuid.uuid4().hex[:6]}"
+    t_cancel = (CUTOFF + timedelta(hours=3)).isoformat()
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": AFTER,
+        "cancelled": True,
+        "cancelled_at": t_cancel,
+        "line_items": [{
+            "line_id": "ln-ncl",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+        }],
+    })
+    await _insert_delivery(
+        db,
+        order_id=oid,
+        line_id="ln-ncl",
+        line_idx=0,
+        qty=200,
+        occurred_at=(CUTOFF + timedelta(hours=1, minutes=30)).isoformat(),
+    )
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    kinds = [e.kind for e in pack["events"]]
+    assert kinds.count("RESERVE") == 1
+    assert kinds.count("SHIP_RESERVED") == 1
+    assert kinds.count("RELEASE") == 1
+    release = next(e for e in pack["events"] if e.kind == "RELEASE")
+    assert str(release.qty) == "800"  # 1000 - 200 shipped
+    _, row = await _catalog_row(db)
+    # RESERVE 1000 → 19000; RELEASE 800 → 19800
+    assert row["stock_dapat_dijual"] == 19800.0
+
+
+async def test_list_detail_export_parity_owner_default_no_alloc(db):
+    await _seed_master_wh(db)
+    oid = f"so-par2-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": "50",
+        "import_source": "accurate_live",
+        "accurate_id": "acc-par2",
+        "created_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-par2",
+            "master_item_id": MID_100032,
+            "quantity": 1000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+        }],
+    })
+    list_cat = await list_physical_stock_catalog(
+        db, branch_id=YGY_BRANCH_ID, warehouse_id=YGY_WAREHOUSE_ID, page=1, limit=50,
+    )
+    detail_cat = await list_physical_stock_catalog(
+        db, branch_id=YGY_BRANCH_ID, warehouse_id=YGY_WAREHOUSE_ID, q="100032", page=1, limit=1,
+    )
+    export_cat = await list_physical_stock_catalog(
+        db, branch_id=YGY_BRANCH_ID, warehouse_id=YGY_WAREHOUSE_ID, page=1, limit=1000,
+    )
+
+    def _row(cat):
+        return next(r for r in cat["items"] if r["master_item_id"] == MID_100032)
+
+    a, b, c = _row(list_cat), _row(detail_cat), _row(export_cat)
+    for key in (
+        "stock_dapat_dijual",
+        "qty_siap_jual",
+        "ats_cutover_status",
+        "ats_baseline",
+        "ats_pengurangan",
+        "ats_sekarang",
+        "physical_qty",
+    ):
+        assert a[key] == b[key] == c[key]
+    assert a["stock_dapat_dijual"] == 19000.0
+    assert a["ats_sekarang"] == 19000.0
+    assert a["physical_qty"] == -19300
