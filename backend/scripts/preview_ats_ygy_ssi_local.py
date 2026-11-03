@@ -118,20 +118,67 @@ async def _seed_baseline(db, manifest: dict) -> list[str]:
 
 
 async def _load_ro_dump(db, dump_dir: Path) -> dict:
-    """Load optional RO orders + ledger JSON dumps (post-cutoff filter applied by collector)."""
-    stats = {"orders": 0, "ledger": 0}
+    """Load RO package from VPS export (orders + ledger + optional reversals_extra)."""
+    stats = {
+        "orders": 0,
+        "ledger": 0,
+        "reversals_extra": 0,
+        "manifest_history_complete": None,
+        "manifest_started_at_utc": None,
+        "manifest_finished_at_utc": None,
+        "live_sha": None,
+        "has_post_cutoff_payload": False,
+    }
+    manifest_path = dump_dir / "manifest.json"
+    if manifest_path.is_file():
+        man = json.loads(manifest_path.read_text())
+        if isinstance(man, dict):
+            stats["manifest_history_complete"] = man.get("history_complete")
+            stats["manifest_started_at_utc"] = man.get("started_at_utc")
+            stats["manifest_finished_at_utc"] = man.get("finished_at_utc")
+            ident = man.get("identity") or {}
+            if isinstance(ident, dict):
+                stats["live_sha"] = ident.get("active_sha_file") or ident.get("active_sha_env")
+
     orders_path = dump_dir / "orders.json"
     ledger_path = dump_dir / "physical_stock_ledger.json"
+    rev_path = dump_dir / "reversals_extra.json"
     if orders_path.is_file():
         orders = json.loads(orders_path.read_text())
         if isinstance(orders, list) and orders:
-            await db.orders.insert_many(orders)
-            stats["orders"] = len(orders)
+            # Strip RO helper keys that are not part of ERP order schema.
+            cleaned = []
+            for o in orders:
+                if not isinstance(o, dict):
+                    continue
+                row = {k: v for k, v in o.items() if not str(k).startswith("_ro_")}
+                cleaned.append(row)
+            if cleaned:
+                await db.orders.insert_many(cleaned)
+                stats["orders"] = len(cleaned)
+    ledger_docs: list = []
     if ledger_path.is_file():
         ledger = json.loads(ledger_path.read_text())
-        if isinstance(ledger, list) and ledger:
-            await db[LEDGER_COLLECTION].insert_many(ledger)
-            stats["ledger"] = len(ledger)
+        if isinstance(ledger, list):
+            ledger_docs.extend([d for d in ledger if isinstance(d, dict)])
+    if rev_path.is_file():
+        extra = json.loads(rev_path.read_text())
+        if isinstance(extra, list):
+            seen = {str(d.get("id") or "") for d in ledger_docs}
+            for d in extra:
+                if not isinstance(d, dict):
+                    continue
+                rid = str(d.get("id") or "")
+                if rid and rid in seen:
+                    continue
+                ledger_docs.append(d)
+                stats["reversals_extra"] += 1
+                if rid:
+                    seen.add(rid)
+    if ledger_docs:
+        await db[LEDGER_COLLECTION].insert_many(ledger_docs)
+        stats["ledger"] = len(ledger_docs)
+    stats["has_post_cutoff_payload"] = bool(stats["orders"] or stats["ledger"])
     return stats
 
 
@@ -156,17 +203,27 @@ async def _page_all(db) -> list[dict]:
     return items
 
 
-def _row_preview(row: dict) -> dict:
+def _row_preview(row: dict, *, preview_class: str) -> dict:
     gaps = row.get("ats_coverage_gaps") or []
+    penambahan = row.get("ats_penambahan")
+    pengurangan = row.get("ats_pengurangan")
+    moved = False
+    try:
+        moved = float(penambahan or 0) != 0.0 or float(pengurangan or 0) != 0.0
+    except (TypeError, ValueError):
+        moved = False
     return {
         "kode": row.get("item_code") or row.get("kode"),
         "nama": row.get("item_name") or row.get("nama"),
         "baseline": row.get("ats_baseline"),
-        "penambahan": row.get("ats_penambahan"),
-        "pengurangan": row.get("ats_pengurangan"),
+        "penambahan": penambahan,
+        "pengurangan": pengurangan,
+        "ats_akhir": row.get("ats_sekarang"),
         "ats_sekarang": row.get("ats_sekarang"),
         "status": row.get("ats_cutover_status"),
         "gap": "; ".join(str(g) for g in gaps) if gaps else "",
+        "preview_class": preview_class,
+        "post_cutoff_effect": bool(moved),
         "physical_qty": row.get("physical_qty"),
         "stock_dapat_dijual": row.get("stock_dapat_dijual"),
         "skipped": "; ".join(str(s) for s in (row.get("ats_cutover_skipped") or [])),
@@ -217,11 +274,49 @@ async def main() -> int:
         },
     )
     await _seed_baseline(db, manifest)
-    ro_stats = {"orders": 0, "ledger": 0}
+    ro_stats = {
+        "orders": 0,
+        "ledger": 0,
+        "reversals_extra": 0,
+        "has_post_cutoff_payload": False,
+    }
     if args.ro_dump_dir:
         ro_stats = await _load_ro_dump(db, Path(args.ro_dump_dir))
 
     items = await _page_all(db)
+    # Classify preview: BASELINE_ONLY must never be labeled activation-ready.
+    codes_with_effect = 0
+    for r in items:
+        try:
+            if float(r.get("ats_penambahan") or 0) != 0.0 or float(
+                r.get("ats_pengurangan") or 0
+            ) != 0.0:
+                codes_with_effect += 1
+        except (TypeError, ValueError):
+            pass
+    if not ro_stats.get("has_post_cutoff_payload"):
+        preview_class = "BASELINE_ONLY"
+        class_note = (
+            "No post-cutoff RO orders/ledger loaded. READY rows equal baseline; "
+            "NOT activation-ready."
+        )
+    elif codes_with_effect == 0 and not any(
+        (r.get("ats_cutover_status") == "UNAVAILABLE") for r in items
+    ):
+        preview_class = "POST_CUTOFF_RO_LOADED_NO_NET_EFFECT"
+        class_note = (
+            "RO dump loaded but no net penambahan/pengurangan on READY rows "
+            "(e.g. only SHIP_RESERVED / skipped old-PO). Not the same as BASELINE_ONLY; "
+            "still not auto activation-ready."
+        )
+    else:
+        preview_class = "POST_CUTOFF_INCLUDED"
+        class_note = (
+            "RO dump included; ATS reflects baseline ± mapped post-cutoff events "
+            "through export time. Gaps remain fail-closed. Activation still Owner-gated."
+        )
+    activation_ready = False
+
     # Consistency: detail-style single-code fetch for first READY row
     ready = next((r for r in items if r.get("ats_cutover_status") == "READY"), None)
     consistency = {"checked": False}
@@ -254,7 +349,7 @@ async def main() -> int:
             ),
         }
 
-    preview_rows = [_row_preview(r) for r in items]
+    preview_rows = [_row_preview(r, preview_class=preview_class) for r in items]
     status_counts: dict[str, int] = {}
     for r in preview_rows:
         status_counts[r["status"] or "?"] = status_counts.get(r["status"] or "?", 0) + 1
@@ -262,6 +357,7 @@ async def main() -> int:
     gap_by_code = {
         r["kode"]: r["gap"] for r in preview_rows if r.get("gap")
     }
+    effect_codes = [r["kode"] for r in preview_rows if r.get("post_cutoff_effect")]
 
     summary = {
         "generated_at_utc": _now_iso(),
@@ -272,12 +368,16 @@ async def main() -> int:
         "baseline_rows": len(manifest.get("rows") or []),
         "catalog_rows": len(preview_rows),
         "status_counts": status_counts,
+        "preview_class": preview_class,
+        "activation_ready": activation_ready,
+        "codes_with_post_cutoff_effect": effect_codes,
+        "codes_with_post_cutoff_effect_count": codes_with_effect,
+        "class_note": class_note,
         "ro_dump_loaded": ro_stats,
         "list_detail_consistency": consistency,
         "note": (
-            "Without a post-cutoff RO dump, penambahan/pengurangan stay 0 and "
-            "ATS=baseline for READY rows. Live ops after cutoff require Owner RO "
-            "orders+ledger; this preview never rewrites physical_stock_balances."
+            "physical_stock_balances never rewritten. BASELINE_ONLY is explicitly "
+            "not activation-ready. Prefer POST_CUTOFF_INCLUDED after Owner RO tarball."
         ),
         "unmapped_or_gap_codes": sorted(gap_by_code.keys()),
     }
@@ -295,9 +395,11 @@ async def main() -> int:
         "baseline",
         "penambahan",
         "pengurangan",
-        "ats_sekarang",
+        "ats_akhir",
         "status",
         "gap",
+        "preview_class",
+        "post_cutoff_effect",
         "physical_qty",
         "stock_dapat_dijual",
         "skipped",
