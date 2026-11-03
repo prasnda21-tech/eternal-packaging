@@ -149,6 +149,40 @@ async def test_release_idempotent_no_double_decrement():
 
 
 @pytest.mark.anyio
+async def test_bootstrap_excludes_cancelled_and_superseded_deliveries():
+    """Historical inactive SJ must not exhaust a new line allocation counter."""
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    for status, cancelled, qty in [
+        ("TERKIRIM", False, 200),       # active shipment must count
+        ("TERKIRIM", True, 500),        # cancelled=True legacy SJ
+        ("superseded", False, 500),     # replaced SJ without cancel boolean
+    ]:
+        await server.db.sales_deliveries.insert_one({
+            "id": str(uuid.uuid4()),
+            "po_id": po_id,
+            "status": status,
+            "cancelled": cancelled,
+            "line_items": [{"line_id": line_id, "line_idx": 0, "qty": qty}],
+        })
+
+    claim = await claim_source_line_allocation(
+        server.db,
+        source_po_id=po_id,
+        source_line_id=line_id,
+        source_line_idx=0,
+        ordered_qty=1000,
+        qty=500,
+        sales_delivery_id=str(uuid.uuid4()),
+    )
+    assert claim["qty"] == 500
+    counter = await _counter(po_id, line_id)
+    assert int(counter["allocated_qty"]) == 700
+    assert int(counter["ordered_qty"]) == 1000
+
+
+@pytest.mark.anyio
 async def test_claim_retry_same_sj_idempotent():
     po_id = str(uuid.uuid4())
     line_id = f"{po_id}_l0"
