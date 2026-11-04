@@ -2553,6 +2553,10 @@ async def cancel_sales_invoice(
 
         await raise_if_revision_in_progress(db, inv["id"])
         if status == FINANCIAL_CANCELLED:
+            # A cancelled invoice can retain a posting lease after an interrupted
+            # accounting operation. Never free billing capacity while it is live.
+            if posting_claim_is_active(inv):
+                raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
             # Crash-safe replay: previous cancellation may have persisted its
             # status but failed before releasing PO/SJ billing claims.
             # Never heal if payment or accounting evidence contradicts cancel.
