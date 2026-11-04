@@ -542,9 +542,12 @@ async def collect_ats_stream_for_ygy(
                 )
                 if opening_raw is None:
                     # No proven opening reservation snapshot — do not re-cut baseline.
-                    # Surface explicitly when a post-cutoff change timestamp exists.
+                    # Free-stock baseline already nets open POs at cutoff; refuse invented
+                    # delta via skip (not gap) so READY stays at baseline rather than
+                    # UNAVAILABLE. Owner must supply ats_reserved_qty_at_cutoff to apply
+                    # proven post-cutoff increases.
                     if change_time is not None and change_time > cutoff_dt:
-                        _append_gap(
+                        _append_skip(
                             pack,
                             "PRE_CUTOFF_PO_CHANGE_UNPROVEN:"
                             f"{key}: post-cutoff line/alloc change seen but "
@@ -742,6 +745,25 @@ async def collect_ats_stream_for_ygy(
 
             # Pre-cutoff / adoption: do NOT ISSUE_FREE (would re-cut baseline).
             order = order_by_id.get(oid) if oid else None
+            # RO dumps may omit metadata.order_id on SALES_DELIVERY. Resolve only when
+            # exactly one pre-cutoff order on this page contains the master_item_id.
+            if order is None and not oid:
+                candidates = []
+                for cand in order_by_id.values():
+                    created_cand = _parse_event_time(
+                        cand.get("created_at") or cand.get("imported_at")
+                    )
+                    if created_cand is None or created_cand > cutoff_dt:
+                        continue
+                    for line in (cand.get("line_items") or []):
+                        if not isinstance(line, dict):
+                            continue
+                        if str(line.get("master_item_id") or "").strip() == mid:
+                            candidates.append(cand)
+                            break
+                if len(candidates) == 1:
+                    order = candidates[0]
+                    oid = str(order.get("id") or "").strip()
             if order is not None:
                 created = _parse_event_time(
                     order.get("created_at") or order.get("imported_at")

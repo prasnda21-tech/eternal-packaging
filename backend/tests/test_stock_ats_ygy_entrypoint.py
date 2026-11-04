@@ -1220,7 +1220,8 @@ async def test_entrypoint_pre_cutoff_proven_increase_reserves_delta_only(db):
     assert row["stock_dapat_dijual"] == 18000.0
 
 
-async def test_entrypoint_pre_cutoff_change_without_opening_qty_is_gap_not_silent(db):
+async def test_entrypoint_pre_cutoff_change_without_opening_qty_is_skip_not_silent(db):
+    """Refuse invented reserve delta; keep evidence complete so baseline READY stands."""
     await _seed_master_wh(db)
     oid = f"so-old-gap-{uuid.uuid4().hex[:6]}"
     await db.orders.insert_one({
@@ -1244,4 +1245,6 @@ async def test_entrypoint_pre_cutoff_change_without_opening_qty_is_gap_not_silen
     )
     pack = stream["by_master"][MID_100032]
     assert not any(e.kind == "RESERVE" for e in pack["events"])
-    assert any("PRE_CUTOFF_PO_CHANGE_UNPROVEN" in g for g in pack["gaps"])
+    assert not any("PRE_CUTOFF_PO_CHANGE_UNPROVEN" in g for g in pack["gaps"])
+    assert any("PRE_CUTOFF_PO_CHANGE_UNPROVEN" in s for s in pack["skipped"])
+    assert pack["evidence_complete"] is True

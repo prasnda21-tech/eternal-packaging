@@ -389,25 +389,32 @@ def main() -> int:
             r = subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True)
             (out_dir / "runtime_preview_stdout.txt").write_text(r.stdout + "\n" + r.stderr)
             rows = _load_json(preview_out / "PREVIEW_ROWS.json", [])
+            summary_prev = _load_json(preview_out / "PREVIEW_SUMMARY.json", {}) or {}
             hit = next((x for x in rows if str(x.get("kode")) == "100153"), None)
+            hit_032 = next((x for x in rows if str(x.get("kode")) == "100032"), None)
             proof = {
                 "preview_rc": r.returncode,
-                "preview_class": (_load_json(preview_out / "PREVIEW_SUMMARY.json", {}) or {}).get(
-                    "preview_class"
+                "preview_class": summary_prev.get("preview_class"),
+                "list_detail_export_consistency": summary_prev.get(
+                    "list_detail_consistency"
                 ),
-                "list_detail_consistency": (
-                    _load_json(preview_out / "PREVIEW_SUMMARY.json", {}) or {}
-                ).get("list_detail_consistency"),
+                "code_100032": hit_032,
                 "code_100153": hit,
-                "expect_baseline": 109000.0,
+                "expect_baseline_100153": 109000.0,
+                "expect_baseline_100032": 9000.0,
                 "no_double_cut": bool(
                     hit
                     and float(hit.get("baseline") or -1) == 109000.0
                     and float(hit.get("pengurangan") or 0) == 0.0
-                    and (
-                        hit.get("ats_akhir") is None
-                        or float(hit.get("ats_akhir")) == 109000.0
-                    )
+                    and float(hit.get("ats_akhir") or -1) == 109000.0
+                    and hit.get("status") == "READY"
+                    and "SKIP_OLD_PO_SHIP" in str(hit.get("skipped") or "")
+                ),
+                "code_100032_ok": bool(
+                    hit_032
+                    and float(hit_032.get("baseline") or -1) == 9000.0
+                    and float(hit_032.get("ats_akhir") or -1) == 9000.0
+                    and hit_032.get("status") == "READY"
                 ),
             }
             (out_dir / "RUNTIME_PROOF_100153.json").write_text(
