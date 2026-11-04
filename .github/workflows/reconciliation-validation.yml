@@ -213,6 +213,18 @@ jobs:
             mongosh --quiet mongodb://127.0.0.1:27017 --eval 'db.runCommand({ ping: 1 })' || true
             exit "${status}"
           fi
+      - name: Run revised PO billing and SJ reprint regression tests
+        working-directory: backend
+        timeout-minutes: 5
+        env:
+          MONGO_URL: mongodb://127.0.0.1:27017
+          DB_NAME: eternal_packaging_ci_invoice_revision_reprint
+          JWT_SECRET: ci-only-secret
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=15s 180s \
+            python -m pytest -vv -n 0 --tb=short \
+            tests/test_invoice_revision_preview_sj_reprint.py
       # Phase 2.2D business-cancel suite also pins DB_NAME at import; run serial
       # and isolated so it cannot collide with other sales accounting modules.
       - name: Run sales business cancel tests
