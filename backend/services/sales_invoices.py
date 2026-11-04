@@ -2553,6 +2553,21 @@ async def cancel_sales_invoice(
 
         await raise_if_revision_in_progress(db, inv["id"])
         if status == FINANCIAL_CANCELLED:
+            # Crash-safe replay: previous cancellation may have persisted its
+            # status but failed before releasing PO/SJ billing claims.
+            # Never heal if payment or accounting evidence contradicts cancel.
+            pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
+            if pay_count:
+                raise HTTPException(
+                    409, "Faktur sudah dibatalkan tetapi memiliki penerimaan; perlu rekonsiliasi Finance.",
+                )
+            prior_journal = await find_sales_invoice_source_journal(db, inv["id"])
+            if prior_journal:
+                raise HTTPException(
+                    409, "Faktur sudah dibatalkan tetapi memiliki jurnal; perlu rekonsiliasi Finance.",
+                )
+            from services.sales_invoice_allocations import release_invoice_billing_allocations
+            await release_invoice_billing_allocations(db, inv)
             return await get_sales_invoice_detail(db, inv["id"])
 
         pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
