@@ -1224,6 +1224,48 @@ async def release_delivery_allocations(
     return results
 
 
+
+async def assert_delivery_allocation_claims_released(
+    db, sales_delivery_id: str, *, session=None,
+) -> None:
+    """Fail closed before hard-delete if *any* counter still owns this SJ.
+
+    A release result may be a no-op when its quantity/legacy shape disagrees
+    with the counter, or the SJ's line list omits an old claim. This check
+    consults counters, not just the SJ payload, and keeps the SJ recoverable
+    if a claim remains. Pass the transaction session for atomic delete paths.
+    """
+    sid = _norm(sales_delivery_id)
+    if not sid:
+        raise HTTPException(409, "Identitas SJ tidak valid untuk verifikasi alokasi.")
+    claim_path = _claim_qty_field(sid)
+    kw = {"session": session} if session is not None else {}
+    remaining = await _counters(db).find_one(
+        {
+            "$or": [
+                {claim_path: {"$exists": True}},
+                {"active_delivery_ids": sid},
+            ]
+        },
+        {"_id": 0, "id": 1, "source_po_id": 1, "source_line_id": 1},
+        **kw,
+    )
+    if remaining:
+        raise HTTPException(
+            409,
+            {
+                "code": "SJ_ALLOCATION_RELEASE_INCOMPLETE",
+                "message": (
+                    "Penghapusan Surat Jalan ditolak: klaim alokasi masih "
+                    "tercatat. Dokumen SJ dipertahankan untuk rekonsiliasi."
+                ),
+                "sales_delivery_id": sid,
+                "source_po_id": remaining.get("source_po_id"),
+                "source_line_id": remaining.get("source_line_id"),
+            },
+        )
+
+
 async def fence_sales_delivery_for_hard_delete(db, sales_delivery_id: str) -> dict:
     """Mark SJ inactive for remaining/seed before counter release.
 
