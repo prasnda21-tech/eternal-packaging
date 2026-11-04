@@ -24,24 +24,41 @@ def test_registry_loads_active_free_stock_baseline():
     reg = load_registry()
     assert reg["warehouse_id"] == YGY_WAREHOUSE_ID
     assert reg["active_baseline_id"]
-    # Nov-2 draft remains in history for rollback even after tonight's activate pointer.
+    # Active pointer stays on Nov-2 until Owner-approved 357 install.
+    assert "2026-11-02" in str(reg["active_baseline_id"])
     hist_ids = {h.get("baseline_id") for h in (reg.get("history") or [])}
     assert any("2026-11-02" in str(x) for x in hist_ids)
+    assert any("2026-11-04" in str(x) for x in hist_ids)
+    assert "2026-11-04" in str(reg.get("candidate_baseline_id") or "")
     man, path = load_active_baseline_manifest()
     assert path.is_file()
     assert man["warehouse_id"] == YGY_WAREHOUSE_ID
-    assert man["cutoff_at"] == "2026-11-04T22:45:00+07:00"
-    assert len(man.get("rows") or []) == 357
-    # 100032 free-stock sample from Owner CSV 2026-11-04
+    assert man["cutoff_at"] == "2026-11-02T23:22:00+07:00"
+    assert len(man.get("rows") or []) == 162
+    # Active Nov-2 sample (pre-recutover)
     hit = next(r for r in man["rows"] if r.get("kode") == "100032")
-    assert float(hit["accurate_ats"]) == 9000.0
-    # Negatives preserved (e.g. 100001)
-    neg = next(r for r in man["rows"] if r.get("kode") == "100001")
-    assert float(neg["accurate_ats"]) == -4000.0
-    # ROLL unit preserved
-    roll = next(r for r in man["rows"] if r.get("kode") == "100145")
-    assert roll.get("satuan") == "ROLL"
+    assert float(hit["accurate_ats"]) == 20000.0
     assert runtime.active_cutoff_at() == man["cutoff_at"]
+
+    # Candidate 357 (not active): free-stock Owner CSV @ 2026-11-04T22:45+07
+    cand_rel = str(reg.get("candidate_relpath") or "")
+    cand_path = Path(__file__).resolve().parents[1] / "data" / "ats_baselines" / cand_rel
+    cand = json.loads(cand_path.read_text(encoding="utf-8"))
+    assert cand["cutoff_at"] == "2026-11-04T22:45:00+07:00"
+    assert len(cand.get("rows") or []) == 357
+    c32 = next(r for r in cand["rows"] if r.get("kode") == "100032")
+    assert float(c32["accurate_ats"]) == 9000.0
+    neg = next(r for r in cand["rows"] if r.get("kode") == "100001")
+    assert float(neg["accurate_ats"]) == -4000.0
+    roll = next(r for r in cand["rows"] if r.get("kode") == "100145")
+    assert roll.get("satuan") == "ROLL"
+    # Four codes must NOT carry synthetic IDs — pending live RO match.
+    for kode in ("100463", "100464", "100488", "100489"):
+        row = next(r for r in cand["rows"] if r.get("kode") == kode)
+        mid = str(row.get("master_item_id") or "")
+        assert mid == ""
+        assert row.get("eligible_master") is False
+        assert row.get("match_status") == "PENDING_LIVE_MASTER"
 
 
 def test_build_and_write_new_version_without_overwrite(tmp_path, monkeypatch):

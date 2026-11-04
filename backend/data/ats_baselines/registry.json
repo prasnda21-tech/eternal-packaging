@@ -2,16 +2,19 @@
   "schema": "eternal.ats_ygy_baseline_registry.v1",
   "warehouse_id": "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24",
   "warehouse_code": "YGY-MAIN",
-  "active_baseline_id": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8",
-  "active_relpath": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8.json",
+  "active_baseline_id": "ygy_main_2026-11-02T232200+0700_draft_162",
+  "active_relpath": "archive/ygy_main_2026-11-02T232200+0700_draft_162.json",
+  "candidate_baseline_id": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8",
+  "candidate_relpath": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8.json",
   "history": [
     {
       "baseline_id": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8",
       "cutoff_at": "2026-11-04T22:45:00+07:00",
       "relpath": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8.json",
-      "source_sha256": "d8bef8b608c893f11f0d493141365498d5b084790bac9ccefa8d72e602c301cf",
+      "source_sha256": "e185ac285b294477d7d7ffedf5553a8cda97ee71d5a8bb9554d737201c8270e0",
       "row_count": 357,
-      "status": "DRAFT_NOT_ACTIVATED",
+      "status": "DRAFT_PENDING_LIVE_MASTER_MATCH",
+      "role": "CANDIDATE_PENDING_INSTALL",
       "source_meaning": "free blank goods already net of open orders at cutoff; Owner Accurate Stok Dapat Dijual; do not re-subtract open POs"
     },
     {
@@ -20,14 +23,13 @@
       "relpath": "archive/ygy_main_2026-11-02T232200+0700_draft_162.json",
       "source_sha256": "0464582e1d774d6e15a6eab0add64671df42703ec216522d8957cc306f990eb6",
       "row_count": 162,
-      "status": "DRAFT_NOT_ACTIVATED",
-      "source_meaning": "free blank goods not committed to a PO; Owner-defined Accurate ATS",
-      "archived_reason": "superseded_pending_tonight_recutover"
+      "status": "ACTIVE_UNTIL_APPROVED_SWITCH",
+      "source_meaning": "free blank goods not committed to a PO; Owner-defined Accurate ATS"
     }
   ],
   "notes": [
-    "Active baseline is versioned; do not overwrite archive files.",
-    "Tonight Owner free-stock Accurate file will become a new versioned baseline.",
-    "physical_stock_balances / ledger are never written by baseline install."
+    "Active pointer remains Nov-2 until Owner-approved install switches to candidate 357.",
+    "Production ATS mode may already be activated; do not re-activate or rewrite physical/ledger.",
+    "Switch pointer only via install package after live RO match + post-cutoff preview ACK."
   ]
 }

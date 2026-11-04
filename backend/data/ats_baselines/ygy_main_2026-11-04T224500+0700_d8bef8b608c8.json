@@ -1,11 +1,11 @@
 {
-  "status": "DRAFT_NOT_ACTIVATED",
+  "status": "DRAFT_PENDING_LIVE_MASTER_MATCH",
   "warehouse_id": "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24",
   "warehouse_code": "YGY-MAIN",
   "source_date": "2026-11-04",
   "cutoff_at": "2026-11-04T22:45:00+07:00",
   "cutoff_at_utc": "2026-11-04T15:45:00Z",
-  "source_sha256": "d8bef8b608c893f11f0d493141365498d5b084790bac9ccefa8d72e602c301cf",
+  "source_sha256": "e185ac285b294477d7d7ffedf5553a8cda97ee71d5a8bb9554d737201c8270e0",
   "source_file_name": "ATS_YGY_357_20261104.csv",
   "source_file_sha256": "31ec53244b8095044e336225681a17d654babe7c0303aa65aeadb9254ef6bfb3",
   "source_meaning": "free blank goods already net of open orders at cutoff; Owner Accurate Stok Dapat Dijual; do not re-subtract open POs",
@@ -2835,16 +2835,18 @@
       "nama": "Thinwall RoundBowl 750 Ml Victory + Lid",
       "satuan": "PCS",
       "accurate_ats": 0.0,
-      "master_item_id": "0da47651-44a2-564a-bab3-ce8fda010c18",
-      "eligible_master": true
+      "master_item_id": "",
+      "eligible_master": false,
+      "match_status": "PENDING_LIVE_MASTER"
     },
     {
       "kode": "100464",
       "nama": "Papper Tray Printing M",
       "satuan": "PCS",
       "accurate_ats": 0.0,
-      "master_item_id": "5d358a97-c2a7-5821-8129-033def35a8e5",
-      "eligible_master": true
+      "master_item_id": "",
+      "eligible_master": false,
+      "match_status": "PENDING_LIVE_MASTER"
     },
     {
       "kode": "100460",
@@ -2859,29 +2861,68 @@
       "nama": "Plastik Klip Pond Transparan 30 x 40",
       "satuan": "PCS",
       "accurate_ats": 500.0,
-      "master_item_id": "067f7a44-7ebe-562a-ba54-8b8ea5768673",
-      "eligible_master": true
+      "master_item_id": "",
+      "eligible_master": false,
+      "match_status": "PENDING_LIVE_MASTER"
     },
     {
       "kode": "100489",
       "nama": "LID Connect Inject Orange Glosy Starglas",
       "satuan": "PCS",
       "accurate_ats": 1000.0,
-      "master_item_id": "9a0c449b-bd66-50e0-bc45-4c83ed4eef54",
-      "eligible_master": true
+      "master_item_id": "",
+      "eligible_master": false,
+      "match_status": "PENDING_LIVE_MASTER"
     }
   ],
   "inactive_rows": [],
-  "unmatched_rows": [],
+  "unmatched_rows": [
+    {
+      "kode": "100463",
+      "nama": "Thinwall RoundBowl 750 Ml Victory + Lid",
+      "satuan": "PCS",
+      "qty": 0.0,
+      "reason": "NEED_LIVE_MASTER_MATCH",
+      "prior_synthetic_id_removed": "0da47651-44a2-564a-bab3-ce8fda010c18"
+    },
+    {
+      "kode": "100464",
+      "nama": "Papper Tray Printing M",
+      "satuan": "PCS",
+      "qty": 0.0,
+      "reason": "NEED_LIVE_MASTER_MATCH",
+      "prior_synthetic_id_removed": "5d358a97-c2a7-5821-8129-033def35a8e5"
+    },
+    {
+      "kode": "100488",
+      "nama": "Plastik Klip Pond Transparan 30 x 40",
+      "satuan": "PCS",
+      "qty": 500.0,
+      "reason": "NEED_LIVE_MASTER_MATCH",
+      "prior_synthetic_id_removed": "067f7a44-7ebe-562a-ba54-8b8ea5768673"
+    },
+    {
+      "kode": "100489",
+      "nama": "LID Connect Inject Orange Glosy Starglas",
+      "satuan": "PCS",
+      "qty": 1000.0,
+      "reason": "NEED_LIVE_MASTER_MATCH",
+      "prior_synthetic_id_removed": "9a0c449b-bd66-50e0-bc45-4c83ed4eef54"
+    }
+  ],
   "row_count": 357,
   "built_at": "2026-11-04T15:52:22Z",
-  "local_preview_note": {
-    "synthetic_master_item_ids_for_codes": [
+  "install_gate": {
+    "requires_live_ro_match": true,
+    "requires_post_cutoff_preview": true,
+    "do_not_activate_pointer_until_owner_ack": true,
+    "critical_codes_must_have_real_master_ids": [
       "100463",
       "100464",
       "100488",
       "100489"
-    ],
-    "reason": "codes absent from local artifact maps; rematch against live Mongo on VPS before activation"
-  }
+    ]
+  },
+  "eligible_count": 353,
+  "pending_live_master_count": 4
 }

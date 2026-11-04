@@ -188,7 +188,7 @@ def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_compl
     )
     gaps.append(
         "OLD_PO_CANCEL_SKIP_CONSEQUENCE: refusing RELEASE on pre-cutoff cancel without "
-        "proven opening reservation avoids inventing free stock; understated ATS is "
+        "proven opening reservation avoids inventing free stock; UNDERSTATED ATS is "
         "reported explicitly until Owner proves the reservation delta"
     )
     return gaps

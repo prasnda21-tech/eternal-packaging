@@ -1,6 +1,6 @@
-# ATS YGY-MAIN — cutover ulang (file Accurate malam ini)
+# ATS YGY-MAIN — cutover ulang (357 @ 2026-11-04T22:45+07)
 
-Status: **kode + preview/tes siap**. Tunggu file + cutoff Owner. **Tidak ada deploy/aktivasi dari agent.**
+Status: **paket pemasangan siap**. Production ATS mode **sudah activated** — installer hanya mengganti pointer baseline setelah RO evidence + Owner ACK. **Agent tidak mengaktifkan ulang / tidak menulis fisik/ledger.**
 
 ## Semantik baseline baru
 
@@ -9,64 +9,92 @@ Status: **kode + preview/tes siap**. Tunggu file + cutoff Owner. **Tidak ada dep
 | Isi file | Stok bebas Accurate sudah net pesanan pada cutoff |
 | Open PO | **Jangan** kurangi lagi seluruh PO terbuka |
 | Di luar file | **Tidak** dinolkan |
-| Inactive | Dilaporkan terpisah (`inactive_rows` / status EXCLUDED) |
+| Inactive | Dilaporkan terpisah (`INACTIVE.json` / status EXCLUDED) |
+| Missing / mismatch | Dilaporkan terpisah (`MISSING.json` / `MISMATCH.json`) |
+| Empat kode kritis | `100463` `100464` `100488` `100489` → **ID Mongo live nyata saja** (no synthetic) |
 | Fisik / ledger | **Tidak** ditulis |
-| Cutoff | Dari file Owner (bukan hardcode 2 Nov) |
-| Baseline lama | Diarsipkan di `backend/data/ats_baselines/archive/` + registry history |
+| Cutoff | `2026-11-04T22:45:00+07:00` |
+| Pointer aktif sekarang | Nov-2 (`ygy_main_2026-11-02T232200+0700_draft_162`) sampai install disetujui |
+| Candidate | `ygy_main_2026-11-04T224500+0700_d8bef8b608c8` (353 eligible + 4 pending live match) |
 
-## Ambil file Accurate (jeda operasional sesingkat mungkin)
+## 1) Script RO mandiri (satu file, siap unduh)
 
-1. Owner tentukan **waktu cutoff** (ISO + zona, contoh `2026-11-04T22:30:00+07:00`).
-2. Di Accurate, export **Stok Dapat Dijual** gudang YGY-MAIN **tepat pada/ setelah cutoff** dengan kolom minimal: `kode`, `satuan`, `qty` (nama opsional).
-3. Selama jeda cutoff → aktivasi: catat bahwa transaksi live tetap masuk collector `as_of=now` (RESERVE / SHIP_RESERVED / RELEASE / RECEIVE / REVERSE) — **jangan** mengunci angka dump.
-4. Serahkan file + cutoff ke agent/operator; jangan kirim password di chat.
+Agent **tidak punya akses Mongo live**. Semua bukti match + preview pasca-cutoff diambil dengan **satu** script:
 
-## Build baseline berversi (local / VPS admin, belum activate mode)
+`scripts/ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh`
+
+(Salinan unduhan juga di artifact run bila tersedia.)
 
 ```bash
-cd /opt/eternal-packaging-runtime/current/backend   # atau checkout branch
-python3 scripts/build_ats_ygy_baseline_from_accurate.py \
-  --file /path/StokDapatDijual_YGY.xlsx \
-  --cutoff 'YYYY-MM-DDTHH:MM:SS+07:00' \
-  --db-name eternal_packaging
-# cek JSON summary: eligible/inactive/unmatched + source_sha256
-# lalu aktifkan pointer registry (masih belum set ETERNAL_ATS_YGY_MODE):
-python3 scripts/build_ats_ygy_baseline_from_accurate.py \
-  --file /path/StokDapatDijual_YGY.xlsx \
-  --cutoff 'YYYY-MM-DDTHH:MM:SS+07:00' \
-  --activate
+# dari laptop Owner
+scp scripts/ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh eternaladmin@HOST:/tmp/
+ssh eternaladmin@HOST 'bash /tmp/ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh'
+# unduh tarball yang dicetak TGZ=...
+scp eternaladmin@HOST:/tmp/eternal_ro_ats_ygy_357_*.tgz ~/Downloads/
 ```
 
-Rollback pointer (tanpa hapus arsip):
+Script ini (READ-ONLY):
 
-```python
-from services.stock_ats_baseline_store import rollback_registry_to
-rollback_registry_to("ygy_main_2026-11-02T232200+0700_draft_162")
-```
+1. Mencocokkan **seluruh 357** `kode+satuan` ke `master_items` live.
+2. Menolak ID sintetik; empat kode kritis wajib ID nyata.
+3. Memisahkan `MISSING` / `INACTIVE` / `MISMATCH`.
+4. Menghitung preview dari transaksi live **setelah** cutoff sampai waktu pemeriksaan (bukan mengklaim `BASELINE_ONLY` sebagai saldo sekarang).
+5. Menulis `PREVIEW_TABLE.tsv` (baseline, penambahan, pengurangan, ats_akhir, status, gap) untuk semua kode.
+6. Memverifikasi konsistensi list/detail/export sample `100032` baseline **9000**.
+7. Menandai `SNAPSHOT_VS_CUTOFF=OWNER_STATED_FILE_EQUALS_CUTOFF_UNVERIFIED_BY_AGENT` (ketidakpastian jam file vs cutoff).
 
-## Preview SSI (draft_read, DB throwaway)
+Tidak mengubah registry, `ETERNAL_ATS_YGY_MODE`, saldo fisik, atau ledger.
+
+## 2) Preview lokal tanpa RO (bukan saldo sekarang)
 
 ```bash
 ETERNAL_ATS_YGY_MODE=draft_read \
-python3 scripts/preview_ats_ygy_ssi_local.py --q 100032
+ETERNAL_ATS_YGY_BASELINE_PATH=backend/data/ats_baselines/ygy_main_2026-11-04T224500+0700_d8bef8b608c8.json \
+python3 backend/scripts/preview_ats_ygy_ssi_local.py --q 100032
 ```
 
-Periksa: `ats_baseline` = qty file, `ats_sekarang` = baseline ± transaksi pasca-cutoff, `physical_qty` tidak diganti, gap terlihat jika evidence incomplete.
+Class `BASELINE_ONLY` di sini **bukan** saldo terkini — hanya angka file tanpa transaksi pasca-cutoff.
 
-## Aktivasi production (hanya setelah Owner ACK file+cutoff+preview)
+## 3) Paket pemasangan pointer (+ rollback)
 
-1. Deploy SHA branch ini (manual Owner).
-2. Pastikan registry `active` = baseline malam ini.
-3. Jalankan prosedur admin `VPS_ADMIN_ATS_YGY_ACTIVATE.sh` yang `EXPECT_SHA` = SHA deploy, cutoff proof = cutoff file.
-4. Bukti HTTP sample + `RESULT=ACTIVATED_READY|ACTIVATED_WITH_GAPS`.
-5. Rollback mode: `ETERNAL_ATS_YGY_MODE=off` atau `... rollback`; baseline file tetap bisa di-rollback via registry.
+`scripts/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh`
 
-## Pemeriksaan seluruh kode file
+Prasyarat:
 
-- [ ] Setiap baris file → master `kode+satuan` (unmatched tercatat)
-- [ ] Inactive terpisah, tidak memaksa ATS 0 pada SKU di luar file
-- [ ] Tidak ada RESERVE massal untuk seluruh PO pra-cutoff
-- [ ] Transaksi pasca-cutoff muncul sekali (tidak dobel ship)
-- [ ] Perubahan PO pra-cutoff hanya delta terbukti (`ats_reserved_qty_at_cutoff`) atau gap eksplisit
-- [ ] SSI list/detail/export ATS konsisten; fisik unreconciled = **Belum direkonsiliasi**
-- [ ] Rollback registry + mode off tersedia
+- Tarball RO sudah ditinjau (`MATCHED_BASELINE.json`, `PREVIEW_TABLE.tsv`, `CRITICAL_FOUR.json`).
+- Empat kode kritis = `MATCHED` dengan ID live.
+- `unmatched_rows` kosong.
+- Owner ACK snapshot file == cutoff.
+- Production mode tetap `activated` (script **tidak** menulis ulang mode).
+
+```bash
+# install pointer (bukan re-aktivasi mode)
+export ETERNAL_ATS_INSTALL_ACK=OWNER_ACK_RO_EVIDENCE_AND_SNAPSHOT
+sudo -i bash /path/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh install \
+  /path/eternal_ro_ats_ygy_357_*/MATCHED_BASELINE.json
+
+# rollback pointer ke baseline Nov-2 (100032=20000)
+sudo -i bash /path/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh rollback
+
+# status pointer
+sudo -i bash /path/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh status
+```
+
+Bukti sukses install: `PROOF_100032=PASS` (baseline 9000), cutoff `2026-11-04T22:45:00+07:00`, critical four OK.
+
+## 4) Pemeriksaan
+
+- [ ] RO: 357 matched (atau missing/inactive/mismatch terpisah + Owner putusan)
+- [ ] Critical four = ID live nyata
+- [ ] Preview class ≠ klaim `BASELINE_ONLY` sebagai current
+- [ ] `100032` baseline 9000 di list/detail/export
+- [ ] Snapshot vs cutoff di-ACK Owner
+- [ ] Install pointer hanya setelah ACK; mode tidak diubah
+- [ ] Rollback Nov-2 tersedia dan terbukti
+
+## Bukan dilakukan oleh agent
+
+- Aktivasi ulang `ETERNAL_ATS_YGY_MODE`
+- Mengubah pointer production sebelum install disetujui
+- Menulis `physical_stock_balances` / ledger
+- Membuat master otomatis / ID sintetik
