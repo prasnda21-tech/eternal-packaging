@@ -1622,7 +1622,7 @@ export default function PengirimanPesanan() {
                 hidden={deliveryFormTab !== "items"}
                 style={deliveryFormTab !== "items" ? { display: "none" } : undefined}
               >
-                {!multiPoMode && Array.isArray(poSummary?.deliveries) && poSummary.deliveries.length > 0 ? (
+                {canPrint && !multiPoMode && Array.isArray(poSummary?.deliveries) && poSummary.deliveries.some((d) => d?.id) ? (
                   <div
                     data-testid="existing-sj-reprint"
                     style={{
