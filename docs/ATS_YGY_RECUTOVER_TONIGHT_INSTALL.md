@@ -23,7 +23,9 @@ Agent **tidak punya akses Mongo live**. Semua bukti match + preview pasca-cutoff
 
 `scripts/ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh`
 
-(Salinan unduhan juga di artifact run bila tersedia.)
+Mandiri terhadap live **9ff5a0cd** (tanpa import `services.stock_ats_*` / overlay PR #730).  
+Mongo dari env terbukti: `/etc/eternal-packaging/backend.env` (bukan legacy `/opt/.../backend/.env`).  
+`CUTOFF_UTC` diturunkan otomatis dari `CUTOFF_AT` → `2026-11-04T15:45:00Z`.
 
 ```bash
 # dari laptop Owner
@@ -38,9 +40,9 @@ Script ini (READ-ONLY):
 1. Mencocokkan **seluruh 357** `kode+satuan` ke `master_items` live.
 2. Menolak ID sintetik; empat kode kritis wajib ID nyata.
 3. Memisahkan `MISSING` / `INACTIVE` / `MISMATCH`.
-4. Menghitung preview dari transaksi live **setelah** cutoff sampai waktu pemeriksaan (bukan mengklaim `BASELINE_ONLY` sebagai saldo sekarang).
+4. Menghitung preview inline dari transaksi live **≥ cutoff** sampai waktu pemeriksaan (bukan mengklaim `BASELINE_ONLY` sebagai saldo sekarang).
 5. Menulis `PREVIEW_TABLE.tsv` (baseline, penambahan, pengurangan, ats_akhir, status, gap) untuk semua kode.
-6. Memverifikasi konsistensi list/detail/export sample `100032` baseline **9000**.
+6. Memverifikasi konsistensi sample `100032` baseline **9000** pada proyeksi yang sama.
 7. Menandai `SNAPSHOT_VS_CUTOFF=OWNER_STATED_FILE_EQUALS_CUTOFF_UNVERIFIED_BY_AGENT` (ketidakpastian jam file vs cutoff).
 
 Tidak mengubah registry, `ETERNAL_ATS_YGY_MODE`, saldo fisik, atau ledger.

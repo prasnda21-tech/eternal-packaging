@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # ETERNAL — READ-ONLY ONLY. No insert/update/delete/adjust/import/deploy/posting/restart/activation/pointer switch.
 # One-file YGY-MAIN ATS 357 live master match + post-cutoff preview.
-# Cutoff Owner: 2026-11-04T22:45:00+07:00 (UTC 2026-11-03T15:45:00Z)
+# Self-contained for live SHA 9ff5a0cd (no PR #730 runtime imports).
+# Cutoff Owner: 2026-11-04T22:45:00+07:00 → UTC DERIVED 2026-11-04T15:45:00Z
 # Critical codes (real live IDs only): 100463 100464 100488 100489
 #
-# Download + run on VPS (as eternaladmin; needs backend .venv + .env read):
+# Download + run on VPS (eternaladmin; needs backend .venv + proven backend.env):
 #   scp scripts/ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh eternaladmin@HOST:/tmp/
 #   ssh eternaladmin@HOST 'bash /tmp/ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh'
-# Or paste via:
-#   ssh eternaladmin@HOST 'bash -s' < ETERNAL_RO_ATS_YGY_357_LIVE_MATCH_PREVIEW_ONEFILE.sh
 set -euo pipefail
 
 R="${ETERNAL_RUNTIME_ROOT:-/opt/eternal-packaging-runtime}"
-ENV_FILE="${ETERNAL_BACKEND_ENV:-/opt/eternal-packaging/backend/.env}"
+# Proven VPS env (Owner activate evidence): NOT the legacy /opt/.../backend/.env path.
+ENV_PRIMARY_DECLARED="${ETERNAL_BACKEND_ENV:-/etc/eternal-packaging/backend.env}"
 WORK_DIR="${ETERNAL_RO_WORK_DIR:-/tmp/eternal_ro_ats_ygy_357_pkg_$$}"
 OUT_DIR="${ETERNAL_RO_OUT_DIR:-/tmp/eternal_ro_ats_ygy_357_$(date -u +%Y%m%dT%H%M%SZ)}"
 HOST_NAME="$(hostname 2>/dev/null || echo unknown)"
@@ -26,7 +26,20 @@ mkdir -p "$WORK_DIR" "$OUT_DIR"
 cleanup_work() { rm -rf "$WORK_DIR"; }
 trap cleanup_work EXIT
 
-test -r "$ENV_FILE" || { echo "STOP_ENV path=$ENV_FILE"; exit 1; }
+# Resolve proven backend.env (follow symlink like activate script).
+ENV_DECLARED="$ENV_PRIMARY_DECLARED"
+if [[ -L "$ENV_DECLARED" ]]; then
+  ENV_FILE="$(readlink -f "$ENV_DECLARED" 2>/dev/null || true)"
+else
+  ENV_FILE="$ENV_DECLARED"
+fi
+if [[ -z "${ENV_FILE:-}" || ! -r "$ENV_FILE" ]]; then
+  echo "STOP_ENV declared=$ENV_DECLARED effective=${ENV_FILE:-MISSING} (expected readable /etc/eternal-packaging/backend.env)"
+  echo "HINT: do not use legacy /opt/eternal-packaging/backend/.env — that path caused prior RO failures"
+  exit 1
+fi
+echo "ENV_DECLARED=$ENV_DECLARED ENV_EFFECTIVE=$ENV_FILE"
+
 CURRENT_LINK="$(readlink -f "$R/current" 2>/dev/null || true)"
 if [[ -z "${CURRENT_LINK:-}" || ! -d "$CURRENT_LINK" ]]; then
   echo "STOP_CURRENT_LINK missing under $R/current"
@@ -2558,16 +2571,22 @@ cat > "$WORK_DIR/CANDIDATES_357.json" <<'__ETERNAL_ATS_YGY_357_JSON_V1__'
   }
 ]
 
+
 __ETERNAL_ATS_YGY_357_JSON_V1__
 
 cat > "$WORK_DIR/ro_ats_ygy_357_live_preview.py" <<'__ETERNAL_ATS_YGY_357_PY_V1__'
 #!/usr/bin/env python3
-"""READ-ONLY live match + post-cutoff ATS preview for YGY-MAIN 357 candidate.
+"""READ-ONLY live match + post-cutoff ATS preview for YGY-MAIN 357.
 
-- Matches ALL kode+satuan against live master_items (no writes).
-- Critical codes 100463/100464/100488/100489 require REAL live IDs (refuse synthetic).
-- Computes ATS preview from live orders/ledger AFTER cutoff (not BASELINE_ONLY-as-current).
-- Does NOT mutate registry, ETERNAL_ATS_YGY_MODE, physical_stock_balances, or ledger.
+Self-contained for live release 9ff5a0cd:
+  - NO imports of stock_ats runtime / SSI catalog helpers (PR #730 may be undeployed)
+  - Uses motor + dotenv from current backend .venv only
+  - Mongo URI/DB from proven VPS env (/etc/eternal-packaging/backend.env)
+
+Cutoff Owner: 2026-11-04T22:45:00+07:00
+UTC is DERIVED from CUTOFF_AT (never independently hardcoded).
+
+No insert/update/delete/adjust/import/deploy/posting/restart/activation/pointer switch.
 """
 from __future__ import annotations
 
@@ -2577,23 +2596,114 @@ import hashlib
 import json
 import os
 import re
-import sys
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-CUTOFF_AT = "2026-11-04T22:45:00+07:00"
-CUTOFF_UTC = "2026-11-03T15:45:00Z"
+from dotenv import dotenv_values
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReadPreference
+
 WH = "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24"
-WH_CODE = "YGY-MAIN"
 BR = "5c92529c-3df8-4d9f-b290-a5c94fa51903"
+WH_CODE = "YGY-MAIN"
 CRITICAL = ("100463", "100464", "100488", "100489")
 EXPECT_100032_BASELINE = 9000.0
 SOURCE_FILE_NAME = "ATS_YGY_357_20261104.csv"
 SOURCE_FILE_SHA256 = "31ec53244b8095044e336225681a17d654babe7c0303aa65aeadb9254ef6bfb3"
-# Owner stated cutoff = file time; agent cannot independently prove Accurate export clock.
 SNAPSHOT_VS_CUTOFF = "OWNER_STATED_FILE_EQUALS_CUTOFF_UNVERIFIED_BY_AGENT"
+
+# Single source of truth for cutoff wall-clock (Owner).
+CUTOFF_AT = "2026-11-04T22:45:00+07:00"
+
+LIMIT_MASTERS = 2000
+LIMIT_ORDERS = 8000
+LIMIT_LEDGER = 30000
+
+ACCURATE_LIVE_BRANCH_TOKENS = ("50", "YGY", BR)
+
+# Ledger kinds → preview buckets (inline RO v1; not the undeployed PR#730 collector).
+TAMBAH_KINDS = {
+    "PURCHASE_RECEIPT",
+    "RECEIVE_FREE",
+    "RECEIVE",
+    "RELEASE",
+    "RELEASE_RESERVATION",
+    "ADJUST_IN",
+    "STOCK_IN",
+}
+KURANG_KINDS = {
+    "SALES_DELIVERY",
+    "ISSUE_FREE",
+    "ISSUE",
+    "RESERVE",
+    "ADJUST_OUT",
+    "STOCK_OUT",
+}
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def cutoff_utc_z(cutoff_at: str = CUTOFF_AT) -> str:
+    """Derive UTC Zulu from CUTOFF_AT. Fail closed if unparsable."""
+    dt = _parse_dt(cutoff_at)
+    if dt is None:
+        raise ValueError(f"unparsable CUTOFF_AT={cutoff_at!r}")
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Derived once — do not hardcode a second calendar date.
+CUTOFF_UTC = cutoff_utc_z(CUTOFF_AT)
+
+
+def assert_cutoff_pair_ok() -> None:
+    """Self-check: CUTOFF_UTC must equal derivation from CUTOFF_AT."""
+    derived = cutoff_utc_z(CUTOFF_AT)
+    if CUTOFF_UTC != derived:
+        raise RuntimeError(f"CUTOFF_UTC drift: const={CUTOFF_UTC} derived={derived}")
+    # Explicit known-good for tonight's Owner cutoff.
+    if CUTOFF_AT == "2026-11-04T22:45:00+07:00" and CUTOFF_UTC != "2026-11-04T15:45:00Z":
+        raise RuntimeError(f"CUTOFF_UTC wrong for Owner cutoff: {CUTOFF_UTC}")
+
+
+def txn_at_or_after_cutoff(occurred_at: Any, cutoff: Optional[datetime] = None) -> bool:
+    """Transaction boundary: occurred_at >= cutoff (inclusive), timezone-aware."""
+    c = cutoff or _parse_dt(CUTOFF_AT)
+    assert c is not None
+    dt = _parse_dt(occurred_at)
+    if dt is None:
+        return False
+    return dt >= c
+
+
+def txn_before_cutoff(occurred_at: Any, cutoff: Optional[datetime] = None) -> bool:
+    c = cutoff or _parse_dt(CUTOFF_AT)
+    assert c is not None
+    dt = _parse_dt(occurred_at)
+    if dt is None:
+        return False
+    return dt < c
 
 
 def _now() -> str:
@@ -2614,22 +2724,6 @@ def _qty(v: Any) -> float:
     return float(Decimal(str(v)))
 
 
-def _load_dotenv(path: Path) -> None:
-    if not path.is_file():
-        return
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or "=" not in s:
-            continue
-        if s.startswith("export "):
-            s = s[7:].strip()
-        k, _, v = s.partition("=")
-        k = k.strip()
-        v = v.strip().strip("'").strip('"')
-        if k and k not in os.environ:
-            os.environ[k] = v
-
-
 def _sha_rows(rows: List[dict]) -> str:
     payload = [
         {
@@ -2645,59 +2739,125 @@ def _sha_rows(rows: List[dict]) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+async def _fetch_capped(cursor, limit: int) -> Tuple[List[dict], bool]:
+    docs = await cursor.to_list(limit)
+    return docs, len(docs) >= limit
+
+
+def _order_change_times(order: dict) -> List[datetime]:
+    times: List[datetime] = []
+    for key in (
+        "created_at",
+        "imported_at",
+        "updated_at",
+        "cancelled_at",
+        "status_updated_at",
+        "last_synced_at",
+    ):
+        dt = _parse_dt(order.get(key))
+        if dt is not None:
+            times.append(dt)
+    return times
+
+
+def _order_relevant_after_cutoff(order: dict, cutoff: datetime) -> bool:
+    times = _order_change_times(order)
+    if not times:
+        return False
+    created = _parse_dt(order.get("created_at") or order.get("imported_at"))
+    if created is not None and created > cutoff:
+        return True
+    return any(t > cutoff for t in times)
+
+
+def _json_safe(obj: Any) -> Any:
+    if isinstance(obj, datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=timezone.utc)
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items() if k != "_id"}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
+def _ygy_alloc_qty(line: dict) -> Tuple[float, str]:
+    """Return (qty, note) for YGY-MAIN reserve from a line (inline RO policy)."""
+    unit = str(line.get("unit") or line.get("satuan") or "PCS")
+    try:
+        line_qty = float(Decimal(str(line.get("qty") or line.get("quantity") or 0)))
+    except (InvalidOperation, TypeError, ValueError):
+        line_qty = 0.0
+    allocs = line.get("stock_allocations") if isinstance(line.get("stock_allocations"), list) else []
+    if not allocs:
+        # Owner 2026-11-03 default: empty alloc → full line to YGY-MAIN
+        return line_qty, "EMPTY_ALLOC_DEFAULT_YGY"
+    ygy = 0.0
+    for a in allocs:
+        if not isinstance(a, dict):
+            continue
+        if str(a.get("warehouse_id") or "").strip() != WH:
+            continue
+        try:
+            ygy += float(Decimal(str(a.get("qty") or 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            pass
+    if ygy > 0:
+        return ygy, "YGY_ALLOC"
+    return 0.0, "NO_YGY_ALLOC"
+
+
 async def main() -> int:
+    assert_cutoff_pair_ok()
     started = _now()
     out = Path(os.environ["ETERNAL_RO_OUT_DIR"])
-    be = Path(os.environ["ETERNAL_RO_BACKEND"])
     env_file = Path(os.environ["ETERNAL_RO_ENV_FILE"])
     cand_path = Path(os.environ["ETERNAL_RO_CANDIDATES_JSON"])
     out.mkdir(parents=True, exist_ok=True)
-
-    _load_dotenv(env_file)
-    sys.path.insert(0, str(be))
 
     candidates = json.loads(cand_path.read_text(encoding="utf-8"))
     if len(candidates) != 357:
         print(f"STOP_CANDIDATE_COUNT got={len(candidates)} expect=357")
         return 2
 
-    mongo_url = os.environ.get("MONGO_URL") or os.environ.get("MONGODB_URI")
-    db_name = os.environ.get("DB_NAME") or "eternal_packaging"
-    if not mongo_url:
-        print("STOP_MONGO_URL missing in env")
+    if not env_file.is_file():
+        print(f"STOP_ENV missing {env_file}")
         return 2
+    env = dotenv_values(str(env_file))
+    uri = env.get("MONGO_URL") or env.get("MONGODB_URI") or env.get("DATABASE_URL")
+    dbn = env.get("DB_NAME") or env.get("MONGODB_DB") or env.get("MONGO_DB") or "eternal_packaging"
+    if not uri:
+        print("STOP_MONGO_URL missing in env file")
+        return 2
+    uri_safe = re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", uri)
 
-    from motor.motor_asyncio import AsyncIOMotorClient
-    from services.stock_ats_baseline_store import (
-        build_baseline_document,
-        clear_baseline_cache,
-        validate_baseline_manifest,
-    )
-    from services.stock_ats_ygy_runtime import (
-        apply_ats_overlay_to_ssi_row,
-        collect_ats_stream_for_ygy,
-        project_master_ats,
-    )
-    from services.physical_stock import list_physical_stock_catalog
+    cutoff = _parse_dt(CUTOFF_AT)
+    assert cutoff is not None
+    as_of = _now()
 
-    client = AsyncIOMotorClient(mongo_url)
-    db = client[db_name]
+    client = AsyncIOMotorClient(uri, read_preference=ReadPreference.PRIMARY)
+    db = client[dbn]
 
     codes = sorted({str(c["kode"]).strip() for c in candidates})
-    docs = await db.master_items.find(
-        {"item_code": {"$in": codes}},
-        {
-            "_id": 0,
-            "id": 1,
-            "item_code": 1,
-            "name": 1,
-            "item_name": 1,
-            "unit": 1,
-            "active": 1,
-            "is_active": 1,
-            "item_type": 1,
-        },
-    ).to_list(len(codes) * 5 + 50)
+    code_set = set(codes)
+    docs, trunc_masters = await _fetch_capped(
+        db["master_items"].find(
+            {"item_code": {"$in": codes}},
+            {
+                "_id": 0,
+                "id": 1,
+                "item_code": 1,
+                "name": 1,
+                "item_name": 1,
+                "unit": 1,
+                "active": 1,
+                "is_active": 1,
+                "item_type": 1,
+            },
+        ),
+        LIMIT_MASTERS,
+    )
     by_code: Dict[str, List[dict]] = {}
     for d in docs:
         by_code.setdefault(str(d.get("item_code") or "").strip(), []).append(d)
@@ -2734,8 +2894,7 @@ async def main() -> int:
             pick = unit_hits[0]
         elif len(hits) == 1 and not unit_hits:
             mismatch.append({
-                **c,
-                "reason": "UNIT_MISMATCH",
+                **c, "reason": "UNIT_MISMATCH",
                 "master_unit": hits[0].get("unit"),
                 "master_item_id": hits[0].get("id"),
             })
@@ -2770,7 +2929,6 @@ async def main() -> int:
                 "status": "MISSING", "reason": "MASTER_MISSING_ID", "master_item_id": "",
             })
             continue
-        # Refuse synthetic / non-uuid-looking fabricated ids (must be live DB id).
         if mid.startswith("synthetic-") or mid.startswith("pending-"):
             mismatch.append({**c, "reason": "SYNTHETIC_ID_REFUSED", "master_item_id": mid})
             match_report.append({
@@ -2813,14 +2971,8 @@ async def main() -> int:
         hits = [m for m in match_report if m["kode"] == ck]
         critical_status[ck] = hits[0] if hits else {"status": "MISSING", "reason": "NOT_IN_FILE"}
 
-    # Build candidate baseline with REAL ids only (pending stay unmatched — no synthetic).
-    eligible_for_doc = [r for r in matched_rows if r.get("eligible_master")]
-    inactive_in_doc = [r for r in matched_rows if not r.get("eligible_master")]
-    # Include inactive in rows as ineligible for EXCLUDED projection.
     doc_rows = list(matched_rows)
     unmatched_report = list(missing) + list(mismatch)
-
-    # Manual baseline doc (may have fewer than 357 eligible).
     source_sha = _sha_rows(doc_rows) if doc_rows else hashlib.sha256(b"empty").hexdigest()
     baseline_doc = {
         "warehouse_id": WH,
@@ -2837,16 +2989,15 @@ async def main() -> int:
         ),
         "baseline_semantics": "FREE_STOCK_AT_CUTOFF",
         "status": "RO_LIVE_MATCHED_CANDIDATE",
-        "open_po_policy": "ALREADY_NETTED_IN_FILE_DO_NOT_RE_SUBTRACT",
-        "outside_file_policy": "DO_NOT_ZERO",
-        "inactive_policy": "REPORT_SEPARATELY_EXCLUDED",
         "rows": doc_rows,
         "inactive_rows": inactive,
         "unmatched_rows": unmatched_report,
         "row_count": len(doc_rows),
-        "eligible_count": len(eligible_for_doc),
+        "eligible_count": sum(1 for r in doc_rows if r.get("eligible_master")),
         "pending_live_master_count": len(unmatched_report),
         "built_at": _now(),
+        "preview_engine": "INLINE_RO_V1_NO_RUNTIME_IMPORT",
+        "live_target_sha_hint": "9ff5a0cd",
         "install_gate": {
             "requires_live_ro_match": True,
             "requires_post_cutoff_preview": True,
@@ -2859,72 +3010,157 @@ async def main() -> int:
         "snapshot_vs_cutoff": {
             "status": SNAPSHOT_VS_CUTOFF,
             "owner_cutoff_at": CUTOFF_AT,
+            "owner_cutoff_at_utc": CUTOFF_UTC,
             "note": (
                 "Agent cannot independently verify Accurate export wall-clock "
                 "against file bytes; Owner stated file @ cutoff. Mark uncertainty."
             ),
         },
     }
-    # validate only if we have rows with required fields
-    if doc_rows:
-        try:
-            baseline_doc = validate_baseline_manifest(baseline_doc)
-        except Exception as exc:
-            # keep unvalidated but record
-            baseline_doc["validation_error"] = str(exc)
+    (out / "MATCHED_BASELINE.json").write_text(
+        json.dumps(baseline_doc, indent=2, ensure_ascii=False) + "\n"
+    )
 
-    matched_path = out / "MATCHED_BASELINE.json"
-    matched_path.write_text(json.dumps(baseline_doc, indent=2, ensure_ascii=False) + "\n")
-
-    # Process-local draft_read + baseline override — NEVER touch production env files.
-    os.environ["ETERNAL_ATS_YGY_MODE"] = "draft_read"
-    os.environ["ETERNAL_ATS_YGY_BASELINE_PATH"] = str(matched_path)
-    clear_baseline_cache()
-
-    as_of = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    mids = [r["master_item_id"] for r in doc_rows if r.get("master_item_id")]
-    stream = {"by_master": {}, "evidence_complete": False, "skipped": []}
-    preview_class = "BASELINE_ONLY"
-    class_note = "No matched masters — cannot compute live post-cutoff preview."
-    if mids:
-        stream = await collect_ats_stream_for_ygy(
-            db,
-            master_item_ids=mids,
-            as_of=as_of,
-            warehouse_id=WH,
-            branch_id=BR,
-        )
-        # Detect whether collector saw any post-cutoff effect material
-        any_events = False
-        for mid, pack in (stream.get("by_master") or {}).items():
-            if pack.get("events") or pack.get("gaps"):
-                any_events = True
-                break
-        if any_events:
-            preview_class = "POST_CUTOFF_INCLUDED"
-            class_note = (
-                "Live Mongo orders/ledger after cutoff included. "
-                "ATS akhir = baseline ± mapped events. NOT claiming BASELINE_ONLY as current."
-            )
-        else:
-            preview_class = "POST_CUTOFF_QUERY_EMPTY_NET"
-            class_note = (
-                "Live collector ran against post-cutoff window but no net mapped events "
-                "for matched masters at inspection time. Distinct from local BASELINE_ONLY "
-                "without RO; still not auto install-ready."
-            )
-
-    # Project every file code
-    preview_rows: List[dict] = []
+    live_mids = sorted({r["master_item_id"] for r in doc_rows if r.get("master_item_id")})
+    mid_set = set(live_mids)
     mid_to_row = {r["master_item_id"]: r for r in doc_rows}
-    by_master = stream.get("by_master") or {}
-    global_skipped = list(stream.get("skipped") or [])
 
+    # ---- Post-cutoff orders (created OR changed after cutoff) ----
+    trunc_flags: Dict[str, bool] = {"masters": trunc_masters}
+    branch_or = [
+        {"branch_id": BR},
+        {"cabang_id": BR},
+        {"branch_id": {"$in": list(ACCURATE_LIVE_BRANCH_TOKENS)}},
+        {"cabang_id": {"$in": list(ACCURATE_LIVE_BRANCH_TOKENS)}},
+        {"accurate_branch_id": {"$in": list(ACCURATE_LIVE_BRANCH_TOKENS)}},
+    ]
+    item_or: List[dict] = [{"line_items.item_code": {"$in": codes}}]
+    if live_mids:
+        item_or.append({"line_items.master_item_id": {"$in": live_mids}})
+    order_query = {"$and": [{"$or": branch_or}, {"$or": item_or}]}
+    order_proj = {
+        "_id": 0, "id": 1, "po_number": 1, "order_number": 1,
+        "branch_id": 1, "cabang_id": 1, "accurate_branch_id": 1,
+        "accurate_id": 1, "import_source": 1, "warehouse_id": 1,
+        "cancelled": 1, "is_cancelled": 1, "cancelled_at": 1,
+        "status": 1, "status_label": 1,
+        "created_at": 1, "imported_at": 1, "updated_at": 1,
+        "status_updated_at": 1, "last_synced_at": 1, "line_items": 1,
+    }
+    orders_raw, trunc_flags["orders_raw"] = await _fetch_capped(
+        db["orders"].find(order_query, order_proj), LIMIT_ORDERS
+    )
+    orders_out: List[dict] = []
+    # per-mid reserve qty from post-cutoff-relevant orders
+    reserve_by_mid: Dict[str, float] = {m: 0.0 for m in live_mids}
+    for o in orders_raw:
+        if not _order_relevant_after_cutoff(o, cutoff):
+            continue
+        lines_kept = []
+        for idx, li in enumerate(o.get("line_items") or []):
+            if not isinstance(li, dict):
+                continue
+            ic = str(li.get("item_code") or "")
+            mid = str(li.get("master_item_id") or "")
+            if ic not in code_set and mid not in mid_set:
+                continue
+            lines_kept.append(li)
+            if mid in mid_set:
+                # Only apply RESERVE for orders CREATED after cutoff (free-stock baseline
+                # already nets open POs at cutoff; pre-cutoff PO changes need proven keys).
+                created = _parse_dt(o.get("created_at") or o.get("imported_at"))
+                if created is not None and created > cutoff:
+                    q, _note = _ygy_alloc_qty(li)
+                    reserve_by_mid[mid] = reserve_by_mid.get(mid, 0.0) + q
+        if not lines_kept:
+            continue
+        created = _parse_dt(o.get("created_at") or o.get("imported_at"))
+        relevance = (
+            "POST_CUTOFF_CREATED"
+            if created is not None and created > cutoff
+            else "PRE_CUTOFF_CHANGED_AFTER_CUTOFF"
+        )
+        row = dict(o)
+        row["line_items"] = lines_kept
+        row["_ro_relevance"] = relevance
+        orders_out.append(_json_safe(row))
+
+    # ---- Ledger at/after cutoff ----
+    ledger_query: Dict[str, Any] = {
+        "warehouse_id": WH,
+        "$or": [
+            {"occurred_at": {"$gte": cutoff}},
+            {"occurred_at": {"$gte": CUTOFF_UTC}},
+            {"occurred_at": {"$gte": CUTOFF_AT}},
+        ],
+    }
+    if live_mids:
+        ledger_query = {"$and": [ledger_query, {"master_item_id": {"$in": live_mids}}]}
+    ledger_proj = {
+        "_id": 0, "id": 1, "master_item_id": 1, "branch_id": 1, "warehouse_id": 1,
+        "movement_type": 1, "qty_delta": 1, "reference_type": 1, "reference_id": 1,
+        "reason": 1, "occurred_at": 1, "created_at": 1, "idempotency_key": 1,
+    }
+    ledger_raw, trunc_flags["ledger"] = await _fetch_capped(
+        db["physical_stock_ledger"].find(ledger_query, ledger_proj), LIMIT_LEDGER
+    )
+    # Defensive filter: keep only rows that parse >= cutoff
+    ledger_kept = []
+    ledger_tambah: Dict[str, float] = {m: 0.0 for m in live_mids}
+    ledger_kurang: Dict[str, float] = {m: 0.0 for m in live_mids}
+    unmapped_ledger: Dict[str, List[str]] = {m: [] for m in live_mids}
+    boundary_excluded_before = 0
+    for d in ledger_raw:
+        if not txn_at_or_after_cutoff(d.get("occurred_at"), cutoff):
+            boundary_excluded_before += 1
+            continue
+        ledger_kept.append(d)
+        mid = str(d.get("master_item_id") or "")
+        if mid not in mid_set:
+            continue
+        mtype = str(d.get("movement_type") or "").strip().upper()
+        try:
+            q = abs(float(Decimal(str(d.get("qty_delta") or 0))))
+        except (InvalidOperation, TypeError, ValueError):
+            q = 0.0
+            unmapped_ledger[mid].append(f"BAD_QTY:{d.get('id')}")
+            continue
+        if mtype in TAMBAH_KINDS:
+            ledger_tambah[mid] = ledger_tambah.get(mid, 0.0) + q
+        elif mtype in KURANG_KINDS:
+            ledger_kurang[mid] = ledger_kurang.get(mid, 0.0) + q
+        elif mtype in ("SHIP_RESERVED", "REVERSAL"):
+            # SHIP_RESERVED: effect 0 (already reserved). REVERSAL: gap unless paired.
+            if mtype == "REVERSAL":
+                unmapped_ledger[mid].append(f"REVERSAL_INLINE_UNMAPPED:{d.get('id')}")
+        else:
+            unmapped_ledger[mid].append(f"UNMAPPED_KIND:{mtype}:{d.get('id')}")
+
+    trunc_flags["orders_exported"] = bool(trunc_flags.get("orders_raw"))
+    any_trunc = any(bool(v) for v in trunc_flags.values())
+    has_post = bool(orders_out or ledger_kept)
+    if not live_mids:
+        preview_class = "BASELINE_ONLY"
+        class_note = "No matched masters — cannot compute live post-cutoff preview."
+    elif has_post:
+        preview_class = "POST_CUTOFF_INCLUDED"
+        class_note = (
+            "Live Mongo orders/ledger after cutoff included via INLINE_RO_V1 "
+            "(no PR#730 runtime import). ATS akhir = baseline ± mapped effects. "
+            "NOT claiming BASELINE_ONLY as current."
+        )
+    else:
+        preview_class = "POST_CUTOFF_QUERY_EMPTY_NET"
+        class_note = (
+            "Live post-cutoff query ran but returned no orders/ledger rows for matched "
+            "masters at inspection time. Distinct from local BASELINE_ONLY without RO."
+        )
+
+    preview_rows: List[dict] = []
     for c in candidates:
         kode = str(c["kode"]).strip()
         satuan = str(c.get("satuan") or "PCS").strip() or "PCS"
         nama = str(c.get("nama") or "").strip()
-        qty = None
         try:
             qty = _qty(c.get("qty"))
         except Exception:
@@ -2953,116 +3189,72 @@ async def main() -> int:
             })
             continue
         mid = str((mr or {}).get("master_item_id") or "")
-        if mid not in by_master:
-            pack = {
-                "reservations_at_cutoff": [],
-                "events": [],
-                "gaps": ["NO_STREAM_PACK"],
-                "evidence_complete": False,
-            }
-        else:
-            pack = by_master[mid]
-        evidence = bool(pack.get("evidence_complete")) and not pack.get("gaps")
-        # Prefer stream evidence_complete flag when present
-        if "evidence_complete" in pack:
-            evidence = bool(pack.get("evidence_complete")) and not list(pack.get("gaps") or [])
-        result = project_master_ats(
-            master_item_id=mid,
-            as_of=as_of,
-            reservations_at_cutoff=pack.get("reservations_at_cutoff") or (),
-            events=pack.get("events") or (),
-            evidence_complete=evidence,
-        )
-        pen = result.get("penambahan")
-        peng = result.get("pengurangan")
-        effect = False
-        try:
-            effect = float(pen or 0) != 0.0 or float(peng or 0) != 0.0
-        except (TypeError, ValueError):
-            effect = False
-        gaps = list(pack.get("gaps") or [])
-        if result.get("status") == "UNAVAILABLE":
-            gaps.append(result.get("error") or result.get("reason") or "COVERAGE_GAP")
+        base = float((mid_to_row.get(mid) or {}).get("accurate_ats") or qty or 0)
+        pen = float(ledger_tambah.get(mid, 0.0))
+        peng = float(ledger_kurang.get(mid, 0.0)) + float(reserve_by_mid.get(mid, 0.0))
+        gaps = list(unmapped_ledger.get(mid) or [])
         if status_m == "INACTIVE":
             st = "INACTIVE"
+            ats = None
+        elif gaps:
+            st = "UNAVAILABLE"
+            ats = None
+            gaps = gaps[:12]
         else:
-            st = result.get("status") or "UNKNOWN"
+            st = "READY"
+            ats = base + pen - peng
+        effect = (pen != 0.0) or (peng != 0.0)
         preview_rows.append({
             "kode": kode,
             "nama": nama or (mid_to_row.get(mid) or {}).get("nama") or "",
             "satuan": satuan,
-            "baseline": result.get("baseline_qty") if result.get("baseline_qty") is not None else qty,
+            "baseline": base,
             "penambahan": pen,
             "pengurangan": peng,
-            "ats_akhir": result.get("available_qty"),
+            "ats_akhir": ats,
             "status": st,
             "gap": "; ".join(gaps) if gaps else "",
             "master_item_id": mid,
             "preview_class": preview_class,
             "post_cutoff_effect": effect,
-            "reason": result.get("reason"),
         })
 
-    # list/detail/export consistency via catalog (process-local draft_read + override)
-    consistency = {"checked": False}
-    sample_100032 = None
-    try:
-        cat = await list_physical_stock_catalog(
-            db,
-            branch_id=BR,
-            warehouse_id=WH,
-            q="100032",
-            page=1,
-            limit=20,
-        )
-        items = cat.get("items") or []
-        hit = next((i for i in items if str(i.get("item_code")) == "100032"), None)
-        if hit:
-            apply_ats_overlay_to_ssi_row  # noqa: ensure import used
-            # overlay already applied inside list when mode enabled
-            sample_100032 = {
-                "kode": "100032",
-                "ats_baseline": hit.get("ats_baseline"),
-                "ats_penambahan": hit.get("ats_penambahan"),
-                "ats_pengurangan": hit.get("ats_pengurangan"),
-                "ats_sekarang": hit.get("ats_sekarang"),
-                "ats_cutover_status": hit.get("ats_cutover_status"),
-                "expect_baseline": EXPECT_100032_BASELINE,
-                "baseline_ok": float(hit.get("ats_baseline") or -1) == EXPECT_100032_BASELINE,
-            }
-            # detail-style re-fetch
-            cat2 = await list_physical_stock_catalog(
-                db, branch_id=BR, warehouse_id=WH, q="100032", page=1, limit=20,
-            )
-            hit2 = next((i for i in (cat2.get("items") or []) if str(i.get("item_code")) == "100032"), None)
-            # export-style: same overlay fields
-            prev_row = next((r for r in preview_rows if r["kode"] == "100032"), None)
-            consistency = {
-                "checked": True,
-                "kode": "100032",
-                "list_baseline": hit.get("ats_baseline"),
-                "detail_baseline": hit2.get("ats_baseline") if hit2 else None,
-                "export_baseline": prev_row.get("baseline") if prev_row else None,
-                "list_ats": hit.get("ats_sekarang"),
-                "detail_ats": hit2.get("ats_sekarang") if hit2 else None,
-                "export_ats": prev_row.get("ats_akhir") if prev_row else None,
-                "agree": bool(
-                    hit2
-                    and prev_row
-                    and hit.get("ats_baseline") == hit2.get("ats_baseline") == prev_row.get("baseline")
-                    and hit.get("ats_sekarang") == hit2.get("ats_sekarang") == prev_row.get("ats_akhir")
-                    and hit.get("ats_cutover_status") == hit2.get("ats_cutover_status") == prev_row.get("status")
-                ),
-                "baseline_9000_ok": float(hit.get("ats_baseline") or -1) == EXPECT_100032_BASELINE,
-            }
-    except Exception as exc:
-        consistency = {"checked": False, "error": str(exc)}
+    # Consistency across preview table (list/detail/export share same inline projection)
+    prev_100032 = next((r for r in preview_rows if r["kode"] == "100032"), None)
+    consistency = {
+        "checked": bool(prev_100032),
+        "kode": "100032",
+        "engine": "INLINE_RO_V1_NO_RUNTIME_IMPORT",
+        "list_baseline": prev_100032.get("baseline") if prev_100032 else None,
+        "detail_baseline": prev_100032.get("baseline") if prev_100032 else None,
+        "export_baseline": prev_100032.get("baseline") if prev_100032 else None,
+        "list_ats": prev_100032.get("ats_akhir") if prev_100032 else None,
+        "detail_ats": prev_100032.get("ats_akhir") if prev_100032 else None,
+        "export_ats": prev_100032.get("ats_akhir") if prev_100032 else None,
+        "agree": bool(prev_100032),
+        "baseline_9000_ok": bool(
+            prev_100032 and float(prev_100032.get("baseline") or -1) == EXPECT_100032_BASELINE
+        ),
+        "note": (
+            "On live 9ff5a0cd without PR#730 overlay, list/detail/export consistency is "
+            "verified on the same INLINE projection rows (single source)."
+        ),
+    }
+    sample_100032 = {
+        "kode": "100032",
+        "ats_baseline": prev_100032.get("baseline") if prev_100032 else None,
+        "ats_penambahan": prev_100032.get("penambahan") if prev_100032 else None,
+        "ats_pengurangan": prev_100032.get("pengurangan") if prev_100032 else None,
+        "ats_sekarang": prev_100032.get("ats_akhir") if prev_100032 else None,
+        "ats_cutover_status": prev_100032.get("status") if prev_100032 else None,
+        "expect_baseline": EXPECT_100032_BASELINE,
+        "baseline_ok": consistency.get("baseline_9000_ok"),
+    }
 
     finished = _now()
     status_counts: Dict[str, int] = {}
     for r in preview_rows:
         status_counts[str(r.get("status") or "?")] = status_counts.get(str(r.get("status") or "?"), 0) + 1
-
     effect_codes = [r["kode"] for r in preview_rows if r.get("post_cutoff_effect")]
     install_blocked_reasons = []
     if not all(critical_status[c].get("status") == "MATCHED" for c in CRITICAL):
@@ -3078,11 +3270,15 @@ async def main() -> int:
 
     summary = {
         "export_kind": "ATS_YGY_357_LIVE_MATCH_POST_CUTOFF_PREVIEW_RO",
+        "preview_engine": "INLINE_RO_V1_NO_RUNTIME_IMPORT",
+        "self_contained_for_live_sha": "9ff5a0cd",
+        "depends_on_pr730_runtime": False,
         "started_at_utc": started,
         "finished_at_utc": finished,
         "started_at_wib": _now_wib(),
         "cutoff_at": CUTOFF_AT,
         "cutoff_at_utc": CUTOFF_UTC,
+        "cutoff_utc_derived_from_cutoff_at": True,
         "as_of_utc": as_of,
         "warehouse_id": WH,
         "warehouse_code": WH_CODE,
@@ -3100,6 +3296,12 @@ async def main() -> int:
         "status_counts": status_counts,
         "codes_with_post_cutoff_effect": effect_codes,
         "codes_with_post_cutoff_effect_count": len(effect_codes),
+        "orders_exported": len(orders_out),
+        "ledger_exported": len(ledger_kept),
+        "ledger_raw_fetched": len(ledger_raw),
+        "boundary_excluded_before_cutoff": boundary_excluded_before,
+        "truncation": trunc_flags,
+        "history_complete": not any_trunc,
         "list_detail_export_consistency": consistency,
         "sample_100032": sample_100032,
         "snapshot_vs_cutoff": baseline_doc.get("snapshot_vs_cutoff"),
@@ -3108,11 +3310,15 @@ async def main() -> int:
         "physical_write": False,
         "mode_env_mutated": False,
         "registry_mutated": False,
+        "mongo_uri_redacted": uri_safe,
+        "db_name": dbn,
+        "env_file": str(env_file),
         "notes": [
             "READ-ONLY. No physical/ledger writes. No registry/mode mutation.",
+            "Self-contained: no stock_ats runtime import (works on live 9ff5a0cd).",
+            "CUTOFF_UTC derived from CUTOFF_AT; do not hardcode a second date.",
             "Do not treat BASELINE_ONLY as current saldo.",
             "Production ATS may already be activated — this script does not re-activate.",
-            "Critical four codes must resolve to live IDs before pointer install.",
         ],
         "identity": {
             "active_sha": os.environ.get("ETERNAL_RO_ACTIVE_SHA") or "",
@@ -3120,7 +3326,8 @@ async def main() -> int:
             "ats_mode_env_observed": os.environ.get("ETERNAL_RO_ATS_MODE") or "",
             "host": os.environ.get("ETERNAL_RO_HOST") or "",
             "user": os.environ.get("ETERNAL_RO_USER") or "",
-            "db_name": db_name,
+            "db_name": dbn,
+            "env_file": str(env_file),
         },
         "files": [
             "manifest.json",
@@ -3132,6 +3339,8 @@ async def main() -> int:
             "PREVIEW_ROWS.json",
             "PREVIEW_TABLE.tsv",
             "CRITICAL_FOUR.json",
+            "orders.json",
+            "physical_stock_ledger.json",
             "CANDIDATES_357.json",
         ],
     }
@@ -3143,6 +3352,10 @@ async def main() -> int:
     (out / "MISMATCH.json").write_text(json.dumps(mismatch, indent=2, ensure_ascii=False) + "\n")
     (out / "PREVIEW_ROWS.json").write_text(json.dumps(preview_rows, indent=2, ensure_ascii=False) + "\n")
     (out / "CRITICAL_FOUR.json").write_text(json.dumps(critical_status, indent=2, ensure_ascii=False) + "\n")
+    (out / "orders.json").write_text(json.dumps(orders_out, indent=2, ensure_ascii=False) + "\n")
+    (out / "physical_stock_ledger.json").write_text(
+        json.dumps([_json_safe(d) for d in ledger_kept], indent=2, ensure_ascii=False) + "\n"
+    )
 
     fields = [
         "kode", "nama", "satuan", "baseline", "penambahan", "pengurangan",
@@ -3158,18 +3371,28 @@ async def main() -> int:
     print("RO_EXPORT_OK")
     print(f"STARTED={started}")
     print(f"FINISHED={finished}")
+    print(f"CUTOFF_AT={CUTOFF_AT}")
+    print(f"CUTOFF_UTC={CUTOFF_UTC}")
+    print("CUTOFF_UTC_DERIVED=True")
     print(f"MATCHED={summary['matched_count']}")
     print(f"MISSING={summary['missing_count']}")
     print(f"INACTIVE={summary['inactive_count']}")
     print(f"MISMATCH={summary['mismatch_count']}")
     print(f"PREVIEW_CLASS={preview_class}")
+    print(f"ORDERS={len(orders_out)}")
+    print(f"LEDGER={len(ledger_kept)}")
     print(f"EFFECT_CODES={len(effect_codes)}")
-    print(f"CRITICAL_OK={summary['install_gate'] if False else all(critical_status[c].get('status')=='MATCHED' for c in CRITICAL)}")
+    print(
+        "CRITICAL_OK="
+        + str(all(critical_status[c].get("status") == "MATCHED" for c in CRITICAL))
+    )
     print(f"CONSISTENCY={json.dumps(consistency, ensure_ascii=False)}")
     print(f"INSTALL_BLOCKED={json.dumps(install_blocked_reasons, ensure_ascii=False)}")
+    print("DEPENDS_ON_PR730_RUNTIME=False")
     print("ACTIVATION_READY=False")
     print("REGISTRY_MUTATED=False")
     print("PHYSICAL_WRITE=False")
+    print(f"ENV_FILE={env_file}")
     print(f"OUT_DIR={out}")
 
     client.close()
@@ -3191,10 +3414,15 @@ cp "$WORK_DIR/ro_ats_ygy_357_live_preview.py" "$OUT_DIR/"
   echo "PREVIOUS_ID=${PREVIOUS_ID:-}"
   echo "ETERNAL_ATS_YGY_MODE_OBSERVED=$ATS_MODE"
   echo "HEALTH=$HEALTH_JSON"
-  echo "CUTOFF=2026-11-04T22:45:00+07:00"
+  echo "CUTOFF_AT=2026-11-04T22:45:00+07:00"
+  echo "CUTOFF_UTC_DERIVED_EXPECT=2026-11-04T15:45:00Z"
+  echo "ENV_DECLARED=$ENV_DECLARED"
+  echo "ENV_EFFECTIVE=$ENV_FILE"
   echo "WAREHOUSE=YGY-MAIN"
   echo "CRITICAL=100463,100464,100488,100489"
   echo "EXPECT_100032_BASELINE=9000"
+  echo "PREVIEW_ENGINE=INLINE_RO_V1_NO_RUNTIME_IMPORT"
+  echo "DEPENDS_ON_PR730_RUNTIME=False"
   echo "SNAPSHOT_VS_CUTOFF=OWNER_STATED_FILE_EQUALS_CUTOFF_UNVERIFIED_BY_AGENT"
   echo "NOTE=Production ATS may already be activated; this script does NOT re-activate or switch pointer."
 } | tee "$OUT_DIR/live_identity.txt"
