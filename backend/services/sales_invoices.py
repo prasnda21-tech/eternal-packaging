@@ -706,6 +706,23 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         int(row["line_idx"]): row for row in qty_summary.get("lines") or []
     }
     preview_lines = []
+    # Read-only lookup: current atomic billing counter may disagree with
+    # historical invoice documents after a PO revision/cancellation.
+    counter_by_line_id = {}
+    if not exclude_invoice_id and raw_lines:
+        from services.sales_invoice_allocations import BILLING_COUNTERS, po_billing_counter_id
+        ids = [
+            po_billing_counter_id(po_id, str(li.get("line_id") or li.get("id") or f"line_{idx}"))
+            for idx, li in enumerate(raw_lines) if isinstance(li, dict)
+        ]
+        if ids:
+            counter_docs = await db[BILLING_COUNTERS].find(
+                {"id": {"$in": ids}}, {"_id": 0, "id": 1, "invoiced_qty": 1},
+            ).to_list(len(ids))
+            counter_by_line_id = {
+                str(row["id"]): int(row.get("invoiced_qty") or 0)
+                for row in counter_docs
+            }
 
     for idx, li in enumerate(raw_lines):
         if not isinstance(li, dict):
@@ -721,8 +738,14 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         color = str(li.get("color") or "").strip()
         qty_row = qty_by_line.get(line_idx) or {}
         ordered_qty = int(qty_row.get("ordered_qty") or 0)
-        invoiced_cumulative = int(qty_row.get("invoiced_cumulative") or 0)
-        remaining_invoice_qty = int(qty_row.get("remaining_invoice_qty") or 0)
+        invoice_document_qty = int(qty_row.get("invoiced_cumulative") or 0)
+        counter_qty = counter_by_line_id.get(f"{po_id}::{line_id}")
+        # Never offer more than either source permits. No silent reconciliation.
+        invoiced_cumulative = max(invoice_document_qty, counter_qty or 0)
+        remaining_invoice_qty = max(0, ordered_qty - invoiced_cumulative)
+        billing_counter_discrepancy = (
+            counter_qty is not None and counter_qty != invoice_document_qty
+        )
         stored_price = stored_order_unit_price(li)
         stored_subtotal = None
         if stored_price is not None:
@@ -736,6 +759,9 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
             "color": color,
             "ordered_qty": ordered_qty,
             "invoiced_cumulative": invoiced_cumulative,
+            "invoice_document_qty": invoice_document_qty,
+            "billing_counter_qty": counter_qty,
+            "billing_counter_discrepancy": billing_counter_discrepancy,
             "remaining_invoice_qty": remaining_invoice_qty,
             "quantity": remaining_invoice_qty,  # Default suggested qty to invoice
             "unit": unit,
@@ -747,7 +773,7 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         })
 
     total_ordered_qty = int(qty_summary.get("total_ordered_qty") or 0)
-    total_remaining_invoice_qty = int(qty_summary.get("total_remaining_invoice_qty") or 0)
+    total_remaining_invoice_qty = sum(int(line["remaining_invoice_qty"]) for line in preview_lines)
 
     return {
         "po_id": po_id,
@@ -762,8 +788,17 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         "notes": notes,
         "total_ordered_qty": total_ordered_qty,
         "total_remaining_invoice_qty": total_remaining_invoice_qty,
+        "billing_reconciliation_required": any(
+            line["billing_counter_discrepancy"] for line in preview_lines
+        ),
         "total_qty": total_remaining_invoice_qty,
-        "remaining_by_unit": qty_summary.get("remaining_by_unit") or [],
+        "remaining_by_unit": [
+            {"unit": unit, "qty": sum(
+                int(line["remaining_invoice_qty"])
+                for line in preview_lines if line["unit"] == unit
+            )}
+            for unit in dict.fromkeys(line["unit"] for line in preview_lines)
+        ],
         "lines": preview_lines,
         "subtotal": 0.0,
         "discount_amount": 0.0,
