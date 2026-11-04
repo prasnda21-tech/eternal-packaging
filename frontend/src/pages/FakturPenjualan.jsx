@@ -3966,6 +3966,18 @@ export default function FakturPenjualan() {
                 </div>
               </section>
 
+              {!isSjMode && !isMultiPo && previewData?.billing_reconciliation_required ? (
+                <div className="alert-box error" data-testid="invoice-billing-counter-discrepancy">
+                  <AlertCircle size={16} />
+                  <span>
+                    Ada perbedaan Qty Faktur historis dan counter penagihan.
+                    Sisa Qty di form mengikuti batas aman backend. Bila Faktur lama sudah
+                    dibatalkan, minta rekonsiliasi alokasi penagihan terlebih dahulu;
+                    jangan menerbitkan ulang seluruh Qty PO.
+                  </span>
+                </div>
+              ) : null}
+
               {singlePoReady && createCalculations.totalRemaining <= 0 ? (
                 <div className="ux90-fp-banner" data-testid="fully-invoiced-banner">
                   <AlertCircle size={16} />
