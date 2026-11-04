@@ -186,3 +186,57 @@ async def test_cancelled_invoice_replay_releases_stranded_claim(db):
     finally:
         await db.sales_invoices.delete_one({"id": invoice_id})
         await db[BILLING_COUNTERS].delete_one({"id": counter_id})
+
+
+@pytest.mark.anyio
+async def test_cancelled_invoice_with_live_posting_claim_blocks_billing_release(db):
+    """A still-live accounting lease must prevent cancellation replay, even if status is cancelled."""
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+    from fastapi import HTTPException
+    from services.sales_invoices import cancel_sales_invoice
+
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    invoice_id = str(uuid.uuid4())
+    counter_id = f"{po_id}::{line_id}"
+    await db.sales_invoices.insert_one({
+        "id": invoice_id, "po_id": po_id,
+        "financial_status": "cancelled",
+        "accounting_posting_claim": "active-accounting-operation",
+        "accounting_posting_claim_at": datetime.now(timezone.utc).isoformat(),
+        "lines": [{
+            "source_po_id": po_id,
+            "source_po_line_id": line_id,
+            "line_idx": 0, "quantity": 500,
+        }],
+    })
+    await db[BILLING_COUNTERS].insert_one({
+        "id": counter_id, "source_po_id": po_id,
+        "source_line_id": line_id, "invoiced_qty": 500,
+        "claims_by_invoice": {
+            invoice_id: {"qty": 500, "state": "committed"},
+        },
+    })
+    try:
+        with patch(
+            "services.sales_invoice_edit_revision.raise_if_revision_in_progress",
+            new=AsyncMock(),
+        ), patch(
+            "services.sales_invoice_allocations.release_invoice_billing_allocations",
+            new=AsyncMock(),
+        ) as release:
+            with pytest.raises(HTTPException) as err:
+                await cancel_sales_invoice(
+                    db, invoice_id, {"email": "admin@test"},
+                    serialize_in_process=False,
+                )
+            assert err.value.status_code == 409
+            assert "sedang diposting" in str(err.value.detail)
+            release.assert_not_awaited()
+        counter = await db[BILLING_COUNTERS].find_one({"id": counter_id})
+        assert counter["invoiced_qty"] == 500
+        assert invoice_id in counter["claims_by_invoice"]
+    finally:
+        await db.sales_invoices.delete_one({"id": invoice_id})
+        await db[BILLING_COUNTERS].delete_one({"id": counter_id})
