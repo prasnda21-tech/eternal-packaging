@@ -57,42 +57,43 @@ python3 backend/scripts/preview_ats_ygy_ssi_local.py --q 100032
 
 Class `BASELINE_ONLY` di sini **bukan** saldo terkini — hanya angka file tanpa transaksi pasca-cutoff.
 
-## 3) Paket pemasangan pointer (+ rollback)
+## 3) Replay dump → matched-321 + exception (runtime PR#730)
+
+```bash
+python3 backend/scripts/replay_ats_ygy_357_ro_dump.py \
+  --dump /path/eternal_ro_ats_ygy_357_20261104T163426Z.tgz \
+  --out-dir /opt/cursor/artifacts/ats_ygy_357_replay_163426Z
+```
+
+Hasil: `MATCHED_321_BASELINE.json`, `EXCEPTIONS_*`, `MISMATCH_15_OWNER_TABLE.tsv`,
+`runtime_preview/` (list/detail/export via collector PR#730),
+`RUNTIME_PROOF_100153.json` (**109000**, bukan 108000 — no double-cut old PO ship).
+
+Inactive = EXCLUDED. Missing `100489` = exception. Jangan klaim 357 READY.
+
+## 4) Paket pemasangan pointer matched-321 (+ rollback Nov-2)
 
 `scripts/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh`
 
-Prasyarat:
-
-- Tarball RO sudah ditinjau (`MATCHED_BASELINE.json`, `PREVIEW_TABLE.tsv`, `CRITICAL_FOUR.json`).
-- Empat kode kritis = `MATCHED` dengan ID live.
-- `unmatched_rows` kosong.
-- Owner ACK snapshot file == cutoff.
-- Production mode tetap `activated` (script **tidak** menulis ulang mode).
+Prasyarat: runtime preview konkret; `100463`/`100464`/`100488` ID live; `100489` boleh missing;
+Owner ACK snapshot + exception table; mode tetap `activated`. **Jangan** switch pointer sebelum preview ACK.
 
 ```bash
-# install pointer (bukan re-aktivasi mode)
 export ETERNAL_ATS_INSTALL_ACK=OWNER_ACK_RO_EVIDENCE_AND_SNAPSHOT
 sudo -i bash /path/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh install \
-  /path/eternal_ro_ats_ygy_357_*/MATCHED_BASELINE.json
+  /path/MATCHED_321_BASELINE.json
 
-# rollback pointer ke baseline Nov-2 (100032=20000)
 sudo -i bash /path/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh rollback
-
-# status pointer
 sudo -i bash /path/VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh status
 ```
 
-Bukti sukses install: `PROOF_100032=PASS` (baseline 9000), cutoff `2026-11-04T22:45:00+07:00`, critical four OK.
+## 5) Pemeriksaan
 
-## 4) Pemeriksaan
-
-- [ ] RO: 357 matched (atau missing/inactive/mismatch terpisah + Owner putusan)
-- [ ] Critical four = ID live nyata
-- [ ] Preview class ≠ klaim `BASELINE_ONLY` sebagai current
-- [ ] `100032` baseline 9000 di list/detail/export
-- [ ] Snapshot vs cutoff di-ACK Owner
-- [ ] Install pointer hanya setelah ACK; mode tidak diubah
-- [ ] Rollback Nov-2 tersedia dan terbukti
+- [ ] Runtime proof 100153 = 109000 (SKIP_OLD_PO_SHIP; bukan INLINE cut 108000)
+- [ ] Matched ~321; inactive/mismatch/missing terpisah (bukan 357 READY palsu)
+- [ ] Mismatch table 15 untuk keputusan Owner
+- [ ] `100032` baseline 9000 list/detail/export
+- [ ] Install pointer hanya setelah ACK; rollback Nov-2 siap
 
 ## Bukan dilakukan oleh agent
 

@@ -324,6 +324,163 @@ async def test_entrypoint_old_po_ship_does_not_recut_baseline(db):
     assert any("SKIP_OLD_PO_SHIP" in s for s in (row.get("ats_cutover_skipped") or []))
 
 
+async def test_entrypoint_100153_old_po_sales_delivery_no_double_cut(db, monkeypatch):
+    """Owner RO bug: INLINE_RO cut 100153 109000→108000 on SALES_DELIVERY after cutoff
+    for Accurate PO created 2 Nov (before cutoff 4 Nov 22:45). Runtime must keep 109000.
+    """
+    from pathlib import Path
+
+    import services.stock_ats_baseline_store as baseline_store
+    import services.stock_ats_ygy_runtime as ats_runtime
+    import services.physical_stock as physical_stock_mod
+
+    mid = "cd807b26-f23e-49b6-aecd-9d469df06131"
+    cutoff_at = "2026-11-04T22:45:00+07:00"
+    cutoff_dt = datetime.fromisoformat(cutoff_at)
+    after = (cutoff_dt + timedelta(seconds=6)).astimezone().isoformat()
+    # 2026-11-04T15:45:06Z exactly as Owner RO evidence
+    after_utc = "2026-11-04T15:45:06Z"
+    before = "2026-11-02T10:00:00+07:00"
+    as_of = (cutoff_dt + timedelta(hours=2)).isoformat()
+
+    # Tiny free-stock baseline containing only 100153 @ 109000
+    tiny = {
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "warehouse_code": "YGY-MAIN",
+        "cutoff_at": cutoff_at,
+        "cutoff_at_utc": "2026-11-04T15:45:00Z",
+        "source_sha256": "b" * 64,
+        "source_meaning": "free blank goods already net of open orders at cutoff",
+        "baseline_semantics": "FREE_STOCK_AT_CUTOFF",
+        "rows": [{
+            "kode": "100153",
+            "nama": "22 oz Datar Rib 8 gr TAM",
+            "satuan": "PCS",
+            "accurate_ats": 109000.0,
+            "master_item_id": mid,
+            "eligible_master": True,
+        }],
+    }
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(tiny, fh)
+        base_path = fh.name
+    monkeypatch.setenv("ETERNAL_ATS_YGY_BASELINE_PATH", base_path)
+    baseline_store.clear_baseline_cache()
+    ats_runtime.CUTOFF_AT = cutoff_at
+    ats_runtime.CUTOFF_AT_UTC = "2026-11-04T15:45:00Z"
+    monkeypatch.setattr(physical_stock_mod, "now_iso", lambda: as_of)
+
+    await db[MASTER_ITEMS_COLLECTION].insert_one({
+        "id": mid,
+        "item_code": "100153",
+        "item_name": "22 oz Datar Rib 8 gr TAM",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    })
+    await db[BRANCHES_COLLECTION].insert_one({
+        "id": YGY_BRANCH_ID, "code": "YGY", "name": "Yogyakarta", "active": True,
+    })
+    await db[WAREHOUSES_COLLECTION].insert_one({
+        "id": YGY_WAREHOUSE_ID,
+        "branch_id": YGY_BRANCH_ID,
+        "code": "YGY-MAIN",
+        "name": "YGY Main",
+        "active": True,
+        "is_operational": True,
+        "is_default": True,
+    })
+    await db[BALANCE_COLLECTION].insert_one({
+        "id": f"bal-{uuid.uuid4().hex[:8]}",
+        "master_item_id": mid,
+        "branch_id": YGY_BRANCH_ID,
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "physical_qty": 0,
+        "version": 1,
+        "updated_at": after_utc,
+    })
+    oid = f"so-94016-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "po_number": "94016",
+        "branch_id": "50",
+        "import_source": "accurate_live",
+        "accurate_id": "94016",
+        "created_at": before,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-100153",
+            "master_item_id": mid,
+            "item_code": "100153",
+            "quantity": 1000,
+            "production_process": "non_print",
+        }],
+    })
+    await db[LEDGER_COLLECTION].insert_one({
+        "id": f"sd-100153-{uuid.uuid4().hex[:8]}",
+        "master_item_id": mid,
+        "branch_id": YGY_BRANCH_ID,
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "qty_delta": -1000,
+        "reference_type": "sales_delivery_confirmation",
+        "reference_id": "conf-100153",
+        "reason": "ship Accurate PO 94016",
+        "actor_id": "t",
+        "occurred_at": after_utc,
+        "created_at": after_utc,
+        "idempotency_key": f"sales-delivery:conf-100153:0:{mid}",
+        "metadata": {
+            "order_id": oid,
+            "line_id": "ln-100153",
+            "line_idx": 0,
+            "unit": "PCS",
+        },
+    })
+
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[mid], as_of=as_of,
+    )
+    pack = stream["by_master"][mid]
+    assert any("SKIP_OLD_PO_SHIP" in s for s in pack["skipped"])
+    assert not any(e.kind == "ISSUE_FREE" for e in pack["events"])
+    assert not any(e.kind == "SHIP_RESERVED" for e in pack["events"])
+
+    catalog = await list_physical_stock_catalog(
+        db,
+        branch_id=YGY_BRANCH_ID,
+        warehouse_id=YGY_WAREHOUSE_ID,
+        q="100153",
+        page=1,
+        limit=10,
+    )
+    items = catalog.get("items") or []
+    row = next(r for r in items if r.get("item_code") == "100153")
+    # list
+    assert row["ats_cutover_status"] == "READY"
+    assert row["ats_baseline"] == 109000.0
+    assert row["ats_sekarang"] == 109000.0
+    assert row["stock_dapat_dijual"] == 109000.0
+    assert float(row.get("ats_pengurangan") or 0) == 0.0
+    # detail (same catalog path)
+    catalog2 = await list_physical_stock_catalog(
+        db,
+        branch_id=YGY_BRANCH_ID,
+        warehouse_id=YGY_WAREHOUSE_ID,
+        q="100153",
+        page=1,
+        limit=10,
+    )
+    detail = next(r for r in (catalog2.get("items") or []) if r.get("item_code") == "100153")
+    assert detail["ats_sekarang"] == row["ats_sekarang"] == 109000.0
+    assert detail["ats_baseline"] == row["ats_baseline"] == 109000.0
+    # export-equivalent fields share overlay
+    assert detail["ats_cutover_status"] == row["ats_cutover_status"] == "READY"
+
+
 async def test_entrypoint_old_po_cancel_no_release_and_unavailable(db):
     """Pre-cutoff PO cancelled after cutoff without opening reservation.
 

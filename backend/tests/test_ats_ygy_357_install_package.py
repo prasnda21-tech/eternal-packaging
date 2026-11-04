@@ -165,6 +165,8 @@ def test_install_pointer_script_no_reactivate_has_rollback():
     assert "rewrite_ats_mode_file" not in text
     assert "physical_stock_balances" in text.lower() or "physical_stock_balances" in text
     assert "OWNER_ACK_RO_EVIDENCE_AND_SNAPSHOT" in text
+    assert "matched_only" in text
+    assert "MATCHED_321" in text or "matched-321" in text.lower() or "321" in text
 
 
 def test_candidate_pending_four_and_registry_not_switched():

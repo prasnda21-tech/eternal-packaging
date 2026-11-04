@@ -12,11 +12,14 @@
 #   - write physical_stock_balances or ledger
 #   - invent synthetic master IDs
 #
-# Usage (after RO tarball evidence ACK):
+# Usage (after RO tarball + runtime preview ACK):
 #   sudo -i bash VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh install \
-#     /path/to/eternal_ro_ats_ygy_357_*/MATCHED_BASELINE.json
+#     /path/MATCHED_321_BASELINE.json
 #   sudo -i bash VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh rollback
 #   sudo -i bash VPS_ADMIN_ATS_YGY_INSTALL_357_POINTER.sh status
+#
+# Matched-only install: exceptions (inactive/mismatch/missing e.g. 100489) stay
+# visible outside READY — do not fake 357 READY. Rollback = Nov-2 baseline.
 set -Eeuo pipefail
 
 CMD="${1:-status}"
@@ -31,7 +34,8 @@ YGY_BRANCH_ID="5c92529c-3df8-4d9f-b290-a5c94fa51903"
 EXPECT_CUTOFF="2026-11-04T22:45:00+07:00"
 EXPECT_100032="9000"
 ROLLBACK_BASELINE_ID="ygy_main_2026-11-02T232200+0700_draft_162"
-CRITICAL_CODES=(100463 100464 100488 100489)
+# 100489 may remain MISSING; three others must have live IDs.
+CRITICAL_CODES=(100463 100464 100488)
 MODE_KEY="ETERNAL_ATS_YGY_MODE"
 STATE_DIR="${ETERNAL_ATS_STATE_DIR:-/var/lib/eternal-packaging/ats-ygy-357-install-state}"
 ACK_FLAG="${ETERNAL_ATS_INSTALL_ACK:-}"
@@ -86,7 +90,7 @@ print(f"CUTOFF={man.get('cutoff_at')}")
 print(f"ROW_COUNT={len(man.get('rows') or [])}")
 print(f"BASELINE_100032={hit.get('accurate_ats')}")
 print(f"ELIGIBLE={sum(1 for r in man['rows'] if r.get('eligible_master'))}")
-crit = ["100463", "100464", "100488", "100489"]
+crit = ["100463", "100464", "100488"]  # 100489 may remain missing
 for c in crit:
     row = next((r for r in man["rows"] if r.get("kode") == c), None)
     mid = (row or {}).get("master_item_id") or ""
@@ -136,12 +140,15 @@ import json, os, sys
 from pathlib import Path
 src = Path(os.environ["ETERNAL_MATCHED_SRC"])
 doc = json.loads(src.read_text())
-crit = ["100463", "100464", "100488", "100489"]
+crit = ["100463", "100464", "100488"]  # 100489 may stay missing
 if doc.get("cutoff_at") != "2026-11-04T22:45:00+07:00":
     print("STOP cutoff", doc.get("cutoff_at")); sys.exit(2)
 rows = doc.get("rows") or []
 if not rows:
     print("STOP empty rows"); sys.exit(2)
+# Matched-only package: do not require 357; expect ~321 eligible rows.
+if len(rows) < 300:
+    print(f"STOP row_count too low for matched-321 package: {len(rows)}"); sys.exit(2)
 by = {r.get("kode"): r for r in rows}
 for c in crit:
     r = by.get(c)
@@ -149,16 +156,29 @@ for c in crit:
     if not r or not r.get("eligible_master") or not mid or mid.startswith(("synthetic-", "pending-")):
         print(f"STOP critical {c} needs real live master id, got {mid!r}")
         sys.exit(2)
+# 100489 must NOT be faked into READY
+r489 = by.get("100489")
+if r489 and r489.get("eligible_master") and str(r489.get("master_item_id") or "").startswith(("synthetic-", "pending-")):
+    print("STOP refuse synthetic 100489"); sys.exit(2)
 hit = by.get("100032")
 if not hit or float(hit.get("accurate_ats") or -1) != 9000.0:
     print("STOP 100032 baseline must be 9000"); sys.exit(2)
+# Synthetic IDs forbidden anywhere in install rows
+for r in rows:
+    mid = str(r.get("master_item_id") or "")
+    if mid.startswith(("synthetic-", "pending-")):
+        print(f"STOP synthetic id on {r.get('kode')}"); sys.exit(2)
 unmatched = doc.get("unmatched_rows") or []
-missing = [u for u in unmatched if "NO_MASTER" in str(u.get("reason") or "")]
-if unmatched:
-    print(f"WARN unmatched_rows={len(unmatched)} (install still blocked if critical OK? critical passed)")
-# Refuse install while unmatched/missing remain — Owner asked full 357 match.
-if unmatched:
-    print(f"STOP unmatched_rows={len(unmatched)} — resolve missing/mismatch before pointer install")
+inactive = doc.get("inactive_rows") or []
+gate = doc.get("install_gate") or {}
+matched_only = bool(gate.get("matched_only")) or str(doc.get("status") or "").startswith("INSTALL_CANDIDATE_MATCHED")
+if unmatched or inactive:
+    print(
+        f"EXCEPTIONS_VISIBLE unmatched={len(unmatched)} inactive={len(inactive)} "
+        f"(matched_only={matched_only}; not faking 357 READY)"
+    )
+if not matched_only and unmatched:
+    print(f"STOP unmatched_rows={len(unmatched)} without matched_only gate")
     sys.exit(5)
 snap = (doc.get("snapshot_vs_cutoff") or {}).get("status") or ""
 if "UNVERIFIED" in snap:

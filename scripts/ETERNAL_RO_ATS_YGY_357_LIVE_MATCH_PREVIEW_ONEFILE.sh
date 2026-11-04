@@ -2634,7 +2634,9 @@ TAMBAH_KINDS = {
     "STOCK_IN",
 }
 KURANG_KINDS = {
-    "SALES_DELIVERY",
+    # SALES_DELIVERY is NOT here: free-stock baseline already nets open POs.
+    # Pre-cutoff PO ship must not re-cut; post-cutoff ship is SHIP_RESERVED (effect 0)
+    # after RESERVE. See runtime collect_ats_stream_for_ygy SKIP_OLD_PO_SHIP.
     "ISSUE_FREE",
     "ISSUE",
     "RESERVE",
@@ -3085,6 +3087,12 @@ async def main() -> int:
         row["_ro_relevance"] = relevance
         orders_out.append(_json_safe(row))
 
+    order_by_id = {
+        str(o.get("id") or ""): o
+        for o in orders_raw
+        if isinstance(o, dict) and str(o.get("id") or "").strip()
+    }
+
     # ---- Ledger at/after cutoff ----
     ledger_query: Dict[str, Any] = {
         "warehouse_id": WH,
@@ -3129,6 +3137,25 @@ async def main() -> int:
             ledger_tambah[mid] = ledger_tambah.get(mid, 0.0) + q
         elif mtype in KURANG_KINDS:
             ledger_kurang[mid] = ledger_kurang.get(mid, 0.0) + q
+        elif mtype == "SALES_DELIVERY":
+            # Align with PR#730 runtime: never ISSUE_FREE / re-cut free-stock baseline.
+            # Pre-cutoff PO ship → skip. Post-cutoff reserved ship → effect 0.
+            # Without order linkage → explicit gap (fail closed), not silent cut.
+            meta = d.get("metadata") if isinstance(d.get("metadata"), dict) else {}
+            oid = str(meta.get("order_id") or "").strip()
+            order = order_by_id.get(oid) if oid else None
+            created = None
+            if order is not None:
+                created = _parse_dt(order.get("created_at") or order.get("imported_at"))
+            if created is not None and created <= cutoff:
+                # SKIP_OLD_PO_SHIP — baseline already netted this commitment
+                continue
+            if created is not None and created > cutoff:
+                # Post-cutoff ship against reservation: effect 0 (RESERVE already counted)
+                continue
+            unmapped_ledger[mid].append(
+                f"UNATTRIBUTED_OR_UNRESERVED_SHIP:{d.get('id')}:order={oid or '-'}"
+            )
         elif mtype in ("SHIP_RESERVED", "REVERSAL"):
             # SHIP_RESERVED: effect 0 (already reserved). REVERSAL: gap unless paired.
             if mtype == "REVERSAL":
