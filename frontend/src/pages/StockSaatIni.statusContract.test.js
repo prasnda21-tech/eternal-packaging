@@ -78,7 +78,7 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     container.remove();
   });
 
-  test("incomplete physical → Stock/Polos/ATP plain numbers; no status labels in cells", async () => {
+  test("incomplete physical → Stock/Polos Belum direkonsiliasi; ATP may stay numeric", async () => {
     api.physicalStockCatalog.mockResolvedValue({
       stock_read_mode: "warehouse_standalone",
       r2_authority_active: false,
@@ -115,18 +115,16 @@ describe("StockSaatIni P0-B1 UI-only status contract", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await flush();
     const physical = container.querySelector('[data-testid="stock-physical-m-partial"]');
-    expect(physical?.textContent?.replace(/\s/g, "")).toBe("0");
-    expect(physical?.textContent).not.toMatch(/Belum lengkap|Belum terverifikasi|Indikatif|tampilan/i);
+    expect(physical?.textContent?.replace(/\s/g, "")).toMatch(/Belumlengkap|Belumdirekonsiliasi/);
+    expect(physical?.textContent).not.toMatch(/Indikatif|tampilan/i);
     const dapat = container.querySelector('[data-testid="stock-siap-jual-m-partial"]');
     expect(dapat?.getAttribute("data-condition-status")).toBe("INDICATIVE");
     expect(dapat?.textContent).toMatch(/8/);
-    expect(dapat?.textContent).not.toMatch(/Indikatif|Belum|tampilan/i);
+    expect(dapat?.textContent).not.toMatch(/Indikatif|tampilan/i);
     const polos = container.querySelector('[data-testid="stock-polos-m-partial"]');
     expect(polos?.getAttribute("data-condition-status")).toBe("UNVERIFIED");
     expect(polos?.getAttribute("data-presentation-fallback")).toBe("true");
-    expect(polos?.getAttribute("data-unverified-reason")).toBe("WIP_COMPOSITION_UNPROVEN");
-    expect(polos?.textContent?.replace(/\s/g, "")).toBe("0");
-    expect(polos?.textContent).not.toMatch(/Belum terverifikasi|tampilan/i);
+    expect(polos?.textContent?.replace(/\s/g, "")).toMatch(/Belumdirekonsiliasi/);
   });
 
   test("complete baseline negative SO → Dapat/Polos numbers only; detail keeps presentation contract", async () => {

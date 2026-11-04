@@ -51,8 +51,9 @@ class Baseline:
             raise CutoverError('Missing baseline identity')
         if len(self.source_sha256) != 64 or any(c not in '0123456789abcdef' for c in self.source_sha256):
             raise CutoverError('Source SHA256 required')
-        if quantity(self.available_qty) < 0:
-            raise CutoverError('Baseline must be nonnegative')
+        # Free-stock Accurate ATS may be negative (oversold / net commitment);
+        # still require a finite quantity.
+        quantity(self.available_qty)
         return timestamp(self.cutoff_at)
 
 

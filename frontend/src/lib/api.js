@@ -313,7 +313,8 @@ export const api = {
   masterItemDetail: (id) => client.get(`/master-items/${encodeURIComponent(id)}/detail`).then((r) => r.data),
   saveUnitConversion: (id, payload) => client.put(`/master-items/${encodeURIComponent(id)}/unit-conversion`, payload).then((r) => r.data),
   initOpeningBalance: (id, payload) => client.post(`/master-items/${encodeURIComponent(id)}/opening-balance`, payload).then((r) => r.data),
-  physicalStockCatalog: (params = {}) => client.get(`/physical-stock`, { params }).then((r) => r.data),
+  physicalStockCatalog: (params = {}, config = {}) =>
+    client.get(`/physical-stock`, { params, ...config }).then((r) => r.data),
   physicalStockStatusSummary: (params = {}) =>
     client.get(`/physical-stock/status-summary`, { params }).then((r) => r.data),
   physicalStock: (id, params = {}) => client.get(`/master-items/${encodeURIComponent(id)}/physical-stock`, { params }).then((r) => r.data),

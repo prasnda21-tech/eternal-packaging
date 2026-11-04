@@ -52,18 +52,30 @@ describe("ssiStatusDisplay simplified numeric cells", () => {
     expect(disp.presentationFallback).toBe(true);
   });
 
-  test("missing physical → presentation 0; proven qty unchanged", () => {
-    expect(resolvePhysicalDisplay({ present: false, text: "Belum lengkap" })).toEqual({
-      mode: "presentation_zero",
-      qty: 0,
+  test("missing/unreconciled physical → status text (never invent 0); proven qty unchanged", () => {
+    expect(resolvePhysicalDisplay({ present: false, text: "Belum direkonsiliasi" })).toEqual({
+      mode: "status_text",
+      qty: null,
       presentationFallback: true,
-      statusText: "Belum lengkap",
+      statusText: "Belum direkonsiliasi",
     });
     expect(resolvePhysicalDisplay({ present: true, qty: -8300 })).toMatchObject({
       mode: "qty",
       qty: -8300,
       presentationFallback: false,
     });
+  });
+
+  test("incomplete physical → Polos shows Belum direkonsiliasi (not derived numeric)", () => {
+    const item = {
+      qty_polos: 500,
+      qty_polos_status: "READY",
+      baseline_status: "unreconciled",
+    };
+    const disp = resolvePolosDisplay(item, { present: false, text: "Belum direkonsiliasi" });
+    expect(disp.mode).toBe("status_text");
+    expect(disp.label).toBe("Belum direkonsiliasi");
+    expect(disp.qty).toBeNull();
   });
 
   test("missing baseline with numeric ATP → qty mode keeps number", () => {

@@ -47,10 +47,10 @@ from services.physical_stock import (  # noqa: E402
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.stock_ats_ygy_runtime import (  # noqa: E402
-    CUTOFF_AT,
     YGY_BRANCH_ID,
     YGY_WAREHOUSE_CODE,
     YGY_WAREHOUSE_ID,
+    active_cutoff_at,
     load_baseline_manifest,
 )
 from services.warehouse_stock_standalone import (  # noqa: E402
@@ -264,7 +264,7 @@ async def main() -> int:
         db,
         enabled=False,
         org_branch_id=YGY_BRANCH_ID,
-        historical_cutoff_at=CUTOFF_AT,
+        historical_cutoff_at=active_cutoff_at(),
         accurate_live_branch_map={
             "enabled": True,
             "org_branch_id": YGY_BRANCH_ID,
@@ -317,8 +317,15 @@ async def main() -> int:
         )
     activation_ready = False
 
-    # Consistency: detail-style single-code fetch for first READY row
-    ready = next((r for r in items if r.get("ats_cutover_status") == "READY"), None)
+    # Consistency: prefer Owner proof codes 100032 / 100153, else first READY row
+    by_code = {
+        str(r.get("item_code") or ""): r
+        for r in items
+        if str(r.get("item_code") or "")
+    }
+    ready = by_code.get("100032") or by_code.get("100153")
+    if ready is None or ready.get("ats_cutover_status") != "READY":
+        ready = next((r for r in items if r.get("ats_cutover_status") == "READY"), None)
     consistency = {"checked": False}
     if ready:
         code = ready.get("item_code")
@@ -334,13 +341,18 @@ async def main() -> int:
             (r for r in (detail_cat.get("items") or []) if r.get("item_code") == code),
             None,
         )
+        # Export uses the same overlay fields as list/detail catalog rows.
         consistency = {
             "checked": True,
             "kode": code,
             "list_ats": ready.get("ats_sekarang"),
             "detail_ats": detail.get("ats_sekarang") if detail else None,
+            "export_ats": ready.get("ats_sekarang"),
             "list_baseline": ready.get("ats_baseline"),
             "detail_baseline": detail.get("ats_baseline") if detail else None,
+            "export_baseline": ready.get("ats_baseline"),
+            "list_status": ready.get("ats_cutover_status"),
+            "detail_status": detail.get("ats_cutover_status") if detail else None,
             "agree": bool(
                 detail
                 and detail.get("ats_sekarang") == ready.get("ats_sekarang")
@@ -363,7 +375,7 @@ async def main() -> int:
         "generated_at_utc": _now_iso(),
         "mode": "draft_read",
         "db_name": db_name,
-        "cutoff_at": CUTOFF_AT,
+        "cutoff_at": active_cutoff_at(),
         "warehouse": YGY_WAREHOUSE_CODE,
         "baseline_rows": len(manifest.get("rows") or []),
         "catalog_rows": len(preview_rows),

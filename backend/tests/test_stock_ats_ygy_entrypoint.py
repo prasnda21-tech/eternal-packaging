@@ -53,7 +53,8 @@ if "replicaSet=" not in MONGO_URL:
     MONGO_URL = MONGO_URL.rstrip("/") + ("&" if "?" in MONGO_URL else "?") + "replicaSet=eternal_local_rs"
 
 MID_100032 = "a88fb167-cf11-4d1f-8862-25dae1723053"
-CUTOFF = datetime.fromisoformat(CUTOFF_AT)
+# Entrypoint projector tests are pinned to archived Nov-2 baseline (20000 @ 100032).
+CUTOFF = datetime.fromisoformat("2026-11-02T23:22:00+07:00")
 AFTER = (CUTOFF + timedelta(hours=1)).isoformat()
 BEFORE = (CUTOFF - timedelta(days=10)).isoformat()
 AS_OF_LATER = (CUTOFF + timedelta(hours=5)).isoformat()
@@ -71,6 +72,23 @@ async def db(monkeypatch):
     assert "preview" not in TEST_DB
     prev_mode = os.environ.get("ETERNAL_ATS_YGY_MODE")
     os.environ["ETERNAL_ATS_YGY_MODE"] = "draft_read"
+    # Pin to archived Nov-2 draft (100032=20000) even if registry active is tonight's 357.
+    from pathlib import Path
+
+    import services.stock_ats_baseline_store as baseline_store
+    import services.stock_ats_ygy_runtime as ats_runtime
+
+    nov2 = (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "ats_baselines"
+        / "archive"
+        / "ygy_main_2026-11-02T232200+0700_draft_162.json"
+    )
+    monkeypatch.setenv("ETERNAL_ATS_YGY_BASELINE_PATH", str(nov2))
+    baseline_store.clear_baseline_cache()
+    ats_runtime.CUTOFF_AT = "2026-11-02T23:22:00+07:00"
+    ats_runtime.CUTOFF_AT_UTC = "2026-11-02T16:22:00Z"
     # Catalog ATS as_of uses physical_stock.now_iso — freeze after all fixture events.
     import services.physical_stock as physical_stock_mod
 
@@ -85,7 +103,7 @@ async def db(monkeypatch):
         database,
         enabled=False,
         org_branch_id=YGY_BRANCH_ID,
-        historical_cutoff_at=CUTOFF_AT,
+        historical_cutoff_at="2026-11-02T23:22:00+07:00",
         accurate_live_branch_map={
             "enabled": True,
             "org_branch_id": YGY_BRANCH_ID,
@@ -304,6 +322,163 @@ async def test_entrypoint_old_po_ship_does_not_recut_baseline(db):
     assert row["stock_dapat_dijual"] == 20000.0
     assert row["physical_qty"] == -19300
     assert any("SKIP_OLD_PO_SHIP" in s for s in (row.get("ats_cutover_skipped") or []))
+
+
+async def test_entrypoint_100153_old_po_sales_delivery_no_double_cut(db, monkeypatch):
+    """Owner RO bug: INLINE_RO cut 100153 109000→108000 on SALES_DELIVERY after cutoff
+    for Accurate PO created 2 Nov (before cutoff 4 Nov 22:45). Runtime must keep 109000.
+    """
+    from pathlib import Path
+
+    import services.stock_ats_baseline_store as baseline_store
+    import services.stock_ats_ygy_runtime as ats_runtime
+    import services.physical_stock as physical_stock_mod
+
+    mid = "cd807b26-f23e-49b6-aecd-9d469df06131"
+    cutoff_at = "2026-11-04T22:45:00+07:00"
+    cutoff_dt = datetime.fromisoformat(cutoff_at)
+    after = (cutoff_dt + timedelta(seconds=6)).astimezone().isoformat()
+    # 2026-11-04T15:45:06Z exactly as Owner RO evidence
+    after_utc = "2026-11-04T15:45:06Z"
+    before = "2026-11-02T10:00:00+07:00"
+    as_of = (cutoff_dt + timedelta(hours=2)).isoformat()
+
+    # Tiny free-stock baseline containing only 100153 @ 109000
+    tiny = {
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "warehouse_code": "YGY-MAIN",
+        "cutoff_at": cutoff_at,
+        "cutoff_at_utc": "2026-11-04T15:45:00Z",
+        "source_sha256": "b" * 64,
+        "source_meaning": "free blank goods already net of open orders at cutoff",
+        "baseline_semantics": "FREE_STOCK_AT_CUTOFF",
+        "rows": [{
+            "kode": "100153",
+            "nama": "22 oz Datar Rib 8 gr TAM",
+            "satuan": "PCS",
+            "accurate_ats": 109000.0,
+            "master_item_id": mid,
+            "eligible_master": True,
+        }],
+    }
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(tiny, fh)
+        base_path = fh.name
+    monkeypatch.setenv("ETERNAL_ATS_YGY_BASELINE_PATH", base_path)
+    baseline_store.clear_baseline_cache()
+    ats_runtime.CUTOFF_AT = cutoff_at
+    ats_runtime.CUTOFF_AT_UTC = "2026-11-04T15:45:00Z"
+    monkeypatch.setattr(physical_stock_mod, "now_iso", lambda: as_of)
+
+    await db[MASTER_ITEMS_COLLECTION].insert_one({
+        "id": mid,
+        "item_code": "100153",
+        "item_name": "22 oz Datar Rib 8 gr TAM",
+        "unit": "PCS",
+        "item_type": "INVENTORY",
+        "is_active": True,
+    })
+    await db[BRANCHES_COLLECTION].insert_one({
+        "id": YGY_BRANCH_ID, "code": "YGY", "name": "Yogyakarta", "active": True,
+    })
+    await db[WAREHOUSES_COLLECTION].insert_one({
+        "id": YGY_WAREHOUSE_ID,
+        "branch_id": YGY_BRANCH_ID,
+        "code": "YGY-MAIN",
+        "name": "YGY Main",
+        "active": True,
+        "is_operational": True,
+        "is_default": True,
+    })
+    await db[BALANCE_COLLECTION].insert_one({
+        "id": f"bal-{uuid.uuid4().hex[:8]}",
+        "master_item_id": mid,
+        "branch_id": YGY_BRANCH_ID,
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "physical_qty": 0,
+        "version": 1,
+        "updated_at": after_utc,
+    })
+    oid = f"so-94016-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "po_number": "94016",
+        "branch_id": "50",
+        "import_source": "accurate_live",
+        "accurate_id": "94016",
+        "created_at": before,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-100153",
+            "master_item_id": mid,
+            "item_code": "100153",
+            "quantity": 1000,
+            "production_process": "non_print",
+        }],
+    })
+    await db[LEDGER_COLLECTION].insert_one({
+        "id": f"sd-100153-{uuid.uuid4().hex[:8]}",
+        "master_item_id": mid,
+        "branch_id": YGY_BRANCH_ID,
+        "warehouse_id": YGY_WAREHOUSE_ID,
+        "movement_type": MOVEMENT_SALES_DELIVERY,
+        "qty_delta": -1000,
+        "reference_type": "sales_delivery_confirmation",
+        "reference_id": "conf-100153",
+        "reason": "ship Accurate PO 94016",
+        "actor_id": "t",
+        "occurred_at": after_utc,
+        "created_at": after_utc,
+        "idempotency_key": f"sales-delivery:conf-100153:0:{mid}",
+        "metadata": {
+            "order_id": oid,
+            "line_id": "ln-100153",
+            "line_idx": 0,
+            "unit": "PCS",
+        },
+    })
+
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[mid], as_of=as_of,
+    )
+    pack = stream["by_master"][mid]
+    assert any("SKIP_OLD_PO_SHIP" in s for s in pack["skipped"])
+    assert not any(e.kind == "ISSUE_FREE" for e in pack["events"])
+    assert not any(e.kind == "SHIP_RESERVED" for e in pack["events"])
+
+    catalog = await list_physical_stock_catalog(
+        db,
+        branch_id=YGY_BRANCH_ID,
+        warehouse_id=YGY_WAREHOUSE_ID,
+        q="100153",
+        page=1,
+        limit=10,
+    )
+    items = catalog.get("items") or []
+    row = next(r for r in items if r.get("item_code") == "100153")
+    # list
+    assert row["ats_cutover_status"] == "READY"
+    assert row["ats_baseline"] == 109000.0
+    assert row["ats_sekarang"] == 109000.0
+    assert row["stock_dapat_dijual"] == 109000.0
+    assert float(row.get("ats_pengurangan") or 0) == 0.0
+    # detail (same catalog path)
+    catalog2 = await list_physical_stock_catalog(
+        db,
+        branch_id=YGY_BRANCH_ID,
+        warehouse_id=YGY_WAREHOUSE_ID,
+        q="100153",
+        page=1,
+        limit=10,
+    )
+    detail = next(r for r in (catalog2.get("items") or []) if r.get("item_code") == "100153")
+    assert detail["ats_sekarang"] == row["ats_sekarang"] == 109000.0
+    assert detail["ats_baseline"] == row["ats_baseline"] == 109000.0
+    # export-equivalent fields share overlay
+    assert detail["ats_cutover_status"] == row["ats_cutover_status"] == "READY"
 
 
 async def test_entrypoint_old_po_cancel_no_release_and_unavailable(db):
@@ -1012,3 +1187,64 @@ async def test_list_detail_export_parity_owner_default_no_alloc(db):
     assert a["stock_dapat_dijual"] == 19000.0
     assert a["ats_sekarang"] == 19000.0
     assert a["physical_qty"] == -19300
+
+
+async def test_entrypoint_pre_cutoff_proven_increase_reserves_delta_only(db):
+    await _seed_master_wh(db)
+    oid = f"so-old-delta-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": BEFORE,
+        "updated_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-old-delta",
+            "master_item_id": MID_100032,
+            "quantity": 7000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "ats_reserved_qty_at_cutoff": 5000,
+            "updated_at": AFTER,
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
+    assert len(reserves) == 1
+    assert str(reserves[0].qty) == "2000"
+    assert reserves[0].event_id.endswith(":delta")
+    _, row = await _catalog_row(db)
+    assert row["stock_dapat_dijual"] == 18000.0
+
+
+async def test_entrypoint_pre_cutoff_change_without_opening_qty_is_skip_not_silent(db):
+    """Refuse invented reserve delta; keep evidence complete so baseline READY stands."""
+    await _seed_master_wh(db)
+    oid = f"so-old-gap-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": BEFORE,
+        "updated_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-old-gap",
+            "master_item_id": MID_100032,
+            "quantity": 5000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "updated_at": AFTER,
+            # no ats_reserved_qty_at_cutoff → must not invent delta
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert not any(e.kind == "RESERVE" for e in pack["events"])
+    assert not any("PRE_CUTOFF_PO_CHANGE_UNPROVEN" in g for g in pack["gaps"])
+    assert any("PRE_CUTOFF_PO_CHANGE_UNPROVEN" in s for s in pack["skipped"])
+    assert pack["evidence_complete"] is True

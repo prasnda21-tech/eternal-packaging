@@ -187,6 +187,21 @@ function excelQtyCell(col, row, key, physicalPrimary) {
   // Plain numeric cells; null/unknown → presentation 0 (not written to export/math).
   if (col.key === "qty_polos") {
     const disp = resolvePolosDisplay(row, physicalPrimary);
+    if (disp.mode === "status_text") {
+      return (
+        <td
+          key={key || col.key}
+          className="col-fit num mono"
+          data-testid={`${col.testId}-${masterItemId}`}
+          data-condition-status={disp.status}
+          data-presentation-fallback="true"
+          data-unverified-reason={disp.reason || undefined}
+          title={disp.title}
+        >
+          {disp.label || "Belum direkonsiliasi"}
+        </td>
+      );
+    }
     const neg = Number(disp.qty) < 0;
     return (
       <td
@@ -328,6 +343,7 @@ export default function StockSaatIni() {
   const [detailItem, setDetailItem] = useState(null);
   const saveLock = useRef(false);
   const loadSeq = useRef(0);
+  const loadAbortRef = useRef(null);
   const summarySeq = useRef(0);
   /** Skip one catalog reload when syncing branchId from catalog effective_branch_id. */
   const skipBranchPinReload = useRef(false);
@@ -432,10 +448,15 @@ export default function StockSaatIni() {
       setLoading(true);
     }
     try {
+      if (loadAbortRef.current) {
+        try { loadAbortRef.current.abort(); } catch { /* ignore */ }
+      }
+      const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+      loadAbortRef.current = ac;
       const params = { q, page, limit: pageSize };
       if (branchId) params.branch_id = branchId;
       if (warehouseId) params.warehouse_id = warehouseId;
-      const d = await api.physicalStockCatalog(params);
+      const d = await api.physicalStockCatalog(params, ac ? { signal: ac.signal } : undefined);
       if (seq !== loadSeq.current) return;
       setData(d);
       itemsRef.current = Array.isArray(d?.items) ? d.items : [];
@@ -460,6 +481,15 @@ export default function StockSaatIni() {
       }
     } catch (ex) {
       if (seq !== loadSeq.current) return;
+      // Ignore superseded searches (AbortController / axios cancel).
+      if (
+        ex?.code === "ERR_CANCELED"
+        || ex?.name === "CanceledError"
+        || ex?.name === "AbortError"
+        || /abort|cancel/i.test(String(ex?.message || ""))
+      ) {
+        return;
+      }
       const det = ex.response?.data?.detail;
       setErr(typeof det === "object" ? det.message : (det || "Gagal memuat Stock Saat Ini"));
       // Keep prior in-scope rows; only blank when nothing was shown.
@@ -745,8 +775,12 @@ export default function StockSaatIni() {
 
   const renderPhysicalCell = (it, primary, _physicalText, book) => {
     const phys = resolvePhysicalDisplay(primary);
-    const neg = Number(phys.qty) < 0;
-    const qtyNode = (
+    const neg = phys.mode !== "status_text" && Number(phys.qty) < 0;
+    const qtyNode = phys.mode === "status_text" ? (
+      <span className="mono" data-physical-status-text={phys.statusText || "Belum direkonsiliasi"}>
+        {phys.statusText || "Belum direkonsiliasi"}
+      </span>
+    ) : (
       <span className={`mono${neg ? " stock-book-negative" : ""}`}>{fmtQty(phys.qty)}</span>
     );
     // Inline only when a book row already exists (single WH). Missing balance uses the modal.
@@ -1317,7 +1351,9 @@ export default function StockSaatIni() {
                         data-presentation-fallback={polosDisp.presentationFallback ? "true" : undefined}
                         title={polosDisp.title}
                       >
-                        {fmtQty(polosDisp.qty)}
+                        {polosDisp.mode === "status_text"
+                          ? (polosDisp.label || "Belum direkonsiliasi")
+                          : fmtQty(polosDisp.qty)}
                       </strong>
                     </div>
                     <div>

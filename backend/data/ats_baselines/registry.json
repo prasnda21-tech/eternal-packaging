@@ -1,0 +1,35 @@
+{
+  "schema": "eternal.ats_ygy_baseline_registry.v1",
+  "warehouse_id": "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24",
+  "warehouse_code": "YGY-MAIN",
+  "active_baseline_id": "ygy_main_2026-11-02T232200+0700_draft_162",
+  "active_relpath": "archive/ygy_main_2026-11-02T232200+0700_draft_162.json",
+  "candidate_baseline_id": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8",
+  "candidate_relpath": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8.json",
+  "history": [
+    {
+      "baseline_id": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8",
+      "cutoff_at": "2026-11-04T22:45:00+07:00",
+      "relpath": "ygy_main_2026-11-04T224500+0700_d8bef8b608c8.json",
+      "source_sha256": "e185ac285b294477d7d7ffedf5553a8cda97ee71d5a8bb9554d737201c8270e0",
+      "row_count": 357,
+      "status": "DRAFT_PENDING_LIVE_MASTER_MATCH",
+      "role": "CANDIDATE_PENDING_INSTALL",
+      "source_meaning": "free blank goods already net of open orders at cutoff; Owner Accurate Stok Dapat Dijual; do not re-subtract open POs"
+    },
+    {
+      "baseline_id": "ygy_main_2026-11-02T232200+0700_draft_162",
+      "cutoff_at": "2026-11-02T23:22:00+07:00",
+      "relpath": "archive/ygy_main_2026-11-02T232200+0700_draft_162.json",
+      "source_sha256": "0464582e1d774d6e15a6eab0add64671df42703ec216522d8957cc306f990eb6",
+      "row_count": 162,
+      "status": "ACTIVE_UNTIL_APPROVED_SWITCH",
+      "source_meaning": "free blank goods not committed to a PO; Owner-defined Accurate ATS"
+    }
+  ],
+  "notes": [
+    "Active pointer remains Nov-2 until Owner-approved install switches to candidate 357.",
+    "Production ATS mode may already be activated; do not re-activate or rewrite physical/ledger.",
+    "Switch pointer only via install package after live RO match + post-cutoff preview ACK."
+  ]
+}

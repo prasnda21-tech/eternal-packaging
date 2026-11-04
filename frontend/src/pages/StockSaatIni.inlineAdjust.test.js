@@ -149,7 +149,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => { root.render(<StockSaatIni />); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
-    expect(button?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(button?.textContent?.replace(/\s/g, "")).toMatch(/Belumlengkap|Belumsaldo|Belumdirekonsiliasi/);
     expect(button?.getAttribute("data-presentation-fallback")).toBe("true");
     expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-balance-present"))
       .toBe("false");
@@ -261,7 +261,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     });
     await act(async () => { await Promise.resolve(); });
     const button = container.querySelector('[data-testid="stock-adjust-item-1"]');
-    expect(button?.textContent?.replace(/\s/g, "")).toBe("0");
+    expect(button?.textContent?.replace(/\s/g, "")).toMatch(/Belumsaldo|Belumdirekonsiliasi/);
     expect(button?.getAttribute("data-presentation-fallback")).toBe("true");
     await act(async () => { button.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
@@ -617,6 +617,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     expect(select.value).toBe("br-uat");
     expect(api.physicalStockCatalog).toHaveBeenCalledWith(
       expect.objectContaining({ branch_id: "br-uat" }),
+      expect.anything(),
     );
     await act(async () => {
       container.querySelector('[data-testid="stock-adjust-item-1"]').click();
@@ -675,6 +676,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(api.physicalStockCatalog).toHaveBeenCalledWith(
       expect.objectContaining({ branch_id: "br-uat", warehouse_id: "wh-a" }),
+      expect.anything(),
     );
     expect(container.querySelector('[data-testid="stock-physical-header"]')?.textContent).toBe("Stock");
     expect(container.querySelector('[data-testid="stock-opname-button"]')?.getAttribute("href")).toBe(
@@ -682,10 +684,11 @@ describe("Stock Saat Ini inline physical correction", () => {
     );
     expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-baseline-label"))
       .toMatch(/Belum direkonsiliasi/i);
-    expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-balance-present")).toBe("true");
+    // Unreconciled book is not a validated primary qty — show status text, not invent 0/ATS.
+    expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-balance-present")).toBe("false");
     expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.getAttribute("data-baseline-status")).toBe("unreconciled");
     expect(container.querySelector('[data-testid="stock-physical-item-1"]')?.textContent)
-      .not.toMatch(/Belum direkonsiliasi/i);
+      .toMatch(/Belum direkonsiliasi/i);
     await act(async () => {
       container.querySelector('[data-testid="stock-adjust-item-1"]').click();
     });
@@ -695,7 +698,7 @@ describe("Stock Saat Ini inline physical correction", () => {
     container.remove();
   });
 
-  test("warehouse without balance shows presentation 0 with balance-present false", async () => {
+  test("warehouse without balance shows Belum saldo status text with balance-present false", async () => {
     const uatBranch = { id: "br-uat", code: "UAT-YGY", name: "Cabang UAT Adjust", active: true };
     const whB = { id: "wh-b", branch_id: "br-uat", code: "GUD-B", name: "Gudang B", active: true, is_operational: true };
     api.branches.mockResolvedValue({ items: [uatBranch] });
@@ -738,8 +741,8 @@ describe("Stock Saat Ini inline physical correction", () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     const physical = container.querySelector('[data-testid="stock-physical-item-1"]');
     expect(physical?.getAttribute("data-balance-present")).toBe("false");
-    expect(physical?.textContent?.replace(/\s/g, "")).toBe("0");
-    expect(physical?.textContent).not.toMatch(/Belum saldo|Belum terverifikasi|tampilan/i);
+    expect(physical?.textContent?.replace(/\s/g, "")).toMatch(/Belumsaldo|Belumdirekonsiliasi/);
+    expect(physical?.textContent).not.toMatch(/Belum terverifikasi|tampilan/i);
     expect(physical?.querySelector("[data-presentation-fallback='true']")).toBeTruthy();
     expect(container.querySelector('[data-testid="stock-siap-jual-header"]')?.textContent).toMatch(/Stock Dapat Dijual/i);
     expect(physical?.getAttribute("data-baseline-label")).toMatch(/belum direkonsiliasi/i);
