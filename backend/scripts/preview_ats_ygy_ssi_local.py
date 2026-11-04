@@ -47,10 +47,10 @@ from services.physical_stock import (  # noqa: E402
 )
 from services.r2_go_live import set_r2_authority_active  # noqa: E402
 from services.stock_ats_ygy_runtime import (  # noqa: E402
-    CUTOFF_AT,
     YGY_BRANCH_ID,
     YGY_WAREHOUSE_CODE,
     YGY_WAREHOUSE_ID,
+    active_cutoff_at,
     load_baseline_manifest,
 )
 from services.warehouse_stock_standalone import (  # noqa: E402
@@ -264,7 +264,7 @@ async def main() -> int:
         db,
         enabled=False,
         org_branch_id=YGY_BRANCH_ID,
-        historical_cutoff_at=CUTOFF_AT,
+        historical_cutoff_at=active_cutoff_at(),
         accurate_live_branch_map={
             "enabled": True,
             "org_branch_id": YGY_BRANCH_ID,
@@ -363,7 +363,7 @@ async def main() -> int:
         "generated_at_utc": _now_iso(),
         "mode": "draft_read",
         "db_name": db_name,
-        "cutoff_at": CUTOFF_AT,
+        "cutoff_at": active_cutoff_at(),
         "warehouse": YGY_WAREHOUSE_CODE,
         "baseline_rows": len(manifest.get("rows") or []),
         "catalog_rows": len(preview_rows),

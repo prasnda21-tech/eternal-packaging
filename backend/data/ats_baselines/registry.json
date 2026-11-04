@@ -1,0 +1,24 @@
+{
+  "schema": "eternal.ats_ygy_baseline_registry.v1",
+  "warehouse_id": "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24",
+  "warehouse_code": "YGY-MAIN",
+  "active_baseline_id": "ygy_main_2026-11-02T232200+0700_draft_162",
+  "active_relpath": "archive/ygy_main_2026-11-02T232200+0700_draft_162.json",
+  "history": [
+    {
+      "baseline_id": "ygy_main_2026-11-02T232200+0700_draft_162",
+      "cutoff_at": "2026-11-02T23:22:00+07:00",
+      "relpath": "archive/ygy_main_2026-11-02T232200+0700_draft_162.json",
+      "source_sha256": "0464582e1d774d6e15a6eab0add64671df42703ec216522d8957cc306f990eb6",
+      "row_count": 162,
+      "status": "DRAFT_NOT_ACTIVATED",
+      "source_meaning": "free blank goods not committed to a PO; Owner-defined Accurate ATS",
+      "archived_reason": "superseded_pending_tonight_recutover"
+    }
+  ],
+  "notes": [
+    "Active baseline is versioned; do not overwrite archive files.",
+    "Tonight Owner free-stock Accurate file will become a new versioned baseline.",
+    "physical_stock_balances / ledger are never written by baseline install."
+  ]
+}

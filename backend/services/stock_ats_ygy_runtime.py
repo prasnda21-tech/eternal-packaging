@@ -1,7 +1,7 @@
 """YGY-MAIN Accurate ATS cutover — read overlay for Stock Saat Ini.
 
 Does NOT write physical_stock_balances, ledger, or activate production.
-Baseline draft is Owner-defined free blank stock (not physical/opname).
+Baseline is Owner-defined free stock at cutoff (orders already netted in file).
 Overlay READY only when evidence_complete and projector succeeds.
 Otherwise fail closed with explicit coverage gaps (no invented ATS).
 
@@ -11,12 +11,15 @@ branch token sets in this module.
 """
 from __future__ import annotations
 
-import json
 import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from services.stock_ats_baseline_store import (
+    load_active_baseline_manifest,
+    resolve_active_baseline_path,
+)
 from services.stock_ats_cutover import (
     Baseline,
     CutoverError,
@@ -31,8 +34,29 @@ YGY_WAREHOUSE_ID = "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24"
 YGY_WAREHOUSE_CODE = "YGY-MAIN"
 YGY_BRANCH_ID = "5c92529c-3df8-4d9f-b290-a5c94fa51903"
 
+# Compat aliases: prefer active_cutoff_at() / load_baseline_manifest().
+# Kept so older tests/scripts importing CUTOFF_AT still resolve the *active*
+# registry baseline (tonight's recutover supersedes the Nov-2 draft).
+def active_cutoff_at() -> str:
+    man, _ = load_active_baseline_manifest()
+    return str(man.get("cutoff_at"))
+
+
+def _cutoff_utc_iso(cutoff_at: str) -> str:
+    dt = timestamp(cutoff_at)
+    from datetime import timezone
+
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Module-level snapshot for import-time readers; refresh via clear + reload.
 CUTOFF_AT = "2026-11-02T23:22:00+07:00"
 CUTOFF_AT_UTC = "2026-11-02T16:22:00Z"
+try:
+    CUTOFF_AT = active_cutoff_at()
+    CUTOFF_AT_UTC = _cutoff_utc_iso(CUTOFF_AT)
+except Exception:
+    pass
 
 LEDGER_COLLECTION = "physical_stock_ledger"
 MOVEMENT_OPENING_BALANCE = "OPENING_BALANCE"
@@ -82,29 +106,19 @@ def ats_ygy_enabled() -> bool:
 
 
 def default_baseline_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "data" / "ats_baseline_ygy_main_draft_162.json"
-
-
-_BASELINE_CACHE: Optional[Dict[str, Any]] = None
+    return resolve_active_baseline_path()
 
 
 def load_baseline_manifest(path: Optional[Path] = None) -> Dict[str, Any]:
-    global _BASELINE_CACHE
-    p = path or default_baseline_path()
-    if _BASELINE_CACHE is not None and path is None:
-        return _BASELINE_CACHE
-    raw = json.loads(Path(p).read_text())
-    if str(raw.get("warehouse_id") or "") != YGY_WAREHOUSE_ID:
-        raise CutoverError("Baseline warehouse_id must be YGY-MAIN")
-    if str(raw.get("cutoff_at") or "") != CUTOFF_AT:
-        raise CutoverError("Baseline cutoff_at must match Owner decision")
-    # Integrity: recompute sha over sorted eligible identity if file embeds source_sha256
-    sha = str(raw.get("source_sha256") or "")
-    if len(sha) != 64:
-        raise CutoverError("Baseline source_sha256 required")
-    if path is None:
-        _BASELINE_CACHE = raw
-    return raw
+    man, _resolved = load_active_baseline_manifest(path)
+    # Keep module aliases fresh for callers that still read CUTOFF_AT.
+    global CUTOFF_AT, CUTOFF_AT_UTC
+    CUTOFF_AT = str(man.get("cutoff_at") or CUTOFF_AT)
+    try:
+        CUTOFF_AT_UTC = _cutoff_utc_iso(CUTOFF_AT)
+    except Exception:
+        pass
+    return man
 
 
 def eligible_rows(manifest: Optional[Dict[str, Any]] = None) -> Dict[str, dict]:
@@ -122,20 +136,22 @@ def eligible_rows(manifest: Optional[Dict[str, Any]] = None) -> Dict[str, dict]:
     return out
 
 
-def baseline_for_master(master_item_id: str, *, batch_id: str = "ygy-ats-2026-11-02") -> Optional[Baseline]:
+def baseline_for_master(master_item_id: str, *, batch_id: Optional[str] = None) -> Optional[Baseline]:
     rows = eligible_rows()
     mid = str(master_item_id or "").strip()
     row = rows.get(mid)
     if not row:
         return None
     man = load_baseline_manifest()
+    cutoff = str(man.get("cutoff_at") or active_cutoff_at())
+    bid = batch_id or f"ygy-ats-{cutoff}"
     return Baseline(
-        batch_id=batch_id,
+        batch_id=bid,
         warehouse_id=YGY_WAREHOUSE_ID,
         master_item_id=mid,
         unit=str(row.get("satuan") or "PCS"),
         available_qty=quantity(row.get("accurate_ats")),
-        cutoff_at=str(man.get("cutoff_at") or CUTOFF_AT),
+        cutoff_at=cutoff,
         source_sha256=str(man.get("source_sha256")),
     )
 
@@ -166,14 +182,14 @@ def coverage_gaps_for_live_ro(*, has_stock_allocations: bool, event_stream_compl
             "RESERVE/SHIP_RESERVED/RELEASE/RECEIVE_FREE/ISSUE_FREE/REVERSE coverage is verified"
         )
     gaps.append(
-        "ADOPTION_POLICY_PROPOSAL: treat Accurate ATS @ cutoff as free blank baseline; "
-        "reservations_at_cutoff empty unless Owner supplies WH-proven opening reservations; "
-        "map only post-cutoff mutations with warehouse_id==YGY-MAIN"
+        "ADOPTION_POLICY: Accurate Stok Dapat Dijual @ cutoff is FREE STOCK already net of "
+        "open orders; reservations_at_cutoff empty unless Owner supplies WH-proven opening "
+        "reservation keys; do not re-subtract all open POs; map post-cutoff mutations once"
     )
     gaps.append(
-        "OLD_PO_CANCEL_SKIP_CONSEQUENCE: refusing RELEASE on pre-cutoff cancel avoids "
-        "inflating ATS, but free stock may remain UNDERSTATED because commitment was "
-        "already absorbed into the Owner baseline and is not restored by cancel"
+        "OLD_PO_CANCEL_SKIP_CONSEQUENCE: refusing RELEASE on pre-cutoff cancel without "
+        "proven opening reservation avoids inventing free stock; understated ATS is "
+        "reported explicitly until Owner proves the reservation delta"
     )
     return gaps
 
@@ -385,7 +401,8 @@ async def collect_ats_stream_for_ygy(
     wid = str(warehouse_id or "").strip()
     bid = str(branch_id or "").strip() or YGY_BRANCH_ID
     as_of_dt = timestamp(as_of)
-    cutoff_dt = timestamp(CUTOFF_AT)
+    cutoff_at = active_cutoff_at()
+    cutoff_dt = timestamp(cutoff_at)
 
     by_master: Dict[str, Dict[str, Any]] = {mid: _empty_master_pack() for mid in mids}
     if wid != YGY_WAREHOUSE_ID:
@@ -395,7 +412,7 @@ async def collect_ats_stream_for_ygy(
             "by_master": by_master,
             "reservations_at_cutoff": [],
             "mode_b_settings": None,
-            "cutoff_at": CUTOFF_AT,
+            "cutoff_at": cutoff_at,
             "as_of": as_of,
             "warehouse_id": wid,
         }
@@ -405,7 +422,7 @@ async def collect_ats_stream_for_ygy(
             "by_master": {},
             "reservations_at_cutoff": [],
             "mode_b_settings": None,
-            "cutoff_at": CUTOFF_AT,
+            "cutoff_at": cutoff_at,
             "as_of": as_of,
             "warehouse_id": wid,
         }
@@ -427,7 +444,13 @@ async def collect_ats_stream_for_ygy(
         if str(d.get("id") or "").strip()
     }
 
-    order_query: Dict[str, Any] = {"$or": mongo_order_branch_clauses(bid, settings)}
+    # Scope orders to page masters — avoids full-table scan on every SSI search.
+    order_query: Dict[str, Any] = {
+        "$and": [
+            {"$or": mongo_order_branch_clauses(bid, settings)},
+            {"line_items.master_item_id": {"$in": mids}},
+        ]
+    }
     raw_orders = await db.orders.find(order_query, {"_id": 0}).to_list(20000)
     orders = filter_orders_for_branch(raw_orders, bid, settings)
     order_by_id = {
@@ -470,8 +493,6 @@ async def collect_ats_stream_for_ygy(
                 mt = master_type_by_id.get(mid) or ""
                 if mt:
                     line_for_type["item_type"] = mt
-            if not is_post:
-                continue
             baseline_unit = unit_by_mid.get(mid) or "PCS"
             alloc = _ygy_allocation_qty(
                 line_for_type, warehouse_id=wid, baseline_unit=baseline_unit,
@@ -501,23 +522,86 @@ async def collect_ats_stream_for_ygy(
                 continue
             key = _reservation_key(oid, line, idx)
             unit = baseline_unit
+
+            # Free-stock baseline already nets open POs at cutoff.
+            # Post-cutoff orders: RESERVE full YGY qty once.
+            # Pre-cutoff orders: only RESERVE proven *increases* after cutoff
+            # (opening reserved qty must be explicit — never invent).
+            reserve_qty = reserved_qty
+            occurred_dt = created
+            if not is_post:
+                opening_raw = (
+                    line.get("ats_reserved_qty_at_cutoff")
+                    if line.get("ats_reserved_qty_at_cutoff") is not None
+                    else line.get("reserved_qty_at_cutoff")
+                )
+                change_time = _parse_event_time(
+                    line.get("updated_at")
+                    or line.get("allocation_updated_at")
+                    or order.get("updated_at")
+                )
+                if opening_raw is None:
+                    # No proven opening reservation snapshot — do not re-cut baseline.
+                    # Surface explicitly when a post-cutoff change timestamp exists.
+                    if change_time is not None and change_time > cutoff_dt:
+                        _append_gap(
+                            pack,
+                            "PRE_CUTOFF_PO_CHANGE_UNPROVEN:"
+                            f"{key}: post-cutoff line/alloc change seen but "
+                            "ats_reserved_qty_at_cutoff missing — refuse invented delta",
+                        )
+                    continue
+                try:
+                    opening_qty = quantity(opening_raw)
+                except CutoverError:
+                    _append_gap(
+                        pack,
+                        f"PRE_CUTOFF_PO_OPENING_QTY_INVALID:{key}:{opening_raw!r}",
+                    )
+                    continue
+                if opening_qty < 0:
+                    _append_gap(pack, f"PRE_CUTOFF_PO_OPENING_QTY_NEGATIVE:{key}")
+                    continue
+                delta = reserved_qty - opening_qty
+                if delta > 0:
+                    if change_time is None or change_time <= cutoff_dt:
+                        _append_gap(
+                            pack,
+                            "PRE_CUTOFF_PO_INCREASE_TIME_UNPROVEN:"
+                            f"{key}: delta={delta} without post-cutoff updated_at",
+                        )
+                        continue
+                    reserve_qty = delta
+                    occurred_dt = change_time
+                elif delta < 0:
+                    # Decrease/cancel of pre-cutoff commitment: require RELEASE via
+                    # opening reservation path — never invent free stock here.
+                    _append_gap(
+                        pack,
+                        "PRE_CUTOFF_PO_DECREASE_NEEDS_OPENING_RESERVATION:"
+                        f"{key}: delta={delta}; refuse silent ignore and refuse "
+                        "invented RELEASE without WH-proven opening key",
+                    )
+                    continue
+                else:
+                    continue  # unchanged vs proven opening — already in free-stock file
+
             post_cutoff_keys[key] = {
                 "master_item_id": mid,
-                "reserved_qty": reserved_qty,
+                "reserved_qty": reserve_qty,
                 "unit": unit,
                 "order_id": oid,
-                "created_at": created.isoformat(),
+                "created_at": occurred_dt.isoformat(),
             }
-            raw_created = str(order.get("created_at") or order.get("imported_at") or "").strip()
-            occurred = raw_created or created.isoformat()
+            occurred = occurred_dt.isoformat()
             raw_events.append({
-                "event_id": f"reserve:{key}",
+                "event_id": f"reserve:{key}" + ("" if is_post else ":delta"),
                 "warehouse_id": wid,
                 "master_item_id": mid,
                 "unit": unit,
                 "occurred_at": occurred,
                 "kind": mapped_kind("NEW_PO_LINE_RESERVE"),
-                "qty": reserved_qty,
+                "qty": reserve_qty,
                 "reservation_key": key,
                 "reverses_event_id": "",
                 "business_code": "NEW_PO_LINE_RESERVE",
@@ -862,7 +946,7 @@ async def collect_ats_stream_for_ygy(
         "by_master": by_master,
         "reservations_at_cutoff": [],
         "mode_b_settings": settings,
-        "cutoff_at": CUTOFF_AT,
+        "cutoff_at": cutoff_at,
         "as_of": as_of,
         "warehouse_id": wid,
         "branch_id": bid,

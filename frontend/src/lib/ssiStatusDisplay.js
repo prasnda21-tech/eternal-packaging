@@ -72,7 +72,8 @@ export function isPhysicalBaselineIncomplete(item, physicalPrimary) {
 }
 
 /**
- * Physical Stock cell: proven qty as-is (incl. negative); missing → presentation 0.
+ * Physical Stock cell: proven qty as-is (incl. negative).
+ * Missing / unreconciled → Owner text (never invent 0, never use ATS).
  */
 export function resolvePhysicalDisplay(physicalPrimary) {
   if (physicalPrimary?.present) {
@@ -83,11 +84,12 @@ export function resolvePhysicalDisplay(physicalPrimary) {
       statusText: physicalPrimary.text || null,
     };
   }
+  const text = physicalPrimary?.text || "Belum direkonsiliasi";
   return {
-    mode: "presentation_zero",
-    qty: 0,
+    mode: "status_text",
+    qty: null,
     presentationFallback: true,
-    statusText: physicalPrimary?.text || null,
+    statusText: text,
   };
 }
 
@@ -161,6 +163,18 @@ export function resolvePolosDisplay(item, physicalPrimary) {
   const note = String(item?.qty_polos_gudang_note || "").trim();
   const incomplete = isPhysicalBaselineIncomplete(item, physicalPrimary);
 
+  if (incomplete) {
+    return {
+      mode: "status_text",
+      qty: null,
+      status: SSI_STATUS.UNVERIFIED,
+      reason: reasonCode || "BASELINE_INCOMPLETE",
+      label: "Belum direkonsiliasi",
+      presentationFallback: true,
+      title: [SSI_REASON_LABEL.BASELINE_INCOMPLETE, note].filter(Boolean).join(" — ") || undefined,
+    };
+  }
+
   if (qty == null) {
     return {
       mode: "presentation_zero",
@@ -173,9 +187,7 @@ export function resolvePolosDisplay(item, physicalPrimary) {
     };
   }
 
-  const reason = incomplete
-    ? "BASELINE_INCOMPLETE"
-    : (reasonCode || "SIMPLE_POLOS_NO_WIP_COVERAGE");
+  const reason = reasonCode || "SIMPLE_POLOS_NO_WIP_COVERAGE";
   const status = apiStatus === SSI_STATUS.READY
     ? SSI_STATUS.READY
     : (apiStatus === SSI_STATUS.UNVERIFIED ? SSI_STATUS.UNVERIFIED : SSI_STATUS.INDICATIVE);

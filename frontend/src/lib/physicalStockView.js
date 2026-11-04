@@ -203,6 +203,25 @@ export function stockPhysicalPrimaryDisplay(item, { warehouseId = "", branchAggr
         hints: [item?.baseline_label, "Saldo gudang belum ada"].filter(Boolean),
       };
     }
+    // Unreconciled book must not look like a validated physical qty (and must
+    // never be replaced by ATS). Show explicit Owner label.
+    const slot = balances.find((wb) => String(wb?.warehouse_id || "") === wid);
+    const slotUnreconciled = String(
+      slot?.baseline_status || item?.baseline_status || "",
+    ) === "unreconciled" && !slotOperationalZero(slot || item);
+    if (slotUnreconciled || rowBaselineUnreconciled) {
+      return {
+        present: false,
+        qty: null,
+        text: "Belum direkonsiliasi",
+        flag: null,
+        negative: false,
+        hints: [
+          item?.baseline_label || "Belum direkonsiliasi",
+          "Saldo fisik belum direkonsiliasi — bukan nol dan bukan angka ATS",
+        ].filter(Boolean),
+      };
+    }
     const qty = book.qty;
     const negative = Boolean(item?.saldo_buku_negatif) || (qty != null && Number(qty) < 0);
     return {

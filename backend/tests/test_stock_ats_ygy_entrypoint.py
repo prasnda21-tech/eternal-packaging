@@ -1012,3 +1012,61 @@ async def test_list_detail_export_parity_owner_default_no_alloc(db):
     assert a["stock_dapat_dijual"] == 19000.0
     assert a["ats_sekarang"] == 19000.0
     assert a["physical_qty"] == -19300
+
+
+async def test_entrypoint_pre_cutoff_proven_increase_reserves_delta_only(db):
+    await _seed_master_wh(db)
+    oid = f"so-old-delta-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": BEFORE,
+        "updated_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-old-delta",
+            "master_item_id": MID_100032,
+            "quantity": 7000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "ats_reserved_qty_at_cutoff": 5000,
+            "updated_at": AFTER,
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    reserves = [e for e in pack["events"] if e.kind == "RESERVE"]
+    assert len(reserves) == 1
+    assert str(reserves[0].qty) == "2000"
+    assert reserves[0].event_id.endswith(":delta")
+    _, row = await _catalog_row(db)
+    assert row["stock_dapat_dijual"] == 18000.0
+
+
+async def test_entrypoint_pre_cutoff_change_without_opening_qty_is_gap_not_silent(db):
+    await _seed_master_wh(db)
+    oid = f"so-old-gap-{uuid.uuid4().hex[:6]}"
+    await db.orders.insert_one({
+        "id": oid,
+        "branch_id": YGY_BRANCH_ID,
+        "created_at": BEFORE,
+        "updated_at": AFTER,
+        "cancelled": False,
+        "line_items": [{
+            "line_id": "ln-old-gap",
+            "master_item_id": MID_100032,
+            "quantity": 5000,
+            "unit": "PCS",
+            "item_type": "INVENTORY",
+            "updated_at": AFTER,
+            # no ats_reserved_qty_at_cutoff → must not invent delta
+        }],
+    })
+    stream = await collect_ats_stream_for_ygy(
+        db, master_item_ids=[MID_100032], as_of=AS_OF_LATER,
+    )
+    pack = stream["by_master"][MID_100032]
+    assert not any(e.kind == "RESERVE" for e in pack["events"])
+    assert any("PRE_CUTOFF_PO_CHANGE_UNPROVEN" in g for g in pack["gaps"])
