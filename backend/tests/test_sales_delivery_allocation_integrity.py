@@ -2008,6 +2008,75 @@ def test_loading_pod_invoice_guards_not_weakened_in_delete_blocker():
     assert "delivery_confirmations" in block or "delivery_proofs" in block
 
 
+@pytest.mark.anyio
+async def test_hard_delete_guard_blocks_leftover_committed_claim():
+    """A malformed delivery cannot disappear while an unlisted claim remains."""
+    from services.sales_delivery_allocations import (
+        HARD_DELETE_PENDING_FIELD,
+        assert_delivery_allocation_claims_released,
+    )
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    sid = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    claim = await claim_source_line_allocation(
+        server.db, source_po_id=po_id, source_line_id=line_id,
+        source_line_idx=0, ordered_qty=500, qty=500, sales_delivery_id=sid,
+    )
+    await commit_claimed_allocations(server.db, [claim])
+    # A historical/malformed SJ lacks line_items; normal release is a no-op.
+    await server.db.sales_deliveries.insert_one({
+        "id": sid, "po_id": po_id, "line_items": [],
+        HARD_DELETE_PENDING_FIELD: True,
+    })
+    with pytest.raises(HTTPException) as exc:
+        await assert_delivery_allocation_claims_released(server.db, sid)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "SJ_ALLOCATION_RELEASE_INCOMPLETE"
+    assert await server.db.sales_deliveries.find_one({"id": sid}) is not None
+    counter = await _counter(po_id, line_id)
+    assert counter["allocated_qty"] == 500
+    assert sid in counter["claims_by_delivery"]
+
+
+@pytest.mark.anyio
+async def test_hard_delete_guard_allows_clean_release_and_retry():
+    """After idempotent release, the hard-delete guard permits cleanup."""
+    from services.sales_delivery_allocations import assert_delivery_allocation_claims_released
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    sid = str(uuid.uuid4())
+    await server.db[ALLOCATION_COUNTERS].delete_many({"source_po_id": po_id})
+    claim = await claim_source_line_allocation(
+        server.db, source_po_id=po_id, source_line_id=line_id,
+        source_line_idx=0, ordered_qty=500, qty=200, sales_delivery_id=sid,
+    )
+    await commit_claimed_allocations(server.db, [claim])
+    with pytest.raises(HTTPException):
+        await assert_delivery_allocation_claims_released(server.db, sid)
+    await release_source_line_allocation(
+        server.db, source_po_id=po_id, source_line_id=line_id,
+        qty=200, sales_delivery_id=sid,
+    )
+    await assert_delivery_allocation_claims_released(server.db, sid)
+    await assert_delivery_allocation_claims_released(server.db, sid)
+    assert (await _counter(po_id, line_id))["allocated_qty"] == 0
+
+
+def test_delete_paths_verify_claim_release_before_delete():
+    """Both single and bulk hard-delete paths enforce the residual-claim guard."""
+    src = (Path(__file__).resolve().parents[1] / "server.py").read_text(encoding="utf-8")
+    single = src[src.index("async def _hard_delete_draft_sales_delivery"):
+                 src.index("async def _bulk_hard_delete_sales_deliveries_atomic")]
+    bulk = src[src.index("async def _apply_bulk_hard_deletes_in_session"):
+               src.index("async def _hard_delete_draft_sales_delivery")]
+    assert single.count("await assert_delivery_allocation_claims_released(") == 2
+    assert bulk.count("await assert_delivery_allocation_claims_released(") == 1
+    assert bulk.index("await assert_delivery_allocation_claims_released(") < bulk.index(
+        "result = await db.sales_deliveries.delete_one("
+    )
+
+
 # ── Owner final safety review (PR #726) ──────────────────────────────────────
 
 

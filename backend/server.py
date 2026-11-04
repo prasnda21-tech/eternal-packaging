@@ -15265,6 +15265,7 @@ async def _apply_bulk_hard_deletes_in_session(session, deliveries: list) -> list
     """
     from services.sales_delivery_allocations import (
         HARD_DELETE_PENDING_FIELD,
+        assert_delivery_allocation_claims_released,
         delivery_source_po_ids,
         release_delivery_allocations,
     )
@@ -15301,6 +15302,9 @@ async def _apply_bulk_hard_deletes_in_session(session, deliveries: list) -> list
         )
         release_rows = await release_delivery_allocations(
             db, fresh, session=session,
+        )
+        await assert_delivery_allocation_claims_released(
+            db, fresh["id"], session=session,
         )
         allocation_releases.append({
             "id": delivery.get("id"),
@@ -15352,6 +15356,7 @@ async def _hard_delete_draft_sales_delivery(
     """
     from services.sales_delivery_allocations import (
         HARD_DELETE_PENDING_FIELD,
+        assert_delivery_allocation_claims_released,
         delivery_source_po_ids,
         fence_sales_delivery_for_hard_delete,
         mongo_transactions_available,
@@ -15383,6 +15388,9 @@ async def _hard_delete_draft_sales_delivery(
                         })
                     allocation_release = await release_delivery_allocations(
                         db, fresh, session=session,
+                    )
+                    await assert_delivery_allocation_claims_released(
+                        db, fresh["id"], session=session,
                     )
                     deleted = await db.sales_deliveries.delete_one(
                         {
@@ -15423,6 +15431,7 @@ async def _hard_delete_draft_sales_delivery(
         # → then delete. Crash after release leaves a fenced inactive SJ; retry
         # is idempotent and cannot orphan committed claims.
         allocation_release = await release_delivery_allocations(db, fenced)
+        await assert_delivery_allocation_claims_released(db, fenced["id"])
         deleted = await db.sales_deliveries.delete_one(
             {
                 "id": fenced["id"],
