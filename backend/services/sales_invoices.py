@@ -690,17 +690,56 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
     # Header Keterangan PO (orders.notes) for create-form prefill only; invoice stores its own snapshot.
     notes = (order.get("notes") or "").strip()
 
-    # Query all existing invoices for this PO to compute cumulative invoiced quantity per exact line
-    invoice_filter: Dict[str, Any] = {"po_id": po_id}
+    # Include multi-source invoices referencing this PO; attribute each billed
+    # line to its exact PO source (never count another PO's same line_idx).
+    invoice_filter: Dict[str, Any] = {
+        "$or": [
+            {"po_id": po_id},
+            {"source_po_ids": po_id},
+            {"lines.source_po_id": po_id},
+        ],
+        "billing_commit_pending": {"$ne": True},
+    }
     if exclude_invoice_id:
         invoice_filter["id"] = {"$ne": str(exclude_invoice_id)}
 
     existing_invoices = await db.sales_invoices.find(
-        invoice_filter, {"_id": 0, "lines": 1, "financial_status": 1}
-    ).to_list(500)
+        invoice_filter, {"_id": 0, "po_id": 1, "lines": 1, "financial_status": 1}
+    ).to_list(501)
+    if len(existing_invoices) > 500:
+        raise HTTPException(409, "Terlalu banyak Faktur sumber untuk preview PO; gunakan audit penagihan.")
 
-    cumulative_by_line_idx = accumulate_invoiced_qty_by_line_idx(existing_invoices)
     raw_lines = order.get("line_items") or order.get("items") or []
+    current_line_ids = {
+        str(li.get("line_id") or li.get("id") or f"line_{idx}"): idx
+        for idx, li in enumerate(raw_lines) if isinstance(li, dict)
+    }
+    cumulative_by_line_idx: Dict[int, int] = {}
+    for invoice in existing_invoices:
+        if str(invoice.get("financial_status") or "").strip().lower() == "cancelled":
+            continue
+        for row in invoice.get("lines") or []:
+            if not isinstance(row, dict):
+                continue
+            row_po = str(row.get("source_po_id") or invoice.get("po_id") or "").strip()
+            if row_po != str(po_id):
+                continue
+            row_id = str(row.get("source_po_line_id") or row.get("line_id") or "").strip()
+            if row_id in current_line_ids:
+                idx = current_line_ids[row_id]
+            else:
+                try:
+                    idx = int(row.get("source_po_line_idx", row.get("line_idx", -1)))
+                except (ValueError, TypeError):
+                    continue
+                if idx < 0 or idx >= len(raw_lines):
+                    continue
+                current_id = str((raw_lines[idx] or {}).get("line_id") or (raw_lines[idx] or {}).get("id") or "").strip()
+                if row_id and current_id and row_id != current_id:
+                    continue
+            cumulative_by_line_idx[idx] = (
+                cumulative_by_line_idx.get(idx, 0) + int(row.get("quantity") or 0)
+            )
     qty_summary = summarize_po_invoiceable_quantities(raw_lines, cumulative_by_line_idx)
     qty_by_line = {
         int(row["line_idx"]): row for row in qty_summary.get("lines") or []
