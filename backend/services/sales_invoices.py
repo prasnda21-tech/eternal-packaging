@@ -690,22 +690,78 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
     # Header Keterangan PO (orders.notes) for create-form prefill only; invoice stores its own snapshot.
     notes = (order.get("notes") or "").strip()
 
-    # Query all existing invoices for this PO to compute cumulative invoiced quantity per exact line
-    invoice_filter: Dict[str, Any] = {"po_id": po_id}
+    # Include multi-source invoices referencing this PO; attribute each billed
+    # line to its exact PO source (never count another PO's same line_idx).
+    invoice_filter: Dict[str, Any] = {
+        "$or": [
+            {"po_id": po_id},
+            {"source_po_ids": po_id},
+            {"lines.source_po_id": po_id},
+        ],
+        "billing_commit_pending": {"$ne": True},
+    }
     if exclude_invoice_id:
         invoice_filter["id"] = {"$ne": str(exclude_invoice_id)}
 
     existing_invoices = await db.sales_invoices.find(
-        invoice_filter, {"_id": 0, "lines": 1, "financial_status": 1}
-    ).to_list(500)
+        invoice_filter, {"_id": 0, "po_id": 1, "lines": 1, "financial_status": 1}
+    ).to_list(501)
+    if len(existing_invoices) > 500:
+        raise HTTPException(409, "Terlalu banyak Faktur sumber untuk preview PO; gunakan audit penagihan.")
 
-    cumulative_by_line_idx = accumulate_invoiced_qty_by_line_idx(existing_invoices)
     raw_lines = order.get("line_items") or order.get("items") or []
+    current_line_ids = {
+        str(li.get("line_id") or li.get("id") or f"line_{idx}"): idx
+        for idx, li in enumerate(raw_lines) if isinstance(li, dict)
+    }
+    cumulative_by_line_idx: Dict[int, int] = {}
+    for invoice in existing_invoices:
+        if str(invoice.get("financial_status") or "").strip().lower() == "cancelled":
+            continue
+        for row in invoice.get("lines") or []:
+            if not isinstance(row, dict):
+                continue
+            row_po = str(row.get("source_po_id") or invoice.get("po_id") or "").strip()
+            if row_po != str(po_id):
+                continue
+            row_id = str(row.get("source_po_line_id") or row.get("line_id") or "").strip()
+            if row_id in current_line_ids:
+                idx = current_line_ids[row_id]
+            else:
+                try:
+                    idx = int(row.get("source_po_line_idx", row.get("line_idx", -1)))
+                except (ValueError, TypeError):
+                    continue
+                if idx < 0 or idx >= len(raw_lines):
+                    continue
+                current_id = str((raw_lines[idx] or {}).get("line_id") or (raw_lines[idx] or {}).get("id") or "").strip()
+                if row_id and current_id and row_id != current_id:
+                    continue
+            cumulative_by_line_idx[idx] = (
+                cumulative_by_line_idx.get(idx, 0) + int(row.get("quantity") or 0)
+            )
     qty_summary = summarize_po_invoiceable_quantities(raw_lines, cumulative_by_line_idx)
     qty_by_line = {
         int(row["line_idx"]): row for row in qty_summary.get("lines") or []
     }
     preview_lines = []
+    # Read-only lookup: current atomic billing counter may disagree with
+    # historical invoice documents after a PO revision/cancellation.
+    counter_by_line_id = {}
+    if not exclude_invoice_id and raw_lines:
+        from services.sales_invoice_allocations import BILLING_COUNTERS, po_billing_counter_id
+        ids = [
+            po_billing_counter_id(po_id, str(li.get("line_id") or li.get("id") or f"line_{idx}"))
+            for idx, li in enumerate(raw_lines) if isinstance(li, dict)
+        ]
+        if ids:
+            counter_docs = await db[BILLING_COUNTERS].find(
+                {"id": {"$in": ids}}, {"_id": 0, "id": 1, "invoiced_qty": 1},
+            ).to_list(len(ids))
+            counter_by_line_id = {
+                str(row["id"]): int(row.get("invoiced_qty") or 0)
+                for row in counter_docs
+            }
 
     for idx, li in enumerate(raw_lines):
         if not isinstance(li, dict):
@@ -721,8 +777,14 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         color = str(li.get("color") or "").strip()
         qty_row = qty_by_line.get(line_idx) or {}
         ordered_qty = int(qty_row.get("ordered_qty") or 0)
-        invoiced_cumulative = int(qty_row.get("invoiced_cumulative") or 0)
-        remaining_invoice_qty = int(qty_row.get("remaining_invoice_qty") or 0)
+        invoice_document_qty = int(qty_row.get("invoiced_cumulative") or 0)
+        counter_qty = counter_by_line_id.get(f"{po_id}::{line_id}")
+        # Never offer more than either source permits. No silent reconciliation.
+        invoiced_cumulative = max(invoice_document_qty, counter_qty or 0)
+        remaining_invoice_qty = max(0, ordered_qty - invoiced_cumulative)
+        billing_counter_discrepancy = (
+            counter_qty is not None and counter_qty != invoice_document_qty
+        )
         stored_price = stored_order_unit_price(li)
         stored_subtotal = None
         if stored_price is not None:
@@ -736,6 +798,9 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
             "color": color,
             "ordered_qty": ordered_qty,
             "invoiced_cumulative": invoiced_cumulative,
+            "invoice_document_qty": invoice_document_qty,
+            "billing_counter_qty": counter_qty,
+            "billing_counter_discrepancy": billing_counter_discrepancy,
             "remaining_invoice_qty": remaining_invoice_qty,
             "quantity": remaining_invoice_qty,  # Default suggested qty to invoice
             "unit": unit,
@@ -747,7 +812,7 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         })
 
     total_ordered_qty = int(qty_summary.get("total_ordered_qty") or 0)
-    total_remaining_invoice_qty = int(qty_summary.get("total_remaining_invoice_qty") or 0)
+    total_remaining_invoice_qty = sum(int(line["remaining_invoice_qty"]) for line in preview_lines)
 
     return {
         "po_id": po_id,
@@ -762,8 +827,17 @@ async def get_po_invoice_preview(db, po_id_or_doc: Any, exclude_invoice_id: Opti
         "notes": notes,
         "total_ordered_qty": total_ordered_qty,
         "total_remaining_invoice_qty": total_remaining_invoice_qty,
+        "billing_reconciliation_required": any(
+            line["billing_counter_discrepancy"] for line in preview_lines
+        ),
         "total_qty": total_remaining_invoice_qty,
-        "remaining_by_unit": qty_summary.get("remaining_by_unit") or [],
+        "remaining_by_unit": [
+            {"unit": unit, "qty": sum(
+                int(line["remaining_invoice_qty"])
+                for line in preview_lines if line["unit"] == unit
+            )}
+            for unit in dict.fromkeys(line["unit"] for line in preview_lines)
+        ],
         "lines": preview_lines,
         "subtotal": 0.0,
         "discount_amount": 0.0,
@@ -2479,6 +2553,25 @@ async def cancel_sales_invoice(
 
         await raise_if_revision_in_progress(db, inv["id"])
         if status == FINANCIAL_CANCELLED:
+            # A cancelled invoice can retain a posting lease after an interrupted
+            # accounting operation. Never free billing capacity while it is live.
+            if posting_claim_is_active(inv):
+                raise HTTPException(409, CANCEL_CLAIM_MESSAGE)
+            # Crash-safe replay: previous cancellation may have persisted its
+            # status but failed before releasing PO/SJ billing claims.
+            # Never heal if payment or accounting evidence contradicts cancel.
+            pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})
+            if pay_count:
+                raise HTTPException(
+                    409, "Faktur sudah dibatalkan tetapi memiliki penerimaan; perlu rekonsiliasi Finance.",
+                )
+            prior_journal = await find_sales_invoice_source_journal(db, inv["id"])
+            if prior_journal:
+                raise HTTPException(
+                    409, "Faktur sudah dibatalkan tetapi memiliki jurnal; perlu rekonsiliasi Finance.",
+                )
+            from services.sales_invoice_allocations import release_invoice_billing_allocations
+            await release_invoice_billing_allocations(db, inv)
             return await get_sales_invoice_detail(db, inv["id"])
 
         pay_count = await db.sales_receipts.count_documents({"invoice_id": inv["id"]})

@@ -455,6 +455,50 @@ describe("Recipient WhatsApp on Buat Pengiriman", () => {
     await flush();
   }
 
+  test("reprints the existing SJ via PDF without submitting a second delivery", async () => {
+    const summary = summaryFor("po-1", "081111111111", 5);
+    summary.deliveries = [{ id: "sj-existing", sj_number: "SJ/EXISTING" }];
+    api.getPoDeliverySummary.mockResolvedValueOnce(summary);
+    const pdfUrl = "https://example.invalid/sj-existing.pdf";
+    jest.spyOn(api, "salesDeliveryPdfUrl").mockReturnValue(pdfUrl);
+    const open = jest.spyOn(window, "open").mockImplementation(() => null);
+
+    await renderCreate("/penjualan/pengiriman-pesanan?action=create&po_id=po-1");
+    const reprint = container.querySelector('[data-testid="reprint-existing-sj-sj-existing"]');
+    expect(reprint).not.toBeNull();
+    expect(reprint.textContent).toMatch(/Cetak Ulang SJ\/EXISTING/);
+    api.createSalesDelivery.mockClear();
+    await act(async () => { reprint.click(); });
+    expect(api.salesDeliveryPdfUrl).toHaveBeenCalledWith("sj-existing");
+    expect(open).toHaveBeenCalledWith(pdfUrl, "_blank");
+    expect(api.createSalesDelivery).not.toHaveBeenCalled();
+  });
+
+  test("no SJ document means no misleading reprint or automatic replacement", async () => {
+    const summary = summaryFor("po-1", "081111111111", 0);
+    summary.deliveries = [];
+    api.getPoDeliverySummary.mockResolvedValueOnce(summary);
+    const open = jest.spyOn(window, "open").mockImplementation(() => null);
+
+    await renderCreate("/penjualan/pengiriman-pesanan?action=create&po_id=po-1");
+    expect(container.querySelector('[data-testid="existing-sj-reprint"]')).toBeNull();
+    expect(container.querySelector('[data-testid^="reprint-existing-sj-"]')).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+    expect(api.createSalesDelivery).not.toHaveBeenCalled();
+  });
+
+  test("SJ reprint is hidden without delivery print or view permission", async () => {
+    const summary = summaryFor("po-1", "081111111111", 5);
+    summary.deliveries = [{ id: "sj-existing", sj_number: "SJ/EXISTING" }];
+    api.getPoDeliverySummary.mockResolvedValueOnce(summary);
+    require("../lib/auth").useAuth.mockReturnValue({
+      user: { id: "u1", role: "operator" },
+      hasPerm: (perm) => perm === "sales.delivery.create",
+    });
+    await renderCreate("/penjualan/pengiriman-pesanan?action=create&po_id=po-1");
+    expect(container.querySelector('[data-testid="existing-sj-reprint"]')).toBeNull();
+  });
+
   test("normalizes Indonesian WhatsApp digits the same way as the backend helper", () => {
     expect(recipientWhatsappDigits("0812-3456-7890")).toBe("6281234567890");
     expect(recipientWhatsappDigits("+62 812 3456 7890")).toBe("6281234567890");
