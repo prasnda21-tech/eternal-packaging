@@ -1622,6 +1622,37 @@ export default function PengirimanPesanan() {
                 hidden={deliveryFormTab !== "items"}
                 style={deliveryFormTab !== "items" ? { display: "none" } : undefined}
               >
+                {!multiPoMode && Array.isArray(poSummary?.deliveries) && poSummary.deliveries.length > 0 ? (
+                  <div
+                    data-testid="existing-sj-reprint"
+                    style={{
+                      margin: "8px 12px",
+                      padding: "9px 12px",
+                      border: "1px solid #d1d5db",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <strong>Sudah ada SJ untuk PO ini.</strong>
+                    <span>Cetak ulang dokumen yang sama tanpa membuat SJ atau alokasi baru:</span>
+                    {poSummary.deliveries.filter((d) => d?.id).map((d) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        data-testid={`reprint-existing-sj-${d.id}`}
+                        onClick={() => handlePrintPdf(d.id)}
+                        disabled={formBusy}
+                        className="sd-btn-secondary"
+                      >
+                        Cetak Ulang {d.sj_number || d.number || "SJ"}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="ux90-table-head">
                   {(multiPoMode ? combinedAllocRows.length > 0 : poSummary?.lines?.length > 0) ? (
                     <div className="ux90-table-actions">
