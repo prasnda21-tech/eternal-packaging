@@ -73,6 +73,34 @@ async def test_revision_500_to_1000_active_invoice_only_allows_remaining_500(db)
 
 
 @pytest.mark.anyio
+async def test_asmaraloka_cancelled_invoice_does_not_consume_revised_po_qty(db):
+    """Production pattern: cancelled 1000-qty invoice, no billing counter."""
+    po_id = str(uuid.uuid4())
+    invoice_id = str(uuid.uuid4())
+    await db.orders.insert_one(order_doc(po_id, 1000))
+    await db.sales_invoices.insert_one({
+        "id": invoice_id, "po_id": po_id,
+        "financial_status": "cancelled",
+        "lines": [{
+            "line_idx": 0, "source_po_id": po_id,
+            "source_po_line_id": f"{po_id}_line_0",
+            "quantity": 1000,
+        }],
+    })
+    try:
+        preview = await get_po_invoice_preview(db, po_id)
+        line = preview["lines"][0]
+        assert line["invoice_document_qty"] == 0
+        assert line["billing_counter_qty"] is None
+        assert line["remaining_invoice_qty"] == 1000
+        assert preview["total_remaining_invoice_qty"] == 1000
+        assert preview["billing_reconciliation_required"] is False
+    finally:
+        await db.sales_invoices.delete_one({"id": invoice_id})
+        await db.orders.delete_one({"id": po_id})
+
+
+@pytest.mark.anyio
 async def test_revision_orphan_billing_counter_does_not_offer_full_1000(db):
     po_id = str(uuid.uuid4())
     line_id = f"{po_id}_line_0"
