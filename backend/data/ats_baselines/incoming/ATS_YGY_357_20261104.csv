@@ -1,0 +1,358 @@
+kode,nama,jenis_item,satuan,qty
+100272,10 oz Oval 8 gr BSM,CUP,PCS,15900
+100089,12 oz Datar 5 gr Starindo,CUP,PCS,1000
+100032,12 oz Datar 7 gr Starindo,CUP,PCS,9000
+100001,12 oz Datar 8 gr SA,CUP,PCS,-4000
+100057,12 oz Datar Merak (Retail),CUP,PCS,0
+100263,12 oz Datar RJM,CUP,PCS,1900
+100079,12 oz Inject Bening KIIP,CUP,PCS,0
+100147,12 oz Inject Bening Wingoh,CUP,PCS,4400
+100127,12 oz Inject Datar Bening NJI,CUP,PCS,0
+100321,12 oz Inject Datar Bening Victory,CUP,PCS,999
+100273,12 oz Inject Datar Frosted Hitam Doff,CUP,PCS,0
+100284,12 oz Inject Datar Frosted Thinwall/Mister,CUP,PCS,0
+100331,12 oz Inject Datar Frosted Victory,CUP,PCS,4999
+100259,12 oz Inject Datar Frosted Wingoh,CUP,PCS,10000
+100264,12 oz Oval 7 gr Small Starindo,CUP,PCS,0
+100031,12 oz Oval 7 gr Starindo,CUP,PCS,16600
+100049,12 oz Oval 8 gr SA,CUP,PCS,2200
+100056,12 oz Oval Inject Bening,CUP,PCS,500
+100341,12 oz Oval Inject Bening Klir,CUP,PCS,1000
+100359,12 oz Oval Inject Bening Super,CUP,PCS,3500
+100170,12 oz Oval PET PLP,CUP,PCS,-1000
+100184,12 oz Oval PET TAM,CUP,PCS,0
+100292,12 oz Oval RYC TAM,CUP,PCS,1000
+100136,12 oz Papper Cup Cokelat Starindo,CUP,PCS,0
+100083,12 oz Papper Cup Cold Putih Starindo,CUP,PCS,400
+100194,12 oz Papper Cup Hot Putih BSM,CUP,PCS,-500
+100067,12 oz Papper Cup Hot Putih Starindo,CUP,PCS,0
+100003,12 oz PET Datar 11 gr SJP,CUP,PCS,-7801
+100146,12 oz PET Datar 11 gr TAM,CUP,PCS,0
+100080,14 oz Datar 5 gr Starindo,CUP,PCS,7000
+100015,14 oz Datar 7 gr Starindo,CUP,PCS,5500
+100209,14 oz Datar Big 7 gr Starindo,CUP,PCS,3500
+100058,14 oz Datar Merak (Retail),CUP,PCS,0
+100217,14 oz Inject Datar Bening Klir,CUP,PCS,6000
+100241,14 oz Inject Datar Bening Super,CUP,PCS,-1500
+100061,14 oz Inject Datar Bening Victory,CUP,PCS,5000
+100328,14 oz Inject Datar Frosted Hitam Victory,CUP,PCS,0
+100293,14 oz Inject Datar Frosted Hitam Wingoh,CUP,PCS,9475
+100233,14 oz Inject Datar Frosted Klir,CUP,PCS,7000
+100319,14 oz Inject Datar Frosted Super,CUP,PCS,15000
+100137,14 oz Inject Datar Frosted Victory,CUP,PCS,8500
+100332,14 oz Inject Datar Frosted Wingoh,CUP,PCS,3000
+100030,14 oz Oval 8 gr BSM,CUP,PCS,0
+100010,14 oz Oval 8 gr Starindo,CUP,PCS,3650
+100193,14 oz Oval PET PLP,CUP,PCS,0
+100006,14 oz PET Datar 11 gr PLP,CUP,PCS,21500
+100019,14 oz PET Oval 11 gr SJP,CUP,PCS,2000
+100033,16 oz Datar 5 gr Starindo,CUP,PCS,12000
+100016,16 oz Datar 7 gr Starindo,CUP,PCS,1100
+100002,16 oz Datar 8 gr SA,CUP,PCS,1000
+100059,16 oz Datar Merak (Retail),CUP,PCS,0
+100151,16 oz Inject Datar Bening GSS,CUP,PCS,0
+100226,16 oz Inject Datar Bening Klir,CUP,PCS,7150
+100242,16 oz Inject Datar Bening Super,CUP,PCS,6000
+100220,16 oz Inject Datar Bening Thinwal,CUP,PCS,0
+100076,16 oz Inject Datar Bening Victory,CUP,PCS,4000
+100215,16 oz Inject Datar Bening Wingoh,CUP,PCS,0
+100165,16 oz Inject Datar Frosted Victory,CUP,PCS,0
+100333,16 oz Inject Datar Frosted Wingoh,CUP,PCS,10250
+100339,16 oz Inject Datar Silver,CUP,PCS,0
+100132,16 oz Oval 8 gr Merak,CUP,PCS,0
+100050,16 oz Oval 8 gr SA,CUP,PCS,1500
+100011,16 oz Oval 8 gr Starindo,CUP,PCS,2997
+100133,16 oz Oval Tip Top,CUP,PCS,0
+100084,16 oz Papper Cup Cold Putih Starindo,CUP,PCS,0
+100004,16 oz PET Datar 11 gr SJP,CUP,PCS,2000
+100150,16 oz PET Datar 11 gr TAM,CUP,PCS,500
+100107,18 oz Datar 7 gr Merak,CUP,PCS,1000
+100218,18 oz Datar 7 gr Slim Merak,CUP,PCS,0
+100347,18 oz Datar 8 gr Merak,CUP,PCS,0
+100040,18 oz Datar 8 gr Starindo,CUP,PCS,2500
+100162,18 oz Datar Slim Tip Top,CUP,PCS,0
+100231,18 oz Oval 7 gr Merak,CUP,PCS,0
+100012,18 oz Oval 8 gr Starindo,CUP,PCS,2000
+100007,18 oz PET Datar 11 gr PLP,CUP,PCS,0
+100078,22 OZ BSM 8 GR,CUP,PCS,0
+100202,22 oz Datar 7 gr Indoku,CUP,PCS,0
+100094,22 oz Datar 7 gr Merak,CUP,PCS,0
+100329,22 oz Datar 8 Gr Aori,CUP,PCS,0
+100287,22 oz Datar 8 gr Atlas,CUP,PCS,0
+100085,22 oz Datar 8 gr Euro,CUP,PCS,0
+100324,22 oz Datar 8 Gr Fresh One,CUP,PCS,0
+100201,22 oz Datar 8 gr Indoku,CUP,PCS,0
+100239,22 oz Datar 8 gr Kappe,CUP,PCS,0
+100140,22 oz Datar 8 gr Merak,CUP,PCS,14000
+100188,22 oz Datar 8 gr Regal,CUP,PCS,0
+100124,22 oz Datar 8 gr SA,CUP,PCS,0
+100086,22 oz Datar 8 gr Starindo,CUP,PCS,5000
+100149,22 oz Datar 8 gr Unggul,CUP,PCS,2000
+100126,"22 oz Datar 8,5 gr TipTop",CUP,PCS,0
+100171,22 oz Datar 9 gr Merak,CUP,PCS,0
+100125,22 oz Datar 9 gr SA,CUP,PCS,0
+100047,"22 oz Datar 9,5 gr Starindo",CUP,PCS,950
+100153,22 oz Datar Rib 8 gr TAM,CUP,PCS,109000
+100121,22 oz Datar Slim Tip Top,CUP,PCS,0
+100071,22 OZ EURO,CUP,PCS,0
+100066,22 oz HOK Slim,CUP,PCS,0
+100112,22 oz Oval 8 gr Merak,CUP,PCS,3000
+100073,22 oz Oval 9.5 gr Starindo,CUP,PCS,1000
+100128,22 oz Oval Tiptop,CUP,PCS,0
+100181,22 oz Papper Cup Cold Putih Starindo,CUP,PCS,900
+100008,22 oz PET Datar 11 gr PLP,CUP,PCS,0
+100063,22 oz PET Datar 11 gr SJP,CUP,PCS,0
+100228,24 oz Inject Datar Bening KLIR,CUP,PCS,2500
+100246,24 oz Inject Datar Bening Super,CUP,PCS,0
+100104,24 oz Inject Datar Bening Victory,CUP,PCS,0
+100222,8 oz Oval PET PLP,CUP,PCS,0
+100098,8 oz PET 6.2 gr Starindo,CUP,PCS,1000
+100163,8 oz PET Cup Pudding PLP,CUP,PCS,3000
+100299,Bowl Thinwall 450 ml + LID Victory,CUP,PCS,0
+100298,Bowl Thinwall 650 ml + LID Victory,CUP,PCS,0
+100336,Lid Bening Papper Bowl 350/500 ml Starindo,CUP,PCS,0
+100338,Lid Bening Papper Bowl 650 ml Starindo,CUP,PCS,0
+100077,PAPPER BOWL + LID 1000 ML PRINTING,CUP,PCS,0
+100054,Papper Bowl 500 ML,CUP,PCS,2000
+100335,Papper Bowl 500 ml Starindo,CUP,PCS,0
+100041,Papper Bowl 650 ML,CUP,PCS,2100
+100337,Papper Bowl 650 ml Starindo,CUP,PCS,0
+100069,Papper Bowl 720 ML,CUP,PCS,300
+100072,Papper Bowl 800 ML,CUP,PCS,300
+100199,Papper Bowl Coklat/Craft 650 ML,CUP,PCS,0
+100034,Papper Cup Coklat/Craft 8 oz Starindo,CUP,PCS,1000
+100082,Papper Cup Cold 10 oz Putih,CUP,PCS,0
+100232,Papper Cup Double Wall 12 oz Putih,CUP,PCS,0
+100051,Papper Cup Double Wall 8 oz Coklat/Craft,CUP,PCS,4500
+100168,Papper Cup Double Wall 8 oz Putih,CUP,PCS,8644
+100021,Papper Cup Hitam 8 oz Starindo,CUP,PCS,2994
+100152,Papper Cup Hot Hijau 8 oz,CUP,PCS,0
+100060,Papper Cup Putih 4.5 oz,CUP,PCS,-500
+100081,Papper Cup Putih 6.5 oz,CUP,PCS,500
+100036,Papper Cup Putih 8 oz Starindo,CUP,PCS,-550
+100367,Botol Pet Kalle Chubby 100 ML,CUP,PCS,0
+100369,"12 oz Datar 3,8 gr  Bintang",CUP,PCS,0
+100370,"12 oz Datar 3,8 gr Hok",CUP,PCS,0
+100371,"12 oz Datar 3,8 gr EraCup",CUP,PCS,0
+100372,"12 oz Datar 3,8 gr  Starlite",CUP,PCS,0
+100373,"12 oz Datar 3,8 gr O-Cup",CUP,PCS,0
+100375,22 oz Datar 7 gr Starlite,CUP,PCS,0
+100377,16 oz Datar 9 gr SA Putih,CUP,PCS,0
+100384,16 oz Datar 5 gr Aori,CUP,PCS,0
+100374,12 oz Inject Oval Bening Victory,CUP,PCS,-3500
+100385,12 oz Datar 7 gr Polycup,CUP,PCS,150
+100386,16 oz Datar 7 gr Polycup,CUP,PCS,47
+100388,12 oz Inject Datar Frosted Hitam Wingoh,CUP,PCS,3500
+100398,10 oz Datar 4 gr TipTop,CUP,PCS,0
+100397,12 oz Inject Datar Bening Klir,CUP,PCS,-3000
+100395,PP Bowl 650 ML Putih TipTop,CUP,PCS,1000
+100382,12 oz Datar 7 gr GoCup,CUP,PCS,0
+100399,18 oz Datar 7 gr GoCup,CUP,PCS,0
+100400,16 oz Datar 5 gr GoCup,CUP,PCS,0
+100401,Papper Bowl 1000 ML Putih ,CUP,PCS,0
+100404,12 oz Datar Slim 7 gr Polycup,CUP,PCS,0
+100405,12 oz Oval 7 gr Polycup,CUP,PCS,100
+100406,14 oz Datar 7 gr Polycup,CUP,PCS,97
+100407,14 oz Oval 7 gr Polycup,CUP,PCS,100
+100408,16 oz Datar 8 gr Polycup,CUP,PCS,50
+100412,16 oz Oval 8 gr Polycup,CUP,PCS,50
+100409,18 oz Datar Slim 9 gr Polycup,CUP,PCS,50
+100410,22 oz Datar 9 gr Polycup,CUP,PCS,50
+100411,22 oz Oval 9 gr Polycup,CUP,PCS,50
+100414,Papper Bowl 650 ML Craft Wmp,CUP,PCS,0
+100422,22 oz Datar 8 gr Berlian,CUP,PCS,500
+100427,22 oz Datar 7 gr Berlian,CUP,PCS,5500
+100429,Bowl Thinwall 500 ml + LID Victory,CUP,PCS,0
+100432,12 oz Inject Datar Frosted Klir,CUP,PCS,1000
+100433,16 oz Inject Datar Frosted Klir,CUP,PCS,500
+100230,LID 12 oz Double Wall Hitam,LID,PCS,2000
+100167,LID 8 oz Double Wall White,LID,PCS,250
+100055,LID Bening Papper Bowl 500 ML,LID,PCS,2500
+100042,LID Bening Papper Bowl 650 ML Wmp,LID,PCS,1100
+100070,LID Bening Papper Bowl 720 ML,LID,PCS,0
+100205,LID Bening Papper Bowl 800 ML,LID,PCS,0
+100062,LID Cembung DB Starindo,LID,PCS,2000
+100216,LID Cembung PET 8 oz 6.2 gr Starindo,LID,PCS,1000
+100275,LID Connect Frosted Biru Tua,LID,PCS,5000
+100274,LID Connect Frosted Hitam Doff,LID,PCS,0
+100286,LID Connect Frosted Hitam Victory,LID,PCS,1000
+100131,LID Connect Inject Bening GSS,LID,PCS,0
+100244,LID Connect Inject Bening Klir,LID,PCS,-7651
+100243,LID Connect Inject Bening Super,LID,PCS,0
+100115,LID Connect Inject Bening Victory,LID,PCS,3500
+100148,LID Connect Inject Bening Wingoh,LID,PCS,-3500
+100334,LID Connect Inject Frosted Wingoh,LID,PCS,9000
+100129,LID Connect Inject Frosted/Dop Victory,LID,PCS,849
+100116,LID Connect Inject Hitam,LID,PCS,1000
+100389,LID Connect Inject Hitam Frosted Wingoh,LID,PCS,9000
+100394,LID Connect Inject Hitam Glosy Klir,LID,PCS,0
+100393,LID Connect Inject Hitam Glosy Super,LID,PCS,0
+100304,LID Connect Inject Merah,LID,PCS,1000
+100027,LID Datar DB Starindo,LID,PCS,7000
+100099,LID Datar DK Starindo,LID,PCS,0
+100164,LID Flat Non Cross PLP,LID,PCS,0
+100178,LID Flat PP TAM,LID,PCS,2000
+100166,Lid Hitam Paper 9 oz Starindo,LID,PCS,4494
+100130,LID Hitam Papper Cup 12 oz,LID,PCS,0
+100195,LID Hitam Papper Cup 12 oz BSM,LID,PCS,-2000
+100198,LID Hitam Papper Cup 12 oz TPP,LID,PCS,0
+100026,LID Hitam Papper Cup 8 oz STR,LID,PCS,2494
+100390,LID Inject Bening Dome Wingoh,LID,PCS,1000
+100330,LID Inject Flip Bening Klir,LID,PCS,0
+100247,LID Inject Flip Bening Victory,LID,PCS,0
+100260,LID Inject Flip Bening Wingoh,LID,PCS,-200
+100288,LID Inject Flip Hitam Victory,LID,PCS,8500
+100277,LID Inject Flip Hitam Wingoh,LID,PCS,6500
+100342,LID Inject Flip Merah Wingoh,LID,PCS,0
+100093,LID Inject Rigid,LID,PCS,0
+100117,LID Inject Stopper Hitam,LID,PCS,0
+100119,LID Inject Stopper Merah,LID,PCS,0
+100118,LID Inject Stopper Putih,LID,PCS,0
+100092,LID Papper Cup 6.5 oz,LID,PCS,0
+100035,LID PET DOME PLP,LID,PCS,0
+100203,LID PET Dome Starindo,LID,PCS,700
+100025,LID PET FLAT PLP,LID,PCS,0
+100087,LID PET FLAT Starindo,LID,PCS,6000
+100322,LID PET FLAT TAM,LID,PCS,0
+100271,LID PET Strawless New PLP,LID,PCS,0
+100023,LID PET Strawless PLP,LID,PCS,6400
+100123,LID PET Strawless Starindo,LID,PCS,0
+100240,LID PET Strawless TPP,LID,PCS,0
+100396,LID PP Bowl Bening TipTop,LID,PCS,1000
+100037,LID PP Strawless Starindo,LID,PCS,2900
+100196,LID Putih Papper Cup 12 oz BSM,LID,PCS,0
+100204,LID Putih Papper Cup 12 oz STR,LID,PCS,0
+100048,LID Putih Papper Cup 8 oz STR,LID,PCS,1000
+100068,LID Putih Papper Cup Cold 12 oz Starindo,LID,PCS,0
+100145,LID Putih Papper Cup Cold 16/22 oz Starindo,LID,ROLL,5000
+100100,LID SEALER 1300,LID,PCS,0
+100380,Lid Sealer Bos Motif ThankYou 750,LID,PCS,0
+100379,LID SEALER MOTIF PANDA 1200,LID,PCS,0
+100368,Lid/Tutup Botol Pet Kalle Putih,LID,ROLL,0
+100402,LID Papper Bowl 1000 ML Bening,LID,PCS,0
+100428,Lid Sealer Bos Motif Daun Teh 750,LID,PCS,0
+100435,LID Sealer Alibaba,LID,PCS,24
+100135,12 oz Datar 8 gr Printing SA,CUP PRINTING,PCS,0
+100101,12 oz Oval 8 gr Printing SA,CUP PRINTING,PCS,0
+100169,12 oz PET Datar 11 gr Printing,CUP PRINTING,PCS,0
+100088,12 oz PET Datar 11 gr Printing SJP,CUP PRINTING,PCS,0
+100159,12 oz PET Datar 11 gr TAM Printing,CUP PRINTING,PCS,0
+100091,16 OZ PET SJP PRINTING,CUP PRINTING,PCS,0
+100206,16 oz Datar 7 gr Starindo Printing,CUP PRINTING,PCS,0
+100141,22 oz Datar 7 gr Printing TAM,CUP PRINTING,PCS,0
+100182,22 oz Datar Rib 8 gr TAM PRINTING,CUP PRINTING,PCS,0
+100197,Papper Bowl 650 ML Printing,CUP PRINTING,PCS,0
+100229,Papper Cup Double Wall 12 oz Printing,CUP PRINTING,PCS,28
+100211,Papper Cup Double Wall 8 oz Printing,CUP PRINTING,PCS,4495
+100312,Papper Cup Single 12 oz Printing,CUP PRINTING,PCS,0
+100313,Papper Cup Single 16 oz Printing,CUP PRINTING,PCS,0
+100245,Papper Cup Single 8 oz Printing,CUP PRINTING,PCS,1100
+100381,Papper Cup Double Wall 16 oz Printing,CUP PRINTING,PCS,0
+100340,LID Inject Flip Leak Proof,LID PRINTING,PCS,1000
+100317,LID Papper Cup 12/16 oz Printing,LID PRINTING,PCS,0
+100311,LID Papper Cup 8 oz Printing,LID PRINTING,PCS,0
+100172,PLASTIK HDPE 15 x 25,PLASTIK,PCS,0
+100173,PLASTIK HDPE 24 x 32,PLASTIK,PCS,0
+100174,PLASTIK HDPE 28 x 38,PLASTIK,PCS,0
+100219,PLASTIK OPP SEAL 30 X 40,PLASTIK,PCS,0
+100252,PLASTIK PE 05 / 30 x 50,PLASTIK,PCS,0
+100253,PLASTIK PE 05 / 40 x 60,PLASTIK,PCS,0
+100096,PLASTIK PE 20 x 40,PLASTIK,PCS,0
+100143,Plastik PE 28,PLASTIK,PCS,0
+100113,Plastik PE Single Cup (G1),PLASTIK,PCS,0
+100179,PLASTIK PUTIH 21 x 40,PLASTIK,PCS,0
+100108,PLASTIK PUTIH 24 x 42,PLASTIK,PCS,0
+100180,PLASTIK PUTIH 28 x 48,PLASTIK,PCS,0
+100248,PLASTIK SELONGSONG CUP,PLASTIK,PCS,0
+100187,PLASTIK SLOP CUP,PLASTIK,PCS,301
+100109,PLASTIK TRASHBAG,PLASTIK,PCS,1
+100210,Plastik HD Plong Putih 20 x 30,PLASTIK,PCS,20000
+100225,Plastik Klip Pond Hitam 20 x 30,PLASTIK,PCS,0
+100227,Plastik Klip Pond Transparan 30 x 38,PLASTIK,PCS,0
+100290,Plastik PE Bening Party Besar 35,PLASTIK,PCS,0
+100276,Plastik PE Bening Party Kecil 15,PLASTIK,PCS,0
+100301,Plastik PE Bening Party Super 30,PLASTIK,PCS,0
+100097,Plastik PE Bening Party Tanggung 24,PLASTIK,PCS,0
+100294,Plastik PE Double Cup Lebar,PLASTIK,PCS,0
+100114,Plastik PE Double Cup Tinggi (G2),PLASTIK,PCS,0
+100267,Plastik Plong Transparan 25 x 40,PLASTIK,PCS,0
+100261,Plastik Plong Transparan 30 x 45,PLASTIK,PCS,0
+100235,Standing Klip Window Hitam 14 x 22,PLASTIK,PCS,0
+100236,Standing Klip Window Hitam 16 x 24,PLASTIK,PCS,0
+100352,Plastik Kresek Macan Putih 75 x 50,PLASTIK,PCS,0
+100354,PLASTIK KRESEK MACAN PUTIH  65 X 45,PLASTIK,PCS,0
+100314,STRAW / SEDOTAN BOBA,PLASTIK,PCS,0
+100052,STRAW/SEDOTAN LANCIP 620 ISI 300 PCS,PLASTIK,PCS,24
+100053,SEAL KAKA ISI 1200,PLASTIK,PCS,0
+100110,STRAW/SEDOTAN LANCIP 620 ISI 250 PCS,PLASTIK,PCS,-2000
+100250,STRAW/SEDOTAN TEKUK 620 ISI 250 PCS,PLASTIK,PCS,0
+100320,STRAW/SEDOTAN HITAM MASTER/BOBA,PLASTIK,PCS,1000
+100111,Bubble Wrap Hitam,PLASTIK,PCS,24
+100355,"Stirrer/Sedotan Kopi 12,5 Coklat",PLASTIK,PCS,0
+100346,STRAW/SEDOTAN LANCIP 620 ISI 500 PCS,PLASTIK,PCS,21
+100185,STRAW / SEDOTAN STIRRER HITAM,PLASTIK,PCS,0
+100186,STRAW / SEDOTAN STIRRER COKLAT,PLASTIK,PCS,0
+100362,SOS  Papper Bag Cokelat M Printing,PLASTIK,PCS,0
+100363,SOS  Papper Bag Cokelat L Printing,PLASTIK,PCS,0
+100364,SOS  Papper Bag Cokelat S Printing,PLASTIK,PCS,0
+100365,SOS  Papper Bag Putih M Printing,PLASTIK,PCS,0
+100403,Plastik Klip Zipper Buram/Doff  30 x 40,PLASTIK,PCS,0
+100418,Plastik PE 15,PLASTIK,PCS,0
+100120,Papper Rice,PAPPER RICE,PCS,0
+100214,Papper Rice Printing,PAPPER RICE,PCS,0
+100269,Wrap Papper Printing,PAPPER RICE,PCS,0
+100315,Wrap Papper Printing 10.20,PAPPER RICE,PCS,0
+100316,Wrap Papper Printing 27.27,PAPPER RICE,PCS,0
+100361,Wrap Paper Printing 28 X 28,PAPPER RICE,PCS,1000
+100345,Wrap Paper Printing 20 X 20,PAPPER RICE,PCS,0
+100387,Wrap Paper Printing 14 X 14,PAPPER RICE,PCS,0
+100426,Wrap Paper Printing 22.5 X 35,PAPPER RICE,PCS,1500
+100430,Wrap Paper Printing 18 X 18,PAPPER RICE,PCS,0
+100417,Leak Proof Paper 125 mm,PAPPER RICE,PCS,0
+100413,Wrap Paper Printing 24 X 24,PAPPER RICE,PCS,0
+100234,Box Craft 16 X 16 Sambung,PACKAGING PAPPER,PCS,0
+100103,Box Craft 20 X 20,PACKAGING PAPPER,PCS,0
+100249,Box Craft 20 X 20 Sambung,PACKAGING PAPPER,PCS,0
+100183,Box Pizza 30 x 30 cm,PACKAGING PAPPER,PCS,1498
+100212,Burger Box,PACKAGING PAPPER,PCS,500
+100237,Cup Holder (Sleeve) 8 Oz,PACKAGING PAPPER,PCS,0
+100046,LUNCH BOX COKELAT L,PACKAGING PAPPER,PCS,0
+100045,LUNCH BOX COKELAT M,PACKAGING PAPPER,PCS,0
+100044,Lunch Box Cokelat (S),PACKAGING PAPPER,PCS,0
+100213,Lunch Box Cokelat Aldo (L),PACKAGING PAPPER,PCS,150
+100200,Lunch Box Cokelat Aldo (M),PACKAGING PAPPER,PCS,0
+100279,Lunch Box Eco (S),PACKAGING PAPPER,PCS,0
+100295,Lunch Box Printing (L),PACKAGING PAPPER,PCS,1190
+100189,Lunch Box Printing (M),PACKAGING PAPPER,PCS,1300
+100296,Lunch Box Printing (S),PACKAGING PAPPER,PCS,0
+100297,Lunch Box Printing Custom,PACKAGING PAPPER,PCS,0
+100177,Lunch Box Printing Full Laminasi,PACKAGING PAPPER,PCS,0
+100064,Lunch Box Putih (M),PACKAGING PAPPER,PCS,0
+100238,Mika Box 20 x 20,PACKAGING PAPPER,PCS,0
+100142,Papper Bag 15 x 30,PACKAGING PAPPER,PCS,0
+100190,Papper Bag Food Printing,PACKAGING PAPPER,PCS,0
+100289,Papper Take Away Custom,PACKAGING PAPPER,PCS,0
+100208,Papper Tray Coklat/Craft L,PACKAGING PAPPER,PCS,0
+100207,Papper Tray Coklat/Craft M,PACKAGING PAPPER,PCS,800
+100291,Papper Tray Coklat/Craft S,PACKAGING PAPPER,PCS,0
+100191,Papper Tray Printing,PACKAGING PAPPER,PCS,5
+100224,SOS Papper Bag Coklat L,PACKAGING PAPPER,PCS,0
+100302,SOS Papper Bag Coklat M,PACKAGING PAPPER,PCS,0
+100303,SOS Papper Bag Putih M,PACKAGING PAPPER,PCS,0
+100360,SOS Papper Bag Coklat S,PACKAGING PAPPER,PCS,0
+100376,Box Craft 18 X 18 Sambung,PACKAGING PAPPER,PCS,0
+100268,Standing Klip Pouch Craft 13 x 20 cm,PACKAGING,PCS,0
+100266,Standing Klip Pouch Craft 14 x 23 cm,PACKAGING,PCS,0
+100265,Standing Klip Pouch Craft 22 x 33 cm,PACKAGING,PCS,0
+100251,Standing Klip Pouch Craft 22 x 33 cm,PACKAGING,PCS,0
+100434,12 oz Inject Datar Frosted Hitam Merak,CUP,PCS,3950
+100454,12 Oz Pet Souffle Plp,CUP,PCS,0
+100439,Papper Tray Printing S,PACKAGING PAPPER,PCS,0
+100458,Cup Holder (Sleeve) 12 Oz,PACKAGING PAPPER,PCS,0
+100459,Papper Cup Putih 8 oz Plain Irp,CUP,PCS,0
+100461,LID Hitam Papper Cup 8 oz Irp,LID,PCS,0
+100463,Thinwall RoundBowl 750 Ml Victory + Lid,CUP,PCS,0
+100464,Papper Tray Printing M,PACKAGING PAPPER,PCS,0
+100460,LID PET Strawless Tam,LID,PCS,100396
+100488,Plastik Klip Pond Transparan 30 x 40,PLASTIK,PCS,500
+100489,LID Connect Inject Orange Glosy Starglas,LID,PCS,1000

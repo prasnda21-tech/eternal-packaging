@@ -53,7 +53,8 @@ if "replicaSet=" not in MONGO_URL:
     MONGO_URL = MONGO_URL.rstrip("/") + ("&" if "?" in MONGO_URL else "?") + "replicaSet=eternal_local_rs"
 
 MID_100032 = "a88fb167-cf11-4d1f-8862-25dae1723053"
-CUTOFF = datetime.fromisoformat(CUTOFF_AT)
+# Entrypoint projector tests are pinned to archived Nov-2 baseline (20000 @ 100032).
+CUTOFF = datetime.fromisoformat("2026-11-02T23:22:00+07:00")
 AFTER = (CUTOFF + timedelta(hours=1)).isoformat()
 BEFORE = (CUTOFF - timedelta(days=10)).isoformat()
 AS_OF_LATER = (CUTOFF + timedelta(hours=5)).isoformat()
@@ -71,6 +72,23 @@ async def db(monkeypatch):
     assert "preview" not in TEST_DB
     prev_mode = os.environ.get("ETERNAL_ATS_YGY_MODE")
     os.environ["ETERNAL_ATS_YGY_MODE"] = "draft_read"
+    # Pin to archived Nov-2 draft (100032=20000) even if registry active is tonight's 357.
+    from pathlib import Path
+
+    import services.stock_ats_baseline_store as baseline_store
+    import services.stock_ats_ygy_runtime as ats_runtime
+
+    nov2 = (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "ats_baselines"
+        / "archive"
+        / "ygy_main_2026-11-02T232200+0700_draft_162.json"
+    )
+    monkeypatch.setenv("ETERNAL_ATS_YGY_BASELINE_PATH", str(nov2))
+    baseline_store.clear_baseline_cache()
+    ats_runtime.CUTOFF_AT = "2026-11-02T23:22:00+07:00"
+    ats_runtime.CUTOFF_AT_UTC = "2026-11-02T16:22:00Z"
     # Catalog ATS as_of uses physical_stock.now_iso — freeze after all fixture events.
     import services.physical_stock as physical_stock_mod
 
@@ -85,7 +103,7 @@ async def db(monkeypatch):
         database,
         enabled=False,
         org_branch_id=YGY_BRANCH_ID,
-        historical_cutoff_at=CUTOFF_AT,
+        historical_cutoff_at="2026-11-02T23:22:00+07:00",
         accurate_live_branch_map={
             "enabled": True,
             "org_branch_id": YGY_BRANCH_ID,

@@ -19,18 +19,28 @@ from services.stock_ats_cutover import CutoverError
 from services import stock_ats_ygy_runtime as runtime
 
 
-def test_registry_points_at_archived_nov2_and_loads():
+def test_registry_loads_active_free_stock_baseline():
     clear_baseline_cache()
     reg = load_registry()
     assert reg["warehouse_id"] == YGY_WAREHOUSE_ID
     assert reg["active_baseline_id"]
+    # Nov-2 draft remains in history for rollback even after tonight's activate pointer.
+    hist_ids = {h.get("baseline_id") for h in (reg.get("history") or [])}
+    assert any("2026-11-02" in str(x) for x in hist_ids)
     man, path = load_active_baseline_manifest()
     assert path.is_file()
-    assert man["cutoff_at"] == "2026-11-02T23:22:00+07:00"
     assert man["warehouse_id"] == YGY_WAREHOUSE_ID
-    # 100032 free-stock sample
+    assert man["cutoff_at"] == "2026-11-04T22:45:00+07:00"
+    assert len(man.get("rows") or []) == 357
+    # 100032 free-stock sample from Owner CSV 2026-11-04
     hit = next(r for r in man["rows"] if r.get("kode") == "100032")
-    assert float(hit["accurate_ats"]) == 20000.0
+    assert float(hit["accurate_ats"]) == 9000.0
+    # Negatives preserved (e.g. 100001)
+    neg = next(r for r in man["rows"] if r.get("kode") == "100001")
+    assert float(neg["accurate_ats"]) == -4000.0
+    # ROLL unit preserved
+    roll = next(r for r in man["rows"] if r.get("kode") == "100145")
+    assert roll.get("satuan") == "ROLL"
     assert runtime.active_cutoff_at() == man["cutoff_at"]
 
 

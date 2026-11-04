@@ -118,9 +118,8 @@ def validate_baseline_manifest(raw: dict, *, expect_cutoff: Optional[str] = None
         if key in seen_kode:
             raise CutoverError(f"Duplicate kode+satuan in baseline: {key}")
         seen_kode.add(key)
-        quantity(row.get("accurate_ats"))  # nonnegative checked by Baseline later if used
-        if quantity(row.get("accurate_ats")) < 0:
-            raise CutoverError(f"Baseline qty negative for {kode}")
+        # Preserve zeros and negatives from Owner Accurate free-stock export.
+        quantity(row.get("accurate_ats"))
     meaning = str(raw.get("source_meaning") or "")
     if "free" not in meaning.lower() and "stok bebas" not in meaning.lower():
         # Soft marker — still accept Owner files that set free-stock meaning explicitly later

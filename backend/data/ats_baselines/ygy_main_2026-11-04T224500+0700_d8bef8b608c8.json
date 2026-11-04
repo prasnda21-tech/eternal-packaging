@@ -1,0 +1,2887 @@
+{
+  "status": "DRAFT_NOT_ACTIVATED",
+  "warehouse_id": "b3d0bf36-1140-4eac-b0f7-b5c924ed0d24",
+  "warehouse_code": "YGY-MAIN",
+  "source_date": "2026-11-04",
+  "cutoff_at": "2026-11-04T22:45:00+07:00",
+  "cutoff_at_utc": "2026-11-04T15:45:00Z",
+  "source_sha256": "d8bef8b608c893f11f0d493141365498d5b084790bac9ccefa8d72e602c301cf",
+  "source_file_name": "ATS_YGY_357_20261104.csv",
+  "source_file_sha256": "31ec53244b8095044e336225681a17d654babe7c0303aa65aeadb9254ef6bfb3",
+  "source_meaning": "free blank goods already net of open orders at cutoff; Owner Accurate Stok Dapat Dijual; do not re-subtract open POs",
+  "baseline_semantics": "FREE_STOCK_AT_CUTOFF",
+  "open_po_policy": "ALREADY_NETTED_IN_FILE_DO_NOT_RE_SUBTRACT",
+  "outside_file_policy": "DO_NOT_ZERO",
+  "inactive_policy": "REPORT_SEPARATELY_EXCLUDED",
+  "rows": [
+    {
+      "kode": "100272",
+      "nama": "10 oz Oval 8 gr BSM",
+      "satuan": "PCS",
+      "accurate_ats": 15900.0,
+      "master_item_id": "29098e4b-527a-47a6-bbc2-b0647ea4d87c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100089",
+      "nama": "12 oz Datar 5 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "85ead3a7-c464-44fb-a739-2e34ea12524a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100032",
+      "nama": "12 oz Datar 7 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 9000.0,
+      "master_item_id": "a88fb167-cf11-4d1f-8862-25dae1723053",
+      "eligible_master": true
+    },
+    {
+      "kode": "100001",
+      "nama": "12 oz Datar 8 gr SA",
+      "satuan": "PCS",
+      "accurate_ats": -4000.0,
+      "master_item_id": "958bb5e9-1090-4676-9999-eff93ff0bd5b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100057",
+      "nama": "12 oz Datar Merak (Retail)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "bf69bec4-6103-4334-b945-c54a6ca8db7e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100263",
+      "nama": "12 oz Datar RJM",
+      "satuan": "PCS",
+      "accurate_ats": 1900.0,
+      "master_item_id": "7d8517cf-db26-4f09-bb58-6e699f42ba02",
+      "eligible_master": true
+    },
+    {
+      "kode": "100079",
+      "nama": "12 oz Inject Bening KIIP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "798acbf6-4b0f-409f-bfba-583449fe00c8",
+      "eligible_master": true
+    },
+    {
+      "kode": "100147",
+      "nama": "12 oz Inject Bening Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 4400.0,
+      "master_item_id": "f67753a5-f0cf-4c08-9607-373315aeeb10",
+      "eligible_master": true
+    },
+    {
+      "kode": "100127",
+      "nama": "12 oz Inject Datar Bening NJI",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "9d6b5559-f244-4730-9967-6153dc1e7e55",
+      "eligible_master": true
+    },
+    {
+      "kode": "100321",
+      "nama": "12 oz Inject Datar Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": 999.0,
+      "master_item_id": "f9974506-3bd1-4de2-bc7e-a1296f6b3acc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100273",
+      "nama": "12 oz Inject Datar Frosted Hitam Doff",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "40c683a9-7a62-42f0-80ff-c8c3ea1e8187",
+      "eligible_master": true
+    },
+    {
+      "kode": "100284",
+      "nama": "12 oz Inject Datar Frosted Thinwall/Mister",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e5b99713-6ab7-4043-82c8-89e1c90d9be5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100331",
+      "nama": "12 oz Inject Datar Frosted Victory",
+      "satuan": "PCS",
+      "accurate_ats": 4999.0,
+      "master_item_id": "590fa08b-517d-42ab-819f-fb1325d317ba",
+      "eligible_master": true
+    },
+    {
+      "kode": "100259",
+      "nama": "12 oz Inject Datar Frosted Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 10000.0,
+      "master_item_id": "b6a55188-b06c-4566-be78-221784756959",
+      "eligible_master": true
+    },
+    {
+      "kode": "100264",
+      "nama": "12 oz Oval 7 gr Small Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ec3711b6-54d1-4504-893d-f3ff7aec09dc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100031",
+      "nama": "12 oz Oval 7 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 16600.0,
+      "master_item_id": "7ecd01c3-a75f-4450-b37e-40873170bab3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100049",
+      "nama": "12 oz Oval 8 gr SA",
+      "satuan": "PCS",
+      "accurate_ats": 2200.0,
+      "master_item_id": "223df450-1fc7-48b0-8516-607bb5c16aa7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100056",
+      "nama": "12 oz Oval Inject Bening",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "ed774962-6c19-43a8-b75b-45623ea0a0bb",
+      "eligible_master": true
+    },
+    {
+      "kode": "100341",
+      "nama": "12 oz Oval Inject Bening Klir",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "80ec240c-f67e-4988-b6cf-155c8dc3cb66",
+      "eligible_master": true
+    },
+    {
+      "kode": "100359",
+      "nama": "12 oz Oval Inject Bening Super",
+      "satuan": "PCS",
+      "accurate_ats": 3500.0,
+      "master_item_id": "5d42d005-7500-4caf-bfd7-65be603507fb",
+      "eligible_master": true
+    },
+    {
+      "kode": "100170",
+      "nama": "12 oz Oval PET PLP",
+      "satuan": "PCS",
+      "accurate_ats": -1000.0,
+      "master_item_id": "5f3ea463-7d0e-4f70-a992-34da505c721a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100184",
+      "nama": "12 oz Oval PET TAM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6388e3b5-88e1-4fd6-af32-d23368575852",
+      "eligible_master": true
+    },
+    {
+      "kode": "100292",
+      "nama": "12 oz Oval RYC TAM",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "a304cf8d-3ab1-41bf-a242-43d070dcfa5a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100136",
+      "nama": "12 oz Papper Cup Cokelat Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "003c2c02-ecb4-4a52-97e9-d9005fb79b90",
+      "eligible_master": true
+    },
+    {
+      "kode": "100083",
+      "nama": "12 oz Papper Cup Cold Putih Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 400.0,
+      "master_item_id": "df434c14-b767-495a-bbed-97dbfb9e14e1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100194",
+      "nama": "12 oz Papper Cup Hot Putih BSM",
+      "satuan": "PCS",
+      "accurate_ats": -500.0,
+      "master_item_id": "1d9e948f-1c3e-47da-b238-3b407a202ec5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100067",
+      "nama": "12 oz Papper Cup Hot Putih Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1532810c-945d-4511-ba73-3cfc357778b5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100003",
+      "nama": "12 oz PET Datar 11 gr SJP",
+      "satuan": "PCS",
+      "accurate_ats": -7801.0,
+      "master_item_id": "511e1d5d-90b1-4af8-b482-5b90abaada76",
+      "eligible_master": true
+    },
+    {
+      "kode": "100146",
+      "nama": "12 oz PET Datar 11 gr TAM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "023fd328-480b-40d6-a7bf-c96ce0b323b9",
+      "eligible_master": true
+    },
+    {
+      "kode": "100080",
+      "nama": "14 oz Datar 5 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 7000.0,
+      "master_item_id": "d266657c-6d13-496f-b4cd-b1b93dfe6481",
+      "eligible_master": true
+    },
+    {
+      "kode": "100015",
+      "nama": "14 oz Datar 7 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 5500.0,
+      "master_item_id": "8ba0e4ee-3f9f-494f-8b36-e760af312b1d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100209",
+      "nama": "14 oz Datar Big 7 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 3500.0,
+      "master_item_id": "a2cb72a5-a2d3-4b0a-bd66-e14833add673",
+      "eligible_master": true
+    },
+    {
+      "kode": "100058",
+      "nama": "14 oz Datar Merak (Retail)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "62219a0c-7942-4c65-8955-a03ddda9c747",
+      "eligible_master": true
+    },
+    {
+      "kode": "100217",
+      "nama": "14 oz Inject Datar Bening Klir",
+      "satuan": "PCS",
+      "accurate_ats": 6000.0,
+      "master_item_id": "0ee1140e-7ed5-4e0c-b456-fe3b8e107480",
+      "eligible_master": true
+    },
+    {
+      "kode": "100241",
+      "nama": "14 oz Inject Datar Bening Super",
+      "satuan": "PCS",
+      "accurate_ats": -1500.0,
+      "master_item_id": "96a6d1bf-903e-4111-a079-9eb732296b2b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100061",
+      "nama": "14 oz Inject Datar Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": 5000.0,
+      "master_item_id": "5227f6fe-17c3-4e17-a416-2704fc960f19",
+      "eligible_master": true
+    },
+    {
+      "kode": "100328",
+      "nama": "14 oz Inject Datar Frosted Hitam Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "3b002afa-47b7-4774-a4ab-062040695506",
+      "eligible_master": true
+    },
+    {
+      "kode": "100293",
+      "nama": "14 oz Inject Datar Frosted Hitam Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 9475.0,
+      "master_item_id": "a9940988-c5fd-4126-939c-8a7fba4b965f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100233",
+      "nama": "14 oz Inject Datar Frosted Klir",
+      "satuan": "PCS",
+      "accurate_ats": 7000.0,
+      "master_item_id": "af76caad-c07b-451e-bf85-49fa71125197",
+      "eligible_master": true
+    },
+    {
+      "kode": "100319",
+      "nama": "14 oz Inject Datar Frosted Super",
+      "satuan": "PCS",
+      "accurate_ats": 15000.0,
+      "master_item_id": "059d2c58-b954-4ee1-bdca-e6e7ede19c8d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100137",
+      "nama": "14 oz Inject Datar Frosted Victory",
+      "satuan": "PCS",
+      "accurate_ats": 8500.0,
+      "master_item_id": "b33b7ed3-7071-4ae5-abc9-75dadbcc57d1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100332",
+      "nama": "14 oz Inject Datar Frosted Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 3000.0,
+      "master_item_id": "095b16a6-ddfa-4cf2-b5a4-88e83c8b3117",
+      "eligible_master": true
+    },
+    {
+      "kode": "100030",
+      "nama": "14 oz Oval 8 gr BSM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "80160c93-4afd-4a1f-8f00-f3d640742056",
+      "eligible_master": true
+    },
+    {
+      "kode": "100010",
+      "nama": "14 oz Oval 8 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 3650.0,
+      "master_item_id": "9d55eb0f-d235-448a-851f-ba36df6f9ef4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100193",
+      "nama": "14 oz Oval PET PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0940f654-a07c-4598-999d-03b2c9bdef0c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100006",
+      "nama": "14 oz PET Datar 11 gr PLP",
+      "satuan": "PCS",
+      "accurate_ats": 21500.0,
+      "master_item_id": "a1a33821-2fed-440c-9c14-e5f1cc37659b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100019",
+      "nama": "14 oz PET Oval 11 gr SJP",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "86d3f23e-7040-421e-a359-bdccf0057f17",
+      "eligible_master": true
+    },
+    {
+      "kode": "100033",
+      "nama": "16 oz Datar 5 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 12000.0,
+      "master_item_id": "42c2e038-894c-4bde-ad12-7aacb5289944",
+      "eligible_master": true
+    },
+    {
+      "kode": "100016",
+      "nama": "16 oz Datar 7 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 1100.0,
+      "master_item_id": "abaaf1c2-3e93-4d58-8974-d1dcad6f40df",
+      "eligible_master": true
+    },
+    {
+      "kode": "100002",
+      "nama": "16 oz Datar 8 gr SA",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "e593be28-d989-42e7-b250-164da98672f3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100059",
+      "nama": "16 oz Datar Merak (Retail)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ce1518f2-ebce-44ae-bd31-984f9b5adff5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100151",
+      "nama": "16 oz Inject Datar Bening GSS",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "103effe9-099f-4392-9c97-058c91cfc79f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100226",
+      "nama": "16 oz Inject Datar Bening Klir",
+      "satuan": "PCS",
+      "accurate_ats": 7150.0,
+      "master_item_id": "4b754819-0aab-4dbd-b014-7aca298ae68d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100242",
+      "nama": "16 oz Inject Datar Bening Super",
+      "satuan": "PCS",
+      "accurate_ats": 6000.0,
+      "master_item_id": "1438d12a-cf4f-4ffb-84ae-0e7d7adcbbc5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100220",
+      "nama": "16 oz Inject Datar Bening Thinwal",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0afc5e7a-2ec2-43dd-9977-4679717f06f2",
+      "eligible_master": true
+    },
+    {
+      "kode": "100076",
+      "nama": "16 oz Inject Datar Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": 4000.0,
+      "master_item_id": "132d1a9c-8e00-4027-b752-d99923e6aa2d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100215",
+      "nama": "16 oz Inject Datar Bening Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a8ed7372-e5ca-4ed7-b386-2234b562bb85",
+      "eligible_master": true
+    },
+    {
+      "kode": "100165",
+      "nama": "16 oz Inject Datar Frosted Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "102fbd4b-e487-43f8-81db-000c48cd3297",
+      "eligible_master": true
+    },
+    {
+      "kode": "100333",
+      "nama": "16 oz Inject Datar Frosted Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 10250.0,
+      "master_item_id": "77433bed-955a-44f3-8635-2dee7ad50931",
+      "eligible_master": true
+    },
+    {
+      "kode": "100339",
+      "nama": "16 oz Inject Datar Silver",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "c91c47df-573f-4735-8312-50d167050629",
+      "eligible_master": true
+    },
+    {
+      "kode": "100132",
+      "nama": "16 oz Oval 8 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "fccb4bc8-65fb-4697-9b9d-f0f2c5310276",
+      "eligible_master": true
+    },
+    {
+      "kode": "100050",
+      "nama": "16 oz Oval 8 gr SA",
+      "satuan": "PCS",
+      "accurate_ats": 1500.0,
+      "master_item_id": "7195b72a-ca16-41af-b6b1-4e6f68bd5940",
+      "eligible_master": true
+    },
+    {
+      "kode": "100011",
+      "nama": "16 oz Oval 8 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 2997.0,
+      "master_item_id": "41caeb16-1d09-45d8-8fec-df9ec0fbc0e0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100133",
+      "nama": "16 oz Oval Tip Top",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "473d0d46-d39e-481b-a3ad-a0d8dc5b63cb",
+      "eligible_master": true
+    },
+    {
+      "kode": "100084",
+      "nama": "16 oz Papper Cup Cold Putih Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0cd519b9-3916-4a3e-a349-6f6d44ec0d8f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100004",
+      "nama": "16 oz PET Datar 11 gr SJP",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "0105d7b1-9780-4052-bfa7-a08bc0f3f05b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100150",
+      "nama": "16 oz PET Datar 11 gr TAM",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "5e62ef5e-671d-4bfc-945a-9a1575cebbed",
+      "eligible_master": true
+    },
+    {
+      "kode": "100107",
+      "nama": "18 oz Datar 7 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "d2a92878-a456-457c-a18e-7ea553778ae3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100218",
+      "nama": "18 oz Datar 7 gr Slim Merak",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "439aafc1-067c-494b-9e99-a56660d51812",
+      "eligible_master": true
+    },
+    {
+      "kode": "100347",
+      "nama": "18 oz Datar 8 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "01cb6843-bb2f-49cb-938f-8eae7af4505a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100040",
+      "nama": "18 oz Datar 8 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 2500.0,
+      "master_item_id": "a8338023-4728-4df8-9edc-57e081ef6c7b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100162",
+      "nama": "18 oz Datar Slim Tip Top",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6a3bf68e-b68d-4af6-985f-87a9e42abea3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100231",
+      "nama": "18 oz Oval 7 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ae2e3636-f6e4-4b8e-83be-a8464dffd8e1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100012",
+      "nama": "18 oz Oval 8 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "c317a61e-662d-433f-bb1d-c4a66f5623c7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100007",
+      "nama": "18 oz PET Datar 11 gr PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "3e7a8437-b7d1-44a5-a52c-c3ead182edcc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100078",
+      "nama": "22 OZ BSM 8 GR",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "574ab60d-5fae-46c8-82d5-934bd0b5ba3f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100202",
+      "nama": "22 oz Datar 7 gr Indoku",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "40ff77d5-8827-435a-b888-5bbc68a99def",
+      "eligible_master": true
+    },
+    {
+      "kode": "100094",
+      "nama": "22 oz Datar 7 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e9a6bc9b-c37c-46eb-b86c-21639986446c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100329",
+      "nama": "22 oz Datar 8 Gr Aori",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "93cf7f9c-657b-43fa-a012-c8504f52e80b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100287",
+      "nama": "22 oz Datar 8 gr Atlas",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "12d91737-67c9-4607-be60-186f63f774e3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100085",
+      "nama": "22 oz Datar 8 gr Euro",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "309967d4-8ac7-49ce-bf1a-a8917ecfd935",
+      "eligible_master": true
+    },
+    {
+      "kode": "100324",
+      "nama": "22 oz Datar 8 Gr Fresh One",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e23ee52a-e99e-4294-a082-7e27b7e35498",
+      "eligible_master": true
+    },
+    {
+      "kode": "100201",
+      "nama": "22 oz Datar 8 gr Indoku",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1dbc0176-2969-45c9-a3ed-497a81de4271",
+      "eligible_master": true
+    },
+    {
+      "kode": "100239",
+      "nama": "22 oz Datar 8 gr Kappe",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e3485170-7f7c-4b17-afee-51c4a6154bc2",
+      "eligible_master": true
+    },
+    {
+      "kode": "100140",
+      "nama": "22 oz Datar 8 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 14000.0,
+      "master_item_id": "28d66f74-ba1f-4142-a1d7-3c6832ad282d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100188",
+      "nama": "22 oz Datar 8 gr Regal",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "66e7ba82-800a-4ec4-bde6-47aadb6b7c08",
+      "eligible_master": true
+    },
+    {
+      "kode": "100124",
+      "nama": "22 oz Datar 8 gr SA",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2536e8da-2536-4310-86a1-483d09f51812",
+      "eligible_master": true
+    },
+    {
+      "kode": "100086",
+      "nama": "22 oz Datar 8 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 5000.0,
+      "master_item_id": "77aa8cbb-57dc-4be3-afc9-a10ce1ef041d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100149",
+      "nama": "22 oz Datar 8 gr Unggul",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "44258a7f-5f27-4543-8875-3564a1bee060",
+      "eligible_master": true
+    },
+    {
+      "kode": "100126",
+      "nama": "22 oz Datar 8,5 gr TipTop",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "dafa22ba-89a4-4b51-a76e-9b4c492b6032",
+      "eligible_master": true
+    },
+    {
+      "kode": "100171",
+      "nama": "22 oz Datar 9 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1ad066f4-5624-4df0-85de-d8faa7acf34f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100125",
+      "nama": "22 oz Datar 9 gr SA",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "51199ba7-de5f-4ffe-ad66-143af2c9ac58",
+      "eligible_master": true
+    },
+    {
+      "kode": "100047",
+      "nama": "22 oz Datar 9,5 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 950.0,
+      "master_item_id": "831d3632-f1be-45f1-9125-ade9f8146fa0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100153",
+      "nama": "22 oz Datar Rib 8 gr TAM",
+      "satuan": "PCS",
+      "accurate_ats": 109000.0,
+      "master_item_id": "cd807b26-f23e-49b6-aecd-9d469df06131",
+      "eligible_master": true
+    },
+    {
+      "kode": "100121",
+      "nama": "22 oz Datar Slim Tip Top",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0894cf82-d381-4564-bb23-88e698072d2f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100071",
+      "nama": "22 OZ EURO",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a3e920e3-0ba2-4f6f-9bf3-3c1c385fe603",
+      "eligible_master": true
+    },
+    {
+      "kode": "100066",
+      "nama": "22 oz HOK Slim",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1a6f2049-ed5c-4a45-91b7-a8698a01fc31",
+      "eligible_master": true
+    },
+    {
+      "kode": "100112",
+      "nama": "22 oz Oval 8 gr Merak",
+      "satuan": "PCS",
+      "accurate_ats": 3000.0,
+      "master_item_id": "3e4d175e-3178-4bdb-af5e-1ce759321afd",
+      "eligible_master": true
+    },
+    {
+      "kode": "100073",
+      "nama": "22 oz Oval 9.5 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "d09fe0e3-d7e5-47d4-9282-200ee7101500",
+      "eligible_master": true
+    },
+    {
+      "kode": "100128",
+      "nama": "22 oz Oval Tiptop",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a4d08fc1-0b85-4073-81e7-ae907033098f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100181",
+      "nama": "22 oz Papper Cup Cold Putih Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 900.0,
+      "master_item_id": "2fba16bf-91a3-40d7-9209-df03be40aeb6",
+      "eligible_master": true
+    },
+    {
+      "kode": "100008",
+      "nama": "22 oz PET Datar 11 gr PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "addcbf22-5507-4d58-98ab-a63f9ce13aad",
+      "eligible_master": true
+    },
+    {
+      "kode": "100063",
+      "nama": "22 oz PET Datar 11 gr SJP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "db04476d-82c5-490f-ace1-20bf33bb14b2",
+      "eligible_master": true
+    },
+    {
+      "kode": "100228",
+      "nama": "24 oz Inject Datar Bening KLIR",
+      "satuan": "PCS",
+      "accurate_ats": 2500.0,
+      "master_item_id": "7c320dec-7e08-4371-a39b-a8db49668f98",
+      "eligible_master": true
+    },
+    {
+      "kode": "100246",
+      "nama": "24 oz Inject Datar Bening Super",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "377e49d4-0810-4aa8-b1bd-3433ac00cf5b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100104",
+      "nama": "24 oz Inject Datar Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "fe59763b-4c96-4328-a1d1-6685cc22f14b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100222",
+      "nama": "8 oz Oval PET PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "78bacd7b-892d-4629-a21b-07ac3a07bda3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100098",
+      "nama": "8 oz PET 6.2 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "1dcedb1a-561f-4b67-a344-349fc2dd7240",
+      "eligible_master": true
+    },
+    {
+      "kode": "100163",
+      "nama": "8 oz PET Cup Pudding PLP",
+      "satuan": "PCS",
+      "accurate_ats": 3000.0,
+      "master_item_id": "e664da3d-3e85-4dc2-8d67-a41c9c346a9d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100299",
+      "nama": "Bowl Thinwall 450 ml + LID Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "63f89500-8bc6-46d8-b041-bf1895e840fe",
+      "eligible_master": true
+    },
+    {
+      "kode": "100298",
+      "nama": "Bowl Thinwall 650 ml + LID Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d66ea3da-7b52-4e1c-9064-06273bac6b9e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100336",
+      "nama": "Lid Bening Papper Bowl 350/500 ml Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "c2de7f2e-f673-4c7a-b0a1-636e68a2f5a4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100338",
+      "nama": "Lid Bening Papper Bowl 650 ml Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2b73f0f8-2471-44d2-afce-6495a4881278",
+      "eligible_master": true
+    },
+    {
+      "kode": "100077",
+      "nama": "PAPPER BOWL + LID 1000 ML PRINTING",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "26b5c960-6d2e-45b0-820c-3412236492e3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100054",
+      "nama": "Papper Bowl 500 ML",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "f13dee05-8e28-43ff-b848-f83aba9476a4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100335",
+      "nama": "Papper Bowl 500 ml Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "45b783fc-a02b-4cb7-b0e3-4977da90cd4e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100041",
+      "nama": "Papper Bowl 650 ML",
+      "satuan": "PCS",
+      "accurate_ats": 2100.0,
+      "master_item_id": "402dd6e2-0c79-4ff0-8839-53d2e8ef90d5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100337",
+      "nama": "Papper Bowl 650 ml Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "c0c898f1-b916-473f-8edd-8a1d7d7c52c0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100069",
+      "nama": "Papper Bowl 720 ML",
+      "satuan": "PCS",
+      "accurate_ats": 300.0,
+      "master_item_id": "8f4d7c7b-428d-43ac-bdd0-64057b81a66a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100072",
+      "nama": "Papper Bowl 800 ML",
+      "satuan": "PCS",
+      "accurate_ats": 300.0,
+      "master_item_id": "32052be3-be0e-4b16-bdce-bad897b1e691",
+      "eligible_master": true
+    },
+    {
+      "kode": "100199",
+      "nama": "Papper Bowl Coklat/Craft 650 ML",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "7ab83be2-0099-4190-a8b7-5ebe4ddaa4d5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100034",
+      "nama": "Papper Cup Coklat/Craft 8 oz Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "cac87723-4e56-4185-975e-ddd2861f5dd9",
+      "eligible_master": true
+    },
+    {
+      "kode": "100082",
+      "nama": "Papper Cup Cold 10 oz Putih",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2306e395-3731-4e46-a1ed-61e15e364baa",
+      "eligible_master": true
+    },
+    {
+      "kode": "100232",
+      "nama": "Papper Cup Double Wall 12 oz Putih",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2cccc811-371e-4277-93e5-d48e8d4684c0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100051",
+      "nama": "Papper Cup Double Wall 8 oz Coklat/Craft",
+      "satuan": "PCS",
+      "accurate_ats": 4500.0,
+      "master_item_id": "0279c296-02df-49f3-b22a-35d205aa61e1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100168",
+      "nama": "Papper Cup Double Wall 8 oz Putih",
+      "satuan": "PCS",
+      "accurate_ats": 8644.0,
+      "master_item_id": "eced7bb7-cda9-43b0-85a4-03ecb1c4662f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100021",
+      "nama": "Papper Cup Hitam 8 oz Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 2994.0,
+      "master_item_id": "1c20d4b3-d0da-4a83-a24e-d9296fc86db7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100152",
+      "nama": "Papper Cup Hot Hijau 8 oz",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "44648ac8-240e-47b2-a9c8-66568b50f574",
+      "eligible_master": true
+    },
+    {
+      "kode": "100060",
+      "nama": "Papper Cup Putih 4.5 oz",
+      "satuan": "PCS",
+      "accurate_ats": -500.0,
+      "master_item_id": "78635b02-d371-41f8-8732-a1cd282a0f06",
+      "eligible_master": true
+    },
+    {
+      "kode": "100081",
+      "nama": "Papper Cup Putih 6.5 oz",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "4652c77e-4fc8-491f-af1f-489422804f3d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100036",
+      "nama": "Papper Cup Putih 8 oz Starindo",
+      "satuan": "PCS",
+      "accurate_ats": -550.0,
+      "master_item_id": "e811300b-c409-433d-8399-dbb9bbe57b7d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100367",
+      "nama": "Botol Pet Kalle Chubby 100 ML",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "71f6b57b-b37b-44d9-9974-bcc989c12db9",
+      "eligible_master": true
+    },
+    {
+      "kode": "100369",
+      "nama": "12 oz Datar 3,8 gr  Bintang",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "91b0ee01-715a-4648-b5fd-dbcb8f293c17",
+      "eligible_master": true
+    },
+    {
+      "kode": "100370",
+      "nama": "12 oz Datar 3,8 gr Hok",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "744dde27-381d-4491-831b-02a76291c9ea",
+      "eligible_master": true
+    },
+    {
+      "kode": "100371",
+      "nama": "12 oz Datar 3,8 gr EraCup",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "85455c3b-2ab3-4a73-aa32-2dd722b6bc7b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100372",
+      "nama": "12 oz Datar 3,8 gr  Starlite",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "59718902-baf6-4890-a01d-f2754573580e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100373",
+      "nama": "12 oz Datar 3,8 gr O-Cup",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e3b8d354-2035-4810-8f19-bb3a2c872eee",
+      "eligible_master": true
+    },
+    {
+      "kode": "100375",
+      "nama": "22 oz Datar 7 gr Starlite",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ff14c4d5-8266-45a5-b102-aca55975b49d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100377",
+      "nama": "16 oz Datar 9 gr SA Putih",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "35e1f8b2-5670-40de-a6f4-78d077d34d7e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100384",
+      "nama": "16 oz Datar 5 gr Aori",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6db3ad90-6fd6-490b-babe-8dde06528210",
+      "eligible_master": true
+    },
+    {
+      "kode": "100374",
+      "nama": "12 oz Inject Oval Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": -3500.0,
+      "master_item_id": "bb2c0a33-aa0a-475f-99e1-c84a615056d0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100385",
+      "nama": "12 oz Datar 7 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 150.0,
+      "master_item_id": "13b20e4f-fd16-4267-b7ec-a869a645f3ef",
+      "eligible_master": true
+    },
+    {
+      "kode": "100386",
+      "nama": "16 oz Datar 7 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 47.0,
+      "master_item_id": "7493e77e-2cc7-426b-84b8-f11419f0e026",
+      "eligible_master": true
+    },
+    {
+      "kode": "100388",
+      "nama": "12 oz Inject Datar Frosted Hitam Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 3500.0,
+      "master_item_id": "b221bbe4-aafd-4cdd-abd1-f7ad5d0d99b9",
+      "eligible_master": true
+    },
+    {
+      "kode": "100398",
+      "nama": "10 oz Datar 4 gr TipTop",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "48f3b116-8e67-4dc2-b3a5-636ffba2a561",
+      "eligible_master": true
+    },
+    {
+      "kode": "100397",
+      "nama": "12 oz Inject Datar Bening Klir",
+      "satuan": "PCS",
+      "accurate_ats": -3000.0,
+      "master_item_id": "8b35ac50-72f8-4261-a9c2-b6473b191234",
+      "eligible_master": true
+    },
+    {
+      "kode": "100395",
+      "nama": "PP Bowl 650 ML Putih TipTop",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "9041c615-9237-49c2-aa46-c269fb1cd3fd",
+      "eligible_master": true
+    },
+    {
+      "kode": "100382",
+      "nama": "12 oz Datar 7 gr GoCup",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "9a8639b5-84ea-4552-8eda-06f3e1467d36",
+      "eligible_master": true
+    },
+    {
+      "kode": "100399",
+      "nama": "18 oz Datar 7 gr GoCup",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "8fb9db7c-10cf-4422-9605-db5a2d5ec18e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100400",
+      "nama": "16 oz Datar 5 gr GoCup",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "fb4de192-e7dd-459f-a69f-b6f014c71184",
+      "eligible_master": true
+    },
+    {
+      "kode": "100401",
+      "nama": "Papper Bowl 1000 ML Putih",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "757db1f8-40fa-4f0e-bd3a-5806c9bc5368",
+      "eligible_master": true
+    },
+    {
+      "kode": "100404",
+      "nama": "12 oz Datar Slim 7 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a8f4a21c-256c-49a6-862e-15378984d7f7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100405",
+      "nama": "12 oz Oval 7 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 100.0,
+      "master_item_id": "cd99b8ed-0945-4e00-8b5c-053cd7423ed3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100406",
+      "nama": "14 oz Datar 7 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 97.0,
+      "master_item_id": "2df66778-08ac-43ab-ac07-86a61dc51352",
+      "eligible_master": true
+    },
+    {
+      "kode": "100407",
+      "nama": "14 oz Oval 7 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 100.0,
+      "master_item_id": "bd034824-e144-4efb-9651-7d5a5b300a03",
+      "eligible_master": true
+    },
+    {
+      "kode": "100408",
+      "nama": "16 oz Datar 8 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 50.0,
+      "master_item_id": "38d37a57-351d-457d-ba36-da4d5fed88d1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100412",
+      "nama": "16 oz Oval 8 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 50.0,
+      "master_item_id": "3893f412-6601-4039-9bdb-e8fa47c581a5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100409",
+      "nama": "18 oz Datar Slim 9 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 50.0,
+      "master_item_id": "163baca7-3437-4318-98f4-40604dda4f87",
+      "eligible_master": true
+    },
+    {
+      "kode": "100410",
+      "nama": "22 oz Datar 9 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 50.0,
+      "master_item_id": "5b656809-cc0b-435e-8c05-b7bb41c9fff5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100411",
+      "nama": "22 oz Oval 9 gr Polycup",
+      "satuan": "PCS",
+      "accurate_ats": 50.0,
+      "master_item_id": "7322f82d-a4bb-4f57-b46d-910f0471fc96",
+      "eligible_master": true
+    },
+    {
+      "kode": "100414",
+      "nama": "Papper Bowl 650 ML Craft Wmp",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "81b1c84c-1595-433d-9222-6056784d02b1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100422",
+      "nama": "22 oz Datar 8 gr Berlian",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "0bf88845-2dd1-4302-8583-b9d9ef5b5aff",
+      "eligible_master": true
+    },
+    {
+      "kode": "100427",
+      "nama": "22 oz Datar 7 gr Berlian",
+      "satuan": "PCS",
+      "accurate_ats": 5500.0,
+      "master_item_id": "1f1f5123-bde5-43e6-9367-44e7436b6dce",
+      "eligible_master": true
+    },
+    {
+      "kode": "100429",
+      "nama": "Bowl Thinwall 500 ml + LID Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d6b9c53b-ba4e-4d96-8a15-aa5f91457f0d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100432",
+      "nama": "12 oz Inject Datar Frosted Klir",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "ed7a867d-54aa-429c-8fd0-3900d25feef6",
+      "eligible_master": true
+    },
+    {
+      "kode": "100433",
+      "nama": "16 oz Inject Datar Frosted Klir",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "584f9050-b45d-4f1f-b021-917faab9ba68",
+      "eligible_master": true
+    },
+    {
+      "kode": "100230",
+      "nama": "LID 12 oz Double Wall Hitam",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "9cdb86bb-5fc6-45fa-9edc-82d96ead90fb",
+      "eligible_master": true
+    },
+    {
+      "kode": "100167",
+      "nama": "LID 8 oz Double Wall White",
+      "satuan": "PCS",
+      "accurate_ats": 250.0,
+      "master_item_id": "1d294c7c-9bf2-46b4-b732-6d5ae379a985",
+      "eligible_master": true
+    },
+    {
+      "kode": "100055",
+      "nama": "LID Bening Papper Bowl 500 ML",
+      "satuan": "PCS",
+      "accurate_ats": 2500.0,
+      "master_item_id": "283fcd10-881d-4f1a-b031-261af3e75d87",
+      "eligible_master": true
+    },
+    {
+      "kode": "100042",
+      "nama": "LID Bening Papper Bowl 650 ML Wmp",
+      "satuan": "PCS",
+      "accurate_ats": 1100.0,
+      "master_item_id": "9ca0dc76-f024-4a11-96ae-c7093bbecc3e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100070",
+      "nama": "LID Bening Papper Bowl 720 ML",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b51fbc2b-5919-432b-9444-317169727520",
+      "eligible_master": true
+    },
+    {
+      "kode": "100205",
+      "nama": "LID Bening Papper Bowl 800 ML",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0994144f-f8a7-4720-9410-9feb37f39a1c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100062",
+      "nama": "LID Cembung DB Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "c641578a-38b0-4c82-bc11-60ad9ea794c6",
+      "eligible_master": true
+    },
+    {
+      "kode": "100216",
+      "nama": "LID Cembung PET 8 oz 6.2 gr Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "ad4f9436-fab1-4114-9fda-8e93816abd0a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100275",
+      "nama": "LID Connect Frosted Biru Tua",
+      "satuan": "PCS",
+      "accurate_ats": 5000.0,
+      "master_item_id": "8d10ba25-3a1c-4824-9c71-bb10209a17bb",
+      "eligible_master": true
+    },
+    {
+      "kode": "100274",
+      "nama": "LID Connect Frosted Hitam Doff",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a0dcda1a-89dd-438f-bc1c-7eb6868dba00",
+      "eligible_master": true
+    },
+    {
+      "kode": "100286",
+      "nama": "LID Connect Frosted Hitam Victory",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "c0edd202-d99a-4178-b231-aec6fcf184be",
+      "eligible_master": true
+    },
+    {
+      "kode": "100131",
+      "nama": "LID Connect Inject Bening GSS",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "454a4f19-f525-4934-8b1c-f50fff452ac4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100244",
+      "nama": "LID Connect Inject Bening Klir",
+      "satuan": "PCS",
+      "accurate_ats": -7651.0,
+      "master_item_id": "cd0ebd85-3283-4708-80e9-abfd7e81b07d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100243",
+      "nama": "LID Connect Inject Bening Super",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "3b381ef3-c2bf-46b9-b35c-2ee531a18a1a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100115",
+      "nama": "LID Connect Inject Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": 3500.0,
+      "master_item_id": "d67457f3-3bb4-4b42-91e0-3011a215beeb",
+      "eligible_master": true
+    },
+    {
+      "kode": "100148",
+      "nama": "LID Connect Inject Bening Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": -3500.0,
+      "master_item_id": "a80fb6c9-cf22-474e-aca2-74284ffbb518",
+      "eligible_master": true
+    },
+    {
+      "kode": "100334",
+      "nama": "LID Connect Inject Frosted Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 9000.0,
+      "master_item_id": "c1a0a9cb-4509-4601-bd76-d1f0b7dea777",
+      "eligible_master": true
+    },
+    {
+      "kode": "100129",
+      "nama": "LID Connect Inject Frosted/Dop Victory",
+      "satuan": "PCS",
+      "accurate_ats": 849.0,
+      "master_item_id": "48cb1ee4-18d6-4a7b-bab8-52fae69f4ad8",
+      "eligible_master": true
+    },
+    {
+      "kode": "100116",
+      "nama": "LID Connect Inject Hitam",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "d98801b4-10e9-4f36-a8de-41e9b3d75067",
+      "eligible_master": true
+    },
+    {
+      "kode": "100389",
+      "nama": "LID Connect Inject Hitam Frosted Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 9000.0,
+      "master_item_id": "2c3d8b3f-3280-4d04-bad1-fa590adb19af",
+      "eligible_master": true
+    },
+    {
+      "kode": "100394",
+      "nama": "LID Connect Inject Hitam Glosy Klir",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "788e064a-26e5-4151-830c-8dfb6e9f54b5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100393",
+      "nama": "LID Connect Inject Hitam Glosy Super",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ad20b9b8-6bcb-4f14-b279-7cc946a02dda",
+      "eligible_master": true
+    },
+    {
+      "kode": "100304",
+      "nama": "LID Connect Inject Merah",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "b9aee36a-d38d-4d50-8b68-f5c4025364d3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100027",
+      "nama": "LID Datar DB Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 7000.0,
+      "master_item_id": "b20c517f-bb20-4d32-9bef-e8a86025a06d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100099",
+      "nama": "LID Datar DK Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "bfaadb60-792b-46b2-82d2-a18a9dc8c156",
+      "eligible_master": true
+    },
+    {
+      "kode": "100164",
+      "nama": "LID Flat Non Cross PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "73b7d4cf-5638-487d-a181-3ef084e71dd1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100178",
+      "nama": "LID Flat PP TAM",
+      "satuan": "PCS",
+      "accurate_ats": 2000.0,
+      "master_item_id": "f4ad6176-bc8e-420f-8454-698353cb42f5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100166",
+      "nama": "Lid Hitam Paper 9 oz Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 4494.0,
+      "master_item_id": "99f53e4c-fd04-4edb-8dda-1d056579bc2c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100130",
+      "nama": "LID Hitam Papper Cup 12 oz",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "23dfa330-06c8-4fde-a088-b757c40647d8",
+      "eligible_master": true
+    },
+    {
+      "kode": "100195",
+      "nama": "LID Hitam Papper Cup 12 oz BSM",
+      "satuan": "PCS",
+      "accurate_ats": -2000.0,
+      "master_item_id": "f6095893-61cd-45ed-92d3-09c08c4c37ed",
+      "eligible_master": true
+    },
+    {
+      "kode": "100198",
+      "nama": "LID Hitam Papper Cup 12 oz TPP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "55d147ca-f01d-41c7-b4d0-a5f5b5e5aa45",
+      "eligible_master": true
+    },
+    {
+      "kode": "100026",
+      "nama": "LID Hitam Papper Cup 8 oz STR",
+      "satuan": "PCS",
+      "accurate_ats": 2494.0,
+      "master_item_id": "32e94cbf-ee25-44d7-a495-549838470071",
+      "eligible_master": true
+    },
+    {
+      "kode": "100390",
+      "nama": "LID Inject Bening Dome Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "497d397a-ae0d-43ca-a972-59d7dc8580a4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100330",
+      "nama": "LID Inject Flip Bening Klir",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d44cc3db-9a85-4ff7-947b-3fde30d1f828",
+      "eligible_master": true
+    },
+    {
+      "kode": "100247",
+      "nama": "LID Inject Flip Bening Victory",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1e102903-8d96-4915-95f8-160307314f03",
+      "eligible_master": true
+    },
+    {
+      "kode": "100260",
+      "nama": "LID Inject Flip Bening Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": -200.0,
+      "master_item_id": "6a25f1dc-2aa5-45e6-994b-33948eb01b60",
+      "eligible_master": true
+    },
+    {
+      "kode": "100288",
+      "nama": "LID Inject Flip Hitam Victory",
+      "satuan": "PCS",
+      "accurate_ats": 8500.0,
+      "master_item_id": "3ff8aa1e-bbd5-4ae7-b4a4-916a6a3b569a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100277",
+      "nama": "LID Inject Flip Hitam Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 6500.0,
+      "master_item_id": "08e453b7-441e-4df4-85b4-6940228b861b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100342",
+      "nama": "LID Inject Flip Merah Wingoh",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "276b0ea1-ff1d-4bba-ad42-3118a4f64b8e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100093",
+      "nama": "LID Inject Rigid",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6914ca36-66aa-4391-a62e-1aac46f2f412",
+      "eligible_master": true
+    },
+    {
+      "kode": "100117",
+      "nama": "LID Inject Stopper Hitam",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "00f29a18-4496-42ea-9b6c-953c01761b78",
+      "eligible_master": true
+    },
+    {
+      "kode": "100119",
+      "nama": "LID Inject Stopper Merah",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6e5a6005-55b0-4049-b3f3-28b857f13794",
+      "eligible_master": true
+    },
+    {
+      "kode": "100118",
+      "nama": "LID Inject Stopper Putih",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1b33a9d5-77da-457f-9a9a-e23231a6a0d3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100092",
+      "nama": "LID Papper Cup 6.5 oz",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2887a409-093a-41cc-95c1-978a01a22f90",
+      "eligible_master": true
+    },
+    {
+      "kode": "100035",
+      "nama": "LID PET DOME PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "437fb021-ce7b-412f-a2ef-9e4117359c09",
+      "eligible_master": true
+    },
+    {
+      "kode": "100203",
+      "nama": "LID PET Dome Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 700.0,
+      "master_item_id": "640634ca-7c3d-4382-a184-f4c442b7d9bc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100025",
+      "nama": "LID PET FLAT PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a1ed570c-dbee-4b44-b7df-743728c046f3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100087",
+      "nama": "LID PET FLAT Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 6000.0,
+      "master_item_id": "56fc42b9-eeaf-4bab-8501-a8246e6b56c3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100322",
+      "nama": "LID PET FLAT TAM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "4344a071-7d19-4836-ba85-a9914af25171",
+      "eligible_master": true
+    },
+    {
+      "kode": "100271",
+      "nama": "LID PET Strawless New PLP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b1c16145-fa93-4e2b-9003-7f1a730c1a6b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100023",
+      "nama": "LID PET Strawless PLP",
+      "satuan": "PCS",
+      "accurate_ats": 6400.0,
+      "master_item_id": "e678ff02-2738-4fee-9605-ea3973948cc5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100123",
+      "nama": "LID PET Strawless Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "9d10b833-82b4-4352-9bd7-a74aeae20e4d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100240",
+      "nama": "LID PET Strawless TPP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1fdc5547-0d0e-42e3-aa57-8044cc7ea017",
+      "eligible_master": true
+    },
+    {
+      "kode": "100396",
+      "nama": "LID PP Bowl Bening TipTop",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "9f9e9c14-b556-4838-a254-bda8f82a65ab",
+      "eligible_master": true
+    },
+    {
+      "kode": "100037",
+      "nama": "LID PP Strawless Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 2900.0,
+      "master_item_id": "88d330b0-c7bf-4db5-95ee-96e60003036b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100196",
+      "nama": "LID Putih Papper Cup 12 oz BSM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "4e978f27-2462-4d61-b987-1364f8740c48",
+      "eligible_master": true
+    },
+    {
+      "kode": "100204",
+      "nama": "LID Putih Papper Cup 12 oz STR",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d6717c5b-bb0d-4501-b789-35a40f329aea",
+      "eligible_master": true
+    },
+    {
+      "kode": "100048",
+      "nama": "LID Putih Papper Cup 8 oz STR",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "047ec862-2d5a-457d-bb21-44b7085a33e0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100068",
+      "nama": "LID Putih Papper Cup Cold 12 oz Starindo",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ccee2a7e-1034-4402-ba87-3dd88702a415",
+      "eligible_master": true
+    },
+    {
+      "kode": "100145",
+      "nama": "LID Putih Papper Cup Cold 16/22 oz Starindo",
+      "satuan": "ROLL",
+      "accurate_ats": 5000.0,
+      "master_item_id": "79d77f46-c7e0-43cf-95f5-6bac5ce52f22",
+      "eligible_master": true
+    },
+    {
+      "kode": "100100",
+      "nama": "LID SEALER 1300",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "7574930e-b315-4144-aea3-530a38664732",
+      "eligible_master": true
+    },
+    {
+      "kode": "100380",
+      "nama": "Lid Sealer Bos Motif ThankYou 750",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d7847732-d266-41d3-b82f-cba85abc8456",
+      "eligible_master": true
+    },
+    {
+      "kode": "100379",
+      "nama": "LID SEALER MOTIF PANDA 1200",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "09c0ca51-75aa-4025-be49-b2c00ca1261c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100368",
+      "nama": "Lid/Tutup Botol Pet Kalle Putih",
+      "satuan": "ROLL",
+      "accurate_ats": 0.0,
+      "master_item_id": "6607e403-9bfa-4245-97f2-2f668b3aeae8",
+      "eligible_master": true
+    },
+    {
+      "kode": "100402",
+      "nama": "LID Papper Bowl 1000 ML Bening",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "adfba022-bc8b-495d-937c-94658c7a1128",
+      "eligible_master": true
+    },
+    {
+      "kode": "100428",
+      "nama": "Lid Sealer Bos Motif Daun Teh 750",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "943dfe0b-65ae-4736-bd26-ddee82462db1",
+      "eligible_master": true
+    },
+    {
+      "kode": "100435",
+      "nama": "LID Sealer Alibaba",
+      "satuan": "PCS",
+      "accurate_ats": 24.0,
+      "master_item_id": "1cd774c8-c501-477e-8245-6be5472cb04d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100135",
+      "nama": "12 oz Datar 8 gr Printing SA",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "85c0f7c7-6442-4c97-a173-3588d2036aef",
+      "eligible_master": true
+    },
+    {
+      "kode": "100101",
+      "nama": "12 oz Oval 8 gr Printing SA",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "dd997385-4e0c-4b39-9a65-58c5fc4ed63f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100169",
+      "nama": "12 oz PET Datar 11 gr Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6d76bcb8-3559-43f2-9c83-39ae413fb082",
+      "eligible_master": true
+    },
+    {
+      "kode": "100088",
+      "nama": "12 oz PET Datar 11 gr Printing SJP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "98df8f25-7d68-41d9-ac64-4aedae301d10",
+      "eligible_master": true
+    },
+    {
+      "kode": "100159",
+      "nama": "12 oz PET Datar 11 gr TAM Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "4c1cc98f-6828-46ee-8111-0638130907c9",
+      "eligible_master": true
+    },
+    {
+      "kode": "100091",
+      "nama": "16 OZ PET SJP PRINTING",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b0fa2f7d-c7a1-428c-b9cb-c6f7f7f1e281",
+      "eligible_master": true
+    },
+    {
+      "kode": "100206",
+      "nama": "16 oz Datar 7 gr Starindo Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d6b87902-19b8-41b5-9bd8-e7d6c8c27f19",
+      "eligible_master": true
+    },
+    {
+      "kode": "100141",
+      "nama": "22 oz Datar 7 gr Printing TAM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "120e01b6-5928-4cf5-8957-33fcc89b793f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100182",
+      "nama": "22 oz Datar Rib 8 gr TAM PRINTING",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "def8aff2-b872-4569-a4d4-4a5a73647cdc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100197",
+      "nama": "Papper Bowl 650 ML Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1e5b21b6-645e-441a-bf29-636866ee09a5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100229",
+      "nama": "Papper Cup Double Wall 12 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 28.0,
+      "master_item_id": "a9ed6939-5e87-4e5b-ae98-a2fb0491ade7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100211",
+      "nama": "Papper Cup Double Wall 8 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 4495.0,
+      "master_item_id": "a64a43fb-8fd0-4cfa-9b12-dd54516ac434",
+      "eligible_master": true
+    },
+    {
+      "kode": "100312",
+      "nama": "Papper Cup Single 12 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "fc6db202-9bdc-476b-821b-5db9dcce70de",
+      "eligible_master": true
+    },
+    {
+      "kode": "100313",
+      "nama": "Papper Cup Single 16 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "899e966c-7489-43f4-a69c-e65ee71da0ae",
+      "eligible_master": true
+    },
+    {
+      "kode": "100245",
+      "nama": "Papper Cup Single 8 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 1100.0,
+      "master_item_id": "6eaa4b10-62db-4d40-b530-49566aeda77b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100381",
+      "nama": "Papper Cup Double Wall 16 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a75ba311-ca18-4805-891f-f0805d5eb6ee",
+      "eligible_master": true
+    },
+    {
+      "kode": "100340",
+      "nama": "LID Inject Flip Leak Proof",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "f5422e8b-4ca8-4273-892f-1cf2d91fed59",
+      "eligible_master": true
+    },
+    {
+      "kode": "100317",
+      "nama": "LID Papper Cup 12/16 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "15863e7c-3d1f-4360-bd2e-e9abf3859bcf",
+      "eligible_master": true
+    },
+    {
+      "kode": "100311",
+      "nama": "LID Papper Cup 8 oz Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "67ffc361-25a8-466b-beee-4cd1dc0191de",
+      "eligible_master": true
+    },
+    {
+      "kode": "100172",
+      "nama": "PLASTIK HDPE 15 x 25",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2e961249-4a8f-44db-b8c2-3a8a61643285",
+      "eligible_master": true
+    },
+    {
+      "kode": "100173",
+      "nama": "PLASTIK HDPE 24 x 32",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2eeb5b36-da1a-4e25-8df7-d139fae21b59",
+      "eligible_master": true
+    },
+    {
+      "kode": "100174",
+      "nama": "PLASTIK HDPE 28 x 38",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2d413d22-0e4d-4bde-bd15-b25f4be3641c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100219",
+      "nama": "PLASTIK OPP SEAL 30 X 40",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ea5e9e2e-ddea-4b07-9a39-cdf5787016da",
+      "eligible_master": true
+    },
+    {
+      "kode": "100252",
+      "nama": "PLASTIK PE 05 / 30 x 50",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "523dfa8d-f705-4165-9c60-19a367324b57",
+      "eligible_master": true
+    },
+    {
+      "kode": "100253",
+      "nama": "PLASTIK PE 05 / 40 x 60",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1d442f7a-2138-41c6-b69a-f18dc63ed7f0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100096",
+      "nama": "PLASTIK PE 20 x 40",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "aadf8087-4fe5-41a9-9c1b-724daba385e4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100143",
+      "nama": "Plastik PE 28",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a272b6b5-8dad-498a-b896-244d04814f1f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100113",
+      "nama": "Plastik PE Single Cup (G1)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a3980fea-f3ae-452e-8f7f-34cca67a1d73",
+      "eligible_master": true
+    },
+    {
+      "kode": "100179",
+      "nama": "PLASTIK PUTIH 21 x 40",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "f9a57863-2363-4e20-b3a6-cb6188ae37af",
+      "eligible_master": true
+    },
+    {
+      "kode": "100108",
+      "nama": "PLASTIK PUTIH 24 x 42",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e41b99b6-3d36-4525-91e4-e537b47df752",
+      "eligible_master": true
+    },
+    {
+      "kode": "100180",
+      "nama": "PLASTIK PUTIH 28 x 48",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "31412b63-a68f-4e53-af37-afd6db7833c4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100248",
+      "nama": "PLASTIK SELONGSONG CUP",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "72d9b253-43ea-450b-ae73-def6828b4496",
+      "eligible_master": true
+    },
+    {
+      "kode": "100187",
+      "nama": "PLASTIK SLOP CUP",
+      "satuan": "PCS",
+      "accurate_ats": 301.0,
+      "master_item_id": "b05b7e9f-d99a-4748-a3f5-f5b519bb4c9c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100109",
+      "nama": "PLASTIK TRASHBAG",
+      "satuan": "PCS",
+      "accurate_ats": 1.0,
+      "master_item_id": "50c10ae7-53a2-40bc-9a94-03e14a1ddafa",
+      "eligible_master": true
+    },
+    {
+      "kode": "100210",
+      "nama": "Plastik HD Plong Putih 20 x 30",
+      "satuan": "PCS",
+      "accurate_ats": 20000.0,
+      "master_item_id": "9208b6b4-fea1-487d-9eeb-41248a56f788",
+      "eligible_master": true
+    },
+    {
+      "kode": "100225",
+      "nama": "Plastik Klip Pond Hitam 20 x 30",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "54c4a9ea-6769-4b9f-8991-64580c35adbf",
+      "eligible_master": true
+    },
+    {
+      "kode": "100227",
+      "nama": "Plastik Klip Pond Transparan 30 x 38",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "89d6a28e-31ab-4bea-92e3-e292d61d15a6",
+      "eligible_master": true
+    },
+    {
+      "kode": "100290",
+      "nama": "Plastik PE Bening Party Besar 35",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d0c5c121-1966-4b5a-b3f9-4ee12d34a09c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100276",
+      "nama": "Plastik PE Bening Party Kecil 15",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "50140c26-6d3b-4023-b0b3-9396ff0d8a1a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100301",
+      "nama": "Plastik PE Bening Party Super 30",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d82d6a95-b0b0-43ac-a5c6-0ed5bcbd12ba",
+      "eligible_master": true
+    },
+    {
+      "kode": "100097",
+      "nama": "Plastik PE Bening Party Tanggung 24",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6b064139-f4c4-4af7-baac-dc4ad766f421",
+      "eligible_master": true
+    },
+    {
+      "kode": "100294",
+      "nama": "Plastik PE Double Cup Lebar",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "29bc0cfa-c2c4-4093-a98a-ade9cc3c77cc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100114",
+      "nama": "Plastik PE Double Cup Tinggi (G2)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "aca5459f-3c2f-4490-a1ff-703dbef48d76",
+      "eligible_master": true
+    },
+    {
+      "kode": "100267",
+      "nama": "Plastik Plong Transparan 25 x 40",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ecf587ea-503a-4b77-b641-8950f204c10c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100261",
+      "nama": "Plastik Plong Transparan 30 x 45",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0af738cc-c4d8-413a-a6b7-976f1ecfb83a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100235",
+      "nama": "Standing Klip Window Hitam 14 x 22",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1e764265-a205-488e-8cc7-a2ff4cd342ad",
+      "eligible_master": true
+    },
+    {
+      "kode": "100236",
+      "nama": "Standing Klip Window Hitam 16 x 24",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "4c8ddf47-4e5b-439b-be14-18e8203d4392",
+      "eligible_master": true
+    },
+    {
+      "kode": "100352",
+      "nama": "Plastik Kresek Macan Putih 75 x 50",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2a090b22-cce0-4bc9-a7ad-f94192e1ef3b",
+      "eligible_master": true
+    },
+    {
+      "kode": "100354",
+      "nama": "PLASTIK KRESEK MACAN PUTIH  65 X 45",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d988d8cc-27f6-4e6f-8221-eaae89735d67",
+      "eligible_master": true
+    },
+    {
+      "kode": "100314",
+      "nama": "STRAW / SEDOTAN BOBA",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "f36f8b8a-4601-4018-a350-83e165dee195",
+      "eligible_master": true
+    },
+    {
+      "kode": "100052",
+      "nama": "STRAW/SEDOTAN LANCIP 620 ISI 300 PCS",
+      "satuan": "PCS",
+      "accurate_ats": 24.0,
+      "master_item_id": "d2be20b4-64d1-417a-bc82-5a9d65118a64",
+      "eligible_master": true
+    },
+    {
+      "kode": "100053",
+      "nama": "SEAL KAKA ISI 1200",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "22782ee5-2c1c-43ee-8959-f4f66fcc6302",
+      "eligible_master": true
+    },
+    {
+      "kode": "100110",
+      "nama": "STRAW/SEDOTAN LANCIP 620 ISI 250 PCS",
+      "satuan": "PCS",
+      "accurate_ats": -2000.0,
+      "master_item_id": "d3d19796-813d-41f6-aee1-93f7ea231697",
+      "eligible_master": true
+    },
+    {
+      "kode": "100250",
+      "nama": "STRAW/SEDOTAN TEKUK 620 ISI 250 PCS",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "43335d14-0871-499d-b58c-8aec6f88047e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100320",
+      "nama": "STRAW/SEDOTAN HITAM MASTER/BOBA",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "f760e10a-464b-4f9d-8b7c-739c7f6a0986",
+      "eligible_master": true
+    },
+    {
+      "kode": "100111",
+      "nama": "Bubble Wrap Hitam",
+      "satuan": "PCS",
+      "accurate_ats": 24.0,
+      "master_item_id": "2b61e7ae-a566-401a-9b43-5d42c32cd935",
+      "eligible_master": true
+    },
+    {
+      "kode": "100355",
+      "nama": "Stirrer/Sedotan Kopi 12,5 Coklat",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "09f14cfb-7d85-4c10-948a-1fa97ed65d6c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100346",
+      "nama": "STRAW/SEDOTAN LANCIP 620 ISI 500 PCS",
+      "satuan": "PCS",
+      "accurate_ats": 21.0,
+      "master_item_id": "9be0671c-135e-42d8-98f3-4d1d38c7f61d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100185",
+      "nama": "STRAW / SEDOTAN STIRRER HITAM",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "157dd7d1-67c9-4816-b8ca-17747b1e10cc",
+      "eligible_master": true
+    },
+    {
+      "kode": "100186",
+      "nama": "STRAW / SEDOTAN STIRRER COKLAT",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "12e7abf8-1ee2-41e6-864f-6c3b9badc0a7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100362",
+      "nama": "SOS  Papper Bag Cokelat M Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "01a7a155-f4e1-44a9-93cf-c8d3bfc1efed",
+      "eligible_master": true
+    },
+    {
+      "kode": "100363",
+      "nama": "SOS  Papper Bag Cokelat L Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "4d71d26a-b63a-4c15-84c2-150cbdb52725",
+      "eligible_master": true
+    },
+    {
+      "kode": "100364",
+      "nama": "SOS  Papper Bag Cokelat S Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "76dee0fa-1922-45ba-99c7-b8c1d8dcd7c5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100365",
+      "nama": "SOS  Papper Bag Putih M Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "8fd683c1-078c-494f-b80e-a8d3207b75ee",
+      "eligible_master": true
+    },
+    {
+      "kode": "100403",
+      "nama": "Plastik Klip Zipper Buram/Doff  30 x 40",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1adc119a-5b2c-4434-94f2-e83deb59ba9e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100418",
+      "nama": "Plastik PE 15",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "850c9307-bec9-4cb2-a952-81189a1d2b97",
+      "eligible_master": true
+    },
+    {
+      "kode": "100120",
+      "nama": "Papper Rice",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "3541f32d-4ccc-4f71-a957-e9563c6a9957",
+      "eligible_master": true
+    },
+    {
+      "kode": "100214",
+      "nama": "Papper Rice Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ccab7b71-6b12-4ec3-808f-fee766d9002a",
+      "eligible_master": true
+    },
+    {
+      "kode": "100269",
+      "nama": "Wrap Papper Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "11f2e845-8024-4364-ab76-85e16a053e92",
+      "eligible_master": true
+    },
+    {
+      "kode": "100315",
+      "nama": "Wrap Papper Printing 10.20",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a492e35f-4ab4-493f-83e9-691c7a351873",
+      "eligible_master": true
+    },
+    {
+      "kode": "100316",
+      "nama": "Wrap Papper Printing 27.27",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "20916aa9-473f-4663-ae38-f70ecffb9465",
+      "eligible_master": true
+    },
+    {
+      "kode": "100361",
+      "nama": "Wrap Paper Printing 28 X 28",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "64b17340-f612-4b46-8273-199927c4b1d7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100345",
+      "nama": "Wrap Paper Printing 20 X 20",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2eec268e-ca06-48f7-ab0b-0ed7af819679",
+      "eligible_master": true
+    },
+    {
+      "kode": "100387",
+      "nama": "Wrap Paper Printing 14 X 14",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "09054eab-a9c4-489c-afec-e58522075117",
+      "eligible_master": true
+    },
+    {
+      "kode": "100426",
+      "nama": "Wrap Paper Printing 22.5 X 35",
+      "satuan": "PCS",
+      "accurate_ats": 1500.0,
+      "master_item_id": "6f3fcec7-6b1e-486f-b27b-da4ab10ae414",
+      "eligible_master": true
+    },
+    {
+      "kode": "100430",
+      "nama": "Wrap Paper Printing 18 X 18",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "277166cb-504c-4f92-ad99-14c613f59304",
+      "eligible_master": true
+    },
+    {
+      "kode": "100417",
+      "nama": "Leak Proof Paper 125 mm",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "3cacbcea-638f-44de-9262-8cca9c2ba0db",
+      "eligible_master": true
+    },
+    {
+      "kode": "100413",
+      "nama": "Wrap Paper Printing 24 X 24",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b3a62d99-10e1-4693-a3fb-58e8d6e857da",
+      "eligible_master": true
+    },
+    {
+      "kode": "100234",
+      "nama": "Box Craft 16 X 16 Sambung",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b90c67e9-83ed-4206-b60d-0d69feb42659",
+      "eligible_master": true
+    },
+    {
+      "kode": "100103",
+      "nama": "Box Craft 20 X 20",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ba624219-8937-4745-af2d-f8b4e036dd98",
+      "eligible_master": true
+    },
+    {
+      "kode": "100249",
+      "nama": "Box Craft 20 X 20 Sambung",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "da8690ff-568d-49d2-8dfc-d84077bd5e21",
+      "eligible_master": true
+    },
+    {
+      "kode": "100183",
+      "nama": "Box Pizza 30 x 30 cm",
+      "satuan": "PCS",
+      "accurate_ats": 1498.0,
+      "master_item_id": "bee577f5-a51e-4fcd-a0d9-d894183e5e1f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100212",
+      "nama": "Burger Box",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "39c6ba28-3f83-4534-9abb-0f53c7601e9c",
+      "eligible_master": true
+    },
+    {
+      "kode": "100237",
+      "nama": "Cup Holder (Sleeve) 8 Oz",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "13d76151-04c7-4e9a-bbbe-bb50a43205be",
+      "eligible_master": true
+    },
+    {
+      "kode": "100046",
+      "nama": "LUNCH BOX COKELAT L",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "ea7a2e66-b70d-4ada-9d87-23b98b345631",
+      "eligible_master": true
+    },
+    {
+      "kode": "100045",
+      "nama": "LUNCH BOX COKELAT M",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "a78fe09e-6c54-448e-9254-ae936e8231f5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100044",
+      "nama": "Lunch Box Cokelat (S)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d163ba8a-e75c-4878-93f6-ff95e6a7cb67",
+      "eligible_master": true
+    },
+    {
+      "kode": "100213",
+      "nama": "Lunch Box Cokelat Aldo (L)",
+      "satuan": "PCS",
+      "accurate_ats": 150.0,
+      "master_item_id": "80dcabce-dea8-4c2e-87a4-9283a4a79509",
+      "eligible_master": true
+    },
+    {
+      "kode": "100200",
+      "nama": "Lunch Box Cokelat Aldo (M)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "aca7f6e5-35ed-4736-bd68-39ac7a71f137",
+      "eligible_master": true
+    },
+    {
+      "kode": "100279",
+      "nama": "Lunch Box Eco (S)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "f282eb9f-34ef-4d8a-896b-8c740d9b7471",
+      "eligible_master": true
+    },
+    {
+      "kode": "100295",
+      "nama": "Lunch Box Printing (L)",
+      "satuan": "PCS",
+      "accurate_ats": 1190.0,
+      "master_item_id": "2a64089e-8007-433b-a092-83f0abc9c27e",
+      "eligible_master": true
+    },
+    {
+      "kode": "100189",
+      "nama": "Lunch Box Printing (M)",
+      "satuan": "PCS",
+      "accurate_ats": 1300.0,
+      "master_item_id": "eb6e56f5-7dcb-4a9b-ad59-f8ea2a95d3c3",
+      "eligible_master": true
+    },
+    {
+      "kode": "100296",
+      "nama": "Lunch Box Printing (S)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "85c6c35d-6fb8-4a2f-8e97-e9491b85a04f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100297",
+      "nama": "Lunch Box Printing Custom",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "dcf3cef6-53ef-4d41-98be-23057d4e0089",
+      "eligible_master": true
+    },
+    {
+      "kode": "100177",
+      "nama": "Lunch Box Printing Full Laminasi",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "59d156bc-c926-4d3a-b89d-7397dad5e8d4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100064",
+      "nama": "Lunch Box Putih (M)",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "86ee4d57-0c73-4ffa-8928-bd5c5f06abde",
+      "eligible_master": true
+    },
+    {
+      "kode": "100238",
+      "nama": "Mika Box 20 x 20",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "304be767-8633-4277-aedf-5ae1e0d7531f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100142",
+      "nama": "Papper Bag 15 x 30",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "eea276eb-1078-43fc-91fd-923744d957b4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100190",
+      "nama": "Papper Bag Food Printing",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "6d6cab83-2462-46c5-8143-b590ef987e10",
+      "eligible_master": true
+    },
+    {
+      "kode": "100289",
+      "nama": "Papper Take Away Custom",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "cec781cd-da0c-449e-bc21-0997e68a716d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100208",
+      "nama": "Papper Tray Coklat/Craft L",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b513d48c-0ff8-4c63-894a-222fd8060df5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100207",
+      "nama": "Papper Tray Coklat/Craft M",
+      "satuan": "PCS",
+      "accurate_ats": 800.0,
+      "master_item_id": "c614b119-538c-4b9f-8354-d25f336b003d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100291",
+      "nama": "Papper Tray Coklat/Craft S",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "c4b9b016-4a99-49fa-a9d2-4ccca4d7d275",
+      "eligible_master": true
+    },
+    {
+      "kode": "100191",
+      "nama": "Papper Tray Printing",
+      "satuan": "PCS",
+      "accurate_ats": 5.0,
+      "master_item_id": "62628075-504c-42ad-abce-d5aeb69c4db4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100224",
+      "nama": "SOS Papper Bag Coklat L",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "145eef44-c34c-4f75-b3e8-3b8ac9a799d5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100302",
+      "nama": "SOS Papper Bag Coklat M",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "02ba8300-d523-4d3e-8129-3ad0068df965",
+      "eligible_master": true
+    },
+    {
+      "kode": "100303",
+      "nama": "SOS Papper Bag Putih M",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "cb31d256-813b-4e46-b719-c5e244bf29d5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100360",
+      "nama": "SOS Papper Bag Coklat S",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "451c1542-3d35-4c8e-ab29-9aedddac7a05",
+      "eligible_master": true
+    },
+    {
+      "kode": "100376",
+      "nama": "Box Craft 18 X 18 Sambung",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "94bb6b2e-eedc-4ff6-ad35-5fc51a1dbf4f",
+      "eligible_master": true
+    },
+    {
+      "kode": "100268",
+      "nama": "Standing Klip Pouch Craft 13 x 20 cm",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "2183a248-971f-48e9-976d-a894f56fc4f7",
+      "eligible_master": true
+    },
+    {
+      "kode": "100266",
+      "nama": "Standing Klip Pouch Craft 14 x 23 cm",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "5427cfa3-ab18-4f5d-9b49-51ef4b0351aa",
+      "eligible_master": true
+    },
+    {
+      "kode": "100265",
+      "nama": "Standing Klip Pouch Craft 22 x 33 cm",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "4852f73d-e17a-437e-b6ca-0930279486a2",
+      "eligible_master": true
+    },
+    {
+      "kode": "100251",
+      "nama": "Standing Klip Pouch Craft 22 x 33 cm",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "d5aa91bf-a21d-4d42-9f1d-04e0de4732f0",
+      "eligible_master": true
+    },
+    {
+      "kode": "100434",
+      "nama": "12 oz Inject Datar Frosted Hitam Merak",
+      "satuan": "PCS",
+      "accurate_ats": 3950.0,
+      "master_item_id": "079326e1-5a15-461e-b16c-a66e07f95cb5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100454",
+      "nama": "12 Oz Pet Souffle Plp",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "b769da25-db35-4566-a86e-38e635d04868",
+      "eligible_master": true
+    },
+    {
+      "kode": "100439",
+      "nama": "Papper Tray Printing S",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "1b4662dd-1788-416a-8ace-e48bc92ba87d",
+      "eligible_master": true
+    },
+    {
+      "kode": "100458",
+      "nama": "Cup Holder (Sleeve) 12 Oz",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "bcf5289f-d645-4943-a935-ed2aa4ffb6c4",
+      "eligible_master": true
+    },
+    {
+      "kode": "100459",
+      "nama": "Papper Cup Putih 8 oz Plain Irp",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "570ee9a6-2a66-4efe-827a-7aa28d3fe488",
+      "eligible_master": true
+    },
+    {
+      "kode": "100461",
+      "nama": "LID Hitam Papper Cup 8 oz Irp",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "e97728df-c033-4c39-8edb-6093b4fd3675",
+      "eligible_master": true
+    },
+    {
+      "kode": "100463",
+      "nama": "Thinwall RoundBowl 750 Ml Victory + Lid",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "0da47651-44a2-564a-bab3-ce8fda010c18",
+      "eligible_master": true
+    },
+    {
+      "kode": "100464",
+      "nama": "Papper Tray Printing M",
+      "satuan": "PCS",
+      "accurate_ats": 0.0,
+      "master_item_id": "5d358a97-c2a7-5821-8129-033def35a8e5",
+      "eligible_master": true
+    },
+    {
+      "kode": "100460",
+      "nama": "LID PET Strawless Tam",
+      "satuan": "PCS",
+      "accurate_ats": 100396.0,
+      "master_item_id": "e69b90ec-4f13-4e9f-8157-b237de39e505",
+      "eligible_master": true
+    },
+    {
+      "kode": "100488",
+      "nama": "Plastik Klip Pond Transparan 30 x 40",
+      "satuan": "PCS",
+      "accurate_ats": 500.0,
+      "master_item_id": "067f7a44-7ebe-562a-ba54-8b8ea5768673",
+      "eligible_master": true
+    },
+    {
+      "kode": "100489",
+      "nama": "LID Connect Inject Orange Glosy Starglas",
+      "satuan": "PCS",
+      "accurate_ats": 1000.0,
+      "master_item_id": "9a0c449b-bd66-50e0-bc45-4c83ed4eef54",
+      "eligible_master": true
+    }
+  ],
+  "inactive_rows": [],
+  "unmatched_rows": [],
+  "row_count": 357,
+  "built_at": "2026-11-04T15:52:22Z",
+  "local_preview_note": {
+    "synthetic_master_item_ids_for_codes": [
+      "100463",
+      "100464",
+      "100488",
+      "100489"
+    ],
+    "reason": "codes absent from local artifact maps; rematch against live Mongo on VPS before activation"
+  }
+}
