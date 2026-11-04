@@ -109,3 +109,52 @@ def test_sj_reprint_uses_existing_pdf_without_creating_new_delivery():
     assert "handlePrintPdf(d.id)" in panel
     assert "api.createSalesDelivery" not in panel
     assert "Cetak Ulang" in panel
+
+
+@pytest.mark.anyio
+async def test_cancelled_invoice_replay_releases_stranded_claim(db):
+    """A crash after cancelled status, before billing release, is recoverable."""
+    from unittest.mock import AsyncMock, patch
+    from services.sales_invoices import cancel_sales_invoice
+
+    po_id = str(uuid.uuid4())
+    line_id = f"{po_id}_line_0"
+    invoice_id = str(uuid.uuid4())
+    counter_id = f"{po_id}::{line_id}"
+    await db.sales_invoices.insert_one({
+        "id": invoice_id, "po_id": po_id,
+        "invoice_number": f"INV/{invoice_id[:8]}",
+        "financial_status": "cancelled",
+        "lines": [{
+            "source_po_id": po_id, "source_po_line_id": line_id,
+            "line_idx": 0, "quantity": 500,
+        }],
+    })
+    await db[BILLING_COUNTERS].insert_one({
+        "id": counter_id, "source_po_id": po_id,
+        "source_line_id": line_id, "invoiced_qty": 500,
+        "claims_by_invoice": {
+            invoice_id: {"qty": 500, "state": "committed"},
+        },
+    })
+    try:
+        with patch(
+            "services.sales_invoice_posting.find_sales_invoice_source_journal",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "services.sales_invoice_edit_revision.raise_if_revision_in_progress",
+            new=AsyncMock(),
+        ), patch(
+            "services.sales_invoices.get_sales_invoice_detail",
+            new=AsyncMock(return_value={"id": invoice_id, "financial_status": "cancelled"}),
+        ):
+            await cancel_sales_invoice(db, invoice_id, {"email": "admin@test"}, serialize_in_process=False)
+            await cancel_sales_invoice(db, invoice_id, {"email": "admin@test"}, serialize_in_process=False)
+        counter = await db[BILLING_COUNTERS].find_one({"id": counter_id})
+        assert counter["invoiced_qty"] == 0
+        assert invoice_id not in counter["claims_by_invoice"]
+        invoice = await db.sales_invoices.find_one({"id": invoice_id})
+        assert invoice["financial_status"] == "cancelled"
+    finally:
+        await db.sales_invoices.delete_one({"id": invoice_id})
+        await db[BILLING_COUNTERS].delete_one({"id": counter_id})
