@@ -817,7 +817,13 @@ async def _book_qty_now(db, mongo_session, *, master_item_id: str, branch_id: st
 
 
 async def _enrich_operational_preview(db, doc: dict) -> dict:
-    """Attach live book + net movement preview for operational sessions (read-only)."""
+    """Attach live book + demand + net movement preview for operational sessions.
+
+    Read-only presentation: recomputes Qty Pesanan / Belum Terkirim from current
+    orders so parent-link repairs are visible on the active COUNTING/REVIEW
+    session without cancelling or rewriting stored physical counts.
+    Does not persist demand fields back to the session document.
+    """
     if session_mode(doc) != MODE_OPERATIONAL:
         return doc
     if doc.get("status") not in (STATUS_COUNTING, STATUS_REVIEW):
@@ -828,6 +834,15 @@ async def _enrich_operational_preview(db, doc: dict) -> dict:
     branch_id = str(doc.get("branch_id") or "")
     lines = [dict(line) for line in doc.get("lines") or []]
     async with await _client(db).start_session() as mongo_session:
+        # Live demand / Belum (parity with Stock Saat Ini). Stored snapshot may
+        # lag after SERVICE→parent repairs; never invent verified zeros.
+        await _snapshot_order_buckets(
+            db,
+            mongo_session,
+            lines,
+            branch_id=branch_id,
+            warehouse_id=warehouse_id,
+        )
         for line in lines:
             count_at = parse_physical_count_at(line.get("physical_count_at"))
             mid = str(line.get("master_item_id") or "")
