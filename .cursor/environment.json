@@ -1,0 +1,21 @@
+{
+  "name": "Eternal Packaging",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "backend",
+      "command": "cd backend && .venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload",
+      "description": "FastAPI backend API (http://localhost:8000, routes under /api)."
+    },
+    {
+      "name": "frontend",
+      "command": "cd frontend && BROWSER=none corepack yarn start",
+      "description": "React (CRACO) dev server (http://localhost:3000)."
+    }
+  ],
+  "ports": [
+    { "name": "frontend", "port": 3000 },
+    { "name": "backend", "port": 8000 }
+  ]
+}
